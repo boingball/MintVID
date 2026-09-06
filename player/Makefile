@@ -104,9 +104,18 @@ mr_yuv_dither_check: tests/mr_yuv_dither_check.c core/mr_yuv_dither.c \
 	$(CC) $(CFLAGS) -o $@ tests/mr_yuv_dither_check.c core/mr_yuv_dither.c \
 	    core/mr_yuv.c core/mr_scale.c core/mr_dither.c
 
+mr_yuv_ham_check: tests/mr_yuv_ham_check.c core/mr_yuv_ham.c \
+                  core/mr_yuv_ham.h core/mr_yuv.c core/mr_yuv.h \
+                  core/mr_scale.c core/mr_scale.h core/mr_ham.c \
+                  core/mr_ham.h core/mr_types.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_yuv_ham_check.c core/mr_yuv_ham.c \
+	    core/mr_yuv.c core/mr_scale.c core/mr_ham.c
+
 mr_mpeg1_probe_check: tests/mr_mpeg1_probe_check.c core/mr_mpeg1.c \
-                      core/mr_mpeg1.h core/pl_mpeg.h core/mr_types.h
-	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_probe_check.c core/mr_mpeg1.c
+                      core/mr_mpeg1.h core/pl_mpeg.h core/mr_yuv.c \
+                      core/mr_yuv.h core/mr_types.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_probe_check.c core/mr_mpeg1.c \
+	    core/mr_yuv.c
 
 mr_ps_check: tests/mr_ps_check.c core/mr_ps.c core/mr_ps.h \
              core/mr_demux.h core/mr_types.h
@@ -215,6 +224,9 @@ mr_h264_cabac_coeff_check: tests/mr_h264_cabac_coeff_check.c $(LIBAVC_SRC)
 mr_h264_mvpred_dispatch_check: tests/mr_h264_mvpred_dispatch_check.c $(LIBAVC_SRC)
 	$(CC) $(CFLAGS) -o $@ tests/mr_h264_mvpred_dispatch_check.c $(LIBAVC_SRC)
 
+mr_h264_mc_degrade_check: tests/mr_h264_mc_degrade_check.c $(LIBAVC_SRC)
+	$(CC) $(CFLAGS) -o $@ tests/mr_h264_mc_degrade_check.c $(LIBAVC_SRC)
+
 mr_h264_recon8x8_check: tests/mr_h264_recon8x8_check.c $(LIBAVC_SRC)
 	$(CC) $(CFLAGS) -o $@ tests/mr_h264_recon8x8_check.c $(LIBAVC_SRC)
 
@@ -247,7 +259,7 @@ mr_youtube_search_check: tests/mr_youtube_search_check.c \
 	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_search_check.c \
 	    youtube/mr_youtube_search.c
 
-check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_mpeg1_probe_check mr_ps_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_h264_m68k_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check
+check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_ps_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_h264_m68k_check mr_h264_mc_degrade_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check
 	./mr_youtube_search_check
 	./mr_youtube_check
 	./mr_hls_override_check
@@ -258,6 +270,7 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	./mr_aspect_check
 	./mr_media_clock_check
 	./mr_h264_m68k_check
+	./mr_h264_mc_degrade_check
 	./mr_decode ../testfiles/mov+cinepak+pcm_s8++grosspnt.mov 2>&1 \
 	    | grep -F "audio: PCM S8 mono 11025 Hz (twos)"
 	./mr_rawvideo_check
@@ -267,6 +280,7 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	./mr_ham_check
 	./mr_dither_check
 	./mr_yuv_dither_check
+	./mr_yuv_ham_check
 	./mr_mpeg1_probe_check
 	./mr_ps_check
 	./mr_ts_mp2_check
@@ -394,7 +408,7 @@ check-m68k:
 
 clean:
 	rm -f mr_decode mr_decode_ssl mr_audio_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check \
-	      mr_dither_check mr_yuv_dither_check mr_mpeg1_probe_check mr_ps_check mr_ts_mp2_check mr_mkv_check \
+	      mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_ps_check mr_ts_mp2_check mr_mkv_check \
 	      mr_mov_seek_check
 	rm -f mr_legacy_video_check
 	rm -f mr_rawvideo_check mr_codec_registry_check
@@ -403,6 +417,7 @@ clean:
 	rm -f mr_aspect_check
 	rm -f mr_media_clock_check
 	rm -f mr_h264_m68k_check
+	rm -f mr_h264_mc_degrade_check
 	rm -f mr_iptv_check mr_youtube_check mr_youtube_search_check
 
 .PHONY: all check check-audio check-http check-https check-libavc check-m68k clean

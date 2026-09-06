@@ -52,6 +52,17 @@ ifeq ($(filter $(CPU),$(SUPPORTED_CPUS)),)
 $(error unsupported CPU '$(CPU)' (choose $(SUPPORTED_CPUS)))
 endif
 CPUFLAGS := -m$(CPU)
+# YUV_ASM=0 builds the YUV420->RGB24 converter from portable C instead of
+# core/mr_yuv_m68k.S, for A/B testing that one kernel on real hardware. See
+# the note at the top of core/mr_yuv.c - the two are bit-identical, so this
+# only ever changes speed.
+YUV_ASM ?= 1
+ifeq ($(YUV_ASM),0)
+YUV_ASM_CPPFLAGS := -DMR_YUV_NO_ASM
+else
+YUV_ASM_CPPFLAGS :=
+endif
+
 include vendor/libavc_port/libavc.mk
 SSL ?= 0
 SSLCERTS ?= 0
@@ -88,7 +99,7 @@ CORE  = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
         core/mr_mpeg2.c $(LIBMPEG2_SRC) \
         core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_wmv.c core/mr_wmv2.c core/mr_h263.c core/mr_msvideo1.c core/mr_rle.c \
         core/mr_rawvideo.c core/mr_yuv.c core/mr_yuv_m68k.S core/mr_yuv_dither.c \
-        core/mr_yuv_dither_m68k.S
+        core/mr_yuv_dither_m68k.S core/mr_yuv_ham.c
 HARN  = tests/mr_decode.c
 PLAY  = amiga/mrplay.c core/mr_media_clock.c core/mr_play_options.c amiga/mr_akiko.c amiga/display.c amiga/display_cgx.c \
         amiga/display_p96.c amiga/display_aga.c amiga/audio_paula.c \
@@ -308,6 +319,7 @@ endif
 # anything except this exact pair of files.
 CFLAGS  = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wextra \
           -DAMIGA_M68K -DMR_HAVE_MPEG1 -DMR_HAVE_H264 -DMR_M68K_ASM=1 \
+          $(YUV_ASM_CPPFLAGS) \
           $(STAGE_PROFILE_FLAGS) $(KALMS_CPPFLAGS) \
           $(HTTP_SSL_FLAGS) $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \
           $(LIBMPEG2_FLAGS) -Iamiga/include \

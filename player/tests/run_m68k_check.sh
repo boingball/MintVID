@@ -73,6 +73,7 @@ LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
     | grep -v -e ithread.c -e ih264_resi_trans_quant.c -e ih264_trans_data.c) \
     $(printf '%s\n' vendor/libavc/decoder/*.c) \
     vendor/libavc_port/ih264d_function_selector_port.c \
+    vendor/libavc_port/ih264_mc_degrade.c \
     vendor/libavc_port/ih264d_stage_profile.c \
     vendor/libavc_port/ih264_m68k_optim.c \
     vendor/libavc_port/ih264_m68k_interp.S \
@@ -130,6 +131,9 @@ $CC -o "$BUILD/mr_h264_cabac_coeff_check.m68k" tests/mr_h264_cabac_coeff_check.c
 echo "== building mr_h264_mvpred_dispatch_check.m68k (real ih264d_mvpred_nonmbaff/_nonmbaffB vs asm) =="
 $CC -o "$BUILD/mr_h264_mvpred_dispatch_check.m68k" tests/mr_h264_mvpred_dispatch_check.c $LIBAVC_SRC
 
+echo "== building mr_h264_mc_degrade_check.m68k (exact chroma/luma filter sets + bilinear vs spec) =="
+$CC -o "$BUILD/mr_h264_mc_degrade_check.m68k" tests/mr_h264_mc_degrade_check.c $LIBAVC_SRC
+
 echo "== building mr_h264_recon8x8_check.m68k (real ih264_iquant_itrans_recon_8x8/_dc vs asm) =="
 $CC -o "$BUILD/mr_h264_recon8x8_check.m68k" tests/mr_h264_recon8x8_check.c $LIBAVC_SRC
 
@@ -164,6 +168,14 @@ $CC -o "$BUILD/mr_yuv_dither_check.m68k" tests/mr_yuv_dither_check.c \
     core/mr_yuv_dither.c core/mr_yuv_dither_m68k.S core/mr_yuv.c \
     core/mr_yuv_m68k.S core/mr_scale.c core/mr_dither.c core/mr_dither_m68k.S
 
+echo "== building mr_yuv_ham_check.m68k =="
+# Same idea for HAM: the reference composition links the real hand-asm
+# mr_yuv420_to_rgb24_m68k, so this cross-checks the fused encoder against the
+# accelerated three-stage pipeline on real big-endian m68k.
+$CC -o "$BUILD/mr_yuv_ham_check.m68k" tests/mr_yuv_ham_check.c \
+    core/mr_yuv_ham.c core/mr_yuv.c core/mr_yuv_m68k.S core/mr_scale.c \
+    core/mr_ham.c
+
 echo "== building mr_mpeg1_blockset_check.m68k / mr_mpeg1_idct_check.m68k =="
 $CC -o "$BUILD/mr_mpeg1_blockset_check.m68k" tests/mr_mpeg1_blockset_check.c \
     core/mr_mpeg1_blockset_m68k.S
@@ -179,6 +191,7 @@ run() { echo "[qemu-m68k] $*"; "$QEMU_M68K" "$@"; }
 run "$BUILD/mr_h264_m68k_check.m68k"
 run "$BUILD/mr_h264_cabac_coeff_check.m68k"
 run "$BUILD/mr_h264_mvpred_dispatch_check.m68k"
+run "$BUILD/mr_h264_mc_degrade_check.m68k"
 run "$BUILD/mr_h264_recon8x8_check.m68k"
 run "$BUILD/mr_h264_intra8x8_check.m68k"
 run "$BUILD/mr_h264_intra_chroma_check.m68k"
@@ -189,6 +202,7 @@ run "$BUILD/mr_c2p_check.m68k"
 run "$BUILD/mr_ham_check.m68k"
 run "$BUILD/mr_dither_check.m68k"
 run "$BUILD/mr_yuv_dither_check.m68k"
+run "$BUILD/mr_yuv_ham_check.m68k"
 run "$BUILD/mr_mpeg1_blockset_check.m68k"
 run "$BUILD/mr_mpeg1_idct_check.m68k"
 run "$BUILD/mr_media_clock_check.m68k"

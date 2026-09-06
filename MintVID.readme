@@ -113,21 +113,25 @@ Kalms is the default C2P choice for AGA/HAM playback. If the selected geometry
 or BitMap layout cannot use its CPU-matched converter, MintVID automatically
 falls back to the established graphics.library path. RTG ignores C2P choices.
 
-TurboGT is the default H.264 mode. Auto currently selects the same policy.
+TurboGT is the default H.264 mode. Auto selects the same policy.
 
   - Quality: full filtering, no deliberate frame skipping.
-  - Balanced: reduces work only on non-reference pictures; often close to
-    Quality on streams with few B-frames.
-  - Fast: cheaper filtering on non-key pictures, but keeps every frame.
+  - Balanced: in-loop deblocking disabled; motion compensation stays exact.
+  - Fast: Balanced plus bilinear rather than six-tap interpolation, but
+    still keeps every frame.
   - Turbo: Fast policy plus B-frame skipping; preserves the P-frame chain.
-  - Turbo+: skips both P- and B-frames and applies maximum degradation
-    (including disabling I-frame deblocking) to every displayed keyframe, so
-    the one remaining expensive decode stays short enough on a slow CPU to
-    keep audio from stuttering between frames. This is a last-resort
-    keyframe/slideshow mode, not the normal fastest setting.
-  - TurboGT: skips B-frames, retains P-frames, and applies maximum degradation
-    to every decoded picture. It is the recommended aggressive PiStorm/Emu68
-    setting and the default from the 1.1.x line.
+  - Turbo+: skips both P- and B-frames, so only keyframes are decoded and
+    shown and that decode stays short enough on a slow CPU to keep audio from
+    stuttering between frames. A last-resort keyframe/slideshow mode, not the
+    normal fastest setting.
+  - TurboGT: the same policy as Turbo, kept as a selectable name.
+
+Turbo and TurboGT are now the same setting. TurboGT used to differ by
+disabling deblocking on keyframes as well, and every mode from Balanced down
+now does that: leaving some pictures undegraded left the remaining ones being
+deblocked against stale per-macroblock parameters, which was both incorrect
+and slow enough that Fast ran slower than Quality. All modes below Quality
+are substantially faster than in 1.2.0.
 
 WHAT IT IS NOT
 

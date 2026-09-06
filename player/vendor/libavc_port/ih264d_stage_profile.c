@@ -47,6 +47,21 @@ MR_MC_WRAP(8)  MR_MC_WRAP(9)  MR_MC_WRAP(10) MR_MC_WRAP(11)
 MR_MC_WRAP(12) MR_MC_WRAP(13) MR_MC_WRAP(14) MR_MC_WRAP(15)
 #undef MR_MC_WRAP
 
+/* Chroma prediction is motion compensation too, and it is not cheap - before
+ * ih264_mc_degrade.c's exact dx/dy shortcuts it was the single hottest
+ * function in a decode. Leaving it out of mc_us made the on-hardware "h264
+ * stages:" line under-report motion compensation and inflate the unattributed
+ * remainder. */
+static ih264_inter_pred_chroma_ft *g_mc_chroma_orig;
+static void mc_chroma_wrap(UWORD8 *pu1_src, UWORD8 *pu1_dst, WORD32 src_strd,
+                           WORD32 dst_strd, WORD32 dx, WORD32 dy,
+                           WORD32 ht, WORD32 wd)
+{
+    clock_t t0 = clock();
+    g_mc_chroma_orig(pu1_src, pu1_dst, src_strd, dst_strd, dx, dy, ht, wd);
+    g_mc_us += stage_elapsed_us(t0);
+}
+
 static ih264_inter_pred_luma_ft * const g_mc_wrap[16] = {
     mc_wrap_0,  mc_wrap_1,  mc_wrap_2,  mc_wrap_3,
     mc_wrap_4,  mc_wrap_5,  mc_wrap_6,  mc_wrap_7,
@@ -246,14 +261,43 @@ static void intra_ref_filt_wrap(UWORD8 *pu1_left, UWORD8 *pu1_topleft,
     g_intra_us += stage_elapsed_us(t0);
 }
 
-void mr_h264_stage_profile_install(void *codec_v)
+/* Set once mr_h264_stage_profile_install() has run, so
+ * mr_h264_stage_profile_rewrap_mc() can tell "the table changed under us and
+ * needs re-wrapping" from "the profiler is not installed at all". Without it,
+ * the rewrap called from mr_h264_port_install_inter_pred() during
+ * ih264d_init_function_ptr() would wrap the table before install() got to it,
+ * and install() would then capture those wrappers as the originals. */
+static int g_installed;
+
+static void wrap_mc_table(dec_struct_t *codec)
 {
-    dec_struct_t *codec = (dec_struct_t *)codec_v;
     int i;
     for (i = 0; i < 16; i++) {
         g_mc_orig[i] = codec->apf_inter_pred_luma[i];
         codec->apf_inter_pred_luma[i] = g_mc_wrap[i];
     }
+    g_mc_chroma_orig = codec->pf_inter_pred_chroma;
+    codec->pf_inter_pred_chroma = mc_chroma_wrap;
+}
+
+/* mr_h264_set_speed_mode() swaps whole inter-prediction filter sets into
+ * apf_inter_pred_luma[] (ih264_mc_degrade.c), which overwrites these
+ * wrappers. Re-apply them to the new filters so mc_us keeps reporting after a
+ * mid-stream mode change instead of silently reading zero. Re-wrapping only
+ * the MC slots, rather than calling install() again, is what keeps a wrapper
+ * from being captured as another wrapper's original. */
+void mr_h264_stage_profile_rewrap_mc(void *codec_v)
+{
+    if (!g_installed || !codec_v) return;
+    wrap_mc_table((dec_struct_t *)codec_v);
+}
+
+void mr_h264_stage_profile_install(void *codec_v)
+{
+    dec_struct_t *codec = (dec_struct_t *)codec_v;
+    int i;
+    wrap_mc_table(codec);
+    g_installed = 1;
 
     g_deblk_luma_vert_bs4_orig = codec->pf_deblk_luma_vert_bs4;
     codec->pf_deblk_luma_vert_bs4 = deblk_luma_vert_bs4_wrap;

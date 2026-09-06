@@ -12,6 +12,7 @@ LIBAVC_DECODER = $(wildcard $(LIBAVC_ROOT)/decoder/*.c)
 # to an empty translation unit while m68k builds get the real implementation.
 # Keeping it in the shared source list avoids a second m68k-only variable.
 LIBAVC_PORTSRC = $(LIBAVC_PORT)/ih264d_function_selector_port.c \
+                 $(LIBAVC_PORT)/ih264_mc_degrade.c \
                  $(LIBAVC_PORT)/ih264d_stage_profile.c \
                  $(LIBAVC_PORT)/ih264_m68k_optim.c \
                  $(LIBAVC_PORT)/ih264_m68k_interp.S \

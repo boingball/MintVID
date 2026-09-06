@@ -137,14 +137,16 @@ int display_supports_indexed(amiga_display *d, int *indexed_depth);
 void display_show_indexed(amiga_display *d, const unsigned char *idx,
                           int w, int h, int idx_stride, int dy0, int dy1);
 
-/* Non-zero when `d` can accept a direct YUV420P -> indexed frame. Fills the
- * indexed-buffer geometry, fast-path vscale (0 means general two-axis resize), and
- * active 4/5/8-plane palette depth. Dither with the matching generic function
- * in core/mr_yuv_dither.h and pass the resulting one-byte indices to
- * display_show_indexed(); the backend may perform final presentation scaling. */
+/* Non-zero when `d` can accept a direct YUV420P -> chunky frame. Fills the
+ * destination geometry, fast-path vscale (0 means general two-axis resize),
+ * the active plane depth, and the pixel encoding: *ham is 0 for palette
+ * indices (convert with core/mr_yuv_dither.h) or 6/8 for HAM6/HAM8 pixel
+ * bytes (core/mr_yuv_ham.h). Either way the result is one chunky byte per
+ * pixel; pass it to display_show_indexed(), which may perform final
+ * presentation scaling. */
 int display_supports_yuv_indexed(amiga_display *d, int src_w, int src_h,
                                  int *dst_w, int *dst_h, int *vscale,
-                                 int *indexed_depth);
+                                 int *indexed_depth, int *ham);
 void display_set_service(amiga_display *d, mr_display_service_fn fn,
                          void *opaque);
 int display_rtg_frame_timing(amiga_display *d, mr_display_timing *timing);
