@@ -332,6 +332,8 @@ int main(int argc, char **argv)
                 fprintf(stderr, "decode error at frame %d\n", frame); break;
             }
         }
+decoded_output:
+        ;
         frame++;
         if (mode && !strcmp(mode, "--first-ppm") && dir) {
             write_ppm(dir, &dec.frame);
@@ -356,7 +358,7 @@ int main(int argc, char **argv)
                 if (changed_lo < dec.frame.dirty_y0 || changed_hi > dec.frame.dirty_y1)
                     dirty_viol++;
             }
-            continue;
+            goto drain_decoded_output;
         }
         if (mode && !strcmp(mode, "--ppm") && dir) {
             snprintf(path, sizeof path, "%s/f%03d.ppm", dir, frame);
@@ -412,6 +414,9 @@ int main(int argc, char **argv)
               snprintf(path, sizeof path, "%s/f%03d.ppm", dir, frame);
               write_ppm(path, &fr); }
         }
+drain_decoded_output:
+        if (mr_decoder_drain(&dec) == MR_OK)
+            goto decoded_output;
     }
     /* Drain any reordered frames held by the decoder (MPEG-4 B-VOPs). */
     while (mr_decoder_flush(&dec) == MR_OK) {

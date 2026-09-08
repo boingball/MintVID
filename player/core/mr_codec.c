@@ -51,6 +51,7 @@ mr_status mr_decoder_open_config(mr_decoder *dec, const mr_codec *codec,
     dec->config = config;
     dec->config_len = config_len;
     dec->priv   = NULL;
+    dec->drain  = NULL;
     dec->frame.data = NULL;
     return codec->open(dec);
 }
@@ -60,6 +61,13 @@ mr_status mr_decoder_decode(mr_decoder *dec, const uint8_t *data, uint32_t len)
     if (!dec || !dec->codec)
         return MR_ERR;
     return dec->codec->decode(dec, data, len);
+}
+
+mr_status mr_decoder_drain(mr_decoder *dec)
+{
+    if (!dec || !dec->codec || !dec->drain)
+        return MR_EAGAIN;
+    return dec->drain(dec);
 }
 
 mr_status mr_decoder_flush(mr_decoder *dec)

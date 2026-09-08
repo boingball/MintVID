@@ -40,6 +40,9 @@ struct mr_decoder {
     uint32_t        config_len;
     mr_frame        frame;   /* filled in by decode()                       */
     void           *priv;    /* decoder-private state                       */
+    /* Optional codec-installed callback for extra frames made ready by the
+     * last decode(), without signalling end of stream. */
+    mr_status     (*drain)(mr_decoder *dec);
 };
 
 /* Registry: decoders self-select by fourcc. */
@@ -51,6 +54,8 @@ mr_status mr_decoder_open_config(mr_decoder *dec, const mr_codec *codec,
                                  int width, int height,
                                  const uint8_t *config, uint32_t config_len);
 mr_status mr_decoder_decode(mr_decoder *dec, const uint8_t *data, uint32_t len);
+/* Drain one additional frame made ready by the last decode() call. */
+mr_status mr_decoder_drain(mr_decoder *dec);
 /* Drain one reordered frame at end of stream (MR_EAGAIN when none left). */
 mr_status mr_decoder_flush(mr_decoder *dec);
 /* Re-open the codec with the same stream setup, discarding reference frames. */
