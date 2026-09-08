@@ -97,8 +97,28 @@ static int run_mpeg1(const uint8_t *buf, size_t len, const char *mode,
     printf("mpeg1: %dx%d\n", mr_mpeg1_width(m), mr_mpeg1_height(m));
     int frame = 0, bad = 0; long worst = 0;
     mr_frame fr;
+    /* The audio track is pulled alongside the video, as play_mpeg1() does, and
+     * reported: "no audio" on a .mpg that has an MP2 track is a real failure
+     * mode (an unsupported header leaves the source reporting a rate of 0) and
+     * silence is otherwise indistinguishable from a stream that simply has no
+     * audio. */
+    unsigned rate = mr_mpeg1_samplerate(m);
+    int channels = mr_mpeg1_channels(m);
+    unsigned char *abuf = (unsigned char *)malloc(1152 * 4);
+    unsigned long audio_frames = 0, audio_sample_frames = 0;
+    if (rate)
+        printf("audio: MP2 %s %u Hz\n", channels == 1 ? "mono" : "stereo", rate);
+    else
+        printf("audio: none\n");
     while (mr_mpeg1_next(m, &fr, NULL)) {
         frame++;
+        if (abuf && rate) {
+            int n;
+            while ((n = mr_mpeg1_audio(m, abuf)) > 0) {
+                audio_frames++;
+                audio_sample_frames += (unsigned long)n;
+            }
+        }
         char path[512];
         if (mode && !strcmp(mode, "--ppm") && dir) {
             snprintf(path, sizeof path, "%s/f%03d.ppm", dir, frame);
@@ -112,9 +132,13 @@ static int run_mpeg1(const uint8_t *buf, size_t len, const char *mode,
         }
     }
     printf("decoded %d frames\n", frame);
+    if (rate)
+        printf("audio: %lu frames, %lu sample frames\n",
+               audio_frames, audio_sample_frames);
     if (mode && !strcmp(mode, "--check"))
         printf("worst per-frame MAE=%ld.%03ld, frames over threshold=%d\n",
                worst / 1000, worst % 1000, bad);
+    free(abuf);
     mr_mpeg1_close(m);
     return bad ? 1 : 0;
 }

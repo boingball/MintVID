@@ -143,6 +143,19 @@ $CC -DMR_AC3_CHECK_NO_DEMUX $MINTAMP_FLAGS -o "$BUILD/mr_ac3_check.m68k" \
     core/mr_mpeg1.c core/mr_mpeg1_idct_m68k.S \
     core/mr_mpeg1_blockset_m68k.S core/mr_latm.c $MINTAMP_SRC -lm
 
+# MP2 out of a .mpg on a real big-endian target. The MPEG-1 source decodes
+# audio with pl_mpeg's own integer Layer II code and hands it back as
+# explicitly little-endian bytes (mr_mpeg1_audio()), which is precisely the
+# kind of claim the host build cannot test.
+echo "== building mr_mp2_check.m68k =="
+test -f tests/assets/test_mpeg1_mp2.mpg -a -f tests/assets/ref_mpeg1_mp2.raw \
+    || sh tests/gen_audio_assets.sh
+# pl_mpeg's video path calls out to the hand-written m68k IDCT and block
+# routines on this target, so they have to be linked in even though only its
+# audio side is under test here.
+$CC -o "$BUILD/mr_mp2_check.m68k" tests/mr_mp2_check.c core/mr_mpeg1.c \
+    core/mr_mpeg1_idct_m68k.S core/mr_mpeg1_blockset_m68k.S
+
 echo "== building mr_h264_m68k_check.m68k =="
 $CC -o "$BUILD/mr_h264_m68k_check.m68k" tests/mr_h264_m68k_check.c \
     vendor/libavc_port/ih264_m68k_optim.c \
@@ -246,6 +259,10 @@ run "$BUILD/mr_media_clock_check.m68k"
 echo "[AC-3 vs ffmpeg, real m68k/big-endian]"
 run "$BUILD/mr_ac3_check.m68k" tests/assets/test_ac3.ac3 \
     tests/assets/ref_ac3_mkv.raw 32000 1
+
+echo "[MP2 from an MPEG-1 program stream vs ffmpeg, real m68k/big-endian]"
+run "$BUILD/mr_mp2_check.m68k" tests/assets/test_mpeg1_mp2.mpg \
+    tests/assets/ref_mpeg1_mp2.raw 22050 1
 
 echo "[H.264 High Profile avc1 + B-frames, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_h264_high.mp4 \

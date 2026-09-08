@@ -157,7 +157,10 @@ mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
 - [x] MPEG-1 in the Amiga player: .mpg/.mpeg play through pl_mpeg (video + MP2
       audio -> Paula), reusing the display/audio backends. The 68k build links
       a fixed-point decode path with no libm/soft-float dependency. pause/loop
-      apply. (Cinepak/MJPEG path stays integer.)
+      apply. (Cinepak/MJPEG path stays integer.) The Layer II decoder takes
+      both MPEG-1 audio (32/44.1/48 kHz) and MPEG-2 "low sampling frequency"
+      audio (16/22.05/24 kHz); the latter is what an encode aimed at Paula
+      normally produces, and `mr_mp2_check` holds its PCM against ffmpeg's.
 - [x] MPEG-2 program streams (`.mpg`/`.mpeg`, including DVD-style files) are
       demuxed in-tree and decoded by the existing integer libmpeg2 adapter; no
       additional video decoder dependency is required. AC-3 audio is decoded

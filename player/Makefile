@@ -168,6 +168,13 @@ mr_ac3_check: tests/mr_ac3_check.c audio/mr_audio_decode.c audio/mr_pcm.c \
 	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LIBA52_SRC) $(WMA_FFT_OBJ) -lm
 mr_ac3_check: | check-libavc
 
+# Decoded MP2 from a .mpg against an ffmpeg reference. The MPEG-1 program
+# stream source has its own audio path (pl_mpeg, not the MintAMP adapter), so
+# it needs its own oracle; nothing else in the suite reaches it.
+mr_mp2_check: tests/mr_mp2_check.c core/mr_mpeg1.c core/mr_mpeg1.h \
+              core/pl_mpeg.h core/mr_types.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_mp2_check.c core/mr_mpeg1.c
+
 check-libavc:
 	@test -f $(LIBAVC_ROOT)/decoder/ih264d.h || { \
 	  echo "ERROR: initialise the libavc submodule first:"; \
@@ -409,9 +416,11 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	@echo "[H.263+ unrestricted motion vectors]"
 	./mr_decode tests/assets/test_h263p_umv.avi --check tests/assets/ref_h263p_umv
 
-check-audio: mr_audio_check mr_ac3_check
+check-audio: mr_audio_check mr_ac3_check mr_mp2_check
 	@test -f tests/assets/test_mp3.avi -a -f tests/assets/test_aac.mp4 \
 	    -a -f tests/assets/test_mp3_stereo.avi \
+	    -a -f tests/assets/test_mpeg1_mp2.mpg \
+	    -a -f tests/assets/ref_mpeg1_mp2.raw \
 	    -a -f tests/assets/test_mp2_stereo.ts \
 	    -a -f tests/assets/test_ac3_stereo.mkv \
 	    || sh tests/gen_audio_assets.sh
@@ -436,6 +445,8 @@ check-audio: mr_audio_check mr_ac3_check
 	    32000 1
 	./mr_ac3_check tests/assets/test_ac3_stereo.mkv \
 	    tests/assets/ref_ac3_stereo.raw 44100 2
+	./mr_mp2_check tests/assets/test_mpeg1_mp2.mpg \
+	    tests/assets/ref_mpeg1_mp2.raw 22050 1
 
 check-http: mr_decode mr_youtube_check
 	@test -d tests/assets/ref_mpeg2_ts \

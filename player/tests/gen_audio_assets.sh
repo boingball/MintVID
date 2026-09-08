@@ -52,4 +52,17 @@ ffmpeg -v error -i test_h264_ac3.mkv -c:a copy -f ac3 test_ac3.ac3 -y
 ffmpeg -v error -i test_ac3_stereo.mkv -vn -f s16le -acodec pcm_s16le \
     ref_ac3_stereo.raw -y
 
+# MPEG-1 program stream with MPEG-2 Layer II audio: 22.05 kHz is below MPEG-1
+# audio's lowest rate, so this is an ISO 13818-3 "low sampling frequency"
+# stream - the shape any file encoded for Paula ends up with, and the one the
+# .mpg source used to report as having no audio at all. Pink noise rather than
+# a tone on purpose: it spreads energy over every subband, so a wrong bit
+# allocation shows up immediately instead of hiding under an unused table.
+ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=25:duration=1 \
+    -f lavfi -i "anoisesrc=color=pink:sample_rate=22050:duration=1:amplitude=0.7" \
+    -c:v mpeg1video -b:v 200k -c:a mp2 -b:a 64k -ar 22050 -ac 1 \
+    -shortest -f mpeg test_mpeg1_mp2.mpg -y
+ffmpeg -v error -i test_mpeg1_mp2.mpg -vn -f s16le -acodec pcm_s16le \
+    ref_mpeg1_mp2.raw -y
+
 echo "audio fixtures regenerated in $(pwd)"
