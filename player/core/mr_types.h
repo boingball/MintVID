@@ -39,11 +39,13 @@ static inline uint32_t mr_rb32(const uint8_t *p)
      ((uint32_t)(c) << 16) | ((uint32_t)(d) << 24))
 
 /* Surface pixel formats the decoders can emit. RGB24 is the lowest common
- * denominator for host validation; the Amiga renderer tier will add packed
- * chunky and planar targets that a decoder can write to directly. */
+ * denominator for host validation. INDEX8 is a byte-per-pixel index into the
+ * fixed native-display palette selected by the caller; YUV420P exposes three
+ * borrowed decoder planes for a renderer that can consume them directly. */
 typedef enum {
     MR_PIX_RGB24 = 0,   /* r,g,b per pixel, top-down                        */
-    MR_PIX_YUV420P      /* planar Y, Cb, Cr (2x2 subsampled)                */
+    MR_PIX_YUV420P,     /* planar Y, Cb, Cr (2x2 subsampled)                */
+    MR_PIX_INDEX8       /* one fixed-palette index per pixel, top-down      */
 } mr_pixfmt;
 
 typedef struct {
@@ -53,8 +55,8 @@ typedef struct {
     int       stride;   /* bytes per row of the primary plane (Y, when
                           * fmt==MR_PIX_YUV420P)                            */
     uint8_t  *data;     /* owned by the decoder; valid until next decode.
-                          * Interleaved RGB24, or the Y plane when
-                          * fmt==MR_PIX_YUV420P                             */
+                          * Interleaved RGB24, INDEX8 pixels, or the Y plane
+                          * when fmt==MR_PIX_YUV420P                        */
     /* Rows [dirty_y0, dirty_y1) changed this frame (the rest are identical to
      * the previous frame, since decoders patch a persistent buffer). A decoder
      * may report the full frame; dirty_y1 <= dirty_y0 means nothing changed. */

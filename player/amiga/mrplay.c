@@ -19,6 +19,7 @@
 #include "../core/mr_youtube.h"
 #include "hls_fetch.h"
 #include "../core/mr_codec.h"
+#include "../core/mr_cinepak.h"
 #include "../core/mr_rawvideo.h"
 #include "../core/mr_mpeg1.h"
 #include "../core/mr_h264.h"
@@ -1905,6 +1906,14 @@ int main(int argc, char **argv)
      * slot below uses the same format throughout. */
     int use_indexed_queue = !use_yuv_indexed_queue &&
                             display_supports_indexed(disp, &indexed_depth);
+    /* Cinepak's vectors already describe tiny reusable colour tiles. On a
+     * native indexed 1:1 display, pre-dither those tiles when their codebook
+     * changes and decode straight to one-byte pixels. This preserves the
+     * exact existing Bayer output while skipping RGB24 and the subsequent
+     * full-frame queue_copy_indexed() pass. */
+    int use_cinepak_indexed_queue =
+        codec == &mr_codec_cinepak && use_indexed_queue &&
+        mr_cinepak_set_indexed_output(&dec, indexed_depth);
     /* Every remaining H.264 display path consumes RGB24.  Keep libavc's
      * output planar and convert it directly into each queue slot instead of
      * first allocating/filling the decoder's private RGB framebuffer and
@@ -1936,6 +1945,10 @@ int main(int argc, char **argv)
                    yuv_vscale == 1 ? "(1:1 identity)" :
                    yuv_vscale > 1  ? "(vscale asm path)" :
                                      "(general resize path)");
+        else if (use_cinepak_indexed_queue)
+            printf("video path: Cinepak -> INDEX%d %dx%d "
+                   "(direct codebook tiles)\n",
+                   indexed_depth, vi->width, vi->height);
         else if (use_indexed_queue)
             printf("video path: RGB24 %dx%d -> INDEX%d (queue_copy_indexed)\n",
                    vi->width, vi->height, indexed_depth);
@@ -2511,6 +2524,9 @@ int main(int argc, char **argv)
                     mr_h264_set_timing_enabled(&dec, want_time);
                     if (use_yuv_indexed_queue || use_yuv_rgb_queue)
                         mr_h264_set_yuv_output(&dec, 1);
+                    if (use_cinepak_indexed_queue &&
+                        !mr_cinepak_set_indexed_output(&dec, indexed_depth))
+                        break;
                     if (audio_dec) mr_audio_decoder_reset(audio_dec);
                     qcount = 0; qhead = 0;
                     playback_started = 0;
@@ -2768,6 +2784,9 @@ int main(int argc, char **argv)
             mr_h264_set_timing_enabled(&dec, want_time);
             if (use_yuv_indexed_queue || use_yuv_rgb_queue)
                 mr_h264_set_yuv_output(&dec, 1);
+            if (use_cinepak_indexed_queue &&
+                !mr_cinepak_set_indexed_output(&dec, indexed_depth))
+                break;
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
             input_eof = 0; decoded_index = 0; mono_base_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
@@ -2847,6 +2866,9 @@ int main(int argc, char **argv)
             mr_h264_set_timing_enabled(&dec, want_time);
             if (use_yuv_indexed_queue || use_yuv_rgb_queue)
                 mr_h264_set_yuv_output(&dec, 1);
+            if (use_cinepak_indexed_queue &&
+                !mr_cinepak_set_indexed_output(&dec, indexed_depth))
+                break;
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
             input_eof = 0; decoded_index = 0; mono_base_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
@@ -3186,7 +3208,10 @@ int main(int argc, char **argv)
                                     if (us > stats.yuv_indexed_max_us)
                                         stats.yuv_indexed_max_us = us;
                                 }
-                            } else if (use_indexed_queue)
+                            } else if (use_cinepak_indexed_queue)
+                                copy_ok = queue_copy(tail, &dec.frame, pts,
+                                                     decoded_at);
+                            else if (use_indexed_queue)
                                 copy_ok = queue_copy_indexed(tail, &dec.frame,
                                                              pts, decoded_at,
                                                              indexed_depth);

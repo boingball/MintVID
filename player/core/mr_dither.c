@@ -78,6 +78,16 @@ static void build_lut(int depth)
     lut_depth = depth;
 }
 
+uint8_t mr_dither_rgb_indexed_pixel(uint8_t r, uint8_t g, uint8_t b,
+                                    int x, int y, int depth)
+{
+    int t;
+    if (depth != 4 && depth != 5) depth = 8;
+    if (lut_depth != depth) build_lut(depth);
+    t = bayer4[y & 3][x & 3];
+    return (uint8_t)(lut_r[t][r] + lut_g[t][g] + lut_b[t][b]);
+}
+
 void mr_dither_rgb_indexed(const uint8_t *rgb, int w, int h, int rgb_stride,
                            uint8_t *out, int out_stride, int y_base,
                            int depth)
