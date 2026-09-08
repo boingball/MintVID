@@ -8,6 +8,8 @@ typedef struct {
     const uint8_t *buf;
     size_t         len;
     size_t         cursor;
+    size_t         video_cursor;
+    size_t         video_end;
     uint8_t        video_stream;
     uint8_t        audio_stream;
     mr_video_info  video;
