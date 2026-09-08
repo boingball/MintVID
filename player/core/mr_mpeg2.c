@@ -2,8 +2,8 @@
  * MintVID - MPEG-1/MPEG-2 video decoder adapter.
  *
  * libmpeg2 supplies the Main Profile bitstream decoder, reference pictures and
- * display reordering. The adapter consumes one elementary-stream PES payload
- * per call and converts the displayed YUV420 frame to RGB24.
+ * display reordering. The adapter consumes one elementary-stream chunk per
+ * call and converts displayed YUV420 frames to RGB24.
  */
 #include "mr_mpeg2.h"
 #include "mr_yuv.h"
@@ -13,12 +13,19 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+typedef struct mpeg2_frame_node {
+    uint8_t *rgb;
+    struct mpeg2_frame_node *next;
+} mpeg2_frame_node;
+
 typedef struct {
     mpeg2dec_t        *decoder;
     const mpeg2_info_t *info;
-    uint8_t           *rgb;
-    uint8_t           *queued_rgb;
-    int                queued;
+    size_t             frame_bytes;
+    mpeg2_frame_node  *pending_head;
+    mpeg2_frame_node  *pending_tail;
+    mpeg2_frame_node  *current;
+    mpeg2_frame_node  *free_nodes;
     int                flushing;
     int                flush_done;
 } mpeg2_state;
@@ -49,15 +56,69 @@ static mr_status emit_rgb(mr_decoder *dec, uint8_t *rgb)
     return MR_OK;
 }
 
+static mpeg2_frame_node *alloc_frame(mpeg2_state *s)
+{
+    mpeg2_frame_node *node = s->free_nodes;
+    if (node) {
+        s->free_nodes = node->next;
+        node->next = NULL;
+        return node;
+    }
+    node = (mpeg2_frame_node *)calloc(1, sizeof *node);
+    if (!node) return NULL;
+    node->rgb = (uint8_t *)malloc(s->frame_bytes);
+    if (!node->rgb) {
+        free(node);
+        return NULL;
+    }
+    return node;
+}
+
+static mr_status queue_display_frame(mr_decoder *dec)
+{
+    mpeg2_state *s = (mpeg2_state *)dec->priv;
+    mpeg2_frame_node *node = alloc_frame(s);
+    mr_status st;
+    if (!node) return MR_ENOMEM;
+    st = emit_rgb(dec, node->rgb);
+    if (st != MR_OK) {
+        node->next = s->free_nodes;
+        s->free_nodes = node;
+        return st;
+    }
+    if (s->pending_tail) s->pending_tail->next = node;
+    else s->pending_head = node;
+    s->pending_tail = node;
+    return MR_OK;
+}
+
+static mr_status pop_display_frame(mr_decoder *dec)
+{
+    mpeg2_state *s = (mpeg2_state *)dec->priv;
+    mpeg2_frame_node *node;
+    if (s->current) {
+        s->current->next = s->free_nodes;
+        s->free_nodes = s->current;
+        s->current = NULL;
+    }
+    node = s->pending_head;
+    if (!node) return MR_EAGAIN;
+    s->pending_head = node->next;
+    if (!s->pending_head) s->pending_tail = NULL;
+    node->next = NULL;
+    s->current = node;
+    dec->frame.data = node->rgb;
+    dec->frame.dirty_y0 = 0;
+    dec->frame.dirty_y1 = dec->height;
+    return MR_OK;
+}
+
 static mr_status pump(mr_decoder *dec, uint8_t *data, uint32_t len)
 {
     mpeg2_state *s = (mpeg2_state *)dec->priv;
     mr_status result = MR_EAGAIN;
-    unsigned outputs = 0;
     unsigned guard = 0;
 
-    if (s->queued)
-        return MR_EFORMAT;
     mpeg2_buffer(s->decoder, data, data + len);
     while (guard++ < 100000u) {
         mpeg2_state_t state = mpeg2_parse(s->decoder);
@@ -70,21 +131,21 @@ static mr_status pump(mr_decoder *dec, uint8_t *data, uint32_t len)
         if ((state == STATE_SLICE || state == STATE_END ||
             state == STATE_INVALID_END) &&
             s->info->display_fbuf) {
-            uint8_t *dst;
-            if (outputs == 0)
-                dst = s->rgb;
-            else if (outputs == 1)
-                dst = s->queued_rgb;
-            else
-                return MR_EFORMAT;
-            result = emit_rgb(dec, dst);
+            result = queue_display_frame(dec);
             if (result != MR_OK) return result;
-            outputs++;
         }
     }
-    if (outputs > 1)
-        s->queued = 1;
     return guard >= 100000u ? MR_EFORMAT : result;
+}
+
+static void free_frame_list(mpeg2_frame_node *node)
+{
+    while (node) {
+        mpeg2_frame_node *next = node->next;
+        free(node->rgb);
+        free(node);
+        node = next;
+    }
 }
 
 static void mpeg2_close_decoder(mr_decoder *dec)
@@ -92,8 +153,9 @@ static void mpeg2_close_decoder(mr_decoder *dec)
     mpeg2_state *s = dec ? (mpeg2_state *)dec->priv : NULL;
     if (!s) return;
     if (s->decoder) mpeg2_close(s->decoder);
-    free(s->rgb);
-    free(s->queued_rgb);
+    free_frame_list(s->pending_head);
+    free_frame_list(s->current);
+    free_frame_list(s->free_nodes);
     free(s);
     dec->priv = NULL;
     dec->frame.data = NULL;
@@ -117,18 +179,13 @@ static mr_status mpeg2_open_decoder(mr_decoder *dec)
         return MR_ENOMEM;
     }
     s->info = mpeg2_info(s->decoder);
-    s->rgb = (uint8_t *)malloc(pixels * 3u);
-    s->queued_rgb = (uint8_t *)malloc(pixels * 3u);
-    if (!s->rgb || !s->queued_rgb) {
-        mpeg2_close_decoder(dec);
-        return MR_ENOMEM;
-    }
+    s->frame_bytes = pixels * 3u;
 
     dec->frame.width = dec->width;
     dec->frame.height = dec->height;
     dec->frame.fmt = MR_PIX_RGB24;
     dec->frame.stride = dec->width * 3;
-    dec->frame.data = s->rgb;
+    dec->frame.data = NULL;
     dec->frame.dirty_y0 = 0;
     dec->frame.dirty_y1 = 0;
     return MR_OK;
@@ -141,7 +198,11 @@ static mr_status mpeg2_decode_packet(mr_decoder *dec,
     if (!s || !data || !len) return MR_EFORMAT;
     s->flushing = 0;
     s->flush_done = 0;
-    return pump(dec, (uint8_t *)data, len);
+    {
+        mr_status st = pump(dec, (uint8_t *)data, len);
+        if (st != MR_OK && st != MR_EAGAIN) return st;
+        return pop_display_frame(dec);
+    }
 }
 
 static mr_status mpeg2_flush_decoder(mr_decoder *dec)
@@ -150,19 +211,13 @@ static mr_status mpeg2_flush_decoder(mr_decoder *dec)
     mpeg2_state *s = (mpeg2_state *)dec->priv;
     mr_status st;
     if (!s || s->flush_done) return MR_EAGAIN;
-    if (s->queued) {
-        uint8_t *tmp = s->rgb;
-        s->rgb = s->queued_rgb;
-        s->queued_rgb = tmp;
-        s->queued = 0;
-        dec->frame.data = s->rgb;
-        dec->frame.dirty_y0 = 0;
-        dec->frame.dirty_y1 = dec->height;
-        return MR_OK;
-    }
+    st = pop_display_frame(dec);
+    if (st == MR_OK) return st;
     if (!s->flushing) {
         s->flushing = 1;
         st = pump(dec, sequence_end, sizeof sequence_end);
+        if (st != MR_OK && st != MR_EAGAIN) return st;
+        st = pop_display_frame(dec);
         if (st == MR_OK) return st;
     }
     s->flush_done = 1;

@@ -19,6 +19,16 @@ int main(void)
     };
     mr_ps ps;
     mr_packet packet;
+    static const uint8_t multi_picture_stream[] = {
+        0x00,0x00,0x01,0xba, 0x44,0x00,0x04,0x00,
+        /* One video PES containing a sequence header and three pictures. */
+        0x00,0x00,0x01,0xe0, 0x00,0x1d,
+        0x80,0x00,0x00,
+        0x00,0x00,0x01,0xb3, 0x04,0x20,0x32,0x13,
+        0x00,0x00,0x01,0x00, 0x11,0x22,
+        0x00,0x00,0x01,0x00, 0x33,0x44,
+        0x00,0x00,0x01,0x00, 0x55,0x66
+    };
 
     if (mr_ps_open(&ps, stream, sizeof stream) != MR_OK) {
         fprintf(stderr, "could not open synthetic MPEG-PS\n");
@@ -51,6 +61,32 @@ int main(void)
     mr_ps_rewind(&ps);
     if (mr_ps_next_packet(&ps, &packet) != MR_OK) {
         fprintf(stderr, "rewind did not restore first packet\n");
+        return 1;
+    }
+    mr_ps_close(&ps);
+
+    if (mr_ps_open(&ps, multi_picture_stream,
+                   sizeof multi_picture_stream) != MR_OK) {
+        fprintf(stderr, "could not open multi-picture MPEG-PS\n");
+        return 1;
+    }
+    if (mr_ps_next_packet(&ps, &packet) != MR_OK || !packet.is_video ||
+        packet.len != 14 || packet.data[3] != 0xb3) {
+        fprintf(stderr, "bad first split video payload\n");
+        return 1;
+    }
+    if (mr_ps_next_packet(&ps, &packet) != MR_OK || !packet.is_video ||
+        packet.len != 6 || packet.data[3] != 0x00) {
+        fprintf(stderr, "bad second split video payload\n");
+        return 1;
+    }
+    if (mr_ps_next_packet(&ps, &packet) != MR_OK || !packet.is_video ||
+        packet.len != 6 || packet.data[3] != 0x00) {
+        fprintf(stderr, "bad final split video payload\n");
+        return 1;
+    }
+    if (mr_ps_next_packet(&ps, &packet) != MR_EAGAIN) {
+        fprintf(stderr, "expected end of split program stream\n");
         return 1;
     }
     mr_ps_close(&ps);

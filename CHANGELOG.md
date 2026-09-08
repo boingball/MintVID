@@ -49,6 +49,20 @@
 
 ### Fixed
 
+- MPEG-2 video in `.mpg`/MPEG-PS files stopped after the first picture while
+  audio continued. At the very small resolutions useful on a classic Amiga,
+  one PES packet can contain several complete pictures; the adapter only had
+  two RGB return buffers and treated a third picture as corrupt input. The PS
+  demuxer now feeds picture-sized chunks and the libmpeg2 adapter keeps a
+  reusable FIFO for the occasional pair of display-order outputs caused by
+  B-frame reordering. MPEG-2 PS samples at 50p through 360p now decode all 125
+  frames of each five-second test clip.
+- MPEG-1 video could drift progressively behind its MP2 audio whenever decode
+  and display exceeded the frame budget. Its separate legacy player displayed
+  every late picture, unlike the main player scheduler, so it could never
+  recover. MPEG-1 pacing now uses pl_mpeg's frame timestamps against the played
+  Paula audio clock and drops a picture only after it is more than one frame
+  late, keeping sound and the pictures that are shown on the same timeline.
 - MP3 at 8, 11.025 or 12 kHz decoded to silence. Below 16 kHz, Layer III is
   MPEG-2.5 - a third header version - and the vendored Helix decoder shipped
   with the 12-bit syncword, which matches only MPEG-1 and MPEG-2 frames. An
