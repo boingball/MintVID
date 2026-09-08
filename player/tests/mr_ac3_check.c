@@ -44,22 +44,37 @@
 #include <string.h>
 
 #define MAX_FRAMES 400000u
+#define MAX_CHANNELS 2u
 
 struct capture {
-    int16_t      *pcm;          /* first channel only */
-    unsigned long cap;
-    unsigned long count;
+    int16_t      *pcm;          /* interleaved, `channels` per frame */
+    unsigned long cap;          /* capacity in sample frames */
+    unsigned long frames;
     unsigned      channels;
+    int           channels_changed;
 };
 
 static void collect(void *user, const int16_t *pcm,
                     unsigned frames, unsigned channels)
 {
     struct capture *c = (struct capture *)user;
-    unsigned i;
+    unsigned i, ch;
+
+    /* More channels than the buffer holds, or a layout that changed
+     * mid-decode: either would silently misalign every frame after it against
+     * the reference, so refuse rather than compare nonsense. */
+    if (!channels || channels > MAX_CHANNELS ||
+        (c->channels && channels != c->channels)) {
+        c->channels_changed = 1;
+        return;
+    }
     c->channels = channels;
-    for (i = 0; i < frames && c->count < c->cap; i++)
-        c->pcm[c->count++] = pcm[(size_t)i * channels];
+
+    for (i = 0; i < frames && c->frames < c->cap; i++) {
+        for (ch = 0; ch < channels; ch++)
+            c->pcm[c->frames * channels + ch] = pcm[(size_t)i * channels + ch];
+        c->frames++;
+    }
 }
 
 static int16_t *load_reference(const char *path, unsigned long *count)
@@ -82,11 +97,16 @@ static int16_t *load_reference(const char *path, unsigned long *count)
         free(raw); free(data); fclose(f); return NULL;
     }
     fclose(f);
-    /* Explicit little-endian assembly: the reference file is byte-order fixed,
-     * so this reads the same on a big-endian host. */
+    /* Explicit little-endian assembly, so the reference reads identically on a
+     * big-endian host (this runs under qemu-m68k too). Assembled unsigned and
+     * folded into range afterwards: shifting a negative value left is not
+     * something to rely on. */
     n = (unsigned long)bytes / 2;
-    for (i = 0; i < n; i++)
-        data[i] = (int16_t)((int)raw[i * 2] | ((int)(signed char)raw[i * 2 + 1] << 8));
+    for (i = 0; i < n; i++) {
+        unsigned value = (unsigned)raw[i * 2] | ((unsigned)raw[i * 2 + 1] << 8);
+        data[i] = (int16_t)(value < 0x8000u ? (int)value
+                                            : (int)value - 0x10000);
+    }
     free(raw);
     *count = n;
     return data;
@@ -185,7 +205,7 @@ int main(int argc, char **argv)
 
     memset(&cap, 0, sizeof cap);
     cap.cap = MAX_FRAMES;
-    cap.pcm = (int16_t *)malloc(cap.cap * sizeof(int16_t));
+    cap.pcm = (int16_t *)malloc(cap.cap * MAX_CHANNELS * sizeof(int16_t));
     if (!cap.pcm) {
         mr_audio_decoder_close(dec);
 #ifndef MR_AC3_CHECK_NO_DEMUX
@@ -234,36 +254,57 @@ int main(int argc, char **argv)
             fprintf(stderr, "reference rate %u is not a whole multiple of the "
                             "decoded rate %u\n", ref_rate, decoded_rate);
             rc = 1;
+        } else if (cap.channels_changed) {
+            fprintf(stderr, "the decoder changed channel layout mid-stream\n");
+            rc = 1;
+        } else if (cap.channels != ref_channels && ref_channels != 1) {
+            /* The one layout difference this understands is liba52 handing
+             * back two channels for a single-channel stream (acmod 1 comes out
+             * as A52_DOLBY): there every decoded channel is checked against
+             * the one reference channel, which also pins down that the second
+             * channel is a real copy rather than silence. Anything else means
+             * the fixture and the reference disagree. */
+            fprintf(stderr, "decoded %u channels against a %u channel "
+                            "reference\n", cap.channels, ref_channels);
+            rc = 1;
         }
     }
     if (!rc) {
         stride = ref_rate / decoded_rate;
         /* The decoder keeps every stride'th sample frame from frame 0, so the
-         * reference is thinned the same way rather than resampled. */
+         * reference is thinned the same way rather than resampled. Every
+         * decoded channel is compared, not just the first: a fold or an upmix
+         * that got the second channel wrong is exactly the kind of defect this
+         * file exists to catch. */
         compared = 0;
-        for (i = 0; i * stride < ref_frames && i < cap.count; i++) {
-            long got = cap.pcm[i];
-            long want = ref[i * stride * ref_channels];
-            long diff = got - want;
-            if (diff < 0) diff = -diff;
-            if (diff > worst) worst = diff;
-            sum += (double)diff;
-            compared++;
+        for (i = 0; i * stride < ref_frames && i < cap.frames; i++) {
+            unsigned ch;
+            for (ch = 0; ch < cap.channels; ch++) {
+                long got = cap.pcm[i * cap.channels + ch];
+                long want = ref[i * stride * ref_channels +
+                                (ref_channels == 1 ? 0 : ch)];
+                long diff = got - want;
+                if (diff < 0) diff = -diff;
+                if (diff > worst) worst = diff;
+                sum += (double)diff;
+                compared++;
+            }
         }
         /* liba52's fixed-point decode is not bit-identical to ffmpeg's float
-         * one, but it is very close: this measures worst 2 / mean 0.50 on both
-         * fixtures. The bar is set far tighter than any of the failures above
-         * (which ran to tens of thousands) and still leaves room for ordinary
-         * fixed-point drift. */
+         * one, but it is very close: this measures worst 2 / mean 0.50 on the
+         * mono fixtures and worst 5 / 0.52 on the stereo one. The bar is set
+         * far tighter than any of the failures above (which ran to tens of
+         * thousands) and still leaves room for ordinary fixed-point drift. */
         worst_allowed = 64;
         mean_allowed_x100 = 200;
-        printf("%s: %lu frames at %u Hz vs %s (stride %u): worst |diff| %ld, "
-               "mean %.2f\n", argv[1], cap.count, decoded_rate, argv[2],
-               stride, worst, compared ? sum / (double)compared : 0.0);
-        if (!compared || cap.count * 2 < ref_frames / stride) {
+        printf("%s: %lu frames x %u ch at %u Hz vs %s (stride %u): "
+               "worst |diff| %ld, mean %.2f\n", argv[1], cap.frames,
+               cap.channels, decoded_rate, argv[2], stride, worst,
+               compared ? sum / (double)compared : 0.0);
+        if (!compared || cap.frames * 2 < ref_frames / stride) {
             fprintf(stderr, "decoded far less audio than the reference "
                             "(%lu vs %lu frames)\n",
-                    cap.count, ref_frames / stride);
+                    cap.frames, ref_frames / stride);
             rc = 1;
         } else if (worst > worst_allowed ||
                    (compared &&
