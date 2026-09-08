@@ -2,8 +2,8 @@
  * MintVID - MPEG-1/2 program-stream demuxer.
  *
  * Program streams already contain MPEG video elementary-stream bytes inside
- * PES packets. libmpeg2, which is already part of MintVID, consumes those
- * bytes directly; no additional video decoder is needed.
+ * PES packets. The demuxer exposes picture-aware chunks of those bytes to the
+ * existing libmpeg2 decoder.
  */
 #include "mr_ps.h"
 
@@ -16,6 +16,36 @@ static size_t find_start(const uint8_t *b, size_t len, size_t from)
         if (b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 1)
             return i;
     return len;
+}
+
+static size_t find_picture_start(const uint8_t *b, size_t end, size_t from)
+{
+    size_t i;
+    for (i = from; i + 4 <= end; i++)
+        if (b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 1 && b[i + 3] == 0)
+            return i;
+    return end;
+}
+
+/* libmpeg2's adapter returns one display frame per decode call.  A small,
+ * low-bitrate MPEG-PS PES packet can contain several complete pictures, so
+ * handing over the whole PES makes the adapter overflow its one-frame return
+ * contract.  Return at most one picture start per demux packet; libmpeg2 keeps
+ * partial pictures across calls, including pictures split across PES packets. */
+static mr_status next_video_chunk(mr_ps *p, mr_packet *pkt)
+{
+    size_t first, next, end;
+    if (p->video_cursor >= p->video_end) return MR_EAGAIN;
+    first = find_picture_start(p->buf, p->video_end, p->video_cursor);
+    next = first < p->video_end
+         ? find_picture_start(p->buf, p->video_end, first + 4)
+         : p->video_end;
+    end = next > p->video_cursor ? next : p->video_end;
+    pkt->is_video = 1;
+    pkt->data = p->buf + p->video_cursor;
+    pkt->len = (uint32_t)(end - p->video_cursor);
+    p->video_cursor = end;
+    return pkt->len ? MR_OK : MR_EAGAIN;
 }
 
 static int parse_sequence(mr_ps *p)
@@ -148,6 +178,8 @@ mr_status mr_ps_open(mr_ps *p, const uint8_t *buf, size_t len)
 mr_status mr_ps_next_packet(mr_ps *p, mr_packet *pkt)
 {
     size_t start = p->cursor;
+    if (p->video_cursor < p->video_end)
+        return next_video_chunk(p, pkt);
     while ((start = find_start(p->buf, p->len, start)) < p->len) {
         unsigned code = p->buf[start + 3];
         size_t payload, end;
@@ -161,7 +193,12 @@ mr_status mr_ps_next_packet(mr_ps *p, mr_packet *pkt)
             continue;
         }
         p->cursor = end;
-        pkt->is_video = code == p->video_stream;
+        if (code == p->video_stream) {
+            p->video_cursor = payload;
+            p->video_end = end;
+            return next_video_chunk(p, pkt);
+        }
+        pkt->is_video = 0;
         pkt->data = p->buf + payload;
         pkt->len = (uint32_t)(end - payload);
         return pkt->len ? MR_OK : MR_EAGAIN;
@@ -170,5 +207,10 @@ mr_status mr_ps_next_packet(mr_ps *p, mr_packet *pkt)
     return MR_EAGAIN;
 }
 
-void mr_ps_rewind(mr_ps *p) { p->cursor = 0; }
+void mr_ps_rewind(mr_ps *p)
+{
+    p->cursor = 0;
+    p->video_cursor = 0;
+    p->video_end = 0;
+}
 void mr_ps_close(mr_ps *p) { (void)p; }
