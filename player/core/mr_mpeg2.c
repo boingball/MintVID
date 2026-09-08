@@ -30,6 +30,8 @@ typedef struct {
     int                flush_done;
 } mpeg2_state;
 
+static mr_status mpeg2_drain_decoder(mr_decoder *dec);
+
 static mr_status emit_rgb(mr_decoder *dec, uint8_t *rgb)
 {
     mpeg2_state *s = (mpeg2_state *)dec->priv;
@@ -188,6 +190,7 @@ static mr_status mpeg2_open_decoder(mr_decoder *dec)
     dec->frame.data = NULL;
     dec->frame.dirty_y0 = 0;
     dec->frame.dirty_y1 = 0;
+    dec->drain = mpeg2_drain_decoder;
     return MR_OK;
 }
 
@@ -222,6 +225,15 @@ static mr_status mpeg2_flush_decoder(mr_decoder *dec)
     }
     s->flush_done = 1;
     return MR_EAGAIN;
+}
+
+static mr_status mpeg2_drain_decoder(mr_decoder *dec)
+{
+    /* A single libmpeg2 parse pass can complete both a reordered picture and
+     * the following display picture.  Hand every already-converted picture to
+     * the player now, before the demuxer advances through any intervening
+     * audio PES packets. */
+    return pop_display_frame(dec);
 }
 
 const mr_codec mr_codec_mpeg2 = {

@@ -3005,6 +3005,7 @@ int main(int argc, char **argv)
                     mr_status decode_status;
                     uint64_t decode_end;
                     int skip_stale_output;
+                    int first_decoded_output = 1;
                     trace_phase(&trace, "h264-decode");
                     /* A frame decoded into a full queue is dropped (newest-out),
                      * so decode it reference-only: keep the reference chain
@@ -3110,14 +3111,14 @@ int main(int argc, char **argv)
                                (unsigned long)decoded_index,
                                (unsigned long)pkt.len);
                     }
-                    if (decode_status == MR_OK) {
+                    while (decode_status == MR_OK) {
                         if (h264_pipeline_diag_enabled && h264_pipeline_stage < 1) {
                             h264_pipeline_checkpoint_player("decoder-return",
                                                             qcount, playback_started);
                             h264_pipeline_stage = 1;
                         }
-                        unsigned long decode_us =
-                            (unsigned long)(decode_end - a);
+                        unsigned long decode_us = first_decoded_output
+                            ? (unsigned long)(decode_end - a) : 0;
                         uint64_t synthetic_pts = vi->rate
                             ? decoded_index *
                               (uint64_t)(vi->scale ? vi->scale : 1) *
@@ -3167,8 +3168,7 @@ int main(int argc, char **argv)
                                     stats.rescue_video_skipped++;
                                 }
                                 stats.dropped++;
-                                decoded_index++;
-                                continue;
+                                goto drain_decoded_output;
                             }
                             if (skip_stale_output) {
                                 /* Queue full, or this frame already fell more
@@ -3197,8 +3197,7 @@ int main(int argc, char **argv)
                                     stats.rescue_video_skipped++;
                                 }
                                 stats.dropped++;
-                                decoded_index++;
-                                continue;
+                                goto drain_decoded_output;
                             }
                             queued_video *tail =
                                 &vq[(qhead + qcount) % video_cap];
@@ -3275,8 +3274,7 @@ int main(int argc, char **argv)
                                     oom_warned = 1;
                                 }
                                 stats.dropped++;
-                                decoded_index++;
-                                continue;
+                                goto drain_decoded_output;
                             }
                             qcount++;
                             if (h264_pipeline_diag_enabled && h264_pipeline_stage < 2) {
@@ -3290,7 +3288,10 @@ int main(int argc, char **argv)
                                 rescue_newest_retained_pts_us = pts;
                             }
                         }
+drain_decoded_output:
                         decoded_index++;
+                        first_decoded_output = 0;
+                        decode_status = mr_decoder_drain(&dec);
                     }
                 }
                 if (want_time && ready_before && due_before < 0) {
