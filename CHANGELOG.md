@@ -4,6 +4,13 @@
 
 ### Added
 
+- `make check` gained five H.263 conformance paths against ffmpeg, where it
+  previously had none: version 1 sub-QCIF, the same bitstream remuxed into a
+  3GP/QuickTime track as `s263`, version 1 with GOB headers, H.263+ with a
+  custom 68x52 picture format and custom picture clock, and H.263+ with
+  unrestricted motion vectors and several slices per picture. `make check-m68k`
+  runs the first and fourth of those on real big-endian m68k. The four defects
+  above all sat in code the suite never executed.
 - Mono sound mode: `--audio-mono`, and a **Mono audio** tickbox beside **No
   audio** in both GUI editions. Paula's output has always been a single 8-bit
   channel, so this is not a change of what the machine plays - it moves the
@@ -29,6 +36,33 @@
 
 ### Fixed
 
+- H.263 files carrying an extended PTYPE (H.263+/H.263-1998) played as a black
+  window: the decoder stopped at the first picture with `H.263+: unsupported
+  feature extended PTYPE`. Anything `ffmpeg -c:v h263p` writes lands there,
+  because that encoder signals a custom picture format for any non-standard
+  size and a custom picture clock for any frame rate that is not 30000/1001 -
+  a 68x52 25 fps clip needs both. The picture layer now decodes PLUSPTYPE
+  (UFEP/OPPTYPE/MPPTYPE), custom picture formats and pixel aspect ratios, the
+  custom picture clock and its extended temporal reference, the slice-structured
+  headers of Annex K, unrestricted motion vectors (Annex D), and the rounding
+  type that an encoder flip-flops between P pictures. A picture whose size
+  disagrees with the container is still refused, since the frame buffers are
+  sized when the decoder is opened.
+- H.263 escape-coded coefficients were decoded with MPEG-4's three-form escape
+  instead of the single H.263 one, so every escape consumed two bits too many
+  and desynchronised the rest of the picture. The same file also mis-handled
+  `INTRADC`: 255 means 1024, not "invalid", and 0 is not a synonym for 128.
+  Both had gone unnoticed because no fixture had ever driven this decoder -
+  `make check` only checked that the FourCCs routed to it.
+- Motion vectors wrapped modulo the wrong range (+-64 rather than the +-32
+  half-pel range an f_code of 1 gives), which corrupted any macroblock whose
+  predictor and difference straddled the wrap. Macroblock stuffing codes
+  (`MCBPC` 9-bit escape) are now skipped rather than decoded as an intra
+  macroblock, and GOB headers are accepted with the zero stuffing bits that
+  precede them when an encoder byte-aligns the header.
+- H.263 in QuickTime/3GP (`s263`) had no decoder: the demuxer named the codec
+  but the FourCC was missing from the registry, so those files stopped with
+  "no decoder for this fourcc" despite the documented MOV support.
 - Local playback now bounds the audio cushion by the decoded-video queue's
   time span. This prevents fast low-resolution codecs such as Cinepak from
   filling the default 16-frame queue, discarding subsequent pictures while

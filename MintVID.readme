@@ -85,7 +85,7 @@ WHAT IT PLAYS
     MPEG-1 program streams, raw MJPEG/MPEG-4 Visual streams, and direct
     HTTP(S)/HLS URLs (including live IPTV playlists and YouTube).
   - Video codecs: Cinepak, Microsoft Video 1, Microsoft RLE8, uncompressed
-    UYVY422, H.263 baseline, Motion-JPEG, MPEG-1, MPEG-2 (with B-frames),
+    UYVY422, H.263 / H.263+, Motion-JPEG, MPEG-1, MPEG-2 (with B-frames),
     MPEG-4 Part 2 (ISO ASP and Microsoft MP42/DIV2), Windows Media Video 7
     (WMV1), Windows Media Video 8 (WMV2), and H.264/AVC Baseline/Main/High
     Profile.

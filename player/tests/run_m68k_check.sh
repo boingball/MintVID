@@ -48,7 +48,8 @@ test -f vendor/libavc/decoder/ih264d.h || {
     echo "ERROR: initialise the libavc submodule first:"
     echo "  git submodule update --init player/vendor/libavc"; exit 1; }
 
-test -d tests/assets/ref_h264_high || sh tests/gen_assets.sh
+test -d tests/assets/ref_h264_high -a -d tests/assets/ref_h263 \
+    || sh tests/gen_assets.sh
 
 BUILD=/tmp/mr_m68k_check_build
 mkdir -p "$BUILD"
@@ -278,6 +279,12 @@ run "$BUILD/mr_decode.m68k" tests/assets/test_wmv2.avi \
     --check tests/assets/ref_wmv2
 run "$BUILD/mr_decode.m68k" tests/assets/test_wmv2_q20.avi \
     --check tests/assets/ref_wmv2_q20
+echo "[H.263 version 1, real m68k/big-endian]"
+run "$BUILD/mr_decode.m68k" tests/assets/test_h263.avi \
+    --check tests/assets/ref_h263
+echo "[H.263+ custom picture format / slice structured, real m68k/big-endian]"
+run "$BUILD/mr_decode.m68k" tests/assets/test_h263p.avi \
+    --check tests/assets/ref_h263p
 echo "[MPEG-1, real m68k/big-endian - exercises the new motion-comp asm]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_mpeg1.mpg \
     --check tests/assets/ref_mpeg1

@@ -11,7 +11,8 @@ static int expect(const char s[4], const mr_codec *wanted) {
 }
 int main(void) {
     static const char *iso[]={"DIVX","DX50","XVID","xvid","FMP4","MP4V","mp4v","3IV2","3iv2","3IVX","RMP4","BLZ0","SEDG","M4S2","MP4S"};
-    static const char *h[]={"H263","h263","I263","i263","U263","u263","T263","X263"};
+    static const char *h[]={"H263","h263","I263","i263","U263","u263","T263","X263",
+                            "s263","S263"};
     static const char *no[]={"DIV1","DIV3","DIV4","DIV5","DIV6","MP41","MP43","AP41","COL1","COL0"};
     unsigned i; int fail=0;
     for(i=0;i<sizeof iso/sizeof *iso;i++) fail|=expect(iso[i],&mr_codec_mpeg4);
@@ -22,8 +23,10 @@ int main(void) {
       mr_decoder d; uint8_t pkt[8]={0}; mr_status st;
       if (mr_decoder_open(&d,&mr_codec_h263,176,144)!=MR_OK) return 2;
       st=mr_decoder_decode(&d,pkt,1); if(st!=MR_EFORMAT) fail=1;
-      /* 22-bit PSC=0x20, TR=0, PTYPE marker+QCIF+P+UMV, quant=1, CPM=0. */
-      { static const uint8_t umv[7]={0,0,128,2,11,1,0}; memcpy(pkt,umv,7); }
+      /* 22-bit PSC=0x20, TR=0, PTYPE marker+QCIF+P+advanced prediction,
+       * quant=1, CPM=0.  Annex F changes reconstruction, so it must be
+       * refused as unsupported rather than decoded approximately. */
+      { static const uint8_t ap[7]={0,0,128,2,0x0a,0x41,0}; memcpy(pkt,ap,7); }
       st=mr_decoder_decode(&d,pkt,7); if(st!=MR_EUNSUPPORTED) fail=1;
       if(mr_decoder_reset(&d)!=MR_OK) fail=1;
       mr_decoder_close(&d);

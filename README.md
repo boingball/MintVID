@@ -523,15 +523,22 @@ on Aminet.
 
 ## VLC-era video compatibility (wave 1)
 
-H.263 baseline video in AVI and QuickTime MOV is supported for QCIF and CIF,
-including intra/inter pictures, skipped macroblocks, half-pixel motion
-compensation and persistent reference frames. The decoder rejects malformed or
-truncated syntax and refuses H.263+ tools rather than producing corrupt output.
-H.263+ is therefore **partial**: UMV, SAC, advanced prediction, PB/improved-PB,
-deblocking, slice structure, reference-picture selection, independent segments,
-alternative inter VLC, modified quantisation, data partitioning, custom clock
-frequency and scalability remain explicitly unsupported. H.261 is not yet
-supported. WMV1 and WMV2 (Windows Media Video 7/8) are supported - see below;
+H.263 video in AVI, QuickTime MOV and 3GP is supported, in both the version 1
+(H.263-1996) and version 2 (H.263+/H.263-1998) picture syntaxes: the standard
+sub-QCIF/QCIF/CIF/4CIF/16CIF formats and H.263+ custom picture formats (any
+multiple of 4, such as the 68x52 produced by `ffmpeg -c:v h263p`), the custom
+picture clock frequency, GOB headers and slice-structured mode (Annex K, with
+ordered non-rectangular slices), unrestricted motion vectors (Annex D), the
+per-picture rounding type that encoders flip-flop between P pictures, skipped
+macroblocks, half-pixel motion compensation and persistent reference frames.
+The decoder rejects malformed or truncated syntax and refuses the remaining
+H.263+ tools rather than producing corrupt output, naming the one it found:
+SAC, advanced prediction/4MV, advanced intra coding, the deblocking filter,
+PB/improved-PB and B pictures, reference-picture selection, independent segment
+decoding, the alternative inter VLC, modified quantisation, reference picture
+resampling, reduced-resolution update, rectangular or unordered slices,
+continuous-presence multipoint and scalability. H.263+ is therefore still
+**partial**. H.261 is not yet supported. WMV1 and WMV2 (Windows Media Video 7/8) are supported - see below;
 WMV2's IntraX8 ("J-frame") mode, a separate sub-codec shared with VC-1, is
 explicitly rejected rather than approximated. Indeo 3, Sorenson Video 1, and
 VP3/Theora are planned.
@@ -549,7 +556,8 @@ was also decoded by the existing conformance suite.
 | `DIV1`, `MP41` | Microsoft MPEG-4 v1 | none | unsupported | registry rejection |
 | `DIV3`, `MP43`, `AP41`, `COL1`, `COL0` | Microsoft MPEG-4 v3 / DivX 3 | none | unsupported; never routed to ISO ASP | registry rejection |
 | `DIV4`, `DIV5`, `DIV6` | ambiguous DivX-era vendor tags | none | unsupported pending sample verification | registry rejection |
-| `H263`, `h263`, `I263`, `i263` | H.263 | `H.263 baseline` | accepted for baseline QCIF/CIF | registry; `h263.mov` conformance pending |
-| `U263`, `u263`, `T263`, `X263` | vendor H.263 / frequently H.263+ | `H.263 baseline` | registered, but annex flags are rejected | registry; upstream sample inspection pending |
+| `H263`, `h263`, `I263`, `i263` | H.263 | `H.263` | accepted | `test_h263.avi`, `test_h263_gob.avi` |
+| `s263`, `S263` | H.263 in QuickTime/3GP | `H.263` | accepted | `test_h263.3gp` |
+| `U263`, `u263`, `T263`, `X263` | vendor H.263 / frequently H.263+ | `H.263` | accepted; unsupported annex flags are rejected | registry; `test_h263p.avi`, `test_h263p_umv.avi` cover the H.263+ syntax |
 | `WMV1`, `wmv1` | Windows Media Video 7 | `wmv1` | accepted | `test_wmv1.avi`, `test_wmv1_q20.avi` |
 | `WMV2`, `wmv2` | Windows Media Video 8 | `wmv2` | accepted; IntraX8 ("J-frame") mode rejected | `test_wmv2.avi`, `test_wmv2_q20.avi` |

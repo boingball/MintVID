@@ -93,6 +93,26 @@ ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
 # Raw MPEG-4 Visual elementary stream: VOL + one VOP sequence, no container.
 ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=25:duration=1 \
     -c:v mpeg4 -bf 2 -qscale:v 4 -f m4v test_raw_mpeg4.m4v -y
+# ITU-T H.263 version 1, sub-QCIF: the plain picture header, one slice per
+# picture, and the single-escape TCOEF syntax the H.263+ files share.
+ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
+    -c:v h263 -qscale:v 4 test_h263.avi -y
+# The identical packets in a 3GP/QuickTime track, where the same bitstream is
+# tagged 's263'. One ffmpeg reference set covers both containers.
+ffmpeg -v error -i test_h263.avi -c copy -f 3gp test_h263.3gp -y
+# Same content, cut into RTP-sized pieces so each picture carries GOB headers
+# with their own GQUANT (mid-picture quantiser changes and prediction resets).
+ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=1 \
+    -c:v h263 -qscale:v 4 -ps 200 test_h263_gob.avi -y
+# H.263+ (H.263-1998): extended PTYPE with a custom 68x52 picture format, the
+# custom picture clock frequency for 25 fps, slice-structured mode, and the
+# rounding type that flip-flops between P pictures.
+ffmpeg -v error -f lavfi -i testsrc2=size=68x52:rate=25:duration=1 \
+    -c:v h263p -qscale:v 4 test_h263p.avi -y
+# H.263+ with Annex D unrestricted motion vectors (the reversible MV VLC and
+# vectors that point outside the picture) and several slices per picture.
+ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=1 \
+    -c:v h263p -umv 1 -ps 200 -qscale:v 6 test_h263p_umv.avi -y
 
 # Ground-truth frames, decoded by ffmpeg's own Cinepak decoder (per container,
 # since ffmpeg re-encodes the Cinepak stream separately for each).
@@ -134,5 +154,13 @@ ffmpeg -v error -i test_mp4v_b.avi ref_mp4v_b/f%03d.ppm -y
 rm -rf ref_raw_mpeg4 && mkdir -p ref_raw_mpeg4
 ffmpeg -v error -f m4v -framerate 25 -i test_raw_mpeg4.m4v \
     ref_raw_mpeg4/f%03d.ppm -y
+rm -rf ref_h263 && mkdir -p ref_h263
+ffmpeg -v error -i test_h263.avi ref_h263/f%03d.ppm -y
+rm -rf ref_h263_gob && mkdir -p ref_h263_gob
+ffmpeg -v error -i test_h263_gob.avi ref_h263_gob/f%03d.ppm -y
+rm -rf ref_h263p && mkdir -p ref_h263p
+ffmpeg -v error -i test_h263p.avi ref_h263p/f%03d.ppm -y
+rm -rf ref_h263p_umv && mkdir -p ref_h263p_umv
+ffmpeg -v error -i test_h263p_umv.avi ref_h263p_umv/f%03d.ppm -y
 
 echo "fixtures regenerated in $(pwd)"
