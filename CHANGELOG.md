@@ -29,6 +29,37 @@
 
 ### Fixed
 
+- AC-3 played 6 dB hot on every target, the Amiga included: `feed_ac3()` asks
+  liba52 for `LEVEL(0.25)` output, which puts a full-scale sample at `1<<28`,
+  but shifted it down by 12 rather than 13. Anything but quiet material spent
+  its peaks clamped at the rails - distortion, not loudness. With the shift
+  corrected the decoder matches ffmpeg's own decode to a worst-case 2 LSB and a
+  mean of 0.50.
+- The **host** build decoded AC-3 to full-scale noise. It compiled MintAMP's
+  vendored Rockbox FFT - which liba52's IMDCT calls through `ff_fft_calc_c` -
+  with `-DAMIGA_M68K`. MintAMP supports that define on a non-m68k host so its
+  decoders exercise the same C backend the Amiga runs, but
+  `decoders/wma/platform.h` also derives `ROCKBOX_BIG_ENDIAN` from it, and
+  `codeclib_misc.h`'s `MULT32` - the multiply in every FFT butterfly - takes
+  the high half of a 64-bit product through a union whose field order follows
+  that. On a little-endian host it therefore returned the *low* half, and every
+  AC-3 IMDCT came back as hash. Those two translation units now follow the
+  host's real byte order (`WMA_FFT_FLAGS`). The Amiga and m68k builds define it
+  truthfully and were never affected - only the test oracle was, which is why
+  this went unnoticed.
+- `make check-audio` had no oracle for decoded audio at all: it asserted that a
+  plausible number of non-silent samples came out, which full-scale hash passes
+  as readily as music. `mr_ac3_check` now decodes through the real adapter and
+  compares against ffmpeg's PCM sample by sample, thinning the reference by the
+  same Paula decimation ratio the decoder applies rather than resampling it. It
+  fails on both defects above (worst 4249 and 37010 respectively, against a
+  budget of 64). `make check-m68k` runs it too, built without the demuxer so it
+  needs no container or H.264 cross-build - that run is what actually
+  substantiates the endianness claim, since m68k is where the define is true.
+  With AC-3 decoding correctly, mono mode's fold check no longer has to skip
+  it either: liba52's `A52_MONO` output now measures within 1 LSB of the
+  (L+R)/2 average of the stereo decode, as it always should have.
+
 - H.264 Balanced, Fast and Turbo asked libavc to degrade only *some* pictures
   (`i4_degrade_pics` 1 and 3). libavc skips `ih264d_set_deblocking_parameters()`
   and `pf_compute_bs()` per macroblock on a degraded picture, but the

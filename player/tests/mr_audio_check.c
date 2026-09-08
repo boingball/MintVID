@@ -228,16 +228,12 @@ int main(int argc, char **argv)
         return 1;
     }
     /* ~1.5% of full scale: comfortably tighter than the wrong channel or a
-     * 3 dB level slip, comfortably looser than fixed-point fold noise.
-     *
-     * Not applied to AC-3. Its PCM does not match ffmpeg's at all today -
-     * decoded amplitude and waveform are unrelated to the reference, in stereo
-     * as much as in mono - so there is no meaningful fold to measure until the
-     * fixed-point liba52 path is fixed. That is a pre-existing defect this
-     * fixture exposed, not something mono mode introduced; the frame count,
-     * rate and channel-count checks above still hold for it. */
+     * 3 dB level slip, comfortably looser than fixed-point fold noise. AC-3
+     * was exempt from this while its decode did not resemble ffmpeg's at all;
+     * with that fixed (see tests/mr_ac3_check.c) it is held to the same bar as
+     * everything else. */
     tolerance = 512;
-    if (strcmp(argv[2], "ac3") && worst_left > tolerance && worst_mix > tolerance) {
+    if (worst_left > tolerance && worst_mix > tolerance) {
         fprintf(stderr, "mono output matches neither the left channel nor the "
                         "(L+R)/2 average (worst %ld / %ld, tolerance %ld)\n",
                 worst_left, worst_mix, tolerance);

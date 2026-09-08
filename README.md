@@ -113,7 +113,7 @@ on Aminet for that source and its own GPL-2.0/dual GPL-MIT licensing.
 | Amiga RTG / AGA output | ✅ |
 | ReAction + GadTools controllers | ✅ matching file, IPTV and YouTube frontends for modern and OS 3.0 systems |
 | IPTV directory core | ✅ bounded iptv-org JSON/M3U parsing, joining and local filters |
-| PCM / MP2 / MP3 / AAC-LC / AC-3 audio to Paula | ✅ host-validated; AC-3 uses fixed-point stereo downmix |
+| PCM / MP2 / MP3 / AAC-LC / AC-3 audio to Paula | ✅ host-validated; AC-3 uses fixed-point stereo downmix and is checked against ffmpeg's own decode (`mr_ac3_check`), on the host and on m68k |
 | Mono decode (`--audio-mono`) | ✅ decoder-side for MP3/MP2/AC-3, post-decode for AAC; host-validated against the stereo decode |
 
 ## Building & testing the portable core (dev host)
@@ -185,7 +185,8 @@ git submodule update --init --recursive
 cd player
 make            # builds ./mr_decode
 make check      # decodes a Cinepak clip and diffs against ffmpeg (needs ffmpeg)
-make check-audio # MP3, AAC ADTS/LATM and fixed-point AC-3 decoder checks
+make check-audio # MP3, AAC ADTS/LATM and fixed-point AC-3 decoder checks,
+                 # including AC-3 PCM compared against ffmpeg sample by sample
 make check-http # local HTTP range/redirect integration tests
 make check-https # the same tests over TLS (needs OpenSSL development files)
 ```

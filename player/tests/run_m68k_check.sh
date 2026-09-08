@@ -113,6 +113,35 @@ $CC -DMR_HAVE_MPEG1 -o "$BUILD/mr_decode.m68k" tests/mr_decode.c $CORE $LIBAVC_S
     -Wl,--wrap=ih264d_parse_residual4x4_cabac \
     -Wl,--wrap=ih264d_read_coeff4x4_cabac
 
+# AC-3 on a real big-endian target. The decoder's IMDCT runs through MintAMP's
+# vendored Rockbox FFT, whose MULT32 takes the high half of a 64-bit product
+# through a union whose field order follows ROCKBOX_BIG_ENDIAN - which
+# decoders/wma/platform.h derives from AMIGA_M68K. Here that define is true, so
+# unlike the host build (see WMA_FFT_FLAGS in the Makefile) everything is
+# compiled with it. This is the one build where that claim can actually be
+# checked against ffmpeg's decode, which is the whole reason the check exists.
+# Built with MR_AC3_CHECK_NO_DEMUX so it takes a raw .ac3 and needs only the
+# audio adapter - no container or H.264 tier to cross-build.
+echo "== building mr_ac3_check.m68k =="
+MINTAMP_ROOT=vendor/MintAMP
+MINTAMP_FLAGS="-DAMIGA_M68K -DMR_HOST_BUILD -DARDUINO -DESP8266 \
+    -I$MINTAMP_ROOT/pub -I$MINTAMP_ROOT/real -I$MINTAMP_ROOT/decoders/aac \
+    -I$MINTAMP_ROOT/decoders/aac-arduino-shim -Ivendor/liba52"
+MINTAMP_SRC="$MINTAMP_ROOT/mp3dec.c $MINTAMP_ROOT/mp3tabs.c \
+    $MINTAMP_ROOT/real/*.c \
+    $(printf '%s\n' $MINTAMP_ROOT/decoders/aac/*.c | grep -v '/sbr') \
+    $MINTAMP_ROOT/decoders/wma/fft-ffmpeg.c \
+    $MINTAMP_ROOT/decoders/wma/mdct_lookup.c \
+    vendor/liba52/bit_allocate.c vendor/liba52/bitstream.c \
+    vendor/liba52/downmix.c vendor/liba52/imdct.c vendor/liba52/parse.c"
+test -f tests/assets/test_ac3.ac3 -a -f tests/assets/ref_ac3_mkv.raw \
+    || sh tests/gen_audio_assets.sh
+# shellcheck disable=SC2086
+$CC -DMR_AC3_CHECK_NO_DEMUX $MINTAMP_FLAGS -o "$BUILD/mr_ac3_check.m68k" \
+    tests/mr_ac3_check.c audio/mr_audio_decode.c audio/mr_pcm.c \
+    core/mr_mpeg1.c core/mr_mpeg1_idct_m68k.S \
+    core/mr_mpeg1_blockset_m68k.S core/mr_latm.c $MINTAMP_SRC -lm
+
 echo "== building mr_h264_m68k_check.m68k =="
 $CC -o "$BUILD/mr_h264_m68k_check.m68k" tests/mr_h264_m68k_check.c \
     vendor/libavc_port/ih264_m68k_optim.c \
@@ -206,6 +235,10 @@ run "$BUILD/mr_yuv_ham_check.m68k"
 run "$BUILD/mr_mpeg1_blockset_check.m68k"
 run "$BUILD/mr_mpeg1_idct_check.m68k"
 run "$BUILD/mr_media_clock_check.m68k"
+
+echo "[AC-3 vs ffmpeg, real m68k/big-endian]"
+run "$BUILD/mr_ac3_check.m68k" tests/assets/test_ac3.ac3 \
+    tests/assets/ref_ac3_mkv.raw 32000 1
 
 echo "[H.264 High Profile avc1 + B-frames, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_h264_high.mp4 \

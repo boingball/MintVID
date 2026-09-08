@@ -40,17 +40,31 @@ MINTAMP_MP3 = $(MINTAMP_ROOT)/mp3dec.c $(MINTAMP_ROOT)/mp3tabs.c \
 MINTAMP_AAC_ALL = $(wildcard $(MINTAMP_ROOT)/decoders/aac/*.c)
 MINTAMP_AAC = $(filter-out $(wildcard $(MINTAMP_ROOT)/decoders/aac/sbr*.c), \
                            $(MINTAMP_AAC_ALL))
+MINTAMP_INCLUDES = -I$(MINTAMP_ROOT)/pub -I$(MINTAMP_ROOT)/real \
+                   -I$(MINTAMP_ROOT)/decoders/aac \
+                   -I$(MINTAMP_ROOT)/decoders/aac-arduino-shim
 MINTAMP_FLAGS = -DAMIGA_M68K -DMR_HOST_BUILD -DARDUINO -DESP8266 \
-                -I$(MINTAMP_ROOT)/pub -I$(MINTAMP_ROOT)/real \
-                -I$(MINTAMP_ROOT)/decoders/aac \
-                -I$(MINTAMP_ROOT)/decoders/aac-arduino-shim
+                $(MINTAMP_INCLUDES)
+# The same flags without -DAMIGA_M68K, for MintAMP's vendored Rockbox FFT.
+# MintAMP supports building its decoders with AMIGA_M68K on a non-m68k host to
+# exercise the same C backend the Amiga runs, but decoders/wma/platform.h keys
+# ROCKBOX_BIG_ENDIAN off that same define - and codeclib_misc.h's MULT32, the
+# multiply in every FFT butterfly, takes the high half of a 64-bit product
+# through a union whose field order follows it. Claiming big-endian on this
+# little-endian host makes MULT32 return the *low* half, which turns liba52's
+# IMDCT (it calls ff_fft_calc_c) into noise: AC-3 decoded to full-scale hash
+# here for as long as the fixture existed, while the real Amiga build - where
+# the define is true - decoded correctly. So these two units follow the host's
+# actual byte order. Verified both ways in tests/mr_ac3_check.c.
+WMA_FFT_FLAGS = -DMR_HOST_BUILD -DARDUINO -DESP8266 $(MINTAMP_INCLUDES)
 LIBA52_ROOT = vendor/liba52
 LIBA52_FLAGS = -I$(LIBA52_ROOT)
 LIBA52_SRC = $(LIBA52_ROOT)/bit_allocate.c $(LIBA52_ROOT)/bitstream.c \
              $(LIBA52_ROOT)/downmix.c $(LIBA52_ROOT)/imdct.c \
-             $(LIBA52_ROOT)/parse.c \
-             $(MINTAMP_ROOT)/decoders/wma/fft-ffmpeg.c \
-             $(MINTAMP_ROOT)/decoders/wma/mdct_lookup.c
+             $(LIBA52_ROOT)/parse.c
+# Built separately, with WMA_FFT_FLAGS - see the note there.
+HOSTOBJ = .hostobj
+WMA_FFT_OBJ = $(HOSTOBJ)/fft-ffmpeg.o $(HOSTOBJ)/mdct_lookup.o
 HEADERS  = core/mr_codec.h core/mr_source.h core/mr_http.h core/mr_hls.h \
            core/mr_youtube.h \
            core/mr_demux.h core/mr_latm.h core/mr_mkv.h core/mr_avi.h core/mr_mov.h \
@@ -131,15 +145,28 @@ mr_mov_seek_check: tests/mr_mov_seek_check.c core/mr_mov.c core/mr_mov.h \
 	$(CC) $(CFLAGS) -o $@ tests/mr_mov_seek_check.c core/mr_mov.c core/mr_rawvideo.c
 
 mr_audio_check: tests/mr_audio_check.c audio/mr_audio_decode.c audio/mr_pcm.c \
-                audio/mr_audio_decode.h $(CORE)
+                audio/mr_audio_decode.h $(CORE) $(WMA_FFT_OBJ)
 	@test -f $(MINTAMP_ROOT)/pub/mp3dec.h -a \
 	      -f $(MINTAMP_ROOT)/decoders/aac/aacdec.h || { \
 	  echo "ERROR: initialise the MintAMP submodule first:"; \
 	  echo "  git submodule update --init --recursive"; exit 1; }
 	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) $(LIBA52_FLAGS) -o $@ \
 	    tests/mr_audio_check.c audio/mr_audio_decode.c audio/mr_pcm.c $(CORE) \
-	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LIBA52_SRC) -lm
+	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LIBA52_SRC) $(WMA_FFT_OBJ) -lm
 mr_audio_check: | check-libavc
+
+$(HOSTOBJ)/%.o: $(MINTAMP_ROOT)/decoders/wma/%.c
+	@mkdir -p $(HOSTOBJ)
+	$(CC) $(CFLAGS) $(WMA_FFT_FLAGS) $(LIBA52_FLAGS) -c -o $@ $<
+
+# Decoded AC-3 against an ffmpeg reference. mr_audio_check only ever counted
+# non-silent samples, which full-scale hash passes as easily as music.
+mr_ac3_check: tests/mr_ac3_check.c audio/mr_audio_decode.c audio/mr_pcm.c \
+              audio/mr_audio_decode.h $(CORE) $(WMA_FFT_OBJ)
+	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) $(LIBA52_FLAGS) -o $@ \
+	    tests/mr_ac3_check.c audio/mr_audio_decode.c audio/mr_pcm.c $(CORE) \
+	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LIBA52_SRC) $(WMA_FFT_OBJ) -lm
+mr_ac3_check: | check-libavc
 
 check-libavc:
 	@test -f $(LIBAVC_ROOT)/decoder/ih264d.h || { \
@@ -363,7 +390,7 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	@echo "[raw MPEG-4 Part 2]"
 	./mr_decode tests/assets/test_raw_mpeg4.m4v --check tests/assets/ref_raw_mpeg4
 
-check-audio: mr_audio_check
+check-audio: mr_audio_check mr_ac3_check
 	@test -f tests/assets/test_mp3.avi -a -f tests/assets/test_aac.mp4 \
 	    -a -f tests/assets/test_mp3_stereo.avi \
 	    -a -f tests/assets/test_mp2_stereo.ts \
@@ -382,6 +409,14 @@ check-audio: mr_audio_check
 	./mr_audio_check tests/assets/test_mp3_stereo.avi mp3
 	./mr_audio_check tests/assets/test_mp2_stereo.ts mp2
 	./mr_audio_check tests/assets/test_ac3_stereo.mkv ac3
+	@test -f tests/assets/ref_ac3_mkv.raw -a -f tests/assets/ref_ac3_ts.raw \
+	    -a -f tests/assets/ref_ac3_stereo.raw || sh tests/gen_audio_assets.sh
+	./mr_ac3_check tests/assets/test_h264_ac3.mkv tests/assets/ref_ac3_mkv.raw \
+	    32000 1
+	./mr_ac3_check tests/assets/test_h264_ac3.ts tests/assets/ref_ac3_ts.raw \
+	    32000 1
+	./mr_ac3_check tests/assets/test_ac3_stereo.mkv \
+	    tests/assets/ref_ac3_stereo.raw 44100 2
 
 check-http: mr_decode mr_youtube_check
 	@test -d tests/assets/ref_mpeg2_ts \
@@ -412,6 +447,7 @@ check-m68k:
 
 clean:
 	rm -f mr_decode mr_decode_ssl mr_audio_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check \
+	      mr_ac3_check \
 	      mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_ps_check mr_ts_mp2_check mr_mkv_check \
 	      mr_mov_seek_check
 	rm -f mr_legacy_video_check
@@ -423,5 +459,6 @@ clean:
 	rm -f mr_h264_m68k_check
 	rm -f mr_h264_mc_degrade_check
 	rm -f mr_iptv_check mr_youtube_check mr_youtube_search_check
+	rm -rf $(HOSTOBJ)
 
 .PHONY: all check check-audio check-http check-https check-libavc check-m68k clean
