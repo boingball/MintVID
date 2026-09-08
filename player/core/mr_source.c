@@ -14,6 +14,14 @@
 
 #define MR_SOURCE_NAME_MAX 1024
 #define MR_SOURCE_ERROR_MAX 192
+/*
+ * AVI alternates tiny chunk headers with compressed video/audio payloads.
+ * The default stdio buffer on classic Amiga C libraries is small enough that
+ * sequential playback can turn those reads into frequent AmigaDOS I/O waits.
+ * A modest explicit source buffer reads several interleaved packets at once;
+ * the decoded-frame queue can then absorb the less-frequent refill.
+ */
+#define MR_LOCAL_FILE_BUFFER_SIZE (64u * 1024u)
 
 struct mr_source {
     void   *ctx;
@@ -26,6 +34,10 @@ struct mr_source {
 
 typedef struct {
     FILE   *file;
+    unsigned char *io_buffer;
+    size_t  len;
+    size_t  buffer_off;
+    size_t  buffer_len;
     size_t  pos;
     int     pos_valid;
 } file_source;
@@ -118,7 +130,47 @@ mr_source *mr_source_create(void *ctx, size_t len,
 static int file_read_at(void *opaque, size_t off, void *dst, size_t len)
 {
     file_source *f = (file_source *)opaque;
+    size_t within;
     if (!f || !f->file || (!dst && len)) return 0;
+    if (!len) return 1;
+
+    /* Most demux reads are a tiny header followed by its payload. Keep a
+     * deterministic read-ahead window above stdio so even a libc with a very
+     * small input buffer turns that pair (and usually several following AVI
+     * packets) into one AmigaDOS read. Random-access demuxers still work: a
+     * miss simply replaces the window at the requested offset. */
+    if (f->io_buffer && off >= f->buffer_off) {
+        within = off - f->buffer_off;
+        if (within <= f->buffer_len && len <= f->buffer_len - within) {
+            memcpy(dst, f->io_buffer + within, len);
+            return 1;
+        }
+    }
+    if (f->io_buffer && len <= MR_LOCAL_FILE_BUFFER_SIZE) {
+        size_t fill = f->len - off;
+        if (fill > MR_LOCAL_FILE_BUFFER_SIZE)
+            fill = MR_LOCAL_FILE_BUFFER_SIZE;
+        if (!f->pos_valid || f->pos != off) {
+            if (off > 0x7fffffffUL ||
+                fseek(f->file, (long)off, SEEK_SET) != 0) {
+                f->pos_valid = 0;
+                f->buffer_len = 0;
+                return 0;
+            }
+        }
+        if (fread(f->io_buffer, 1, fill, f->file) != fill) {
+            f->pos_valid = 0;
+            f->buffer_len = 0;
+            return 0;
+        }
+        f->pos = off + fill;
+        f->pos_valid = 1;
+        f->buffer_off = off;
+        f->buffer_len = fill;
+        memcpy(dst, f->io_buffer, len);
+        return 1;
+    }
+
     if (!f->pos_valid || f->pos != off) {
         if (off > 0x7fffffffUL || fseek(f->file, (long)off, SEEK_SET) != 0) {
             f->pos_valid = 0;
@@ -131,6 +183,7 @@ static int file_read_at(void *opaque, size_t off, void *dst, size_t len)
     }
     f->pos = off + len;
     f->pos_valid = 1;
+    f->buffer_len = 0;
     return 1;
 }
 
@@ -139,6 +192,7 @@ static void file_close(void *opaque)
     file_source *f = (file_source *)opaque;
     if (!f) return;
     if (f->file) fclose(f->file);
+    free(f->io_buffer);
     free(f);
 }
 
@@ -152,12 +206,6 @@ static mr_source *open_local_file(const char *path)
         mr_source_set_error("cannot open local file");
         return NULL;
     }
-    if (fseek(file, 0, SEEK_END) != 0 || (end = ftell(file)) <= 0 ||
-        fseek(file, 0, SEEK_SET) != 0) {
-        fclose(file);
-        mr_source_set_error("cannot determine local file size");
-        return NULL;
-    }
     ctx = (file_source *)calloc(1, sizeof *ctx);
     if (!ctx) {
         fclose(file);
@@ -165,6 +213,18 @@ static mr_source *open_local_file(const char *path)
         return NULL;
     }
     ctx->file = file;
+    /* This source owns read-ahead explicitly, rather than depending on the
+     * classic libc's default BUFSIZ. Failure to select unbuffered stdio is
+     * harmless: the source cache still remains correct above libc's buffer. */
+    (void)setvbuf(file, NULL, _IONBF, 0);
+    if (fseek(file, 0, SEEK_END) != 0 || (end = ftell(file)) <= 0 ||
+        fseek(file, 0, SEEK_SET) != 0) {
+        file_close(ctx);
+        mr_source_set_error("cannot determine local file size");
+        return NULL;
+    }
+    ctx->len = (size_t)end;
+    ctx->io_buffer = (unsigned char *)malloc(MR_LOCAL_FILE_BUFFER_SIZE);
     ctx->pos = 0;
     ctx->pos_valid = 1;
     source = mr_source_create(ctx, (size_t)end, file_read_at, file_close, path);
