@@ -126,6 +126,12 @@ ffmpeg -v error -f lavfi -i testsrc2=size=320x240:rate=12:duration=2 \
 ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
     -c:v msvideo1 test_msvideo1.avi -y
 python3 ../make_msvideo1_pal8.py test_msvideo1_pal8.avi
+# Microsoft RLE (BI_RLE8). A width that is not a multiple of four exercises
+# the row padding, and AVI stamps this one's biCompression as the numeric
+# BI_RLE8 rather than a fourcc, so the tag reaching the registry is the
+# lower-case 'mrle' from fccHandler.
+ffmpeg -v error -f lavfi -i testsrc2=size=66x50:rate=10:duration=2 \
+    -c:v msrle -pix_fmt pal8 test_msrle.avi -y
 
 # Ground-truth frames, decoded by ffmpeg's own Cinepak decoder (per container,
 # since ffmpeg re-encodes the Cinepak stream separately for each).
@@ -137,6 +143,8 @@ rm -rf ref_msvideo1 && mkdir -p ref_msvideo1
 ffmpeg -v error -i test_msvideo1.avi ref_msvideo1/f%03d.ppm -y
 rm -rf ref_msvideo1_pal8 && mkdir -p ref_msvideo1_pal8
 ffmpeg -v error -i test_msvideo1_pal8.avi ref_msvideo1_pal8/f%03d.ppm -y
+rm -rf ref_msrle && mkdir -p ref_msrle
+ffmpeg -v error -i test_msrle.avi ref_msrle/f%03d.ppm -y
 rm -rf ref_mov && mkdir -p ref_mov
 ffmpeg -v error -i test_cinepak.mov ref_mov/f%03d.ppm -y
 rm -rf ref_mjpeg && mkdir -p ref_mjpeg

@@ -129,6 +129,19 @@ static void rle(void)
   CHECK(eq(d.frame.data,d.frame.stride,1,1,0,0,255));CHECK(eq(d.frame.data,d.frame.stride,1,0,255,0,0));
  }
  {const uint8_t bad[]={6,1,0,1};s=d.codec->decode(&d,bad,sizeof(bad));CHECK(s==MR_EFORMAT);}
+ /* Running out of data is a normal end of frame, not a failure. An AVI
+  * zero-length chunk (an unchanged frame) arrives as an empty packet, and
+  * plenty of encoders omit the end-of-bitmap escape; treating either as an
+  * error aborted playback of files the reference decoder handles fine. */
+ {const uint8_t solid[]={5,1,0,0,5,1,0,1};
+  s=d.codec->decode(&d,solid,sizeof(solid));CHECK(s==MR_OK);
+  CHECK(eq(d.frame.data,d.frame.stride,0,2,255,0,0));
+  s=d.codec->decode(&d,solid,0);CHECK(s==MR_OK);            /* empty packet */
+  CHECK(d.frame.dirty_y1<=d.frame.dirty_y0);
+  CHECK(eq(d.frame.data,d.frame.stride,0,2,255,0,0));        /* kept        */
+  s=d.codec->decode(&d,solid,6);CHECK(s==MR_OK);   /* no end-of-bitmap code */
+  CHECK(eq(d.frame.data,d.frame.stride,0,2,255,0,0));
+  {const uint8_t eol[]={0,0};s=d.codec->decode(&d,eol,sizeof(eol));CHECK(s==MR_OK);}}
  d.codec->close(&d);
 }
 int main(void){msvideo();rle();if(failures)return 1;puts("legacy video decoder checks passed");return 0;}

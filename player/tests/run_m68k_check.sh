@@ -292,6 +292,9 @@ run "$BUILD/mr_decode.m68k" tests/assets/test_msvideo1.avi \
 echo "[Microsoft Video 1 8-bit paletted, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_msvideo1_pal8.avi \
     --check tests/assets/ref_msvideo1_pal8
+echo "[Microsoft RLE, real m68k/big-endian]"
+run "$BUILD/mr_decode.m68k" tests/assets/test_msrle.avi \
+    --check tests/assets/ref_msrle
 echo "[MPEG-4 Part 2 Simple Profile, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_mp4v_sp.avi \
     --check tests/assets/ref_mp4v_sp
