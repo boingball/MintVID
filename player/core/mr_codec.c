@@ -20,13 +20,33 @@ static const mr_codec *const g_codecs[] = {
 #endif
 };
 
+/* Fold the ASCII letters of a fourcc to lower case. Muxers stamp the same
+ * codec tag in whatever case they feel like ('MRLE' vs 'mrle', 'DIVX' vs
+ * 'divx'), and AVI's fccHandler is a particularly bad offender, so matching
+ * case-insensitively beats making every decoder enumerate the variants - the
+ * one nobody thinks of is the one that reports "no decoder for this fourcc"
+ * on a file that is perfectly supported. Bytes outside A-Z are untouched, so
+ * numeric BI_* tags (BI_RLE8 is 1) still compare exactly. */
+static uint32_t fourcc_fold(uint32_t f)
+{
+    uint32_t out = 0;
+    int i;
+    for (i = 0; i < 4; i++) {
+        uint32_t b = (f >> (i * 8)) & 0xffu;
+        if (b >= 'A' && b <= 'Z') b += (uint32_t)('a' - 'A');
+        out |= b << (i * 8);
+    }
+    return out;
+}
+
 const mr_codec *mr_codec_find(uint32_t fourcc)
 {
     size_t i, j;
+    uint32_t want = fourcc_fold(fourcc);
     for (i = 0; i < sizeof(g_codecs) / sizeof(g_codecs[0]); i++) {
         const mr_codec *c = g_codecs[i];
         for (j = 0; j < sizeof(c->fourcc) / sizeof(c->fourcc[0]); j++) {
-            if (c->fourcc[j] && c->fourcc[j] == fourcc)
+            if (c->fourcc[j] && fourcc_fold(c->fourcc[j]) == want)
                 return c;
         }
     }

@@ -217,7 +217,7 @@ mr_cinepak_indexed_check: tests/mr_cinepak_indexed_check.c \
 
 mr_codec_registry_check: tests/mr_codec_registry_check.c core/mr_codec.c \
                          core/mr_mpeg4.c core/mr_msmpeg4v2.c \
-                         core/mr_h263.c core/mr_yuv.c
+                         core/mr_h263.c core/mr_yuv.c core/mr_rle.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 mr_rawvideo_check: tests/mr_rawvideo_check.c core/mr_rawvideo.c
@@ -330,6 +330,7 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	    && test -d tests/assets/ref_cinepak_strips \
 	    && test -d tests/assets/ref_msvideo1 \
 	    && test -d tests/assets/ref_msvideo1_pal8 \
+	    && test -d tests/assets/ref_msrle \
 	    && test -d tests/assets/ref_mjpeg && test -d tests/assets/ref_raw_mjpeg \
 	    && test -d tests/assets/ref_mpeg1 \
 	    && test -d tests/assets/ref_mp4v_intra && test -d tests/assets/ref_mp4v_sp \
@@ -363,6 +364,8 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	./mr_decode tests/assets/test_msvideo1.avi --check tests/assets/ref_msvideo1
 	./mr_decode tests/assets/test_msvideo1_pal8.avi \
 	    --check tests/assets/ref_msvideo1_pal8
+	@echo "[Microsoft RLE]"
+	./mr_decode tests/assets/test_msrle.avi --check tests/assets/ref_msrle
 	@echo "[Cinepak MOV]"
 	./mr_decode tests/assets/test_cinepak.mov --check tests/assets/ref_mov
 	@echo "[MOV seek]"
