@@ -327,6 +327,9 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	./mr_ps_check
 	./mr_ts_mp2_check
 	@test -d tests/assets/ref_cinepak && test -d tests/assets/ref_mov \
+	    && test -d tests/assets/ref_cinepak_strips \
+	    && test -d tests/assets/ref_msvideo1 \
+	    && test -d tests/assets/ref_msvideo1_pal8 \
 	    && test -d tests/assets/ref_mjpeg && test -d tests/assets/ref_raw_mjpeg \
 	    && test -d tests/assets/ref_mpeg1 \
 	    && test -d tests/assets/ref_mp4v_intra && test -d tests/assets/ref_mp4v_sp \
@@ -352,6 +355,14 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	@echo "[Cinepak AVI]"
 	./mr_decode tests/assets/test_cinepak.avi --check tests/assets/ref_cinepak
 	./mr_cinepak_indexed_check tests/assets/test_cinepak.avi
+	@echo "[Cinepak AVI, multi-strip]"
+	./mr_decode tests/assets/test_cinepak_strips.avi \
+	    --check tests/assets/ref_cinepak_strips
+	./mr_cinepak_indexed_check tests/assets/test_cinepak_strips.avi
+	@echo "[Microsoft Video 1]"
+	./mr_decode tests/assets/test_msvideo1.avi --check tests/assets/ref_msvideo1
+	./mr_decode tests/assets/test_msvideo1_pal8.avi \
+	    --check tests/assets/ref_msvideo1_pal8
 	@echo "[Cinepak MOV]"
 	./mr_decode tests/assets/test_cinepak.mov --check tests/assets/ref_mov
 	@echo "[MOV seek]"

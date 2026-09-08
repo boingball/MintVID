@@ -111,17 +111,19 @@ static void cb_build(cvid_ctx *c, cvid_cb *cb, const uint8_t *d,
     }
 }
 
-/* Load/patch a codebook chunk. chunk_id low nibble selects color vs gray and
- * full vs selective update:
+/* Load/patch a codebook chunk. The chunk id is a single byte (see
+ * cvid_decode); its low bits select color vs gray and full vs selective:
  *   0x20/0x22 full color (6 bytes/entry)   0x24/0x26 full gray (4 bytes/entry)
  *   0x21/0x23 sel  color                   0x25/0x27 sel  gray
- * Selective updates carry 32-bit MSB-first flag words; a set bit means the
- * corresponding entry is present. */
+ * so 0x04 means grayscale and 0x01 means selective. Selective updates carry
+ * 32-bit MSB-first flag words; a set bit means the corresponding entry is
+ * present. A chunk that runs out of data simply stops early, leaving the
+ * remaining entries at their previous (persistent) values. */
 static void load_codebook(cvid_ctx *c, cvid_cb *cb, int chunk_id, int is_v1,
                           int phase_y, const uint8_t *data, uint32_t size)
 {
-    int is_color = !(chunk_id & 0x0400);
-    int selective = (chunk_id & 0x0100);
+    int is_color = !(chunk_id & 0x04);
+    int selective = (chunk_id & 0x01);
     int entry_sz = is_color ? 6 : 4;
     const uint8_t *p = data;
     const uint8_t *end = data + size;
@@ -234,12 +236,15 @@ static void put_vector(cvid_ctx *c, const cvid_cb *cb, int x, int y, int scale,
     }
 }
 
-/* Decode the vector map of one strip within rows [y0,y1). Low nibble of the
- * chunk id: bit0 => inter (per-MB "coded" flag, 0 = skip/keep previous frame),
- * bit1 => V4-only (no per-MB type flag, every coded MB is V4). The "coded" and
- * "type" flags share one MSB-first 32-bit reservoir that is refilled from the
- * same byte stream the vector index bytes are read from - so a single cursor
- * feeds both. */
+/* Decode the vector map of one strip within rows [y0,y1). The one-byte chunk
+ * id selects the layout: bit0 (0x31) => inter, i.e. a per-MB "coded" flag with
+ * 0 meaning skip/keep the previous frame; bit1 (0x32) => V1-only, i.e. no
+ * per-MB type flag because every coded MB is V1. 0x32 is *V1*-only and not
+ * V4-only - it is the "this strip needs nothing but flat 4x4 vectors" case,
+ * and decoding it as V4 consumes four index bytes per MB instead of one, which
+ * desynchronises the rest of the strip. The "coded" and "type" flags share one
+ * MSB-first 32-bit reservoir that is refilled from the same byte stream the
+ * vector index bytes are read from - so a single cursor feeds both. */
 static void decode_vectors(cvid_ctx *c, cvid_strip_cb *cb, int chunk_id,
                            int x0, int y0, int x1, int y1,
                            const uint8_t *data, uint32_t size)
@@ -247,8 +252,8 @@ static void decode_vectors(cvid_ctx *c, cvid_strip_cb *cb, int chunk_id,
     const uint8_t *end = data + size;
     bitrdr br;
     int x, y;
-    int inter  = (chunk_id & 0x0100) != 0;
-    int v4only = (chunk_id & 0x0200) != 0;
+    int inter  = (chunk_id & 0x01) != 0;
+    int v1only = (chunk_id & 0x02) != 0;
 
     br_init(&br, data, end);
 
@@ -261,7 +266,7 @@ static void decode_vectors(cvid_ctx *c, cvid_strip_cb *cb, int chunk_id,
             if (y < c->dy0) c->dy0 = y;      /* this MB row changes         */
             if (y + 4 > c->dy1) c->dy1 = y + 4;
 
-            is_v4 = v4only ? 1 : br_bit(&br);
+            is_v4 = v1only ? 0 : br_bit(&br);
 
             if (is_v4) {
                 int q;                        /* four 2x2 sub-blocks         */
@@ -341,68 +346,96 @@ static cvid_strip_cb *ensure_strip_cb(cvid_ctx *c, int n)
 static mr_status cvid_decode(mr_decoder *dec, const uint8_t *data, uint32_t len)
 {
     cvid_ctx *c = (cvid_ctx *)dec->priv;
+    const uint8_t *p, *end;
+    unsigned frame_flags;
+    int num_strips, strip_i, y_top = 0;
+
     if (len < 10) return MR_EFORMAT;
 
     c->decoded_any = 1;
 
     c->dy0 = c->height; c->dy1 = 0;        /* empty until an MB is coded    */
 
-    uint16_t num_strips = mr_rb16(data + 8);
-    const uint8_t *p   = data + 10;
-    const uint8_t *end = data + len;
-    int strip_i;
-    int y_top = 0;
+    /* Frame header: flags, 24-bit coded size, width, height, strip count. */
+    frame_flags = data[0];
+    num_strips  = mr_rb16(data + 8);
+    p   = data + 10;
+    end = data + len;
 
     for (strip_i = 0; strip_i < num_strips && p + 12 <= end; strip_i++) {
-        uint16_t sid  = mr_rb16(p);
-        uint32_t ssz  = mr_rb16(p + 2);
-        int r_y0 = mr_rb16(p + 4);
-        int r_y1 = mr_rb16(p + 8);
-        int strip_h = r_y1 - r_y0;         /* stored coords are per-strip   */
-        const uint8_t *sp  = p + 12;
-        const uint8_t *send = p + ssz;
-        if (send > end) send = end;
-        if (strip_h <= 0) strip_h = c->height - y_top;
+        /* Strip header: a *one-byte* id (0x10 intra, 0x11 inter) followed by a
+         * *24-bit* size that covers this 12-byte header too, then y0,x0,y1,x1.
+         * Reading the id and size as two 16-bit fields happens to work only
+         * while every strip stays under 64KB - above that the size's top byte
+         * bleeds into the id and the strip is truncated. Sizes are also byte
+         * exact: rounding them up to an even boundary shifts every following
+         * strip by one byte the first time an encoder emits an odd-sized one,
+         * which is what turned the lower strips of larger frames to noise. */
+        uint32_t ssz = mr_rb24(p + 1);   /* p[0] is the id: 0x10/0x11 */
+        int r_y0 = mr_rb16(p + 4), r_x0 = mr_rb16(p + 6);
+        int r_y1 = mr_rb16(p + 8), r_x1 = mr_rb16(p + 10);
+        int x0, y0, x1, y1;
+        const uint8_t *sp, *send;
+        cvid_strip_cb *cb;
 
-        int y0 = y_top;
-        int y1 = y_top + strip_h;
+        if (ssz < 12) break;
+
+        /* A stored y0 of zero means "continue below the previous strip", and
+         * the y1 field then carries the strip height rather than a row. */
+        if (r_y0 == 0) { y0 = y_top; y1 = y_top + r_y1; }
+        else           { y0 = r_y0;  y1 = r_y1; }
+        x0 = r_x0; x1 = r_x1;
+        if (x1 > c->width)  x1 = c->width;
         if (y1 > c->height) y1 = c->height;
+        if (x0 >= x1 || y0 >= y1) break;
 
-        cvid_strip_cb *cb = ensure_strip_cb(c, strip_i);
+        send = p + ssz;
+        if (send > end) send = end;
+        sp = p + 12;
+
+        cb = ensure_strip_cb(c, strip_i);
         if (!cb) return MR_ENOMEM;
-        /* An intra strip (0x1000) starts from fresh codebooks; an inter strip
-         * (0x1100) inherits the previous frame's codebooks for this strip. */
-        if (sid == 0x1000)
-            memset(cb, 0, sizeof(*cb));
+        /* Codebooks persist per strip index across frames. When the frame's
+         * flag bit 0 is clear, a strip additionally starts from the *previous
+         * strip's* codebooks in this same frame, which is how encoders avoid
+         * resending a shared codebook for every strip. In indexed mode the
+         * inherited entries carry the previous strip's Bayer phase, which is
+         * only the same phase because strips are 4-row aligned - the same
+         * alignment the 4x4 block grid already depends on. */
+        if (strip_i > 0 && !(frame_flags & 0x01))
+            memcpy(cb, &c->strips[strip_i - 1], sizeof(*cb));
 
         while (sp + 4 <= send) {
-            uint16_t cid = mr_rb16(sp);
-            uint32_t csz = mr_rb16(sp + 2);
+            /* Chunk header has the same 1-byte id / 24-bit size shape. */
+            int cid = sp[0];
+            uint32_t csz = mr_rb24(sp + 1);
             const uint8_t *cdata = sp + 4;
-            uint32_t cbody = (csz >= 4) ? csz - 4 : 0;
-            if (cdata + cbody > send) cbody = (uint32_t)(send - cdata);
+            uint32_t cbody;
 
-            if ((cid & 0xf000) == 0x2000) {
-                /* Codebook. Bit 0x0200 selects V1 vs V4; load_codebook reads
-                 * bit 0x0400 (gray) and 0x0100 (selective) itself. */
-                int is_v1 = (cid & 0x0200) != 0;
-                cvid_cb *tbl = is_v1 ? cb->v1 : cb->v4;
-                load_codebook(c, tbl, cid, is_v1, y0 & 3, cdata, cbody);
-            } else if ((cid & 0xf000) == 0x3000) {
-                /* Vectors: 0x0100 inter, 0x0200 V4-only. */
-                decode_vectors(c, cb, cid, 0, y0, c->width, y1,
-                               cdata, cbody);
-            }   /* else: unknown chunk, skip */
-
-            csz += (csz & 1);
             if (csz < 4) break;
-            sp += csz;
+            cbody = csz - 4;
+            if (cbody > (uint32_t)(send - cdata))
+                cbody = (uint32_t)(send - cdata);
+
+            switch (cid) {
+            case 0x20: case 0x21: case 0x24: case 0x25:
+                load_codebook(c, cb->v4, cid, 0, y0 & 3, cdata, cbody);
+                break;
+            case 0x22: case 0x23: case 0x26: case 0x27:
+                load_codebook(c, cb->v1, cid, 1, y0 & 3, cdata, cbody);
+                break;
+            case 0x30: case 0x31: case 0x32:
+                decode_vectors(c, cb, cid, x0, y0, x1, y1, cdata, cbody);
+                goto strip_done;   /* the vector map ends the strip */
+            default:
+                break;             /* unknown chunk, skip */
+            }
+            sp = cdata + cbody;
         }
 
+    strip_done:
         y_top = y1;
-        ssz += (ssz & 1);
-        if (ssz < 12) break;
-        p += ssz;
+        p = (ssz <= (uint32_t)(end - p)) ? p + ssz : end;
     }
 
     if (c->dy1 > c->height) c->dy1 = c->height;
