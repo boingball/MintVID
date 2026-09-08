@@ -332,6 +332,9 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	    && test -d tests/assets/ref_opendivx_legacy \
 	    && test -d tests/assets/ref_mp4v_qpel && test -d tests/assets/ref_mp4v_b \
 	    && test -d tests/assets/ref_raw_mpeg4 \
+	    && test -d tests/assets/ref_h263 && test -d tests/assets/ref_h263_gob \
+	    && test -d tests/assets/ref_h263p && test -d tests/assets/ref_h263p_umv \
+	    && test -f tests/assets/test_h263.3gp \
 	    || sh tests/gen_assets.sh
 	./mr_mkv_check tests/assets/test_h264_aac.mkv
 	@echo "[Cinepak AVI]"
@@ -395,6 +398,16 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	./mr_decode tests/assets/test_mp4v_b.avi --check tests/assets/ref_mp4v_b
 	@echo "[raw MPEG-4 Part 2]"
 	./mr_decode tests/assets/test_raw_mpeg4.m4v --check tests/assets/ref_raw_mpeg4
+	@echo "[H.263 version 1 sub-QCIF]"
+	./mr_decode tests/assets/test_h263.avi --check tests/assets/ref_h263
+	@echo "[H.263 version 1 in 3GP/QuickTime, 's263']"
+	./mr_decode tests/assets/test_h263.3gp --check tests/assets/ref_h263
+	@echo "[H.263 version 1 with GOB headers]"
+	./mr_decode tests/assets/test_h263_gob.avi --check tests/assets/ref_h263_gob
+	@echo "[H.263+ custom picture format, custom clock, slice structured]"
+	./mr_decode tests/assets/test_h263p.avi --check tests/assets/ref_h263p
+	@echo "[H.263+ unrestricted motion vectors]"
+	./mr_decode tests/assets/test_h263p_umv.avi --check tests/assets/ref_h263p_umv
 
 check-audio: mr_audio_check mr_ac3_check
 	@test -f tests/assets/test_mp3.avi -a -f tests/assets/test_aac.mp4 \

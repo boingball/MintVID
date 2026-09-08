@@ -1,8 +1,14 @@
 /*
- * MintVID - native ITU-T H.263 baseline decoder.
+ * MintVID - native ITU-T H.263 / H.263+ decoder.
  *
- * Baseline syntax deliberately remains separate from the H.263+ feature gate;
- * unsupported annex tools return MR_EUNSUPPORTED before reconstruction.
+ * The picture layer understands both the H.263 version 1 header and the
+ * version 2 extended PTYPE (PLUSPTYPE), including custom picture sizes, the
+ * custom picture clock frequency, the per-picture rounding type, unrestricted
+ * motion vectors (Annex D) and slice-structured mode (Annex K).  Annex tools
+ * that would change reconstruction - SAC, advanced prediction, advanced intra
+ * coding, the deblocking filter, PB/B pictures, modified quantisation and the
+ * alternative inter VLC - are still refused before any macroblock is decoded,
+ * so an unsupported stream stops rather than producing corrupt output.
  */
 #include "mr_h263.h"
 #include "mr_yuv.h"
@@ -61,6 +67,11 @@ static int br_overrun(const bitreader *b)
     return b->pos > b->len * 8;
 }
 
+static int br_left(const bitreader *b)
+{
+    return b->len * 8 - b->pos;
+}
+
 /* ---- VLC table types ------------------------------------------------- */
 typedef struct {
     uint16_t code;
@@ -74,18 +85,6 @@ typedef struct { uint16_t code; uint8_t len; int16_t data; } mvd_t;
 
 #include "mr_mpeg4_tables.inc"
 
-/* Microsoft v2 macroblock VLCs.  The value is the decoded table index. */
-typedef struct { uint8_t code, len, val; } mp42_vlc;
-
-static const mp42_vlc v2_mb_type[] = {
-    { 0x01, 1, 0 }, { 0x00, 2, 1 }, { 0x03, 3, 2 }, { 0x09, 5, 3 },
-    { 0x05, 4, 4 }, { 0x21, 7, 5 }, { 0x20, 7, 6 }, { 0x11, 6, 7 }
-};
-
-static const mp42_vlc v2_intra_cbpc[] = {
-    { 0x01, 1, 0 }, { 0x00, 3, 1 }, { 0x01, 3, 2 }, { 0x01, 2, 3 }
-};
-
 /* grid[v][u] gives the serial coefficient position for that matrix cell. */
 static const uint8_t scan_zigzag[8][8] = {
     { 0, 1, 5, 6,14,15,27,28}, { 2, 4, 7,13,16,26,29,42},
@@ -93,40 +92,39 @@ static const uint8_t scan_zigzag[8][8] = {
     {10,19,23,32,39,45,52,54}, {20,22,33,38,46,51,55,60},
     {21,34,37,47,50,56,59,61}, {35,36,48,49,57,58,62,63}
 };
-static const uint8_t scan_alth[8][8] = {
-    { 0, 1, 2, 3,10,11,12,13}, { 4, 5, 8, 9,17,16,15,14},
-    { 6, 7,19,18,26,27,28,29}, {20,21,24,25,30,31,32,33},
-    {22,23,34,35,42,43,44,45}, {36,37,40,41,46,47,48,49},
-    {38,39,50,51,56,57,58,59}, {52,53,54,55,60,61,62,63}
-};
-static const uint8_t scan_altv[8][8] = {
-    { 0, 4, 6,20,22,36,38,52}, { 1, 5, 7,21,23,37,39,53},
-    { 2, 8,19,24,34,40,50,54}, { 3, 9,18,25,35,41,51,55},
-    {10,17,26,30,42,46,56,60}, {11,16,27,31,43,47,57,61},
-    {12,15,28,32,44,48,58,62}, {13,14,29,33,45,49,59,63}
-};
 
+/* One 16x16 motion vector per macroblock.  Intra and skipped macroblocks
+ * contribute a zero vector, exactly as they do in the reference decoder. */
 typedef struct {
-    int valid;
-    int slice;
-    int dc;                         /* quantised DC; neutral predictor 128 */
-    int16_t row[8], col[8];         /* quantised AC edge predictors       */
-} predblk;
-
-typedef struct {
-    int x, y;
-    int slice;
-    int valid;
+    int16_t x, y;
 } mvblk;
 
+/* Picture-layer state that survives a PLUSPTYPE with UFEP == 0: such a
+ * picture repeats only MPPTYPE and inherits the annex flags of the last
+ * picture that carried a full OPPTYPE. */
 typedef struct {
     int w, h, mb_w, mb_h, cw, ch;
     int ystride, cstride;
+    int gob_index;                   /* macroblock rows per GOB             */
+    int have_ref;                    /* a reference picture was decoded     */
+    int custom_pcf;                  /* custom picture clock frequency      */
+    int umv;                         /* Annex D, H.263+ signalling          */
+    int long_vectors;                /* Annex D, H.263 version 1 signalling */
+    int slice_structured;            /* Annex K                             */
     uint8_t *cur[3], *ref[3];
     uint8_t *rgb;
-    predblk *pl, *pcb, *pcr;
-    mvblk *mv;                       /* one 16x16 vector per macroblock     */
+    mvblk *mv;
 } h263_ctx;
+
+/* Decoded picture header.  Everything here is per-picture. */
+typedef struct {
+    int pict_type;                   /* 0 intra, 1 inter                    */
+    int quant;
+    int no_rounding;                 /* RTYPE: 1 selects rounding type 1    */
+    int mb_start;                    /* first macroblock of the picture     */
+} h263_picture;
+
+#define MV_ERROR 0xffff
 
 static int h263_debug(void)
 {
@@ -136,20 +134,34 @@ static int h263_debug(void)
     return enabled;
 }
 
-/* ---- generic VLC helpers --------------------------------------------- */
-static int match_small(bitreader *b, const mp42_vlc *tab, int count)
+/* ---- unsupported-feature reporting ----------------------------------- */
+enum {
+    FEAT_SAC, FEAT_AP, FEAT_PB, FEAT_AIC, FEAT_DF, FEAT_RPS, FEAT_ISD,
+    FEAT_AIV, FEAT_MQ, FEAT_BPIC, FEAT_CPM, FEAT_RESAMPLE, FEAT_RECT_SLICE,
+    FEAT_ASO, FEAT_4MV, FEAT_COUNT
+};
+
+static const char *const feature_names[FEAT_COUNT] = {
+    "SAC", "advanced prediction", "PB frames", "advanced intra coding",
+    "deblocking filter", "reference picture selection",
+    "independent segment decoding", "alternative inter VLC",
+    "modified quantisation", "B pictures", "continuous presence multipoint",
+    "reference picture resampling", "rectangular slices",
+    "arbitrary slice ordering", "four motion vectors"
+};
+
+static int unsupported(int feature)
 {
-    unsigned w = br_peek(b, 7);
-    int i;
-    for (i = 0; i < count; i++) {
-        if ((w >> (7 - tab[i].len)) == tab[i].code) {
-            br_skip(b, tab[i].len);
-            return tab[i].val;
-        }
+    static unsigned reported;
+    if (!(reported & (1u << feature))) {
+        reported |= 1u << feature;
+        fprintf(stderr, "H.263: unsupported feature %s\n",
+                feature_names[feature]);
     }
-    return -1;
+    return -2;
 }
 
+/* ---- generic VLC helpers --------------------------------------------- */
 static int match_cbpy(bitreader *b)
 {
     unsigned w = br_peek(b, 6);
@@ -198,110 +210,40 @@ static int match_mvd(bitreader *b)
  * in the decoder).  It is byte-for-byte equivalent: each entry covers exactly
  * the prefix range the linear "(w >> (12-len)) == code" test accepted, and the
  * ranges are filled in reverse so the lowest index still wins on any overlap. */
-static int16_t tcoef_lut_intra[4096];
-static int16_t tcoef_lut_inter[4096];
+static int16_t tcoef_lut[4096];
 static int tcoef_lut_ready;
 
-static void build_tcoef_lut(int16_t *lut, const tcoef_t *tab)
+static void build_tcoef_lut(void)
 {
     int i, j;
     for (j = 0; j < 4096; j++)
-        lut[j] = -1;
+        tcoef_lut[j] = -1;
     for (i = 101; i >= 0; i--) {
-        unsigned base = (unsigned)tab[i].code << (12 - tab[i].len);
-        unsigned span = 1u << (12 - tab[i].len), k;
+        unsigned base = (unsigned)tcoef_inter[i].code << (12 - tcoef_inter[i].len);
+        unsigned span = 1u << (12 - tcoef_inter[i].len), k;
         for (k = 0; k < span; k++)
-            lut[base + k] = (int16_t)i;
+            tcoef_lut[base + k] = (int16_t)i;
     }
 }
 
-static const tcoef_t *match_tcoef(bitreader *b, const tcoef_t *tab)
+/* H.263 codes both intra AC and inter coefficients with the one TCOEF table;
+ * the separate intra table belongs to MPEG-4 and to Annex I, which is
+ * refused in the picture header. */
+static const tcoef_t *match_tcoef(bitreader *b)
 {
     unsigned w = br_peek(b, 12);
     int i;
     if (!tcoef_lut_ready) {
-        build_tcoef_lut(tcoef_lut_intra, tcoef_intra);
-        build_tcoef_lut(tcoef_lut_inter, tcoef_inter);
+        build_tcoef_lut();
         tcoef_lut_ready = 1;
     }
-    i = (tab == tcoef_intra ? tcoef_lut_intra : tcoef_lut_inter)[w];
-    return i < 0 ? NULL : &tab[i];
+    i = tcoef_lut[w];
+    return i < 0 ? NULL : &tcoef_inter[i];
 }
 
-/* Decode Microsoft's inverted H.263 DC differential VLC. */
-static int decode_dc_diff(bitreader *b, int chroma, int *diff)
+static int decode_plain_rl(bitreader *b, int *last, int *run, int *level)
 {
-    const vlc3_t *tab = chroma ? dcsize_chrom : dcsize_lum;
-    unsigned w = br_peek(b, 12);
-    int i, size = -1;
-
-    for (i = 0; i < 13; i++) {
-        unsigned mask = (1u << tab[i].len) - 1u;
-        unsigned code = tab[i].code ^ mask;
-        if ((w >> (12 - tab[i].len)) == code) {
-            br_skip(b, tab[i].len);
-            size = tab[i].val;
-            break;
-        }
-    }
-    if (size < 0 || size > 9)
-        return -1;
-    if (size == 0) {
-        *diff = 0;
-        return 0;
-    }
-    {
-        unsigned v = br_bits(b, size);
-        unsigned half = 1u << (size - 1);
-        *diff = (v & half) ? (int)v : (int)v - (int)((1u << size) - 1u);
-    }
-    if (size > 8 && br_bit(b) != 1)
-        return -1;
-    return br_overrun(b) ? -1 : 0;
-}
-
-/* ---- MSMPEG4 run/level escapes --------------------------------------- */
-static int range_lookup(int key, const int *tab, int count)
-{
-    int i;
-    for (i = 0; i < count; i++)
-        if (key <= tab[i * 2])
-            return tab[i * 2 + 1];
-    return -1;
-}
-
-static int lmax_intra(int last, int run)
-{
-    static const int nl[] = {0,27, 1,10, 2,5, 3,4, 7,3, 9,2, 14,1};
-    static const int yl[] = {0,8, 1,3, 6,2, 20,1};
-    return last ? range_lookup(run, yl, 4) : range_lookup(run, nl, 7);
-}
-
-static int lmax_inter(int last, int run)
-{
-    static const int nl[] = {0,12, 1,6, 2,4, 6,3, 10,2, 26,1};
-    static const int yl[] = {0,3, 1,2, 40,1};
-    return last ? range_lookup(run, yl, 3) : range_lookup(run, nl, 6);
-}
-
-static int rmax_intra(int last, int level)
-{
-    static const int nl[] = {1,14, 2,9, 3,7, 4,3, 5,2, 10,1, 27,0};
-    static const int yl[] = {1,20, 2,6, 3,1, 8,0};
-    return last ? range_lookup(level, yl, 4) : range_lookup(level, nl, 7);
-}
-
-static int rmax_inter(int last, int level)
-{
-    static const int nl[] = {1,26, 2,10, 3,6, 4,2, 6,1, 12,0};
-    static const int yl[] = {1,40, 2,1, 3,0};
-    return last ? range_lookup(level, yl, 3) : range_lookup(level, nl, 6);
-}
-
-static int decode_plain_rl(bitreader *b, const tcoef_t *tab,
-                           int *last, int *run, int *level)
-{
-    const tcoef_t *e = match_tcoef(b, tab);
+    const tcoef_t *e = match_tcoef(b);
     if (!e)
         return -1;
     br_skip(b, e->len);
@@ -313,44 +255,32 @@ static int decode_plain_rl(bitreader *b, const tcoef_t *tab,
     return br_overrun(b) ? -1 : 0;
 }
 
-static int decode_rl_event(bitreader *b, int intra,
-                           int *last, int *run, int *level)
+/* H.263 has a single escape: the 7-bit ESCAPE code is followed by a plain
+ * LAST/RUN/LEVEL triple.  (MPEG-4 and the Microsoft variants instead spend
+ * further bits selecting one of three escape forms - decoding those here cost
+ * two extra bits per escape and desynchronised the bitstream.)  LEVEL -128 is
+ * the Annex T 11-bit level extension. */
+static int decode_rl_event(bitreader *b, int *last, int *run, int *level)
 {
-    const tcoef_t *tab = intra ? tcoef_intra : tcoef_inter;
+    int v;
 
     if (br_peek(b, 7) != 0x03)
-        return decode_plain_rl(b, tab, last, run, level);
+        return decode_plain_rl(b, last, run, level);
 
-    br_skip(b, 7);                  /* escape VLC: 0000011 */
-    if (br_bit(b)) {                /* escape 1: extend LEVEL */
-        int add;
-        if (decode_plain_rl(b, tab, last, run, level))
-            return -1;
-        add = intra ? lmax_intra(*last, *run) : lmax_inter(*last, *run);
-        if (add < 0)
-            return -1;
-        *level += (*level < 0) ? -add : add;
-    } else if (br_bit(b)) {         /* escape 2: extend RUN */
-        int add, abslevel;
-        if (decode_plain_rl(b, tab, last, run, level))
-            return -1;
-        abslevel = *level < 0 ? -*level : *level;
-        add = intra ? rmax_intra(*last, abslevel)
-                    : rmax_inter(*last, abslevel);
-        if (add < 0)
-            return -1;
-        *run += add + 1;
-    } else {                        /* escape 3: fixed LAST/RUN/LEVEL */
-        int v;
-        *last = (int)br_bit(b);
-        *run = (int)br_bits(b, 6);
-        v = (int)br_bits(b, 8);
-        if (v & 0x80)
-            v -= 256;
-        if (v == 0 || v == -128)
-            return -1;
-        *level = v;
+    br_skip(b, 7);                      /* ESCAPE: 0000011 */
+    *last = (int)br_bit(b);
+    *run = (int)br_bits(b, 6);
+    v = (int)br_bits(b, 8);
+    if (v & 0x80)
+        v -= 256;
+    if (v == -128) {
+        unsigned lo = br_bits(b, 5);
+        int hi = (int)br_bits(b, 6);
+        if (hi & 0x20)
+            hi -= 64;
+        v = (int)lo | (hi << 5);
     }
+    *level = v;
     return br_overrun(b) ? -1 : 0;
 }
 
@@ -366,7 +296,7 @@ static int decode_rl_event(bitreader *b, int intra,
 #define IDCT_P 13                        /* cosine-matrix fractional bits    */
 #define IDCT_SHIFT (2 * IDCT_P + 2)      /* two passes + the 1/4 IDCT norm    */
 /* Keeping this table in the binary avoids floating-point cos() setup and
- * makes the complete MP42 decoder path integer-only. */
+ * makes the complete decoder path integer-only. */
 static const int32_t idct_tab[8][8] = {
     {5793, 5793, 5793, 5793, 5793, 5793, 5793, 5793},
     {8035, 6811, 4551, 1598,-1598,-4551,-6811,-8035},
@@ -464,8 +394,12 @@ static int fetch_px(const uint8_t *p, int w, int h, int stride, int x, int y)
     return p[(size_t)y * stride + x];
 }
 
+/* rnd is 1 for rounding type 0 (the only type H.263 version 1 has) and 0 for
+ * H.263+ rounding type 1, which drops the +1/2 bias from half-pixel
+ * interpolation.  Encoders alternate the two between P pictures, so getting
+ * this wrong drifts a little further on every inter frame. */
 static void mc_block(const uint8_t *ref, int w, int h, int stride,
-                     int px, int py, int mvx, int mvy, int out[8][8])
+                     int px, int py, int mvx, int mvy, int rnd, int out[8][8])
 {
     int ix = floor_div(mvx, 2), iy = floor_div(mvy, 2);
     int hx = mvx - ix * 2, hy = mvy - iy * 2;
@@ -482,14 +416,14 @@ static void mc_block(const uint8_t *ref, int w, int h, int stride,
             if (!hx && !hy)
                 for (x = 0; x < 8; x++) out[y][x] = r[x];
             else if (hx && !hy)
-                for (x = 0; x < 8; x++) out[y][x] = (r[x] + r[x + 1] + 1) >> 1;
+                for (x = 0; x < 8; x++) out[y][x] = (r[x] + r[x + 1] + rnd) >> 1;
             else if (!hx && hy)
                 for (x = 0; x < 8; x++)
-                    out[y][x] = (r[x] + r[x + stride] + 1) >> 1;
+                    out[y][x] = (r[x] + r[x + stride] + rnd) >> 1;
             else
                 for (x = 0; x < 8; x++)
                     out[y][x] = (r[x] + r[x + 1] +
-                                 r[x + stride] + r[x + stride + 1] + 2) >> 2;
+                                 r[x + stride] + r[x + stride + 1] + 1 + rnd) >> 2;
         }
         return;
     }
@@ -502,9 +436,9 @@ static void mc_block(const uint8_t *ref, int w, int h, int stride,
             int c = fetch_px(ref, w, h, stride, sx, sy + 1);
             int d = fetch_px(ref, w, h, stride, sx + 1, sy + 1);
             if (!hx && !hy) out[y][x] = a;
-            else if (hx && !hy) out[y][x] = (a + b + 1) >> 1;
-            else if (!hx && hy) out[y][x] = (a + c + 1) >> 1;
-            else out[y][x] = (a + b + c + d + 2) >> 2;
+            else if (hx && !hy) out[y][x] = (a + b + rnd) >> 1;
+            else if (!hx && hy) out[y][x] = (a + c + rnd) >> 1;
+            else out[y][x] = (a + b + c + d + 1 + rnd) >> 2;
         }
     }
 }
@@ -516,44 +450,6 @@ static int chroma_mv(int mv)
     int q = floor_div(mv, 4);
     int r = mv - q * 4;
     return q * 2 + roundtab[r];
-}
-
-/* ---- predictor grids ------------------------------------------------- */
-static predblk *pred_at(predblk *grid, int gw, int gh, int x, int y, int slice)
-{
-    predblk *p;
-    if (x < 0 || y < 0 || x >= gw || y >= gh)
-        return NULL;
-    p = &grid[y * gw + x];
-    return p->valid && p->slice == slice ? p : NULL;
-}
-
-static void select_block(h263_ctx *c, int block, int mbx, int mby,
-                         predblk **grid, int *gw, int *gh, int *gx, int *gy,
-                         uint8_t **plane, int *stride, int *px, int *py)
-{
-    if (block < 4) {
-        *grid = c->pl; *gw = c->mb_w * 2; *gh = c->mb_h * 2;
-        *gx = mbx * 2 + (block & 1); *gy = mby * 2 + (block >> 1);
-        *plane = c->cur[0]; *stride = c->ystride;
-        *px = mbx * 16 + (block & 1) * 8;
-        *py = mby * 16 + (block >> 1) * 8;
-    } else {
-        *grid = block == 4 ? c->pcb : c->pcr;
-        *gw = c->mb_w; *gh = c->mb_h; *gx = mbx; *gy = mby;
-        *plane = block == 4 ? c->cur[1] : c->cur[2];
-        *stride = c->cstride; *px = mbx * 8; *py = mby * 8;
-    }
-}
-
-static void invalidate_intra(h263_ctx *c, int mbx, int mby)
-{
-    int i;
-    for (i = 0; i < 4; i++)
-        c->pl[(mby * 2 + (i >> 1)) * (c->mb_w * 2) +
-              mbx * 2 + (i & 1)].valid = 0;
-    c->pcb[mby * c->mb_w + mbx].valid = 0;
-    c->pcr[mby * c->mb_w + mbx].valid = 0;
 }
 
 /* ---- block decode/reconstruction ------------------------------------ */
@@ -573,15 +469,17 @@ static int decode_intra_block(h263_ctx *c, bitreader *b, int block,
     uint8_t *plane;
     int stride, px, py;
 
+    /* INTRADC is a fixed-length code whose reconstruction level is eight
+     * times its value, except for 11111111, which stands for 1024. */
     dc = (int)br_bits(b, 8);
-    if (br_overrun(b) || dc == 255) return -1;
-    if (dc == 0) dc = 128;
+    if (br_overrun(b)) return -1;
+    if (dc == 255) dc = 128;
     memset(serial, 0, sizeof serial);
     serial[0] = dc * 8;
     if (coded) {
         for (;;) {
             int last, run, level, target;
-            if (decode_rl_event(b, 0, &last, &run, &level)) return -1;
+            if (decode_rl_event(b, &last, &run, &level)) return -1;
             target = pos + run;
             if (target >= 64) return -1;
             serial[target] = dequant_ac(level, q);
@@ -614,7 +512,7 @@ static int decode_inter_residual(bitreader *b, int q, int out[8][8])
     for (;;) {
         int last, run, level, target;
         int event_pos = b->pos;
-        if (decode_rl_event(b, 0, &last, &run, &level)) {
+        if (decode_rl_event(b, &last, &run, &level)) {
             if (h263_debug())
                 fprintf(stderr, "[h263] bad RL event %d at bit %d peek=%06lx\n",
                         event, event_pos,
@@ -623,9 +521,9 @@ static int decode_inter_residual(bitreader *b, int q, int out[8][8])
         }
         target = pos + run;
         if (target >= 64) {
-            /* Old Microsoft encoders occasionally terminate a block with a
-             * final coefficient one slot past 63.  FFmpeg's non-strict path
-             * drops that coefficient and accepts the block. */
+            /* A final coefficient one slot past 63 terminates the block in
+             * some encoders.  FFmpeg's non-strict path drops that coefficient
+             * and accepts the block. */
             if (last)
                 break;
             if (h263_debug())
@@ -647,45 +545,72 @@ static int decode_inter_residual(bitreader *b, int q, int out[8][8])
     return 0;
 }
 
-static void motion_predict(const h263_ctx *c, int mbx, int mby, int slice,
-                           int *px, int *py)
+/* Candidate predictors are the vectors of the macroblocks to the left, above
+ * and above-right; anything outside the picture, and anything above the first
+ * line of the current slice, counts as zero.  On that first line the median
+ * collapses to the left-hand candidate alone. */
+static void motion_predict(const h263_ctx *c, int mbx, int mby,
+                           int first_line, int resync_x, int *px, int *py)
 {
-    const mvblk *left = NULL, *top = NULL, *tr = NULL;
-    if (mbx > 0) {
-        const mvblk *m = &c->mv[mby * c->mb_w + mbx - 1];
-        if (m->valid && m->slice == slice) left = m;
-    }
-    if (mby > 0) {
-        const mvblk *m = &c->mv[(mby - 1) * c->mb_w + mbx];
-        if (m->valid && m->slice == slice) top = m;
-        if (mbx + 1 < c->mb_w) {
-            m = &c->mv[(mby - 1) * c->mb_w + mbx + 1];
-            if (m->valid && m->slice == slice) tr = m;
+    const mvblk *l = mbx > 0 ? &c->mv[mby * c->mb_w + mbx - 1] : NULL;
+
+    if (first_line) {
+        if (mbx == resync_x) {
+            *px = *py = 0;
+        } else {
+            *px = l ? l->x : 0;
+            *py = l ? l->y : 0;
         }
+        return;
     }
-    if (!top) {
-        *px = left ? left->x : 0;
-        *py = left ? left->y : 0;
-    } else {
-        *px = median3(left ? left->x : 0, top->x, tr ? tr->x : 0);
-        *py = median3(left ? left->y : 0, top->y, tr ? tr->y : 0);
+    {
+        const mvblk *t = &c->mv[(mby - 1) * c->mb_w + mbx];
+        const mvblk *tr = mbx + 1 < c->mb_w
+                        ? &c->mv[(mby - 1) * c->mb_w + mbx + 1] : NULL;
+        *px = median3(l ? l->x : 0, t->x, tr ? tr->x : 0);
+        *py = median3(l ? l->y : 0, t->y, tr ? tr->y : 0);
     }
 }
 
-static int decode_motion(bitreader *b, int pred)
+/* Annex D reversible VLC, used when unrestricted motion vectors are on. */
+static int decode_umotion(bitreader *b, int pred)
 {
-    int diff = match_mvd(b);
-    int val;
+    int code, sign;
+
+    if (br_bit(b))
+        return pred;                     /* difference is zero */
+    code = 2 + (int)br_bit(b);
+    while (br_bit(b)) {
+        code = (code << 1) + (int)br_bit(b);
+        if (code >= 32768 || br_overrun(b))
+            return MV_ERROR;
+    }
+    sign = code & 1;
+    code >>= 1;
+    return sign ? pred - code : pred + code;
+}
+
+static int decode_motion(bitreader *b, int pred, const h263_ctx *c)
+{
+    int diff, val;
+
+    if (c->umv)
+        return decode_umotion(b, pred);
+    diff = match_mvd(b);
     if (diff == 999)
-        return 999;
+        return MV_ERROR;
     val = pred + diff;
-    if (val <= -64) val += 64;
-    else if (val >= 64) val -= 64;
+    if (!c->long_vectors) {
+        val = ((val + 32) & 63) - 32;    /* modulo the +-32 half-pel range */
+    } else {
+        if (pred < -31 && val < -63) val += 64;
+        if (pred > 32 && val > 63) val -= 64;
+    }
     return val;
 }
 
 static int reconstruct_inter_mb(h263_ctx *c, bitreader *b, int mbx, int mby,
-                                int cbp, int q, int mvx, int mvy)
+                                int cbp, int q, int mvx, int mvy, int rnd)
 {
     int block;
     for (block = 0; block < 6; block++) {
@@ -703,7 +628,7 @@ static int reconstruct_inter_mb(h263_ctx *c, bitreader *b, int mbx, int mby,
         int pred[8][8], residual[8][8];
         int y, x, coded = (cbp >> (5 - block)) & 1;
 
-        mc_block(ref, rw, rh, stride, px, py, bx, by, pred);
+        mc_block(ref, rw, rh, stride, px, py, bx, by, rnd, pred);
         if (coded && decode_inter_residual(b, q, residual)) {
             if (h263_debug())
                 fprintf(stderr, "[h263] residual block %d failed at bit %d/%d\n",
@@ -720,86 +645,281 @@ static int reconstruct_inter_mb(h263_ctx *c, bitreader *b, int mbx, int mby,
     return 0;
 }
 
-/* ---- picture decode -------------------------------------------------- */
-static const char *feature_name(int bit)
+/* ---- picture and slice headers --------------------------------------- */
+static const uint16_t std_format[8][2] = {
+    {    0,    0 }, {  128,   96 }, {  176,  144 }, {  352,  288 },
+    {  704,  576 }, { 1408, 1152 }, {    0,    0 }, {    0,    0 }
+};
+
+/* Slice-structured mode addresses a macroblock directly; the field width
+ * follows from the number of macroblocks in the picture. */
+static int decode_mba(const h263_ctx *c, bitreader *b)
 {
-    static const char *const names[4] = {
-        "UMV", "SAC", "advanced prediction", "PB frames"
-    };
-    return names[bit];
+    static const uint16_t mba_max[6] = { 47, 98, 395, 1583, 6335, 9215 };
+    static const uint8_t mba_length[7] = { 6, 7, 9, 11, 13, 14, 14 };
+    int mb_num = c->mb_w * c->mb_h, i;
+
+    for (i = 0; i < 6; i++)
+        if (mb_num - 1 <= (int)mba_max[i])
+            break;
+    return (int)br_bits(b, mba_length[i]);
+}
+
+static int parse_picture_header(h263_ctx *c, bitreader *b, h263_picture *p)
+{
+    int format, width = 0, height = 0, ufep = 0;
+
+    p->pict_type = 0;
+    p->quant = 0;
+    p->no_rounding = 0;
+    p->mb_start = 0;
+
+    if (br_bits(b, 22) != 0x20) return -1;         /* picture start code */
+    br_skip(b, 8);                                 /* temporal reference */
+    if (br_bit(b) != 1) return -1;                 /* PTYPE marker       */
+    if (br_bit(b) != 0) return -1;                 /* H.263 id           */
+    br_skip(b, 3);            /* split screen, document camera, freeze   */
+    format = (int)br_bits(b, 3);
+    if (br_overrun(b)) return -1;
+
+    if (format != 7) {
+        /* H.263 version 1: the whole picture type sits in PTYPE. */
+        if (format < 1 || format > 5) return -1;
+        width = std_format[format][0];
+        height = std_format[format][1];
+        c->custom_pcf = c->umv = c->slice_structured = 0;
+        p->pict_type = (int)br_bit(b);
+        c->long_vectors = (int)br_bit(b);
+        if (br_bit(b)) return unsupported(FEAT_SAC);
+        if (br_bit(b)) return unsupported(FEAT_AP);
+        if (br_bit(b)) return unsupported(FEAT_PB);
+        p->quant = (int)br_bits(b, 5);
+        if (br_bit(b)) return unsupported(FEAT_CPM);
+    } else {
+        /* H.263 version 2: PLUSPTYPE.  UFEP 0 repeats only MPPTYPE and
+         * inherits the annex flags and the picture size already in force. */
+        c->long_vectors = 0;
+        ufep = (int)br_bits(b, 3);
+        if (ufep == 1) {
+            format = (int)br_bits(b, 3);
+            c->custom_pcf = (int)br_bit(b);
+            c->umv = (int)br_bit(b);
+            if (br_bit(b)) return unsupported(FEAT_SAC);
+            if (br_bit(b)) return unsupported(FEAT_AP);
+            if (br_bit(b)) return unsupported(FEAT_AIC);
+            if (br_bit(b)) return unsupported(FEAT_DF);
+            c->slice_structured = (int)br_bit(b);
+            if (br_bit(b)) return unsupported(FEAT_RPS);
+            if (br_bit(b)) return unsupported(FEAT_ISD);
+            if (br_bit(b)) return unsupported(FEAT_AIV);
+            if (br_bit(b)) return unsupported(FEAT_MQ);
+            if (!br_bit(b)) return -1;             /* OPPTYPE marker */
+            br_skip(b, 3);                         /* reserved       */
+        } else if (ufep != 0) {
+            return -1;
+        }
+
+        switch ((int)br_bits(b, 3)) {              /* MPPTYPE picture type */
+        case 0: p->pict_type = 0; break;
+        case 1: p->pict_type = 1; break;
+        case 2: return unsupported(FEAT_PB);       /* improved PB */
+        case 3: return unsupported(FEAT_BPIC);
+        default: return -1;                        /* EI/EP scalability */
+        }
+        if (br_bits(b, 2)) return unsupported(FEAT_RESAMPLE);  /* RPR, RRU */
+        p->no_rounding = (int)br_bit(b);
+        br_skip(b, 2);                             /* reserved        */
+        if (!br_bit(b)) return -1;                 /* MPPTYPE marker  */
+        if (br_bit(b)) return unsupported(FEAT_CPM);
+
+        if (ufep) {
+            if (format == 6) {                     /* CPFMT */
+                int par = (int)br_bits(b, 4);
+                width = ((int)br_bits(b, 9) + 1) * 4;
+                if (!br_bit(b)) return -1;         /* CPFMT marker */
+                height = (int)br_bits(b, 9) * 4;
+                if (par == 15) br_skip(b, 16);     /* EPAR */
+            } else if (format >= 1 && format <= 5) {
+                width = std_format[format][0];
+                height = std_format[format][1];
+            } else {
+                return -1;
+            }
+            if (c->custom_pcf) br_skip(b, 8);      /* CPCFC */
+        }
+        if (c->custom_pcf) br_skip(b, 2);          /* ETR */
+        if (ufep) {
+            if (c->umv && br_bit(b) == 0) br_skip(b, 1);   /* UUI */
+            if (c->slice_structured) {             /* SSS */
+                if (br_bit(b)) return unsupported(FEAT_RECT_SLICE);
+                if (br_bit(b)) return unsupported(FEAT_ASO);
+            }
+        }
+        p->quant = (int)br_bits(b, 5);
+    }
+
+    /* The frame buffers are sized when the decoder is opened, so a picture
+     * that disagrees has to be refused rather than overrun them. */
+    if (width && (width != c->w || height != c->h)) {
+        static int reported;
+        if (!reported) {
+            reported = 1;
+            fprintf(stderr, "H.263: picture is %dx%d, decoder was opened for "
+                    "%dx%d\n", width, height, c->w, c->h);
+        }
+        return -2;
+    }
+    if (p->quant < 1 || p->quant > 31 || br_overrun(b)) return -1;
+
+    while (br_bit(b)) {                            /* PEI / PSPARE */
+        br_skip(b, 8);
+        if (br_overrun(b)) return -1;
+    }
+    if (c->slice_structured) {
+        if (!br_bit(b)) return -1;                 /* SEPB1 */
+        p->mb_start = decode_mba(c, b);
+        if (!br_bit(b)) return -1;                 /* SEPB2 */
+    }
+    return br_overrun(b) ? -1 : 0;
+}
+
+/* GOB header, or the slice header that replaces it in slice-structured mode.
+ * Both are introduced by 16 zero bits, which may be preceded by up to seven
+ * zero stuffing bits, and terminated by the first one bit. */
+static int decode_gob_header(h263_ctx *c, bitreader *b, int *quant, int *mb_pos)
+{
+    int q, pos, left;
+
+    if (br_peek(b, 16) != 0) return -1;
+    br_skip(b, 16);
+    left = br_left(b);
+    if (left > 32) left = 32;                      /* GSTUF is under a byte */
+    for (; left > 13; left--)
+        if (br_bit(b))
+            break;
+    if (left <= 13) return -1;
+
+    if (c->slice_structured) {
+        if (!br_bit(b)) return -1;                 /* SEPB1  */
+        pos = decode_mba(c, b);
+        if (c->mb_w * c->mb_h > 1583 && !br_bit(b)) return -1;   /* SEPB2 */
+        q = (int)br_bits(b, 5);                    /* SQUANT */
+        if (!br_bit(b)) return -1;                 /* SEPB3  */
+        br_skip(b, 2);                             /* GFID   */
+    } else {
+        int gn = (int)br_bits(b, 5);               /* GN     */
+        br_skip(b, 2);                             /* GFID   */
+        q = (int)br_bits(b, 5);                    /* GQUANT */
+        if (gn < 1) return -1;
+        pos = gn * c->gob_index * c->mb_w;
+    }
+    if (q < 1 || q > 31 || br_overrun(b)) return -1;
+    *quant = q;
+    *mb_pos = pos;
+    return 0;
+}
+
+/* ---- picture decode -------------------------------------------------- */
+static int decode_macroblock(h263_ctx *c, bitreader *b, const h263_picture *p,
+                             int mbx, int mby, int first_line, int resync_x,
+                             int *quant)
+{
+    mvblk *mv = &c->mv[mby * c->mb_w + mbx];
+    int type, cbpc, cbpy, cbp, intra, block, q = *quant;
+    int mvx = 0, mvy = 0;
+
+    if (p->pict_type && br_bit(b)) {               /* COD: skipped */
+        if (reconstruct_inter_mb(c, b, mbx, mby, 0, q, 0, 0, !p->no_rounding))
+            return -1;
+        mv->x = mv->y = 0;
+        return 0;
+    }
+    do {
+        if (match_mcbpc(b, !p->pict_type, &type, &cbpc))
+            return -1;
+    } while (type == 5);                           /* macroblock stuffing */
+
+    intra = type >= 3;
+    if (type == 2) return unsupported(FEAT_4MV);
+    cbpy = match_cbpy(b);
+    if (cbpy < 0) return -1;
+    if (!intra) cbpy ^= 15;
+    cbp = (cbpy << 2) | cbpc;
+    if (type == 1 || type == 4) {                  /* DQUANT */
+        static const int dq[4] = { -1, -2, 1, 2 };
+        q += dq[br_bits(b, 2)];
+        if (q < 1) q = 1;
+        if (q > 31) q = 31;
+        *quant = q;
+    }
+
+    if (intra) {
+        for (block = 0; block < 6; block++)
+            if (decode_intra_block(c, b, block, mbx, mby,
+                                   (cbp >> (5 - block)) & 1, q))
+                return -1;
+    } else {
+        int px, py;
+        motion_predict(c, mbx, mby, first_line, resync_x, &px, &py);
+        mvx = decode_motion(b, px, c);
+        mvy = decode_motion(b, py, c);
+        if (mvx >= MV_ERROR || mvy >= MV_ERROR) return -1;
+        if (c->umv && mvx - px == 1 && mvy - py == 1)
+            br_skip(b, 1);                         /* PSC emulation stuffing */
+        if (reconstruct_inter_mb(c, b, mbx, mby, cbp, q, mvx, mvy,
+                                 !p->no_rounding))
+            return -1;
+    }
+    mv->x = (int16_t)mvx;
+    mv->y = (int16_t)mvy;
+    return 0;
 }
 
 static int decode_picture(h263_ctx *c, bitreader *b)
 {
-    int sf, pictype, q, mbx, mby, have_ref;
-    unsigned ptype;
-    static unsigned reported;
-    if (br_bits(b, 22) != 0x20) return -1;
-    (void)br_bits(b, 8);                 /* temporal reference */
-    ptype = br_bits(b, 13);
-    if (br_overrun(b) || ((ptype >> 12) & 1) != 1 || ((ptype >> 11) & 1)) return -1;
-    sf = (ptype >> 5) & 7;
-    pictype = (ptype >> 4) & 1;          /* zero intra, one inter */
-    if (sf == 7) {
-        fprintf(stderr, "H.263+: unsupported feature extended PTYPE\n");
-        return -2;
-    }
-    if (!((sf == 2 && c->w == 176 && c->h == 144) ||
-          (sf == 3 && c->w == 352 && c->h == 288))) return -1;
-    {
-        int flags = ptype & 15, i;
-        for (i=0; i<4; i++) if ((flags & (8 >> i)) && !(reported & (1u<<i))) {
-            fprintf(stderr, "H.263+: unsupported feature %s\n", feature_name(i));
-            reported |= 1u << i;
+    h263_picture p;
+    int mb_total = c->mb_w * c->mb_h;
+    int mb_index, resync_x, resync_y, first_line, quant, rc;
+
+    rc = parse_picture_header(c, b, &p);
+    if (rc)
+        return rc;
+    if (p.pict_type && !c->have_ref)
+        return -3;
+    if (p.mb_start < 0 || p.mb_start >= mb_total)
+        return -1;
+
+    memset(c->mv, 0, (size_t)mb_total * sizeof(*c->mv));
+    quant = p.quant;
+    mb_index = p.mb_start;
+    resync_x = mb_index % c->mb_w;
+    resync_y = mb_index / c->mb_w;
+    first_line = 1;
+
+    while (mb_index < mb_total) {
+        int mbx = mb_index % c->mb_w, mby = mb_index / c->mb_w;
+
+        /* Macroblock data can never present 16 zero bits, so they can only be
+         * the GOB/slice header that starts the next segment. */
+        if (mb_index != p.mb_start && br_left(b) >= 16 && br_peek(b, 16) == 0) {
+            int pos;
+            if (decode_gob_header(c, b, &quant, &pos))
+                return -1;
+            if (pos != mb_index)                   /* segments are contiguous */
+                return -1;
+            resync_x = mbx;
+            resync_y = mby;
+            first_line = 1;
         }
-        if (flags) return -2;
-    }
-    q=(int)br_bits(b,5);
-    if (!q || br_bit(b)) return -1;      /* CPM is not baseline */
-    while (br_bit(b)) { if (br_bits(b,8)==0) return -1; } /* PEI/PSUPP */
-    have_ref = c->mv[0].slice != 0;
-    if (pictype && !have_ref) return -3;
-    memset(c->mv,0,(size_t)c->mb_w*c->mb_h*sizeof(*c->mv));
-    for (mby=0;mby<c->mb_h;mby++) {
-      /* A baseline CIF picture normally starts each macroblock row with a
-       * GOB header; QCIF groups three rows per GOB.  Accept a header only at
-       * a row boundary, never by scanning past malformed macroblock data. */
-      if (mby && br_peek(b,17) == 1) {
-          int gn;
-          br_skip(b,17); gn=(int)br_bits(b,5); (void)br_bits(b,2);
-          q=(int)br_bits(b,5);
-          if (!gn || !q || br_overrun(b)) return -1;
-      }
-      for (mbx=0;mbx<c->mb_w;mbx++) {
-        int type, cbpc, cbpy, cbp, block, intra, mvx=0,mvy=0;
-        mvblk *mv=&c->mv[mby*c->mb_w+mbx];
-        if (pictype && br_bit(b)) {
-            if (reconstruct_inter_mb(c,b,mbx,mby,0,q,0,0)) return -1;
-            mv->valid=mv->slice=1; continue;
-        }
-        if (match_mcbpc(b,!pictype,&type,&cbpc)) return -1;
-        intra = type >= 3;
-        if (type == 2) return -2; /* four-vector/advanced prediction */
-        cbpy=match_cbpy(b); if (cbpy<0) return -1;
-        if (!intra) cbpy ^= 15;
-        cbp=(cbpy<<2)|cbpc;
-        if (type==1 || type==4) {
-            static const int dq[4]={-1,-2,1,2}; q += dq[br_bits(b,2)];
-            if (q < 1) q = 1;
-            if (q > 31) q = 31;
-        }
-        if (intra) {
-            for(block=0;block<6;block++)
-                if(decode_intra_block(c,b,block,mbx,mby,(cbp>>(5-block))&1,q)) return -1;
-        } else {
-            int px,py; motion_predict(c,mbx,mby,1,&px,&py);
-            mvx=decode_motion(b,px); mvy=decode_motion(b,py);
-            if(mvx==999||mvy==999) return -1;
-            if(reconstruct_inter_mb(c,b,mbx,mby,cbp,q,mvx,mvy)) return -1;
-        }
-        mv->x=mvx; mv->y=mvy; mv->valid=mv->slice=1;
-        if(br_overrun(b)) return -1;
-      }
+        if (mbx == resync_x && mby == resync_y + 1)
+            first_line = 0;
+
+        rc = decode_macroblock(c, b, &p, mbx, mby, first_line, resync_x, &quant);
+        if (rc)
+            return rc;
+        if (br_overrun(b))
+            return -1;
+        mb_index++;
     }
     return 0;
 }
@@ -825,6 +945,7 @@ static mr_status h263_open(mr_decoder *dec)
     c->mb_w = (c->w + 15) >> 4; c->mb_h = (c->h + 15) >> 4;
     c->cw = c->mb_w * 16; c->ch = c->mb_h * 16;
     c->ystride = c->cw; c->cstride = c->cw >> 1;
+    c->gob_index = c->h <= 400 ? 1 : (c->h <= 800 ? 2 : 4);
     for (i = 0; i < 3; i++) {
         size_t size = i == 0 ? (size_t)c->ystride * c->ch
                              : (size_t)c->cstride * (c->ch >> 1);
@@ -836,12 +957,8 @@ static mr_status h263_open(mr_decoder *dec)
         memset(c->ref[i], i ? 128 : 16, size);
     }
     c->rgb = (uint8_t *)malloc((size_t)c->w * c->h * 3);
-    c->pl = (predblk *)calloc((size_t)c->mb_w * 2 * c->mb_h * 2,
-                              sizeof(*c->pl));
-    c->pcb = (predblk *)calloc((size_t)c->mb_w * c->mb_h, sizeof(*c->pcb));
-    c->pcr = (predblk *)calloc((size_t)c->mb_w * c->mb_h, sizeof(*c->pcr));
     c->mv = (mvblk *)calloc((size_t)c->mb_w * c->mb_h, sizeof(*c->mv));
-    if (!c->rgb || !c->pl || !c->pcb || !c->pcr || !c->mv)
+    if (!c->rgb || !c->mv)
         goto oom;
 
     dec->priv = c;
@@ -856,7 +973,7 @@ oom:
         free(c->cur[i]);
         free(c->ref[i]);
     }
-    free(c->rgb); free(c->pl); free(c->pcb); free(c->pcr); free(c->mv);
+    free(c->rgb); free(c->mv);
     free(c);
     return MR_ENOMEM;
 }
@@ -878,6 +995,7 @@ static mr_status h263_decode(mr_decoder *dec, const uint8_t *data, uint32_t len)
         c->ref[i] = c->cur[i];
         c->cur[i] = tmp;
     }
+    c->have_ref = 1;
     dec->frame.dirty_y0 = 0;
     dec->frame.dirty_y1 = c->h;
     return MR_OK;
@@ -893,17 +1011,19 @@ static void h263_close(mr_decoder *dec)
         free(c->cur[i]);
         free(c->ref[i]);
     }
-    free(c->rgb); free(c->pl); free(c->pcb); free(c->pcr); free(c->mv);
+    free(c->rgb); free(c->mv);
     free(c);
     dec->priv = NULL;
 }
 
 const mr_codec mr_codec_h263 = {
-    "H.263 baseline",
+    "H.263",
     { MR_FOURCC('H','2','6','3'), MR_FOURCC('h','2','6','3'),
       MR_FOURCC('I','2','6','3'), MR_FOURCC('i','2','6','3'),
       MR_FOURCC('U','2','6','3'), MR_FOURCC('u','2','6','3'),
-      MR_FOURCC('T','2','6','3'), MR_FOURCC('X','2','6','3') },
+      MR_FOURCC('T','2','6','3'), MR_FOURCC('X','2','6','3'),
+      /* QuickTime/3GP sample description for the same bitstream. */
+      MR_FOURCC('s','2','6','3'), MR_FOURCC('S','2','6','3') },
     h263_open,
     h263_decode,
     h263_close,

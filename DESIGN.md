@@ -212,14 +212,20 @@ mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
 
 The H.263 implementation is a separate codec plugin (`mr_h263.c`); AVI and MOV
 continue to pass packets and stream metadata through the generic codec API.
-Its baseline syntax and reconstruction path are isolated from feature checks so
-future H.263+ annex work can be added one tool at a time. It currently accepts
-QCIF/CIF baseline and rejects UMV, SAC, advanced prediction, PB modes and
-extended PTYPE instead of silently approximating them. Decoder reset reopens the
-plugin and consequently discards the reference frame.
+Its picture-layer syntax and reconstruction path are isolated from feature
+checks so future H.263+ annex work can be added one tool at a time. It accepts
+both picture headers (version 1 PTYPE and version 2 PLUSPTYPE), the standard
+and custom picture formats, the custom picture clock, GOB and slice-structured
+segment headers, unrestricted motion vectors and the per-picture rounding type,
+and rejects the annexes that would change reconstruction - SAC, advanced
+prediction, advanced intra coding, deblocking, PB/B pictures, modified
+quantisation, the alternative inter VLC and the rest listed in README.md -
+instead of silently approximating them. Decoder reset reopens the plugin and
+consequently discards the reference frame.
 
-Compatibility roadmap: H.263 baseline is supported; H.263+ annexes are partial
-and explicitly rejected as documented in README.md; H.261 is not yet supported;
+Compatibility roadmap: H.263 version 1 and the H.263+ picture syntax are
+supported; the remaining H.263+ annexes are explicitly rejected as documented
+in README.md; H.261 is not yet supported;
 WMV1/WMV2 are supported (see above; WMV2's IntraX8 mode is explicitly
 rejected); Indeo 3, Sorenson Video 1, and VP3/Theora are planned.
 # IPTV directory
