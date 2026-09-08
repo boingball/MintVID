@@ -86,6 +86,9 @@
   direct indexed output removes both the RGB traffic and the per-frame dither
   loop while remaining byte-identical to it. RTG, HAM and resized modes retain
   the established RGB24 path.
+- Local-file playback now uses an explicit 64 KiB source read-ahead buffer, so
+  interleaved AVI chunk headers, Cinepak frames and PCM packets are collected
+  into fewer AmigaDOS reads instead of repeatedly stalling the playback loop.
 - Both shared YUV420-to-RGB converters now walk the picture a row *pair* at a
   time. 4:2:0 gives one chroma sample per 2x2 luma quad, so the three
   chroma-derived addends are shared by four output pixels; stepping single
