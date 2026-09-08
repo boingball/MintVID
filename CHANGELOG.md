@@ -29,6 +29,11 @@
 
 ### Fixed
 
+- Local playback now bounds the audio cushion by the decoded-video queue's
+  time span. This prevents fast low-resolution codecs such as Cinepak from
+  filling the default 16-frame queue, discarding subsequent pictures while
+  buffering 2.5 seconds of audio, and presenting visible gaps. At 25 fps the
+  default cushion is now 560 ms.
 - AC-3 played 6 dB hot on every target, the Amiga included: `feed_ac3()` asks
   liba52 for `LEVEL(0.25)` output, which puts a full-scale sample at `1<<28`,
   but shifted it down by 12 rather than 13. Anything but quiet material spent
