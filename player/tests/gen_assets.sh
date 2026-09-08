@@ -114,10 +114,29 @@ ffmpeg -v error -f lavfi -i testsrc2=size=68x52:rate=25:duration=1 \
 ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=1 \
     -c:v h263p -umv 1 -ps 200 -qscale:v 6 test_h263p_umv.avi -y
 
+# Cinepak large enough that the encoder splits the frame into several strips
+# (the 128x96 clip above is a single strip). Multi-strip frames are where the
+# strip header's 24-bit size and the per-strip codebooks actually matter, and
+# an encoder emitting an odd-sized strip desynchronises everything below it.
+ffmpeg -v error -f lavfi -i testsrc2=size=320x240:rate=12:duration=2 \
+    -c:v cinepak test_cinepak_strips.avi -y
+# Microsoft Video 1 (MSVC/CRAM), RGB555. ffmpeg's encoder only emits the
+# 16-bit variant, so the 8-bit paletted block layouts come from the generator
+# below instead - but both are checked against ffmpeg's one decoder.
+ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \
+    -c:v msvideo1 test_msvideo1.avi -y
+python3 ../make_msvideo1_pal8.py test_msvideo1_pal8.avi
+
 # Ground-truth frames, decoded by ffmpeg's own Cinepak decoder (per container,
 # since ffmpeg re-encodes the Cinepak stream separately for each).
 rm -rf ref_cinepak && mkdir -p ref_cinepak
 ffmpeg -v error -i test_cinepak.avi ref_cinepak/f%03d.ppm -y
+rm -rf ref_cinepak_strips && mkdir -p ref_cinepak_strips
+ffmpeg -v error -i test_cinepak_strips.avi ref_cinepak_strips/f%03d.ppm -y
+rm -rf ref_msvideo1 && mkdir -p ref_msvideo1
+ffmpeg -v error -i test_msvideo1.avi ref_msvideo1/f%03d.ppm -y
+rm -rf ref_msvideo1_pal8 && mkdir -p ref_msvideo1_pal8
+ffmpeg -v error -i test_msvideo1_pal8.avi ref_msvideo1_pal8/f%03d.ppm -y
 rm -rf ref_mov && mkdir -p ref_mov
 ffmpeg -v error -i test_cinepak.mov ref_mov/f%03d.ppm -y
 rm -rf ref_mjpeg && mkdir -p ref_mjpeg

@@ -250,6 +250,7 @@ run "$BUILD/mr_c2p_check.m68k"
 run "$BUILD/mr_ham_check.m68k"
 run "$BUILD/mr_dither_check.m68k"
 run "$BUILD/mr_cinepak_indexed_check.m68k" tests/assets/test_cinepak.avi
+run "$BUILD/mr_cinepak_indexed_check.m68k" tests/assets/test_cinepak_strips.avi
 run "$BUILD/mr_yuv_dither_check.m68k"
 run "$BUILD/mr_yuv_ham_check.m68k"
 run "$BUILD/mr_mpeg1_blockset_check.m68k"
@@ -280,6 +281,17 @@ run "$BUILD/mr_decode.m68k" tests/assets/test_h264_aac.ts \
 echo "[Cinepak AVI, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_cinepak.avi \
     --check tests/assets/ref_cinepak
+echo "[Cinepak AVI multi-strip, real m68k/big-endian]"
+run "$BUILD/mr_decode.m68k" tests/assets/test_cinepak_strips.avi \
+    --check tests/assets/ref_cinepak_strips
+# MSVideo1 reads its colour words little-endian out of a big-endian build and
+# indexes an 8-bit palette, so both variants belong on the real m68k target.
+echo "[Microsoft Video 1 RGB555, real m68k/big-endian]"
+run "$BUILD/mr_decode.m68k" tests/assets/test_msvideo1.avi \
+    --check tests/assets/ref_msvideo1
+echo "[Microsoft Video 1 8-bit paletted, real m68k/big-endian]"
+run "$BUILD/mr_decode.m68k" tests/assets/test_msvideo1_pal8.avi \
+    --check tests/assets/ref_msvideo1_pal8
 echo "[MPEG-4 Part 2 Simple Profile, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_mp4v_sp.avi \
     --check tests/assets/ref_mp4v_sp

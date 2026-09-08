@@ -289,6 +289,7 @@ int main(int argc, char **argv)
 
     int frame = 0, bad = 0;
     long worst_mae = 0;   /* MAE * 1000 */
+    int  checked = 0;     /* frames actually compared against a reference */
     unsigned long audio_bytes = 0, audio_pkts = 0;
 
     /* --dirty: verify the decoder's reported changed-row span actually covers
@@ -368,6 +369,7 @@ decoded_output:
             int mxe = 0; long mae = check_ppm(path, &dec.frame, &mxe);
             if (mae < 0) { printf("  frame %3d: no reference\n", frame); }
             else {
+                checked++;
                 if (mae > worst_mae) worst_mae = mae;
                 if (mae > 6000) { bad++;
                     printf("  frame %3d: MAE=%ld.%03ld maxerr=%d  <-- high\n",
@@ -429,7 +431,8 @@ drain_decoded_output:
             snprintf(path, sizeof path, "%s/f%03d.ppm", dir, frame);
             int mxe = 0; long mae = check_ppm(path, &dec.frame, &mxe);
             if (mae < 0) printf("  frame %3d: no reference\n", frame);
-            else { if (mae > worst_mae) worst_mae = mae;
+            else { checked++;
+                   if (mae > worst_mae) worst_mae = mae;
                    if (mae > 6000) { bad++;
                        printf("  frame %3d: MAE=%ld.%03ld maxerr=%d  <-- high\n",
                               frame, mae / 1000, mae % 1000, mxe); } }
@@ -457,10 +460,16 @@ drain_decoded_output:
     if (audio_pkts)
         printf("audio: %lu packets, %lu bytes\n", audio_pkts, audio_bytes);
     if (mode && !strcmp(mode, "--check")) {
-        printf("worst per-frame MAE=%ld.%03ld, frames over threshold=%d\n",
-               worst_mae / 1000, worst_mae % 1000, bad);
+        printf("worst per-frame MAE=%ld.%03ld, frames checked=%d, "
+               "frames over threshold=%d\n",
+               worst_mae / 1000, worst_mae % 1000, checked, bad);
+        /* Comparing nothing is a failure, not a pass: a decoder that gives up
+         * on its first frame would otherwise report "0 over threshold" and
+         * exit 0, which is how a completely broken decoder stayed green. */
+        if (!checked)
+            printf("  no frame was compared against a reference\n");
         mr_decoder_close(&dec); mr_demux_close(dx); free(buf);
-        return bad ? 1 : 0;
+        return (bad || !checked) ? 1 : 0;
     }
     mr_decoder_close(&dec); mr_demux_close(dx); free(buf);
     return 0;

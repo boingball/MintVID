@@ -10,26 +10,112 @@ static mr_status start(mr_decoder*d,const mr_codec*c,int w,int h,const uint8_t*c
 static int eq(const uint8_t *p,int stride,int x,int y,int r,int g,int b)
 {p+=y*stride+x*3;return p[0]==r&&p[1]==g&&p[2]==b;}
 
+/* MSVideo1 is bottom-up in both dimensions: the bottom row of 4x4 blocks is
+ * coded first, and inside a block the bottom pixel row comes first. The
+ * per-pixel selector bit is also inverted - a *set* bit picks the
+ * lower-numbered colour of its pair. These vectors pin both, plus the two
+ * different ways an 8-colour block is signalled in 8- and 16-bit mode. */
 static void msvideo(void)
 {
- uint8_t cfg16[]={16,0},cfg8[2+768]={8,0};mr_decoder d;mr_status s;int i;
- const uint8_t solid[]={0xe0,0x83}; /* RGB555 green, high bit denotes solid */
- const uint8_t two[]={0x55,0x55,0x00,0x7c,0x1f,0x00};
- const uint8_t eight[]={0x1b,0x1b,0x00,0x7c,0x1f,0x80,0xe0,0x03,0x00,0x7c,0x1f,0x00,0xe0,0x03,0xff,0x7f,0,0};
- const uint8_t skip[]={1,0x84};
- cfg8[2+1*3]=255;cfg8[2+2*3+1]=255;cfg8[2+3*3+2]=255;
+ uint8_t cfg16[]={16,0},cfg8[2+768]={8,0};mr_decoder d;mr_status s;int x,y;
+ const uint8_t solid[]={0xe0,0x83};        /* 1-colour RGB555 green         */
+ const uint8_t solid_red[]={0x00,0xfc};    /* 1-colour RGB555 red           */
+ const uint8_t skip[]={1,0x84};            /* skip run covering one block   */
+ /* 2-colour. flags=0x000f: the four set bits are the first pixel row coded,
+  * i.e. the block's *bottom* row, and being set they select colours[0]. */
+ const uint8_t two[]={0x0f,0x00, 0x00,0x7c, 0x1f,0x00};
+ /* 16-bit 8-colour, flagged by bit 15 of the *first* colour word rather than
+  * by the header byte. flags=0, so every pixel takes its quadrant's odd
+  * colour: green / white on the bottom half, blue / red on the top half. */
+ const uint8_t eight16[]={0x00,0x00, 0x00,0xfc, 0xe0,0x03, 0x1f,0x00,
+                          0xff,0x7f, 0x00,0x7c, 0x1f,0x00, 0xe0,0x03,
+                          0x00,0x7c};
+ /* 8-bit mode signals 8 colours with a header byte >= 0x90 instead, and this
+  * block is the case that used to be decoded as a flat one - leaving its eight
+  * palette bytes in the stream and desynchronising everything after it. */
+ const uint8_t eight8[]={0x00,0x90, 0,1,0,2,0,3,0,1};
+ const uint8_t one8[]={0x01,0x80};             /* 8-bit flat, palette red   */
+ const uint8_t two8[]={0x0f,0x00, 0x01,0x03};  /* 8-bit 2-colour red/blue   */
+ cfg8[2+1*3]=255;cfg8[2+2*3+1]=255;cfg8[2+3*3+2]=255;  /* 1=R 2=G 3=B       */
+
+ /* --- 16-bit, single 4x4 block --------------------------------------- */
  CHECK(start(&d,&mr_codec_msvideo1,4,4,cfg16,sizeof(cfg16))==MR_OK);
- s=d.codec->decode(&d,solid,sizeof(solid));CHECK(s==MR_OK);CHECK(eq(d.frame.data,d.frame.stride,2,2,0,255,0));
- s=d.codec->decode(&d,skip,sizeof(skip));CHECK(s==MR_OK);CHECK(eq(d.frame.data,d.frame.stride,2,2,0,255,0));CHECK(d.frame.dirty_y1<=d.frame.dirty_y0);
- s=d.codec->decode(&d,two,sizeof(two));CHECK(s==MR_OK);CHECK(eq(d.frame.data,d.frame.stride,0,0,0,0,255));CHECK(eq(d.frame.data,d.frame.stride,1,0,255,0,0));
- s=d.codec->decode(&d,eight,sizeof(eight));CHECK(s==MR_OK);
- s=d.codec->decode(&d,two,5);CHECK(s==MR_EFORMAT);d.codec->close(&d);
- CHECK(start(&d,&mr_codec_msvideo1,5,3,cfg16,sizeof(cfg16))==MR_OK);
- {const uint8_t edge[]={0x00,0xfc,0x1f,0x80};s=d.codec->decode(&d,edge,sizeof(edge));CHECK(s==MR_OK);CHECK(eq(d.frame.data,d.frame.stride,4,2,0,0,255));}
+ s=d.codec->decode(&d,solid,sizeof(solid));CHECK(s==MR_OK);
+ for(y=0;y<4;y++)for(x=0;x<4;x++)CHECK(eq(d.frame.data,d.frame.stride,x,y,0,255,0));
+
+ /* A skip run leaves the previous frame in place and reports no dirty rows. */
+ s=d.codec->decode(&d,skip,sizeof(skip));CHECK(s==MR_OK);
+ CHECK(eq(d.frame.data,d.frame.stride,2,2,0,255,0));
+ CHECK(d.frame.dirty_y1<=d.frame.dirty_y0);
+
+ /* Set bits land on the bottom row and select colours[0] (red). */
+ s=d.codec->decode(&d,two,sizeof(two));CHECK(s==MR_OK);
+ for(x=0;x<4;x++){
+   CHECK(eq(d.frame.data,d.frame.stride,x,3,255,0,0));
+   for(y=0;y<3;y++)CHECK(eq(d.frame.data,d.frame.stride,x,y,0,0,255));
+ }
+
+ s=d.codec->decode(&d,eight16,sizeof(eight16));CHECK(s==MR_OK);
+ for(y=2;y<4;y++){
+   CHECK(eq(d.frame.data,d.frame.stride,0,y,0,255,0));      /* cols[1] green */
+   CHECK(eq(d.frame.data,d.frame.stride,1,y,0,255,0));
+   CHECK(eq(d.frame.data,d.frame.stride,2,y,255,255,255));  /* cols[3] white */
+   CHECK(eq(d.frame.data,d.frame.stride,3,y,255,255,255));
+ }
+ for(y=0;y<2;y++){
+   CHECK(eq(d.frame.data,d.frame.stride,0,y,0,0,255));      /* cols[5] blue  */
+   CHECK(eq(d.frame.data,d.frame.stride,1,y,0,0,255));
+   CHECK(eq(d.frame.data,d.frame.stride,2,y,255,0,0));      /* cols[7] red   */
+   CHECK(eq(d.frame.data,d.frame.stride,3,y,255,0,0));
+ }
+
+ /* A block truncated by a short packet keeps what was already decoded rather
+  * than failing the whole stream, matching the reference decoder. */
+ s=d.codec->decode(&d,two,5);CHECK(s==MR_OK);
+ CHECK(d.frame.dirty_y1<=d.frame.dirty_y0);
  d.codec->close(&d);
+
+ /* --- block order: the first coded block is the frame's bottom one ---- */
+ CHECK(start(&d,&mr_codec_msvideo1,4,8,cfg16,sizeof(cfg16))==MR_OK);
+ {const uint8_t two_blocks[]={0xe0,0x83, 0x00,0xfc};
+  s=d.codec->decode(&d,two_blocks,sizeof(two_blocks));CHECK(s==MR_OK);
+  for(y=4;y<8;y++)CHECK(eq(d.frame.data,d.frame.stride,0,y,0,255,0));
+  for(y=0;y<4;y++)CHECK(eq(d.frame.data,d.frame.stride,0,y,255,0,0));}
+ d.codec->close(&d);
+
+ /* --- a partial block at the right edge is not coded, and not written -- */
+ CHECK(start(&d,&mr_codec_msvideo1,6,4,cfg16,sizeof(cfg16))==MR_OK);
+ s=d.codec->decode(&d,solid_red,sizeof(solid_red));CHECK(s==MR_OK);
+ CHECK(eq(d.frame.data,d.frame.stride,3,0,255,0,0));
+ CHECK(eq(d.frame.data,d.frame.stride,4,0,0,0,0));
+ CHECK(eq(d.frame.data,d.frame.stride,5,0,0,0,0));
+ d.codec->close(&d);
+
+ /* --- 8-bit paletted ------------------------------------------------- */
  CHECK(start(&d,&mr_codec_msvideo1,4,4,cfg8,sizeof(cfg8))==MR_OK);
- {const uint8_t p[]={0,0,1,2};s=d.codec->decode(&d,p,sizeof(p));CHECK(s==MR_OK);CHECK(eq(d.frame.data,d.frame.stride,0,0,255,0,0));}
- d.codec->close(&d);(void)i;
+ s=d.codec->decode(&d,one8,sizeof(one8));CHECK(s==MR_OK);
+ CHECK(eq(d.frame.data,d.frame.stride,0,0,255,0,0));
+ CHECK(eq(d.frame.data,d.frame.stride,3,3,255,0,0));
+ s=d.codec->decode(&d,two8,sizeof(two8));CHECK(s==MR_OK);
+ for(x=0;x<4;x++){
+   CHECK(eq(d.frame.data,d.frame.stride,x,3,255,0,0));
+   for(y=0;y<3;y++)CHECK(eq(d.frame.data,d.frame.stride,x,y,0,0,255));
+ }
+ s=d.codec->decode(&d,eight8,sizeof(eight8));CHECK(s==MR_OK);
+ for(y=2;y<4;y++){
+   CHECK(eq(d.frame.data,d.frame.stride,0,y,255,0,0));      /* cols[1]=1 R  */
+   CHECK(eq(d.frame.data,d.frame.stride,2,y,0,255,0));      /* cols[3]=2 G  */
+ }
+ CHECK(eq(d.frame.data,d.frame.stride,0,1,0,0,255));        /* cols[5]=3 B  */
+ CHECK(eq(d.frame.data,d.frame.stride,2,1,255,0,0));        /* cols[7]=1 R  */
+ CHECK(eq(d.frame.data,d.frame.stride,0,0,0,0,0));          /* cols[4]=0 K  */
+ CHECK(eq(d.frame.data,d.frame.stride,1,0,0,0,255));        /* cols[5]=3 B  */
+ CHECK(eq(d.frame.data,d.frame.stride,2,0,255,0,0));        /* cols[7]=1 R  */
+ CHECK(eq(d.frame.data,d.frame.stride,3,0,0,0,0));          /* cols[6]=0 K  */
+ d.codec->close(&d);
+
+ /* Frames smaller than one block carry no codable data at all. */
+ CHECK(start(&d,&mr_codec_msvideo1,4,3,cfg16,sizeof(cfg16))==MR_EUNSUPPORTED);
 }
 static void rle(void)
 {
