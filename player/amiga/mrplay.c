@@ -1287,7 +1287,8 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     amiga_display *disp;
     mr_audio      *audio = NULL;
     unsigned       sr;
-    int            w, h, frames = 0, paused = 0, quit = 0, fast_forward = 0;
+    int            w, h, frames = 0, decoded_frames = 0;
+    int            paused = 0, quit = 0, fast_forward = 0;
     int            channels = 2;                 /* 1 under --audio-mono      */
     unsigned long  period, clock_base = 0;
     long           ntick;
@@ -1295,6 +1296,8 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     clock_t        t_dec = 0, t_show = 0;
     mr_frame       fr;
     int64_t        pts_us;
+    int64_t        pts_base_us = 0;
+    int            have_pts_base = 0;
     unsigned       fps_millihz;
 
     mp = mr_mpeg1_open((const uint8_t *)buf, (size_t)len, audio_low_rate,
@@ -1357,9 +1360,15 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
             if (want_time) t_dec += clock() - a;
         }
         if (!got) {
-            if (loop) { mr_mpeg1_rewind(mp); frames = 0;
+            if (loop) { mr_mpeg1_rewind(mp); frames = 0; decoded_frames = 0;
+                        have_pts_base = 0;
                         clock_base = audio ? audio_elapsed_ms(audio) : 0; continue; }
             break;
+        }
+        if (!have_pts_base) {
+            pts_base_us = pts_us;
+            have_pts_base = 1;
+            clock_base = audio ? audio_elapsed_ms(audio) : 0;
         }
         if (audio) {                             /* top up audio (bounded)    */
             int n, k = 0;
@@ -1368,17 +1377,20 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
              * this older MPEG-1 path pre-dates the gate.  Leaving it closed
              * queues PCM forever and deadlocks on the second video frame while
              * waiting for an audio clock that cannot advance. */
-            int limit = frames == 0 ? 4 : 2;
+            int limit = decoded_frames == 0 ? 4 : 2;
             while (k < limit && (n = mr_mpeg1_audio(mp, abuf)) > 0) {
                 audio_write(audio, abuf, (unsigned)(n * 2 * channels));
                 audio_service(audio);
                 k++;
             }
-            if (frames == 0) audio_set_running(audio, 1);
+            if (decoded_frames == 0) audio_set_running(audio, 1);
         }
 
         if (audio) {                             /* pace to the audio clock   */
-            unsigned long target = clock_base + (unsigned long)frames * period;
+            unsigned long target = clock_base +
+                (unsigned long)(pts_us >= pts_base_us
+                    ? (pts_us - pts_base_us) / 1000
+                    : (int64_t)decoded_frames * period);
             for (;;) {
                 int ev = player_event(disp);
                 if (ev == MR_EV_QUIT)  { quit = 1; break; }
@@ -1393,6 +1405,17 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
                 if (audio_elapsed_ms(audio) >= target) break;
                 if (audio_starved(audio)) break;
                 Delay(1);
+            }
+            /* The old MPEG-1 path displayed every decoded frame even after
+             * decode/conversion had fallen behind the playing MP2 clock. That
+             * makes A/V drift grow for the rest of the clip. Drop a video
+             * frame only when it is already more than one frame late; decode
+             * continues so a faster following frame can catch back up. */
+            if (!fast_forward &&
+                audio_elapsed_ms(audio) > target + period) {
+                decoded_frames++;
+                audio_service(audio);
+                continue;
             }
         } else {
             int ev = player_event(disp);
@@ -1410,6 +1433,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
                              fr.dirty_y0, fr.dirty_y1);
             if (want_time) t_show += clock() - a;
         }
+        decoded_frames++;
         frames++;
         if (audio) audio_service(audio);
     }
