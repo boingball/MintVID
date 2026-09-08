@@ -365,6 +365,9 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 
 check-audio: mr_audio_check
 	@test -f tests/assets/test_mp3.avi -a -f tests/assets/test_aac.mp4 \
+	    -a -f tests/assets/test_mp3_stereo.avi \
+	    -a -f tests/assets/test_mp2_stereo.ts \
+	    -a -f tests/assets/test_ac3_stereo.mkv \
 	    || sh tests/gen_audio_assets.sh
 	@test -f tests/assets/test_h264_aac.ts \
 	    -a -f tests/assets/test_h264_latm.ts \
@@ -376,6 +379,9 @@ check-audio: mr_audio_check
 	./mr_audio_check tests/assets/test_h264_latm.ts latm
 	./mr_audio_check tests/assets/test_h264_ac3.mkv ac3
 	./mr_audio_check tests/assets/test_h264_ac3.ts ac3
+	./mr_audio_check tests/assets/test_mp3_stereo.avi mp3
+	./mr_audio_check tests/assets/test_mp2_stereo.ts mp2
+	./mr_audio_check tests/assets/test_ac3_stereo.mkv ac3
 
 check-http: mr_decode mr_youtube_check
 	@test -d tests/assets/ref_mpeg2_ts \

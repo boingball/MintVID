@@ -89,6 +89,7 @@ enum {
     G_2X,
     G_AUDIO_RATE,
     G_NO_AUDIO,
+    G_MONO_AUDIO,
     G_IPTV,
     G_YOUTUBE
 };
@@ -305,11 +306,12 @@ static void set_info(Object *info, struct Window *window, const char *text);
 static void read_play_options(Object *mode, Object *c2p, Object *h264,
                               Object *lace, Object *twox,
                               Object *audio_rate, Object *no_audio,
+                              Object *mono_audio,
                               mr_play_options *options)
 {
     ULONG selected = 0, selected_c2p = 0, selected_h264 = 0;
     ULONG checked_lace = 0, checked_2x = 0;
-    ULONG selected_audio_rate = 0, checked_no_audio = 0;
+    ULONG selected_audio_rate = 0, checked_no_audio = 0, checked_mono = 0;
     mr_play_options_default(options);
     GetAttr(CHOOSER_Selected, mode, &selected);
     GetAttr(CHOOSER_Selected, c2p, &selected_c2p);
@@ -318,6 +320,7 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
     GetAttr(CHECKBOX_Checked, twox, &checked_2x);
     GetAttr(CHOOSER_Selected, audio_rate, &selected_audio_rate);
     GetAttr(CHECKBOX_Checked, no_audio, &checked_no_audio);
+    GetAttr(CHECKBOX_Checked, mono_audio, &checked_mono);
     options->display = selected < mode_count
                      ? mode_values[selected] : MR_DISPLAY_AGA;
     options->c2p = selected_c2p < c2p_count
@@ -330,24 +333,26 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
     options->audio_rate = selected_audio_rate == 1
                         ? MR_AUDIO_RATE_LOW : MR_AUDIO_RATE_NORMAL;
     options->no_audio = checked_no_audio != 0;
+    options->mono_audio = checked_mono != 0;
 }
 
 static void publish_play_options(mr_master_options_port *master_options,
                                  Object *mode, Object *c2p, Object *h264,
                                  Object *lace, Object *twox,
-                                 Object *audio_rate, Object *no_audio)
+                                 Object *audio_rate, Object *no_audio,
+                                 Object *mono_audio)
 {
     mr_play_options options;
 
     read_play_options(mode, c2p, h264, lace, twox, audio_rate, no_audio,
-                      &options);
+                      mono_audio, &options);
     mr_master_options_publish(master_options, &options);
 }
 
 static void open_iptv_browser(Object *mode, Object *c2p, Object *h264,
                               Object *lace, Object *twox,
                               Object *audio_rate, Object *no_audio,
-                              Object *info,
+                              Object *mono_audio, Object *info,
                               struct Window *window)
 {
     BPTR seglist;
@@ -356,7 +361,7 @@ static void open_iptv_browser(Object *mode, Object *c2p, Object *h264,
     mr_play_options options;
 
     read_play_options(mode, c2p, h264, lace, twox, audio_rate, no_audio,
-                      &options);
+                      mono_audio, &options);
     if (!mr_build_iptv_arguments(arguments, sizeof(arguments), &options)) {
         set_info(info, window, "Could not build IPTV playback options.");
         return;
@@ -394,7 +399,7 @@ static void open_iptv_browser(Object *mode, Object *c2p, Object *h264,
 static void open_youtube_browser(Object *mode, Object *c2p, Object *h264,
                                  Object *lace, Object *twox,
                                  Object *audio_rate, Object *no_audio,
-                                 Object *info,
+                                 Object *mono_audio, Object *info,
                                  struct Window *window)
 {
     BPTR seglist;
@@ -403,7 +408,7 @@ static void open_youtube_browser(Object *mode, Object *c2p, Object *h264,
     mr_play_options options;
 
     read_play_options(mode, c2p, h264, lace, twox, audio_rate, no_audio,
-                      &options);
+                      mono_audio, &options);
     if (!mr_build_iptv_arguments(arguments, sizeof(arguments), &options)) {
         set_info(info, window, "Could not build YouTube playback options.");
         return;
@@ -642,7 +647,7 @@ static void start_player(Object *file, Object *mode, Object *c2p,
                          Object *h264,
                          Object *lace, Object *twox,
                          Object *audio_rate, Object *no_audio,
-                         Object *info,
+                         Object *mono_audio, Object *info,
                          struct Window *window)
 {
     char path[512];
@@ -675,7 +680,7 @@ static void start_player(Object *file, Object *mode, Object *c2p,
     path[sizeof(path) - 1] = 0;
 
     read_play_options(mode, c2p, h264, lace, twox, audio_rate, no_audio,
-                      &options);
+                      mono_audio, &options);
     if (!mr_build_player_arguments(args, sizeof(args), &options, path,
                                    NULL, NULL)) {
         set_info(info, window, "Could not build player arguments.");
@@ -720,6 +725,7 @@ int main(void)
     Object *twox;
     Object *audio_rate;
     Object *no_audio;
+    Object *mono_audio;
     Object *info;
     Object *layout;
     Object *controls;
@@ -761,6 +767,7 @@ int main(void)
     twox = NULL;
     audio_rate = NULL;
     no_audio = NULL;
+    mono_audio = NULL;
     info = NULL;
     layout = NULL;
     controls = NULL;
@@ -886,6 +893,11 @@ int main(void)
                                    GA_Text, (ULONG)"No audio",
                                    GA_RelVerify, TRUE,
                                    TAG_DONE);
+    mono_audio = (Object *)NewObject(CHECKBOX_GetClass(), NULL,
+                                     GA_ID, G_MONO_AUDIO,
+                                     GA_Text, (ULONG)"Mono audio",
+                                     GA_RelVerify, TRUE,
+                                     TAG_DONE);
     info = (Object *)NewObject(STRING_GetClass(), NULL,
                                GA_ReadOnly, TRUE,
                                STRINGA_TextVal, (ULONG)"No file selected",
@@ -908,7 +920,7 @@ int main(void)
                                            TAG_DONE);
 
     if (!file || !mode || !c2p || !h264 || !lace || !twox ||
-        !audio_rate || !no_audio || !info ||
+        !audio_rate || !no_audio || !mono_audio || !info ||
         !file_label || !display_label || !c2p_label || !h264_label ||
         !audio_rate_label)
         goto cleanup;
@@ -926,6 +938,7 @@ int main(void)
                                     LAYOUT_AddChild, (ULONG)audio_rate,
                                     CHILD_Label, (ULONG)audio_rate_label,
                                     LAYOUT_AddChild, (ULONG)no_audio,
+                                    LAYOUT_AddChild, (ULONG)mono_audio,
                                     TAG_DONE);
     if (!controls)
         goto cleanup;
@@ -1021,7 +1034,7 @@ int main(void)
     update_mode_controls(mode, c2p, lace, twox, window, TRUE);
     master_options = mr_master_options_open();
     publish_play_options(master_options, mode, c2p, h264, lace, twox,
-                         audio_rate, no_audio);
+                         audio_rate, no_audio, mono_audio);
     GetAttr(WINDOW_SigMask, window_object, &sigmask);
     if (status_timer_open()) {
         timermask = 1UL << status_timer_port->mp_SigBit;
@@ -1065,13 +1078,15 @@ int main(void)
                 case G_MODE:
                     update_mode_controls(mode, c2p, lace, twox, window, TRUE);
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, no_audio);
+                                         lace, twox, audio_rate, no_audio,
+                                         mono_audio);
                     break;
 
                 case G_C2P:
                     update_mode_controls(mode, c2p, lace, twox, window, FALSE);
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, no_audio);
+                                         lace, twox, audio_rate, no_audio,
+                                         mono_audio);
                     break;
 
                 case G_H264:
@@ -1079,13 +1094,16 @@ int main(void)
                 case G_2X:
                 case G_AUDIO_RATE:
                 case G_NO_AUDIO:
+                case G_MONO_AUDIO:
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, no_audio);
+                                         lace, twox, audio_rate, no_audio,
+                                         mono_audio);
                     break;
 
                 case G_PLAY:
                     start_player(file, mode, c2p, h264, lace, twox,
-                                audio_rate, no_audio, info, window);
+                                audio_rate, no_audio, mono_audio, info,
+                                window);
                     break;
 
                 case G_PAUSE:
@@ -1102,16 +1120,20 @@ int main(void)
 
                 case G_IPTV:
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, no_audio);
+                                         lace, twox, audio_rate, no_audio,
+                                         mono_audio);
                     open_iptv_browser(mode, c2p, h264, lace, twox,
-                                      audio_rate, no_audio, info, window);
+                                      audio_rate, no_audio, mono_audio, info,
+                                      window);
                     break;
 
                 case G_YOUTUBE:
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, no_audio);
+                                         lace, twox, audio_rate, no_audio,
+                                         mono_audio);
                     open_youtube_browser(mode, c2p, h264, lace, twox,
-                                         audio_rate, no_audio, info, window);
+                                         audio_rate, no_audio, mono_audio,
+                                         info, window);
                     break;
 
                 default:
@@ -1159,6 +1181,8 @@ cleanup:
                 DisposeObject(audio_rate);
             if (no_audio)
                 DisposeObject(no_audio);
+            if (mono_audio)
+                DisposeObject(mono_audio);
             if (display_label)
                 DisposeObject(display_label);
             if (c2p_label)

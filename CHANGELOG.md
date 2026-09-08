@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Added
+
+- Mono sound mode: `--audio-mono`, and a **Mono audio** tickbox beside **No
+  audio** in both GUI editions. Paula's output has always been a single 8-bit
+  channel, so this is not a change of what the machine plays - it moves the
+  fold from "decode both channels, then average them per sample" to "ask the
+  codec for one channel", which is where the saving is. MP3 uses MintAMP's
+  `MP3SetOutputMono()`/`MP3SetMonoMSSideSkip()`, so on mid/side frames the side
+  channel's Huffman decode, dequant, IMDCT and subband synthesis are skipped
+  outright and the coded mid channel is used as-is (it already carries the
+  1/sqrt(2) scale, so it *is* (L+R)/2). MP2 gains `plm_audio_set_mono()` in
+  pl_mpeg, which runs the polyphase synthesis - the dominant cost of Layer II
+  decode - once per frame instead of twice and emits channel 0. AC-3 asks
+  liba52 for `A52_MONO`, which folds the channels in the frequency domain and
+  so runs one IMDCT per block instead of one per channel. Helix AAC has no mono
+  mode, so there the second channel is dropped after decode: the downmix and
+  the decimation copy get cheaper, the decode itself does not.
+- `make check-audio` gained stereo MP3, MP2 and AC-3 fixtures and checks the
+  mono runs against the stereo ones: same rate and same frame count (mono
+  changes channels per frame, never the timeline), single-channel buffers at
+  the sink, and PCM that matches either the left channel or the (L+R)/2
+  average of the stereo run - the two folds a decoder can legitimately hand
+  back. The stereo fixtures are the point: with the previous mono-source
+  fixtures, "kept one channel" and "kept both" look identical.
+
 ### Fixed
 
 - H.264 Balanced, Fast and Turbo asked libavc to degrade only *some* pictures

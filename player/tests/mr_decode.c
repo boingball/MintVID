@@ -92,7 +92,7 @@ static long check_ppm(const char *path, const mr_frame *fr, int *maxerr)
 static int run_mpeg1(const uint8_t *buf, size_t len, const char *mode,
                      const char *dir)
 {
-    mr_mpeg1 *m = mr_mpeg1_open(buf, len, 0, 0);
+    mr_mpeg1 *m = mr_mpeg1_open(buf, len, 0, 0, 0);
     if (!m) { fprintf(stderr, "not a decodable MPEG-1 stream\n"); return 2; }
     printf("mpeg1: %dx%d\n", mr_mpeg1_width(m), mr_mpeg1_height(m));
     int frame = 0, bad = 0; long worst = 0;

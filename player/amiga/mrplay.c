@@ -1285,13 +1285,14 @@ static int hls_wait_service(void *opaque, unsigned wait_ms)
  * reusing the display and Paula audio backends. Separate from the AVI/MOV +
  * codec path because .mpg is a self-contained stream. */
 static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_time,
-                      int audio_low_rate, int no_audio)
+                      int audio_low_rate, int no_audio, int audio_mono)
 {
     mr_mpeg1      *mp;
     amiga_display *disp;
     mr_audio      *audio = NULL;
     unsigned       sr;
     int            w, h, frames = 0, paused = 0, quit = 0, fast_forward = 0;
+    int            channels = 2;                 /* 1 under --audio-mono      */
     unsigned long  period, clock_base = 0;
     long           ntick;
     unsigned char *abuf;                         /* heap, not stack (4.6 KB)  */
@@ -1301,7 +1302,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     unsigned       fps_millihz;
 
     mp = mr_mpeg1_open((const uint8_t *)buf, (size_t)len, audio_low_rate,
-                       no_audio);
+                       no_audio, audio_mono);
     if (!mp) { printf("cannot open MPEG-1 stream\n");
                player_status(MR_PLAYER_STATE_ERROR, "MPEG-1",
                              "cannot open MPEG-1 stream");
@@ -1323,11 +1324,13 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     printf("display backend: %s\n", display_backend_name(disp));
 
     sr = mr_mpeg1_samplerate(mp);
+    channels = mr_mpeg1_channels(mp);
     if (sr) {
-        audio = audio_open(sr, 2, 16);
+        audio = audio_open(sr, channels, 16);
         control_audio = audio;
         if (audio) audio_set_volume(audio, control_volume);
-        printf(audio ? "audio: Paula out, %u Hz (MP2 stereo)\n"
+        printf(audio ? (channels == 1 ? "audio: Paula out, %u Hz (MP2 mono)\n"
+                                      : "audio: Paula out, %u Hz (MP2 stereo)\n")
                      : "audio: Paula open failed, silent\n", sr);
     }
     fps_millihz = mr_mpeg1_framerate_millihz(mp);
@@ -1371,7 +1374,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
              * waiting for an audio clock that cannot advance. */
             int limit = frames == 0 ? 4 : 2;
             while (k < limit && (n = mr_mpeg1_audio(mp, abuf)) > 0) {
-                audio_write(audio, abuf, (unsigned)(n * 4));
+                audio_write(audio, abuf, (unsigned)(n * 2 * channels));
                 audio_service(audio);
                 k++;
             }
@@ -1475,6 +1478,7 @@ int main(int argc, char **argv)
     int h264_speed = -1; /* automatic: TurboGT - see effective_h264_speed() */
     int audio_low_rate = 0; /* --audio-rate=low: halve the output rate again */
     int no_audio = 0;       /* --no-audio: skip the decoder/Paula entirely   */
+    int audio_mono = 0;     /* --audio-mono: decode one channel, not two     */
     const char *media_path = NULL;
     const char *user_agent = NULL;
     const char *referer = NULL;
@@ -1545,7 +1549,7 @@ int main(int argc, char **argv)
                "[--wpa|--c2p|--riva-c2p|--kalms-c2p] "
                "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
                "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+|turbogt] "
-               "[--audio-rate=normal|low] [--no-audio] "
+               "[--audio-rate=normal|low] [--no-audio] [--audio-mono] "
                "[--time]\n");
         return mrplay_exit(5);
     }
@@ -1621,6 +1625,8 @@ int main(int argc, char **argv)
                 }
             }
             else if (!strcmp(argv[i], "--no-audio")) no_audio = 1;
+            else if (!strcmp(argv[i], "--audio-mono")) audio_mono = 1;
+            else if (!strcmp(argv[i], "--audio-stereo")) audio_mono = 0;
             else if (argv[i][0] != '-' && !media_path) media_path = argv[i];
         }
     }
@@ -1776,7 +1782,7 @@ int main(int argc, char **argv)
 
         if (mr_mpeg1_probe(buf, (size_t)len)) {  /* .mpg via pl_mpeg         */
             int rc = play_mpeg1(buf, len, loop, want_time, audio_low_rate,
-                                no_audio);
+                                no_audio, audio_mono);
             free(buf);
             return mrplay_exit(rc);
         }
@@ -1955,7 +1961,7 @@ int main(int argc, char **argv)
         if (no_audio) {
             printf("audio: disabled (--no-audio)\n");
         } else if (ai->valid && ai->format_tag == MR_AUDIO_FORMAT_PCM) {
-            audio_dec = mr_audio_decoder_open(ai, audio_low_rate);
+            audio_dec = mr_audio_decoder_open(ai, audio_low_rate, audio_mono);
             if (want_time && audio_dec) {
                 if (ai->codec_tag > 0xffff)
                     printf("audio: %s %s %lu Hz (%c%c%c%c)\n",
@@ -1996,7 +2002,7 @@ int main(int argc, char **argv)
                     ai->format_tag == MR_AUDIO_FORMAT_MP3 ||
                     ai->format_tag == MR_AUDIO_FORMAT_AAC ||
                     ai->format_tag == MR_AUDIO_FORMAT_AC3)) {
-            audio_dec = mr_audio_decoder_open(ai, audio_low_rate);
+            audio_dec = mr_audio_decoder_open(ai, audio_low_rate, audio_mono);
             if (audio_dec)
                 audio = audio_open(mr_audio_decoder_rate(audio_dec),
                                    (int)mr_audio_decoder_channels(audio_dec), 16);

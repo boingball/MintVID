@@ -59,6 +59,7 @@ struct mr_audio_decoder {
     unsigned stride;
     unsigned decim_phase;
     int low_rate;
+    int mono;                       /* --audio-mono: emit one channel only */
     unsigned char *pending;
     size_t pending_len;
     size_t pending_cap;
@@ -132,18 +133,22 @@ static unsigned aac_adts_frame_bytes(const unsigned char *p)
            ((unsigned)p[4] << 3) | ((unsigned)p[5] >> 5);
 }
 
+/* `channels` is what d->pcm actually holds; the sink may get fewer (mono mode
+ * drops everything but the first channel of a stereo buffer, for codecs whose
+ * own decoder could not be asked for one channel). */
 static long emit_pcm(mr_audio_decoder *d, unsigned total_shorts,
                      unsigned rate, unsigned channels,
                      mr_audio_pcm_sink sink, void *user)
 {
-    unsigned frames, out, i;
+    unsigned frames, out, i, out_channels;
     if (!channels || channels > 2 || total_shorts > PCM_SHORTS_MAX)
         return -1;
     frames = total_shorts / channels;
-    d->channels = channels;
+    out_channels = (d->mono && channels > 1) ? 1 : channels;
+    d->channels = out_channels;
     if (rate) d->source_rate = rate;
 
-    if (d->stride == 1) {
+    if (d->stride == 1 && out_channels == channels) {
         if (sink && frames) sink(user, d->pcm, frames, channels);
         return (long)frames;
     }
@@ -153,16 +158,17 @@ static long emit_pcm(mr_audio_decoder *d, unsigned total_shorts,
      * mid-stride doesn't restart the pattern at frame zero and drift the
      * effective output rate - block sizes are stride multiples for MP3/AAC/
      * AC-3, so phase is always 0 there, but raw PCM chunks (AVI/WAV) can be
-     * any length. */
+     * any length. The destination index never runs ahead of the source, since
+     * out <= i and out_channels <= channels. */
     out = 0;
     for (i = d->decim_phase; i < frames; i += d->stride) {
         unsigned ch;
-        for (ch = 0; ch < channels; ch++)
-            d->pcm[out * channels + ch] = d->pcm[i * channels + ch];
+        for (ch = 0; ch < out_channels; ch++)
+            d->pcm[out * out_channels + ch] = d->pcm[i * channels + ch];
         out++;
     }
     d->decim_phase = i - frames;
-    if (sink && out) sink(user, d->pcm, out, channels);
+    if (sink && out) sink(user, d->pcm, out, out_channels);
     return (long)out;
 }
 
@@ -218,7 +224,7 @@ static int parse_aac_asc(const mr_audio_info *info,
 }
 
 mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info,
-                                        int low_rate)
+                                        int low_rate, int mono)
 {
     mr_audio_decoder *d;
     if (!info || !info->valid) return NULL;
@@ -232,8 +238,9 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info,
     d = (mr_audio_decoder *)calloc(1, sizeof *d);
     if (!d) return NULL;
     d->low_rate = low_rate != 0;
+    d->mono = mono != 0;
     d->source_rate = info->sample_rate;
-    d->channels = info->channels;
+    d->channels = d->mono ? 1 : info->channels;
     d->stride = compute_stride(info->sample_rate, d->low_rate);
     d->output_rate = info->sample_rate / d->stride;
 
@@ -247,15 +254,26 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info,
         if (!d->mp2_buffer) goto fail;
         d->mp2 = plm_audio_create_with_buffer(d->mp2_buffer, 1);
         if (!d->mp2) goto fail;
+        plm_audio_set_mono(d->mp2, d->mono);
     } else if (info->format_tag == MR_AUDIO_FORMAT_MP3) {
         d->kind = AUDIO_KIND_MP3;
         d->mp3 = MP3InitDecoder();
         if (!d->mp3) goto fail;
+        if (d->mono) {
+            /* One channel out of Helix, and - on joint-stereo frames whose
+             * side channel is only there to reconstruct L/R - its huffman,
+             * dequant, IMDCT and synthesis skipped outright. */
+            MP3SetOutputMono(d->mp3, 1);
+            MP3SetMonoMSSideSkip(d->mp3, 1);
+        }
     } else if (info->format_tag == MR_AUDIO_FORMAT_AC3) {
         d->kind = AUDIO_KIND_AC3;
         d->ac3 = a52_init(0);
         if (!d->ac3) goto fail;
-        d->channels = 2;             /* all layouts are downmixed to stereo */
+        /* All layouts are downmixed to stereo, or to one channel in mono
+         * mode - liba52 folds the channels in the frequency domain, so that
+         * also spares it every IMDCT but the first. */
+        d->channels = d->mono ? 1 : 2;
     } else {
         d->aac = AACInitDecoder();
         if (!d->aac) goto fail;
@@ -284,7 +302,7 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info,
             }
             d->he_aac = he_aac;
             d->source_rate = output_rate;
-            d->channels = channels;
+            d->channels = d->mono ? 1 : channels;
             d->stride = compute_stride(output_rate, d->low_rate);
             d->output_rate = output_rate / d->stride;
         } else {
@@ -310,7 +328,7 @@ static long feed_mp3(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
         int off = MP3FindSyncWord(d->pending, (int)d->pending_len);
         unsigned frame_len;
         unsigned char *in;
-        int left, err;
+        int left, err, chans;
         MP3FrameInfo fi;
         long got;
         if (off < 0) {
@@ -331,8 +349,13 @@ static long feed_mp3(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
         if (err == ERR_MP3_MAINDATA_UNDERFLOW) continue;
         if (err != ERR_MP3_NONE) continue;      /* resync at next frame */
         MP3GetLastFrameInfo(d->mp3, &fi);
+        /* fi.nChans is the *stream's* channel count; under MP3SetOutputMono()
+         * the decoder writes one channel (and scales fi.outputSamps to match),
+         * so the interleave in d->pcm follows MP3GetOutputChannels(). */
+        chans = MP3GetOutputChannels(d->mp3);
+        if (chans <= 0) chans = fi.nChans;
         got = emit_pcm(d, (unsigned)fi.outputSamps, (unsigned)fi.samprate,
-                       (unsigned)fi.nChans, sink, user);
+                       (unsigned)chans, sink, user);
         if (got < 0) return -1;
         produced += got;
     }
@@ -362,10 +385,12 @@ static long feed_mp2(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
                          (uint8_t *)(uintptr_t)data, len) != len)
         return -1;
     while ((samples = plm_audio_decode(d->mp2)) != NULL) {
-        unsigned shorts = samples->count * 2;
+        /* Mono mode has pl_mpeg synthesise and pack a single channel. */
+        unsigned channels = (unsigned)plm_audio_get_channels(d->mp2);
+        unsigned shorts = samples->count * channels;
         long got;
         memcpy(d->pcm, samples->interleaved, shorts * sizeof d->pcm[0]);
-        got = emit_pcm(d, shorts, d->source_rate, 2, sink, user);
+        got = emit_pcm(d, shorts, d->source_rate, channels, sink, user);
         if (got < 0) return -1;
         produced += got;
     }
@@ -423,6 +448,7 @@ static long feed_ac3(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
     while (d->pending_len >= 7) {
         size_t off = 0;
         int flags, rate, bitrate, frame_len, block;
+        unsigned channels;
         level_t level;
         sample_t bias = 0;
         while (off + 1 < d->pending_len &&
@@ -434,12 +460,20 @@ static long feed_ac3(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
         if (frame_len <= 0) { consume_pending(d, 1); continue; }
         if ((size_t)frame_len > d->pending_len) break;
 
-        level = 1 << 24; /* fixed liba52 stereo output at 28-bit precision */
-        flags = A52_STEREO | A52_ADJUST_LEVEL;
+        /* Fixed liba52 output at 28-bit precision. The level is unchanged in
+         * mono mode: A52_ADJUST_LEVEL's stereo->mono trim (-3 dB per channel,
+         * a52_downmix_init()) combined with a52_downmix_coeff()'s own -3 dB
+         * makes the folded channel the (L+R)/2 average the Paula backend used
+         * to compute per sample, at the same loudness as the stereo path. */
+        level = 1 << 24;
+        flags = (d->mono ? A52_MONO : A52_STEREO) | A52_ADJUST_LEVEL;
         if (a52_frame(d->ac3, d->pending, &flags, &level, bias)) {
             consume_pending(d, (size_t)frame_len);
             continue;
         }
+        /* a52_frame() writes back the layout it accepted, which is what
+         * a52_samples() will then hold. */
+        channels = (flags & A52_CHANNEL_MASK) == A52_MONO ? 1 : 2;
         a52_dynrng(d->ac3, NULL, NULL);
         d->source_rate = (unsigned)rate;
         d->stride = compute_stride((unsigned)rate, d->low_rate);
@@ -452,13 +486,15 @@ static long feed_ac3(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
             samples = a52_samples(d->ac3);
             for (i = 0; i < 256; i++) {
                 int32_t l = samples[i] >> 12;
-                int32_t r = samples[256 + i] >> 12;
                 if (l < -32768) l = -32768; else if (l > 32767) l = 32767;
-                if (r < -32768) r = -32768; else if (r > 32767) r = 32767;
                 d->pcm[out++] = (short)l;
-                d->pcm[out++] = (short)r;
+                if (channels == 2) {
+                    int32_t r = samples[256 + i] >> 12;
+                    if (r < -32768) r = -32768; else if (r > 32767) r = 32767;
+                    d->pcm[out++] = (short)r;
+                }
             }
-            got = emit_pcm(d, out, (unsigned)rate, 2, sink, user);
+            got = emit_pcm(d, out, (unsigned)rate, channels, sink, user);
             if (got < 0) return -1;
             produced += got;
         }
@@ -569,6 +605,10 @@ int mr_audio_decoder_reset(mr_audio_decoder *d)
     if (d->kind == AUDIO_KIND_MP3) {
         MP3FreeDecoder(d->mp3);
         d->mp3 = MP3InitDecoder();
+        if (d->mp3 && d->mono) {
+            MP3SetOutputMono(d->mp3, 1);
+            MP3SetMonoMSSideSkip(d->mp3, 1);
+        }
         return d->mp3 != NULL;
     }
     if (d->kind == AUDIO_KIND_MP2) {
@@ -576,6 +616,7 @@ int mr_audio_decoder_reset(mr_audio_decoder *d)
         d->mp2_buffer = plm_buffer_create_with_capacity(8192);
         d->mp2 = d->mp2_buffer
                ? plm_audio_create_with_buffer(d->mp2_buffer, 1) : NULL;
+        if (d->mp2) plm_audio_set_mono(d->mp2, d->mono);
         return d->mp2 != NULL;
     }
     if (d->kind == AUDIO_KIND_AC3) {

@@ -351,6 +351,16 @@ int plm_get_audio_enabled(plm_t *self);
 void plm_set_audio_enabled(plm_t *self, int enabled);
 
 
+// MintVID: decode a stereo stream down to its first channel only. The
+// bitstream is still parsed in full (its channels are interleaved bit by bit),
+// but the polyphase synthesis - by far the most expensive part of Layer II
+// decode - runs once per frame instead of twice, and plm_audio_decode() then
+// returns PLM_AUDIO_SAMPLES_PER_FRAME single-channel samples packed at the
+// front of samples.interleaved. Default FALSE.
+
+void plm_set_audio_mono(plm_t *self, int enabled);
+
+
 // Get the number of audio streams (0--4) reported in the system header.
 
 int plm_get_num_audio_streams(plm_t *self);
@@ -810,6 +820,14 @@ int plm_audio_has_ended(plm_audio_t *self);
 plm_samples_t *plm_audio_decode(plm_audio_t *self);
 
 
+// MintVID: see plm_set_audio_mono(). plm_audio_get_channels() reports how many
+// channels the samples returned by plm_audio_decode() actually carry (1 in mono
+// mode on a stereo stream, 2 otherwise).
+
+void plm_audio_set_mono(plm_audio_t *self, int enabled);
+int plm_audio_get_channels(plm_audio_t *self);
+
+
 
 #ifdef __cplusplus
 }
@@ -865,6 +883,7 @@ struct plm_t {
 	plm_video_t *video_decoder;
 
 	int audio_enabled;
+	int audio_mono;
 	int audio_stream_index;
 	int audio_packet_type;
 	int64_t audio_lead_time;
@@ -946,6 +965,7 @@ int plm_init_decoders(plm_t *self) {
 			self->audio_buffer = plm_buffer_create_with_capacity(PLM_BUFFER_DEFAULT_SIZE);
 			plm_buffer_set_load_callback(self->audio_buffer, plm_read_audio_packet, self);
 			self->audio_decoder = plm_audio_create_with_buffer(self->audio_buffer, TRUE);
+			plm_audio_set_mono(self->audio_decoder, self->audio_mono);
 		}
 	}
 
@@ -1012,6 +1032,13 @@ void plm_set_audio_enabled(plm_t *self, int enabled) {
 	self->audio_packet_type = (plm_init_decoders(self) && self->audio_decoder)
 		? PLM_DEMUX_PACKET_AUDIO_1 + self->audio_stream_index
 		: 0;
+}
+
+void plm_set_audio_mono(plm_t *self, int enabled) {
+	self->audio_mono = enabled ? TRUE : FALSE;
+	if (self->audio_decoder) {
+		plm_audio_set_mono(self->audio_decoder, self->audio_mono);
+	}
 }
 
 void plm_set_audio_stream(plm_t *self, int stream_index) {
@@ -3924,6 +3951,7 @@ struct plm_audio_t {
 	int version;
 	int layer;
 	int mode;
+	int mono;                 /* MintVID: synthesise the first channel only */
 	int bound;
 	int v_pos;
 	int next_frame_data_size;
@@ -3989,6 +4017,22 @@ int plm_audio_get_samplerate(plm_audio_t *self) {
 	return plm_audio_has_header(self)
 		? PLM_AUDIO_SAMPLE_RATE[self->samplerate_index]
 		: 0;
+}
+
+void plm_audio_set_mono(plm_audio_t *self, int enabled) {
+	if (self) {
+		self->mono = enabled ? TRUE : FALSE;
+	}
+}
+
+int plm_audio_get_channels(plm_audio_t *self) {
+	if (!self) {
+		return 0;
+	}
+	/* A single-channel stream is still emitted as two identical interleaved
+	 * channels unless mono mode was asked for, so this follows the flag, not
+	 * the stream's own mode. */
+	return self->mono ? 1 : 2;
 }
 
 int64_t plm_audio_get_time(plm_audio_t *self) {
@@ -4227,25 +4271,30 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 			}
 			for (int sb = self->bound; sb < sblimit; sb++) {
 				plm_audio_read_samples(self, 0, sb, part);
-				self->sample[1][sb][0] = self->sample[0][sb][0];
-				self->sample[1][sb][1] = self->sample[0][sb][1];
-				self->sample[1][sb][2] = self->sample[0][sb][2];
+				if (!self->mono) {
+					self->sample[1][sb][0] = self->sample[0][sb][0];
+					self->sample[1][sb][1] = self->sample[0][sb][1];
+					self->sample[1][sb][2] = self->sample[0][sb][2];
+				}
 			}
 			for (int sb = sblimit; sb < 32; sb++) {
 				self->sample[0][sb][0] = 0;
 				self->sample[0][sb][1] = 0;
 				self->sample[0][sb][2] = 0;
-				self->sample[1][sb][0] = 0;
-				self->sample[1][sb][1] = 0;
-				self->sample[1][sb][2] = 0;
+				if (!self->mono) {
+					self->sample[1][sb][0] = 0;
+					self->sample[1][sb][1] = 0;
+					self->sample[1][sb][2] = 0;
+				}
 			}
 
 			// Synthesis loop
+			int synth_channels = self->mono ? 1 : 2;
 			for (int p = 0; p < 3; p++) {
 				// Shifting step
 				self->v_pos = (self->v_pos - 64) & 1023;
 
-				for (int ch = 0; ch < 2; ch++) {
+				for (int ch = 0; ch < synth_channels; ch++) {
 					plm_audio_idct36(self->sample[ch], p, self->V[ch], self->v_pos);
 
 					// Build U, windowing, calculate output
@@ -4282,9 +4331,18 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 							out_channel[out_pos + j] = plm_audio_clamp(self->U[j] / -66562);
 						}
 					#else
-						for (int j = 0; j < 32; j++) {
-							self->samples.interleaved[((out_pos + j) << 1) + ch] = 
-								plm_audio_clamp(self->U[j] / -66562);
+						if (self->mono) {
+							/* One channel, packed at the front of the buffer. */
+							for (int j = 0; j < 32; j++) {
+								self->samples.interleaved[out_pos + j] =
+									plm_audio_clamp(self->U[j] / -66562);
+							}
+						}
+						else {
+							for (int j = 0; j < 32; j++) {
+								self->samples.interleaved[((out_pos + j) << 1) + ch] =
+									plm_audio_clamp(self->U[j] / -66562);
+							}
 						}
 					#endif
 				} // End of synthesis channel loop

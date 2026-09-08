@@ -22,9 +22,21 @@ typedef void (*mr_audio_pcm_sink)(void *user, const int16_t *pcm,
  * 22.05kHz. A real CPU saving on a heavily-loaded 68k (fewer samples to
  * downmix, convert to 8-bit and queue to Paula) at the cost of noticeably
  * telephone-like audio, especially for music - an explicit opt-in, not a
- * new default. */
+ * new default.
+ *
+ * mono collapses a stereo stream to one channel (--audio-mono). Paula output is
+ * mono either way, so this is not a change of what the machine can play: it is
+ * where the second channel is dropped. Normally both channels are decoded in
+ * full and the Paula backend averages them per sample; in mono mode the decoder
+ * is asked for one channel instead, which for MP3 (MintAMP's
+ * MP3SetOutputMono()/MP3SetMonoMSSideSkip()), MP2 (pl_mpeg's
+ * plm_audio_set_mono()) and AC-3 (liba52's A52_MONO downmix) skips roughly half
+ * of the per-channel synthesis work. Helix AAC has no such mode, so there mono
+ * only saves the decimation copy and the downmix. The audible result is the
+ * left channel rather than a centre mix, except where the codec's own mono
+ * output is a downmix (AC-3 always, MP3 on mid/side frames). */
 mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info,
-                                        int low_rate);
+                                        int low_rate, int mono);
 void              mr_audio_decoder_close(mr_audio_decoder *dec);
 
 /* Feed one demuxed packet. Returns PCM sample frames produced, zero when the

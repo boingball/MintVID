@@ -18,6 +18,7 @@ struct mr_mpeg1 {
     uint8_t *fb;                 /* persistent RGB24 output                 */
     int      w, h;
     int      decim;              /* audio decimation (1, 2 or 4) for Paula  */
+    int      channels;           /* PCM channels emitted (1 in mono mode)   */
     unsigned rate_eff;           /* effective audio rate after decimation   */
 };
 
@@ -67,7 +68,7 @@ int mr_mpeg2_ps_probe(const uint8_t *buf, size_t len)
 }
 
 mr_mpeg1 *mr_mpeg1_open(const uint8_t *buf, size_t len, int low_rate,
-                        int no_audio)
+                        int no_audio, int mono)
 {
     mr_mpeg1 *m = (mr_mpeg1 *)calloc(1, sizeof *m);
     if (!m) return NULL;
@@ -75,8 +76,10 @@ mr_mpeg1 *mr_mpeg1_open(const uint8_t *buf, size_t len, int low_rate,
     m->plm = plm_create_with_memory((uint8_t *)buf, len, 0);
     if (!m->plm) { free(m); return NULL; }
     plm_set_loop(m->plm, 0);
+    plm_set_audio_mono(m->plm, mono);
     plm_set_audio_enabled(m->plm,
                           !no_audio && plm_get_num_audio_streams(m->plm) > 0);
+    m->channels = mono ? 1 : 2;
     m->w = plm_get_width(m->plm);
     m->h = plm_get_height(m->plm);
     if (m->w <= 0 || m->h <= 0) { plm_destroy(m->plm); free(m); return NULL; }
@@ -103,6 +106,11 @@ unsigned mr_mpeg1_framerate_millihz(mr_mpeg1 *m) { return m ? plm_get_framerate(
 unsigned mr_mpeg1_samplerate(mr_mpeg1 *m)
 {
     return m ? m->rate_eff : 0;
+}
+
+int mr_mpeg1_channels(mr_mpeg1 *m)
+{
+    return m ? m->channels : 0;
 }
 
 int mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, int64_t *pts_us)
@@ -142,17 +150,20 @@ int mr_mpeg1_audio(mr_mpeg1 *m, unsigned char *dst)
 {
     plm_samples_t *s;
     unsigned j, out = 0;
-    int decim;
+    int decim, channels;
     if (!m) return 0;
     s = plm_decode_audio(m->plm);
     if (!s) return 0;
     decim = m->decim;
-    /* Take every `decim`-th stereo sample, emit little-endian signed-16 so it
-     * is correct on the big-endian 68k regardless of host byte order. */
+    channels = m->channels;
+    /* Take every `decim`-th sample frame, emit little-endian signed-16 so it
+     * is correct on the big-endian 68k regardless of host byte order. In mono
+     * mode pl_mpeg has already packed one channel at the front of the buffer
+     * (see plm_set_audio_mono()), so the frame stride is one sample. */
     for (j = 0; j < s->count; j += decim) {
         int ch;
-        for (ch = 0; ch < 2; ch++) {
-            int v = s->interleaved[j * 2 + ch];
+        for (ch = 0; ch < channels; ch++) {
+            int v = s->interleaved[j * channels + ch];
             *dst++ = (unsigned char)(v & 0xff);
             *dst++ = (unsigned char)((v >> 8) & 0xff);
         }
