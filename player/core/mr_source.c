@@ -213,10 +213,6 @@ static mr_source *open_local_file(const char *path)
         return NULL;
     }
     ctx->file = file;
-    /* This source owns read-ahead explicitly, rather than depending on the
-     * classic libc's default BUFSIZ. Failure to select unbuffered stdio is
-     * harmless: the source cache still remains correct above libc's buffer. */
-    (void)setvbuf(file, NULL, _IONBF, 0);
     if (fseek(file, 0, SEEK_END) != 0 || (end = ftell(file)) <= 0 ||
         fseek(file, 0, SEEK_SET) != 0) {
         file_close(ctx);
