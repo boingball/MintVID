@@ -36,4 +36,11 @@ void mr_dither_rgb_indexed(const uint8_t *rgb, int w, int h, int rgb_stride,
                            uint8_t *out, int out_stride, int y_base,
                            int depth);
 
+/* Quantise one RGB pixel at absolute Bayer coordinates (x,y). This is the
+ * scalar equivalent of one mr_dither_rgb_indexed() output byte and lets a
+ * block codec precompute its small reusable tiles when a codebook changes,
+ * instead of running the full-frame dither loop after every decoded frame. */
+uint8_t mr_dither_rgb_indexed_pixel(uint8_t r, uint8_t g, uint8_t b,
+                                    int x, int y, int depth);
+
 #endif /* MR_DITHER_H */

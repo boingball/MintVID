@@ -13,19 +13,32 @@
  * persistent framebuffer in place and may selectively update codebook entries,
  * so codebooks and the output buffer are decoder state that survives frames.
  *
- * This decoder emits MR_PIX_RGB24 for host validation. The Amiga tier will add
- * a YUV/chunky output path; the block-walking logic is unchanged - only the
- * per-vector store differs.
+ * RGB24 remains the default for host validation and RTG/HAM display. Native
+ * indexed AGA can opt into MR_PIX_INDEX8 before the first frame: each codebook
+ * update then precomputes the exact 4x4-Bayer palette bytes its V1/V4 vectors
+ * will use, and vector decode writes those bytes straight to a persistent
+ * chunky framebuffer. That removes both the three-byte RGB framebuffer and
+ * the full-frame RGB-to-indexed dither pass from the AGA hot path.
  */
 #include "mr_codec.h"
+#include "mr_cinepak.h"
+#include "mr_dither.h"
 #include <stdlib.h>
 #include <string.h>
 
-/* A codebook entry: a 2x2 luma block plus shared chroma, pre-converted to the
- * four RGB pixels it expands to. Storing RGB avoids repeating the YUV->RGB per
- * macroblock reference. */
+/* A codebook entry represents four source colours. RGB mode stores those four
+ * triplets. Indexed mode instead stores the complete output tile:
+ *
+ *   V1: one 4x4 tile (each source colour doubled in X and Y)
+ *   V4: four 2x2 variants, one for each quadrant of the containing 4x4 block
+ *
+ * Cinepak blocks are 4x4-aligned, so those V4 quadrants also fully determine
+ * the 4x4 Bayer phase. Both representations fit in the same 16-byte union. */
 typedef struct {
-    uint8_t rgb[4][3];   /* pixels: TL, TR, BL, BR */
+    union {
+        uint8_t rgb[4][3];
+        uint8_t indexed[16];
+    } pixels;
 } cvid_cb;
 
 typedef struct {
@@ -35,8 +48,10 @@ typedef struct {
 
 typedef struct {
     int            width, height;
-    uint8_t       *fb;          /* persistent RGB24 framebuffer            */
+    uint8_t       *fb;          /* persistent RGB24 or INDEX8 framebuffer  */
     int            stride;
+    int            indexed_depth; /* 0 => RGB24; otherwise 4, 5 or 8       */
+    int            decoded_any;
     cvid_strip_cb *strips;      /* per-strip codebooks (persist for inter) */
     int            num_strip_cb;
     int            dy0, dy1;    /* changed-row span this frame             */
@@ -56,17 +71,44 @@ static inline void yuv2rgb(int y, int u, int v, uint8_t *out)
 }
 
 /* Build one codebook entry's four RGB pixels from raw bytes. If gray, u=v=0. */
-static void cb_build(cvid_cb *cb, const uint8_t *d, int is_color)
+static void cb_build(cvid_ctx *c, cvid_cb *cb, const uint8_t *d,
+                     int is_color, int is_v1, int phase_y)
 {
     int u = 0, v = 0;
+    uint8_t rgb[4][3];
+    int i;
     if (is_color) {
         u = (int8_t)d[4];
         v = (int8_t)d[5];
     }
-    yuv2rgb(d[0], u, v, cb->rgb[0]);
-    yuv2rgb(d[1], u, v, cb->rgb[1]);
-    yuv2rgb(d[2], u, v, cb->rgb[2]);
-    yuv2rgb(d[3], u, v, cb->rgb[3]);
+    for (i = 0; i < 4; i++) yuv2rgb(d[i], u, v, rgb[i]);
+
+    if (!c->indexed_depth) {
+        memcpy(cb->pixels.rgb, rgb, sizeof rgb);
+    } else if (is_v1) {
+        int x, y;
+        for (y = 0; y < 4; y++)
+            for (x = 0; x < 4; x++) {
+                const uint8_t *p = rgb[(y >> 1) * 2 + (x >> 1)];
+                cb->pixels.indexed[y * 4 + x] =
+                    mr_dither_rgb_indexed_pixel(p[0], p[1], p[2], x,
+                                                phase_y + y,
+                                                c->indexed_depth);
+            }
+    } else {
+        int q, x, y;
+        for (q = 0; q < 4; q++) {
+            int qx = (q & 1) * 2, qy = (q >> 1) * 2;
+            for (y = 0; y < 2; y++)
+                for (x = 0; x < 2; x++) {
+                    const uint8_t *p = rgb[y * 2 + x];
+                    cb->pixels.indexed[q * 4 + y * 2 + x] =
+                        mr_dither_rgb_indexed_pixel(p[0], p[1], p[2],
+                                                    qx + x, phase_y + qy + y,
+                                                    c->indexed_depth);
+                }
+        }
+    }
 }
 
 /* Load/patch a codebook chunk. chunk_id low nibble selects color vs gray and
@@ -75,8 +117,8 @@ static void cb_build(cvid_cb *cb, const uint8_t *d, int is_color)
  *   0x21/0x23 sel  color                   0x25/0x27 sel  gray
  * Selective updates carry 32-bit MSB-first flag words; a set bit means the
  * corresponding entry is present. */
-static void load_codebook(cvid_cb *cb, int chunk_id,
-                          const uint8_t *data, uint32_t size)
+static void load_codebook(cvid_ctx *c, cvid_cb *cb, int chunk_id, int is_v1,
+                          int phase_y, const uint8_t *data, uint32_t size)
 {
     int is_color = !(chunk_id & 0x0400);
     int selective = (chunk_id & 0x0100);
@@ -87,7 +129,7 @@ static void load_codebook(cvid_cb *cb, int chunk_id,
 
     if (!selective) {
         for (i = 0; i < 256 && p + entry_sz <= end; i++, p += entry_sz)
-            cb_build(&cb[i], p, is_color);
+            cb_build(c, &cb[i], p, is_color, is_v1, phase_y);
         return;
     }
 
@@ -99,7 +141,7 @@ static void load_codebook(cvid_cb *cb, int chunk_id,
         for (bit = 31; bit >= 0 && i < 256; bit--, i++) {
             if (flags & (1u << bit)) {
                 if (p + entry_sz > end) return;
-                cb_build(&cb[i], p, is_color);
+                cb_build(c, &cb[i], p, is_color, is_v1, phase_y);
                 p += entry_sz;
             }
         }
@@ -125,12 +167,57 @@ static int br_bit(bitrdr *b)
 
 /* Copy a codebook entry's 2x2 RGB pixels, upscaled by `scale` (1 => a 2x2
  * pixel target for V4 sub-blocks, 2 => a 4x4 target for V1). */
-static void put_vector(cvid_ctx *c, const cvid_cb *cb, int x, int y, int scale)
+static void put_vector(cvid_ctx *c, const cvid_cb *cb, int x, int y, int scale,
+                       int variant)
 {
+    if (c->indexed_depth) {
+        if (scale == 2) {
+            int py;
+            if (x >= 0 && y >= 0 && x + 4 <= c->width &&
+                y + 4 <= c->height) {
+                const uint8_t *src = cb->pixels.indexed;
+                uint8_t *dst = c->fb + (size_t)y * c->stride + x;
+                memcpy(dst, src, 4); dst += c->stride; src += 4;
+                memcpy(dst, src, 4); dst += c->stride; src += 4;
+                memcpy(dst, src, 4); dst += c->stride; src += 4;
+                memcpy(dst, src, 4);
+                return;
+            }
+            for (py = 0; py < 4 && y + py < c->height; py++) {
+                int count = c->width - x;
+                if (count > 4) count = 4;
+                if (count > 0)
+                    memcpy(c->fb + (size_t)(y + py) * c->stride + x,
+                           cb->pixels.indexed + py * 4, (size_t)count);
+            }
+        } else {
+            int q = variant & 3;
+            int py;
+            if (x >= 0 && y >= 0 && x + 2 <= c->width &&
+                y + 2 <= c->height) {
+                const uint8_t *src = cb->pixels.indexed + q * 4;
+                uint8_t *dst = c->fb + (size_t)y * c->stride + x;
+                dst[0] = src[0]; dst[1] = src[1];
+                dst += c->stride;
+                dst[0] = src[2]; dst[1] = src[3];
+                return;
+            }
+            for (py = 0; py < 2 && y + py < c->height; py++) {
+                int count = c->width - x;
+                if (count > 2) count = 2;
+                if (count > 0)
+                    memcpy(c->fb + (size_t)(y + py) * c->stride + x,
+                           cb->pixels.indexed + q * 4 + py * 2,
+                           (size_t)count);
+            }
+        }
+        return;
+    }
+
     int sy, sx;
     for (sy = 0; sy < 2; sy++) {
         for (sx = 0; sx < 2; sx++) {
-            const uint8_t *rgb = cb->rgb[sy * 2 + sx];
+            const uint8_t *rgb = cb->pixels.rgb[sy * 2 + sx];
             int py, px;
             for (py = 0; py < scale; py++) {
                 int oy = y + sy * scale + py;
@@ -181,11 +268,11 @@ static void decode_vectors(cvid_ctx *c, cvid_strip_cb *cb, int chunk_id,
                 for (q = 0; q < 4; q++) {
                     if (br.p >= end) return;
                     put_vector(c, &cb->v4[*br.p++],
-                               x + (q & 1) * 2, y + (q >> 1) * 2, 1);
+                               x + (q & 1) * 2, y + (q >> 1) * 2, 1, q);
                 }
             } else {
                 if (br.p >= end) return;
-                put_vector(c, &cb->v1[*br.p++], x, y, 2);
+                put_vector(c, &cb->v1[*br.p++], x, y, 2, 0);
             }
         }
     }
@@ -211,6 +298,31 @@ static mr_status cvid_open(mr_decoder *dec)
     return MR_OK;
 }
 
+int mr_cinepak_set_indexed_output(mr_decoder *dec, int depth)
+{
+    cvid_ctx *c;
+    uint8_t *fb;
+    size_t bytes;
+    if (!dec || dec->codec != &mr_codec_cinepak || !dec->priv ||
+        (depth != 4 && depth != 5 && depth != 8))
+        return 0;
+    c = (cvid_ctx *)dec->priv;
+    if (c->decoded_any || c->num_strip_cb) return 0;
+    bytes = (size_t)c->width * (size_t)c->height;
+    fb = (uint8_t *)calloc(bytes, 1);
+    if (!fb) return 0;
+    free(c->fb);
+    c->fb = fb;
+    c->stride = c->width;
+    c->indexed_depth = depth;
+    dec->frame.fmt = MR_PIX_INDEX8;
+    dec->frame.stride = c->stride;
+    dec->frame.data = c->fb;
+    dec->frame.u_data = dec->frame.v_data = NULL;
+    dec->frame.u_stride = dec->frame.v_stride = 0;
+    return 1;
+}
+
 static cvid_strip_cb *ensure_strip_cb(cvid_ctx *c, int n)
 {
     if (n >= c->num_strip_cb) {
@@ -230,6 +342,8 @@ static mr_status cvid_decode(mr_decoder *dec, const uint8_t *data, uint32_t len)
 {
     cvid_ctx *c = (cvid_ctx *)dec->priv;
     if (len < 10) return MR_EFORMAT;
+
+    c->decoded_any = 1;
 
     c->dy0 = c->height; c->dy1 = 0;        /* empty until an MB is coded    */
 
@@ -271,8 +385,9 @@ static mr_status cvid_decode(mr_decoder *dec, const uint8_t *data, uint32_t len)
             if ((cid & 0xf000) == 0x2000) {
                 /* Codebook. Bit 0x0200 selects V1 vs V4; load_codebook reads
                  * bit 0x0400 (gray) and 0x0100 (selective) itself. */
-                cvid_cb *tbl = (cid & 0x0200) ? cb->v1 : cb->v4;
-                load_codebook(tbl, cid, cdata, cbody);
+                int is_v1 = (cid & 0x0200) != 0;
+                cvid_cb *tbl = is_v1 ? cb->v1 : cb->v4;
+                load_codebook(c, tbl, cid, is_v1, y0 & 3, cdata, cbody);
             } else if ((cid & 0xf000) == 0x3000) {
                 /* Vectors: 0x0100 inter, 0x0200 V4-only. */
                 decode_vectors(c, cb, cid, 0, y0, c->width, y1,

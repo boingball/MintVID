@@ -14,6 +14,11 @@
 
 #define MR_SOURCE_NAME_MAX 1024
 #define MR_SOURCE_ERROR_MAX 192
+/* libnix defaults FILE streams to a 1 KiB buffer. Local interleaved media then
+ * crosses that boundary constantly, turning sequential AVI playback into many
+ * small AmigaDOS reads. Keep libc's normal fully-buffered path, but enlarge its
+ * read window enough to cover several low-resolution video/audio packets. */
+#define MR_LOCAL_FILE_BUFFER_SIZE (64u * 1024u)
 
 struct mr_source {
     void   *ctx;
@@ -152,6 +157,11 @@ static mr_source *open_local_file(const char *path)
         mr_source_set_error("cannot open local file");
         return NULL;
     }
+    /* Must be requested before the first operation on this stream. With a NULL
+     * buffer, libnix allocates and owns the requested storage and releases it
+     * from fclose(). If allocation/setup fails, the original FILE buffer stays
+     * valid, so falling back silently preserves the established behaviour. */
+    (void)setvbuf(file, NULL, _IOFBF, MR_LOCAL_FILE_BUFFER_SIZE);
     if (fseek(file, 0, SEEK_END) != 0 || (end = ftell(file)) <= 0 ||
         fseek(file, 0, SEEK_SET) != 0) {
         fclose(file);

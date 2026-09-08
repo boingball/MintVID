@@ -79,6 +79,17 @@
 
 ### Improved
 
+- Cinepak on a compatible native indexed display now decodes its reusable V1
+  and V4 codebook tiles directly to the final 4-, 5- or 8-plane palette
+  indices. The previous AGA path wrote a three-byte RGB framebuffer and then
+  read and dithered that entire frame into a second one-byte queue buffer;
+  direct indexed output removes both the RGB traffic and the per-frame dither
+  loop while remaining byte-identical to it. RTG, HAM and resized modes retain
+  the established RGB24 path.
+- Local media files now use a 64 KiB fully-buffered stdio window instead of
+  libnix's 1 KiB default, reducing the number of small AmigaDOS reads needed
+  for interleaved AVI video and audio packets. Allocation failure safely keeps
+  the original libc buffer.
 - Both shared YUV420-to-RGB converters now walk the picture a row *pair* at a
   time. 4:2:0 gives one chroma sample per 2x2 luma quad, so the three
   chroma-derived addends are shared by four output pixels; stepping single
