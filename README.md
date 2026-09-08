@@ -59,6 +59,7 @@ MintVID provides a broad range of codecs, but what is practical in real time
 depends heavily on CPU speed, codec complexity, resolution, bitrate and
 display mode. Codec support does not imply real-time playback on every CPU.
 See **[DESIGN.md](DESIGN.md)** for the full architecture and roadmap.
+For a repeatable real-hardware baseline, see **[68060 @ 50 MHz codec performance & compatibility](docs/68060-50mhz-performance.md)**.
 
 ### Hardware and performance expectations
 
