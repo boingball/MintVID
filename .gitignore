@@ -2,6 +2,8 @@
 player/mr_decode
 player/mr_decode_ssl
 player/mr_audio_check
+player/mr_ac3_check
+player/.hostobj/
 player/mr_codec_registry_check
 player/mr_scale_check
 player/mr_yuv_check

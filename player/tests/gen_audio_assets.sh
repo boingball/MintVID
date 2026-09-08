@@ -35,4 +35,21 @@ sine=frequency=1320:sample_rate=44100:duration=2[r];[l][r]amerge=inputs=2" \
     -c:v mpeg4 -bf 0 -qscale:v 5 -c:a ac3 -b:a 192k -ac 2 \
     -shortest test_ac3_stereo.mkv -y
 
+# ffmpeg's own decode of the AC-3 fixtures, as the reference mr_ac3_check
+# measures against: raw signed 16-bit little-endian at the track's own rate and
+# channel count (the stereo one included - a stereo fold is the case most
+# likely to go wrong). Kept as files rather than regenerated per run so a
+# machine without ffmpeg can still run the check.
+ffmpeg -v error -i test_h264_ac3.mkv -vn -f s16le -acodec pcm_s16le \
+    ref_ac3_mkv.raw -y
+ffmpeg -v error -i test_h264_ac3.ts -vn -f s16le -acodec pcm_s16le \
+    ref_ac3_ts.raw -y
+# The same AC-3 as a raw elementary stream, for the m68k conformance run: that
+# build gets mr_ac3_check without the demuxer (MR_AC3_CHECK_NO_DEMUX), so it
+# does not have to cross-build the whole container/H.264 tier to check the
+# decoder on a real big-endian target.
+ffmpeg -v error -i test_h264_ac3.mkv -c:a copy -f ac3 test_ac3.ac3 -y
+ffmpeg -v error -i test_ac3_stereo.mkv -vn -f s16le -acodec pcm_s16le \
+    ref_ac3_stereo.raw -y
+
 echo "audio fixtures regenerated in $(pwd)"

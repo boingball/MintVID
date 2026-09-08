@@ -21,6 +21,7 @@
 
 #define PCM_SHORTS_MAX 4096
 #define PAULA_RATE_MAX 28000U
+#define AC3_OUTPUT_SHIFT 13         /* see feed_ac3()'s level comment */
 
 /* Base decimation stride (1 or 2, halving anything above Paula's ~28kHz
  * ceiling), doubled again under --audio-rate=low (mr_audio_decoder_open()'s
@@ -460,11 +461,19 @@ static long feed_ac3(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
         if (frame_len <= 0) { consume_pending(d, 1); continue; }
         if ((size_t)frame_len > d->pending_len) break;
 
-        /* Fixed liba52 output at 28-bit precision. The level is unchanged in
-         * mono mode: A52_ADJUST_LEVEL's stereo->mono trim (-3 dB per channel,
-         * a52_downmix_init()) combined with a52_downmix_coeff()'s own -3 dB
-         * makes the folded channel the (L+R)/2 average the Paula backend used
-         * to compute per sample, at the same loudness as the stereo path. */
+        /* LEVEL(x) in fixed liba52 is x << 26, so this level is 0.25 and a
+         * full-scale sample arrives as 0.25 * SAMPLE(1.0) = 1<<28 - which is
+         * 13 bits, not 12, above signed 16-bit full scale. AC3_OUTPUT_SHIFT
+         * was 12 until tests/mr_ac3_check.c measured the output against
+         * ffmpeg's: every AC-3 track played 6 dB hot, so anything but quiet
+         * material spent its peaks clamped at the rails. That was equally true
+         * on the Amiga - the shift has nothing to do with the host.
+         *
+         * The level is the same in mono mode: A52_ADJUST_LEVEL's stereo->mono
+         * trim (-3 dB per channel, a52_downmix_init()) combined with
+         * a52_downmix_coeff()'s own -3 dB makes the folded channel the (L+R)/2
+         * average the Paula backend used to compute per sample, at the same
+         * loudness as the stereo path. */
         level = 1 << 24;
         flags = (d->mono ? A52_MONO : A52_STEREO) | A52_ADJUST_LEVEL;
         if (a52_frame(d->ac3, d->pending, &flags, &level, bias)) {
@@ -485,11 +494,11 @@ static long feed_ac3(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
             if (a52_block(d->ac3)) break;
             samples = a52_samples(d->ac3);
             for (i = 0; i < 256; i++) {
-                int32_t l = samples[i] >> 12;
+                int32_t l = samples[i] >> AC3_OUTPUT_SHIFT;
                 if (l < -32768) l = -32768; else if (l > 32767) l = 32767;
                 d->pcm[out++] = (short)l;
                 if (channels == 2) {
-                    int32_t r = samples[256 + i] >> 12;
+                    int32_t r = samples[256 + i] >> AC3_OUTPUT_SHIFT;
                     if (r < -32768) r = -32768; else if (r > 32767) r = 32767;
                     d->pcm[out++] = (short)r;
                 }
