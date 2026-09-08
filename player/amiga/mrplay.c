@@ -81,10 +81,9 @@ void __chkabort(void) { }
  * The array structs are tiny; only the lazily-allocated RGB buffers cost. */
 #define VIDEO_QUEUE_CAP 48
 /* Default decoded-frame depths, clamped to free RAM and raisable by --net-queue.
- * In the video-ahead regime the presented rate is about depth / cushion_seconds
- * (topping up the audio cushion discards frames decoded past the cap), so a
- * deeper queue presents more before each gap: measured ~5 fps at depth 14 vs
- * ~2 fps at depth 4 against the 2.5 s cushion. Keep it as deep as RAM allows. */
+ * The active audio cushion is bounded by the time span this ring can retain;
+ * otherwise filling audio would decode past a full ring, discard the intervening
+ * pictures, and leave a visible hole in the video timeline. */
 #define VIDEO_QUEUE_NET_DEPTH  16
 #define VIDEO_QUEUE_DISK_DEPTH 16
 /* Never let the decoded queue eat RAM below this: it must leave room for the
@@ -112,13 +111,9 @@ void __chkabort(void) { }
 #define AUDIO_RESCUE_ONE_REQUEST_MS 200UL
 #define AUDIO_STARTUP_TARGET_MS 400UL
 #define AUDIO_CUSHION_MIN_MS 400UL
-/* 2.5 s is the legacy/direct-path ceiling: enough to ride the ~1.7 s stalls
- * seen in hardware logs, but a decoded video ring shallower than the
- * corresponding number of frames cannot stay smooth while filling that much
- * audio. For synchronous network playback the active cushion is therefore
- * reduced after video_cap is known to roughly (video_cap - 2) frame periods,
- * clamped between AUDIO_CUSHION_MIN_MS and this ceiling. Local files keep the
- * ceiling. */
+/* 2.5 s is the maximum cushion: enough to ride the ~1.7 s stalls seen in
+ * hardware logs. The active value is reduced after video_cap is known to
+ * roughly (video_cap - 2) frame periods, for both network and local media. */
 #define AUDIO_CUSHION_TARGET_MS 2500UL
 /* Live-resync (opt-in, --live-resync, network sources only). A multi-second
  * network stall can leave a live stream many seconds behind the wall clock with
@@ -2174,7 +2169,7 @@ int main(int argc, char **argv)
             video_cap = budget_frames;
         if (video_cap < 2) video_cap = 2;          /* ring needs >= 2 slots    */
         if (video_cap > VIDEO_QUEUE_CAP) video_cap = VIDEO_QUEUE_CAP;
-        if (network_source) {
+        {
             uint64_t frame_period_us = vi->rate
                 ? (uint64_t)(vi->scale ? vi->scale : 1) * 1000000ULL / vi->rate
                 : 83333ULL;
@@ -2185,8 +2180,6 @@ int main(int argc, char **argv)
                 cushion_ms = AUDIO_CUSHION_MIN_MS;
             if (cushion_ms > AUDIO_CUSHION_TARGET_MS)
                 cushion_ms = AUDIO_CUSHION_TARGET_MS;
-        } else {
-            cushion_ms = AUDIO_CUSHION_TARGET_MS;
         }
         int prev_master_source = -1;
         if (want_time)
