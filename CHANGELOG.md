@@ -86,6 +86,10 @@
   direct indexed output removes both the RGB traffic and the per-frame dither
   loop while remaining byte-identical to it. RTG, HAM and resized modes retain
   the established RGB24 path.
+- Local media files now use a 64 KiB fully-buffered stdio window instead of
+  libnix's 1 KiB default, reducing the number of small AmigaDOS reads needed
+  for interleaved AVI video and audio packets. Allocation failure safely keeps
+  the original libc buffer.
 - Both shared YUV420-to-RGB converters now walk the picture a row *pair* at a
   time. 4:2:0 gives one chroma sample per 2x2 luma quad, so the three
   chroma-derived addends are shared by four output pixels; stepping single
