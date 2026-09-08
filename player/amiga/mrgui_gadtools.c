@@ -49,7 +49,7 @@ extern struct Library *GadToolsBase;
 
 enum {
     G_FILE = 1, G_BROWSE, G_MODE, G_C2P, G_H264, G_LACE, G_2X,
-    G_AUDIO_RATE, G_NO_AUDIO,
+    G_AUDIO_RATE, G_NO_AUDIO, G_MONO_AUDIO,
     G_PLAY, G_PAUSE, G_STOP, G_FAST, G_IPTV, G_YOUTUBE, G_INFO
 };
 
@@ -59,7 +59,7 @@ typedef struct gt_app {
     APTR visual;
     struct Gadget *gadgets;
     struct Gadget *file, *mode, *c2p, *h264, *lace, *twox, *info;
-    struct Gadget *audio_rate, *no_audio;
+    struct Gadget *audio_rate, *no_audio, *mono_audio;
     struct FileRequester *requester;
     mr_master_options_port *master;
     mr_gui_menu menu;
@@ -220,6 +220,7 @@ static void read_options(gt_app *app, mr_play_options *options)
     options->audio_rate = audio_rate == 1
                         ? MR_AUDIO_RATE_LOW : MR_AUDIO_RATE_NORMAL;
     options->no_audio = gad_value(app, app->no_audio, GTCB_Checked) != 0;
+    options->mono_audio = gad_value(app, app->mono_audio, GTCB_Checked) != 0;
 }
 
 static void publish_options(gt_app *app)
@@ -481,6 +482,8 @@ static int build_window(gt_app *app)
         145, 16, "", GTCY_Labels, (ULONG)audio_rate_labels);
     app->no_audio = g = add_gadget(app, g, CHECKBOX_KIND, G_NO_AUDIO, 161, 69,
         100, 14, "No audio", GTCB_Checked, FALSE);
+    app->mono_audio = g = add_gadget(app, g, CHECKBOX_KIND, G_MONO_AUDIO, 269,
+        69, 110, 14, "Mono audio", GTCB_Checked, FALSE);
     g = add_gadget(app, g, BUTTON_KIND, G_PLAY, 8, 92, 75, 18, "Play",
                    TAG_IGNORE, 0);
     g = add_gadget(app, g, BUTTON_KIND, G_PAUSE, 87, 92, 75, 18, "Pause",
@@ -613,7 +616,7 @@ int main(void)
                     publish_options(&app);
                     break;
                 case G_H264: case G_LACE: case G_2X:
-                case G_AUDIO_RATE: case G_NO_AUDIO:
+                case G_AUDIO_RATE: case G_NO_AUDIO: case G_MONO_AUDIO:
                     publish_options(&app); break;
                 default: break;
                 }

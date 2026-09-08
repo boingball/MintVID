@@ -185,8 +185,10 @@ static int append_playback_flags(char *out, size_t cap,
     }
     if (o->no_audio) {
         if (!append_option(out, cap, "--no-audio")) return 0;
-    } else if (o->audio_rate == MR_AUDIO_RATE_LOW) {
-        if (!append_option(out, cap, "--audio-rate=low")) return 0;
+    } else {
+        if (o->audio_rate == MR_AUDIO_RATE_LOW &&
+            !append_option(out, cap, "--audio-rate=low")) return 0;
+        if (o->mono_audio && !append_option(out, cap, "--audio-mono")) return 0;
     }
     return 1;
 }
@@ -292,6 +294,8 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else goto bad;
         }
         else if (!strcmp(arg, "--no-audio")) o->no_audio = 1;
+        else if (!strcmp(arg, "--audio-mono")) o->mono_audio = 1;
+        else if (!strcmp(arg, "--audio-stereo")) o->mono_audio = 0;
         else if (!strncmp(arg, "--hls-max-width=", 16)) {
             if (!parse_uint(arg + 16, &o->hls_max_width)) goto bad;
         } else if (!strncmp(arg, "--hls-max-height=", 17)) {
@@ -317,11 +321,13 @@ static void hls_policy_text(const mr_play_options *o, char *out, size_t cap)
         snprintf(out, cap, "HLS best");
 }
 
-/* Short description of the audio output rate policy for the status line. */
+/* Short description of the audio output policy for the status line. */
 static const char *audio_policy_text(const mr_play_options *o)
 {
     if (o->no_audio) return "off";
-    return o->audio_rate == MR_AUDIO_RATE_LOW ? "Low" : "Normal";
+    if (o->audio_rate == MR_AUDIO_RATE_LOW)
+        return o->mono_audio ? "Low mono" : "Low";
+    return o->mono_audio ? "Mono" : "Normal";
 }
 
 void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)

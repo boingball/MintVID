@@ -30,28 +30,37 @@ int        mr_mpeg2_ps_probe(const uint8_t *buf, size_t len);
  * doesn't route through that adapter, so it needs its own copy of the same
  * --audio-rate=low policy). no_audio skips demuxing/decoding the MP2 track
  * entirely (mr_mpeg1_samplerate() then reports 0, same as a video-only
- * stream, so callers need no separate no_audio check of their own). */
+ * stream, so callers need no separate no_audio check of their own).
+ * mono decodes only the first channel: the Layer II bitstream still has to be
+ * parsed in full, but the polyphase synthesis - the dominant cost of MP2
+ * decode - runs once per frame instead of twice, and mr_mpeg1_audio() then
+ * emits one channel per sample frame (mr_mpeg1_channels()). */
 mr_mpeg1  *mr_mpeg1_open(const uint8_t *buf, size_t len, int low_rate,
-                         int no_audio);
+                         int no_audio, int mono);
 
 int        mr_mpeg1_width(mr_mpeg1 *m);
 int        mr_mpeg1_height(mr_mpeg1 *m);
 unsigned   mr_mpeg1_framerate_millihz(mr_mpeg1 *m);
 
 /* Audio: the effective output sample rate (0 = no audio track). MP2 is decoded
- * as stereo; the rate is halved internally if the stream is above Paula's reach
- * (~28 kHz), so this is the rate to open the audio backend with. */
+ * as stereo (mono when mr_mpeg1_open() was given mono); the rate is halved
+ * internally if the stream is above Paula's reach (~28 kHz), so this is the
+ * rate to open the audio backend with. */
 unsigned   mr_mpeg1_samplerate(mr_mpeg1 *m);
+
+/* Channels per sample frame in mr_mpeg1_audio()'s output: 2 normally, 1 in
+ * mono mode. Open the audio backend with this. */
+int        mr_mpeg1_channels(mr_mpeg1 *m);
 
 /* Decode the next video frame into `out` (RGB24, owned by the source); *pts (if
  * non-NULL) gets its presentation time in microseconds. Returns 1 on a frame, 0 at
  * end of stream. */
 int        mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, int64_t *pts_us);
 
-/* Decode one audio frame into `dst` as little-endian signed-16 stereo
- * interleaved bytes (room for 1152*4 bytes needed; explicit LE so it is correct
- * on the big-endian 68k). Returns the output sample-frame count, or 0 if none
- * is available right now. */
+/* Decode one audio frame into `dst` as little-endian signed-16 interleaved
+ * bytes, mr_mpeg1_channels() per sample frame (room for 1152*4 bytes needed;
+ * explicit LE so it is correct on the big-endian 68k). Returns the output
+ * sample-frame count, or 0 if none is available right now. */
 int        mr_mpeg1_audio(mr_mpeg1 *m, unsigned char *dst);
 
 void       mr_mpeg1_rewind(mr_mpeg1 *m);

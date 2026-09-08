@@ -114,6 +114,7 @@ on Aminet for that source and its own GPL-2.0/dual GPL-MIT licensing.
 | ReAction + GadTools controllers | ✅ matching file, IPTV and YouTube frontends for modern and OS 3.0 systems |
 | IPTV directory core | ✅ bounded iptv-org JSON/M3U parsing, joining and local filters |
 | PCM / MP2 / MP3 / AAC-LC / AC-3 audio to Paula | ✅ host-validated; AC-3 uses fixed-point stereo downmix |
+| Mono decode (`--audio-mono`) | ✅ decoder-side for MP3/MP2/AC-3, post-decode for AAC; host-validated against the stereo decode |
 
 ## Building & testing the portable core (dev host)
 
@@ -338,6 +339,18 @@ kernel. CD32 is only offered when Akiko's hardware ID is detected; an explicit
 Akiko selection is preserved. The chooser is disabled for CGX. Play starts the
 selected movie, Pause toggles playback, Stop exits it, and Fast forward toggles
 unpaced decode.
+
+**Audio controls**
+
+The **Audio** chooser picks the Paula output rate (Normal, or Low to halve it
+again), **No audio** skips the decoder and Paula entirely, and **Mono audio**
+(`--audio-mono`) asks the codec for one channel instead of two. Paula's output
+is a single 8-bit channel either way, so mono changes where the fold happens,
+not what you hear coming out of the machine: instead of decoding both channels
+and averaging them per sample, MP3, MP2 and AC-3 are asked for one channel and
+skip roughly half of their per-channel synthesis. Helix AAC has no mono mode,
+so an AAC track only saves the downmix. Worth a try when a heavy H.264 stream
+is starving the audio FIFO.
 
 **H.264 performance modes**
 
