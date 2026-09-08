@@ -61,10 +61,11 @@ error that *accumulates* between keyframes, not as an immediate failure.
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4
   Part 2, MSMPEG4v2, MPEG-1/2, MJPEG, ...) vs ffmpeg, on the host CPU
-- `cd player && make check-audio` — MP3/AAC/LATM/AC-3 decode checks, including
-  `mr_ac3_check`, which diffs decoded AC-3 against ffmpeg's own PCM (the rest
-  of that suite only counts non-silent samples, which is why two AC-3 defects
-  survived in it for so long)
+- `cd player && make check-audio` — MP3/MP2/AAC/LATM/AC-3 decode checks,
+  including `mr_ac3_check` and `mr_mp2_check`, which diff decoded AC-3 and
+  decoded .mpg MP2 against ffmpeg's own PCM (the rest of that suite only counts
+  non-silent samples, which is why two AC-3 defects survived in it for so long,
+  and why MPEG-2 Layer II audio was silently unsupported)
 - `cd player && make check-m68k` — the same conformance suite cross-built for
   m68k-linux-gnu and run under qemu-m68k (real big-endian execution; see
   above)

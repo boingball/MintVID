@@ -4,6 +4,16 @@
 
 ### Added
 
+- `make check-audio` gained `mr_mp2_check`, which decodes a .mpg through the
+  MPEG-1 program-stream source - the path `play_mpeg1()` uses, and the only
+  audio path in the player that does not go through the MintAMP adapter - and
+  diffs its PCM against ffmpeg's decode of the same track. `make check-m68k`
+  runs it too, where `mr_mpeg1_audio()`'s explicit little-endian output can
+  actually be checked. The bar is relative rather than absolute, because
+  pl_mpeg's fixed-point Layer II synthesis runs about 2% quieter than ffmpeg's
+  float decode on MPEG-1 and MPEG-2 streams alike; silence, a slipped frame or
+  a wrong bit-allocation table are all far outside it. The check also holds the
+  `--audio-mono` and `--audio-rate=low` runs against the normal one.
 - `make check` gained five H.263 conformance paths against ffmpeg, where it
   previously had none: version 1 sub-QCIF, the same bitstream remuxed into a
   3GP/QuickTime track as `s263`, version 1 with GOB headers, H.263+ with a
@@ -36,6 +46,28 @@
 
 ### Fixed
 
+- MPEG-1 files with 16, 22.05 or 24 kHz audio played silently, and `.mpg`
+  clips encoded for Paula land on exactly those rates. Below 32 kHz, Layer II
+  is MPEG-2 audio (ISO/IEC 13818-3, "low sampling frequency"), and pl_mpeg's
+  header decoder refused any frame that was not MPEG-1 - so `plm_get_samplerate()`
+  returned 0, `mr_mpeg1_samplerate()` reported no audio track, and
+  `play_mpeg1()` never opened Paula at all (it also fell back to pacing video
+  on a timer rather than on the audio clock). MPEG-2 Layer II is now decoded:
+  it halves the three MPEG-1 sample rates, has its own bitrate list, and uses
+  one fixed bit-allocation table instead of choosing between 3-B.2a..d. The
+  tables for all of that were already vendored - only the version gate kept
+  them out of reach - so the fix is the gate, the index offsets into the second
+  half of the rate and bitrate tables, and selecting the fixed allocation table
+  for MPEG-2. MPEG-1 Layer II decodes byte-for-byte as before. This also
+  reaches the general audio adapter, so MP2 at those rates now works in MPEG-TS,
+  Matroska and AVI too, not just in `.mpg`.
+- While in that header: a free-format Layer II frame (bitrate index 0) read
+  `PLM_AUDIO_BIT_RATE[-1]`. Both the free and the forbidden index are now
+  rejected before the lookup.
+- `mr_decode` reports a `.mpg`'s audio track and how much of it decoded. It
+  pulled video only, so "no audio" and "audio that decodes to nothing" looked
+  identical in the harness - which is how the defect above stayed invisible on
+  the dev host.
 - H.263 files carrying an extended PTYPE (H.263+/H.263-1998) played as a black
   window: the decoder stopped at the first picture with `H.263+: unsupported
   feature extended PTYPE`. Anything `ffmpeg -c:v h263p` writes lands there,

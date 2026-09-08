@@ -3875,6 +3875,9 @@ static const uint8_t PLM_AUDIO_QUANT_LUT_STEP_1[2][16] = {
 #define PLM_AUDIO_QUANT_TAB_B (30 | 64)   // Table 3-B.2b: high-rate, sblimit = 30
 #define PLM_AUDIO_QUANT_TAB_C 8           // Table 3-B.2c:  low-rate, sblimit =  8
 #define PLM_AUDIO_QUANT_TAB_D 12          // Table 3-B.2d:  low-rate, sblimit = 12
+// MintVID: Table B.1 in ISO 13818-3 - the one allocation table MPEG-2 Layer II
+// uses, whatever its bitrate and sample rate. Row 2 of QUANT_LUT_STEP_3.
+#define PLM_AUDIO_QUANT_TAB_LSF (30 | 128) // Table B.1: MPEG-2, sblimit = 30
 
 static const uint8_t QUANT_LUT_STEP_2[3][3] = {
 	//44.1 kHz,              48 kHz,                32 kHz
@@ -4118,25 +4121,50 @@ int plm_audio_decode_header(plm_audio_t *self) {
 		return 0;
 	}
 
-	self->version = plm_buffer_read(self->buffer, 2);
-	self->layer = plm_buffer_read(self->buffer, 2);
+	// MintVID: MPEG-2 Layer II - "low sampling frequency", ISO/IEC 13818-3 -
+	// is accepted alongside MPEG-1. It halves the three MPEG-1 sample rates
+	// to 22050/24000/16000, has its own bitrate list, and uses one fixed
+	// bit-allocation table instead of choosing between 3-B.2a..d. The tables
+	// for all of that are already here (second halves of
+	// PLM_AUDIO_SAMPLE_RATE and PLM_AUDIO_BIT_RATE, row 2 of
+	// PLM_AUDIO_QUANT_LUT_STEP_3); only this gate kept them out of reach.
+	// 22.05 kHz is the natural rate to target Paula with, so those files
+	// decoded as silence.
+	//
+	// The version now selects a table in plm_audio_decode_frame(), so it is
+	// stored with the rest of the header below, once this frame is known to
+	// be one we can decode - never left behind by a rejected frame.
+	int version = plm_buffer_read(self->buffer, 2);
+	int layer = plm_buffer_read(self->buffer, 2);
 	int hasCRC = !plm_buffer_read(self->buffer, 1);
+	int lsf = (version == PLM_AUDIO_MPEG_2);
 
 	if (
-		self->version != PLM_AUDIO_MPEG_1 ||
-		self->layer != PLM_AUDIO_LAYER_II
+		(version != PLM_AUDIO_MPEG_1 && !lsf) ||
+		layer != PLM_AUDIO_LAYER_II
 	) {
 		return 0;
 	}
 
+	// Index 0 is the free format and 15 the forbidden one; neither has a
+	// bitrate to look up. (Without the lower bound this indexed
+	// PLM_AUDIO_BIT_RATE at -1.)
 	int bitrate_index = plm_buffer_read(self->buffer, 4) - 1;
-	if (bitrate_index > 13) {
+	if (bitrate_index < 0 || bitrate_index > 13) {
 		return 0;
 	}
 
 	int samplerate_index = plm_buffer_read(self->buffer, 2);
 	if (samplerate_index == 3) {
 		return 0;
+	}
+
+	// Both tables hold MPEG-1 first, then MPEG-2; the offsets keep the
+	// version folded into the stored indices, so the resync check below
+	// still rejects a frame whose version changed under us.
+	if (lsf) {
+		bitrate_index += 14;
+		samplerate_index += 4;
 	}
 
 	int padding = plm_buffer_read(self->buffer, 1);
@@ -4155,6 +4183,8 @@ int plm_audio_decode_header(plm_audio_t *self) {
 		return 0;
 	}
 
+	self->version = version;
+	self->layer = layer;
 	self->bitrate_index = bitrate_index;
 	self->samplerate_index = samplerate_index;
 	self->mode = mode;
@@ -4188,9 +4218,18 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 	int tab3 = 0;
 	int sblimit = 0;
 	
-	int tab1 = (self->mode == PLM_AUDIO_MODE_MONO) ? 0 : 1;
-	int tab2 = PLM_AUDIO_QUANT_LUT_STEP_1[tab1][self->bitrate_index];
-	tab3 = QUANT_LUT_STEP_2[tab2][self->samplerate_index];
+	// MintVID: MPEG-2 has one allocation table, and its bitrate/samplerate
+	// indices are offset past the MPEG-1 half of their tables - so the
+	// MPEG-1-only bitrate-class lookup has to be skipped entirely rather
+	// than indexed out of bounds.
+	if (self->version == PLM_AUDIO_MPEG_1) {
+		int tab1 = (self->mode == PLM_AUDIO_MODE_MONO) ? 0 : 1;
+		int tab2 = PLM_AUDIO_QUANT_LUT_STEP_1[tab1][self->bitrate_index];
+		tab3 = QUANT_LUT_STEP_2[tab2][self->samplerate_index];
+	}
+	else {
+		tab3 = PLM_AUDIO_QUANT_TAB_LSF;
+	}
 	sblimit = tab3 & 63;
 	tab3 >>= 6;
 
