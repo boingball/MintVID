@@ -15,6 +15,7 @@
 #include "ivd.h"
 #include "ih264d.h"
 #include "ih264d_stage_profile.h"
+#include "ih264_mc_degrade.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -1046,6 +1047,36 @@ int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode)
     ih264d_ctl_degrade_ip_t in;
     ih264d_ctl_degrade_op_t out;
     IVD_FRAME_SKIP_MODE_T skip_mode = IVD_SKIP_NONE;
+    /*
+     * The inter-prediction half of what i4_degrade_type asks for below is
+     * dead in the vendored decoder - it sets ps_dec->i4_mv_frac_mask and
+     * nothing ever reads it again, so every picture stays at six-tap quality
+     * however hard the mode asks for cheaper filters. ih264_mc_degrade.c
+     * supplies the missing filter sets; pick one here alongside the degrade
+     * request, so a mode that says "fastest inter prediction filters"
+     * actually gets them.
+     *
+     * The swap is per stream rather than per picture, which costs nothing in
+     * fidelity: only inter pictures perform motion compensation at all, so a
+     * stream-wide swap is exactly libavc's i4_degrade_pics 4 ("all frames")
+     * for MC purposes, and every mode that degrades below asks for 4.
+     *
+     * Every mode asks for 4 because a *mixed* degrade policy is actively
+     * harmful in the vendored decoder. i4_degrade_pics 1 and 3 leave some
+     * pictures undegraded, and libavc skips ih264d_set_deblocking_parameters()
+     * and pf_compute_bs() per macroblock on the degraded ones
+     * (ih264d_parse_pslice.c) while ps_dec->ps_deblk_pic - the per-macroblock
+     * deblocking descriptor array those calls fill in - persists across
+     * pictures. So the next undegraded picture deblocks against the previous
+     * pictures' stale MB_DISABLE_FILTERING flags, boundary strengths and QPs:
+     * wrong output, and far more edges filtered than the picture actually
+     * has. Measured on a 320x180 CABAC stream under qemu-m68k, the old
+     * i4_degrade_pics 3 Fast mode spent 51% of the whole decode inside
+     * ih264d_deblock_mb_nonmbaff() and ran ~47% SLOWER than Quality, which
+     * deblocks every picture properly. Only an all-or-nothing policy keeps
+     * that array consistent with the picture being filtered.
+     */
+    mr_mc_quality mc = MR_MC_QUALITY_FULL;
     if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return 0;
     s = (h264_state *)dec->priv;
     memset(&in, 0, sizeof in);
@@ -1057,15 +1088,16 @@ int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode)
     in.i4_nondegrade_interval = 4;
     switch (mode) {
     case MR_H264_SPEED_BALANCED:
-        /* Disable deblocking + cheaper interpolation on non-reference frames. */
-        in.i4_degrade_type = (1 << 1) | (1 << 2);
-        in.i4_degrade_pics = 1;
+        /* Deblocking off, spec-exact motion compensation. */
+        in.i4_degrade_type = (1 << 1);
+        in.i4_degrade_pics = 4;
         break;
     case MR_H264_SPEED_TURBO:
         /* Fast's cheap filtering plus decoder-level B-picture skipping. */
+        mc = MR_MC_QUALITY_BILINEAR;
         skip_mode = IVD_SKIP_B;
         in.i4_degrade_type = (1 << 1) | (1 << 3);
-        in.i4_degrade_pics = 3;
+        in.i4_degrade_pics = 4;
         break;
     case MR_H264_SPEED_TURBO_PLUS:
         /* Deliberately aggressive: ask libavc to skip both P and B pictures,
@@ -1076,30 +1108,45 @@ int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode)
          * bare 68060) it can run long enough to drain Paula's whole hardware
          * buffer with no audio_service() in between (h264_decode()'s service
          * hook only fires between NAL sub-calls, never mid-call - see
-         * mr_h264_set_service()'s callers). Degrade every decoded picture,
-         * same as TurboGT's IH264D_CMD_CTL_DEGRADE level below, instead of
-         * only non-key ones: it disables I-frame deblocking here, which
-         * shortens exactly that blocking call and keeps Paula fed. Turbo+ is
+         * mr_h264_set_service()'s callers). Degrading every decoded picture
+         * disables I-frame deblocking here, which shortens exactly that
+         * blocking call and keeps Paula fed. Turbo+ is
          * already documented as a last-resort keyframe/slideshow mode, so
          * trading a little keyframe sharpness for smooth audio is the right
          * side of that trade. */
+        mc = MR_MC_QUALITY_BILINEAR;
         skip_mode = IVD_SKIP_PB;
         in.i4_degrade_type = (1 << 1) | (1 << 3);
         in.i4_degrade_pics = 4;
         break;
     case MR_H264_SPEED_TURBO_GT:
-        /* Preserve the reference P-frame chain like Turbo, but apply the
-         * maximum degradation policy to every decoded picture. libavc still
-         * limits cheap interpolation to non-reference pictures; the extra
-         * saving over Turbo is therefore chiefly I-frame deblocking. */
+        /* Retained as a selectable name - the GUI choosers, --h264-speed=
+         * turbogt and saved settings all still resolve - but its policy is
+         * now Turbo's.
+         *
+         * TurboGT used to differ from Turbo by asking for i4_degrade_pics 4
+         * instead of 3, i.e. by disabling deblocking on keyframes too. That
+         * distinction is gone because every degrading mode now asks for 4:
+         * mixing degraded and undegraded pictures is what corrupted the
+         * per-macroblock deblocking state (see the note above), so an
+         * all-or-nothing policy is the only correct one and Turbo already
+         * uses it. The remaining candidate lever, truncating motion vectors
+         * to whole samples, was measured and rejected - 3-4% for 17 dB (see
+         * ih264_mc_degrade.h). Nothing worth having is left between Turbo
+         * and Turbo+'s keyframe slideshow, so TurboGT stops pretending
+         * otherwise rather than shipping a mode that is only nominally
+         * faster. It is now both quicker and much cleaner than the TurboGT
+         * of previous releases. */
+        mc = MR_MC_QUALITY_BILINEAR;
         skip_mode = IVD_SKIP_B;
         in.i4_degrade_type = (1 << 1) | (1 << 3);
         in.i4_degrade_pics = 4;
         break;
     case MR_H264_SPEED_FAST:
-        /* Keep keyframes pristine; favour throughput everywhere else. */
-        in.i4_degrade_type = (1 << 1) | (1 << 3);
-        in.i4_degrade_pics = 3;
+        /* Balanced plus bilinear instead of six-tap interpolation. */
+        mc = MR_MC_QUALITY_BILINEAR;
+        in.i4_degrade_type = (1 << 1) | (1 << 2);
+        in.i4_degrade_pics = 4;
         break;
     default:
         in.i4_degrade_type = 0;
@@ -1109,6 +1156,7 @@ int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode)
     out.u4_size = sizeof out;
     if (ih264d_api_function(s->handle, &in, &out) != IV_SUCCESS)
         return 0;
+    if (!mr_h264_port_set_mc_quality(s->handle, mc)) return 0;
 
     /*
      * The vendored libavc frame-skip API is restored by the companion

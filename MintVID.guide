@@ -165,6 +165,13 @@ CD32 Akiko hardware, or the Kalms converter for chipset playback (it is
 disabled for CGX). Kalms is the default; incompatible geometry or bitmap
 layouts fall back safely to graphics.library.
 
+On a HAM6 or HAM8 screen whose height is an exact whole fraction of the
+decoded height (the 640x360 into 640x180 shape a non-laced fit normally
+produces), H.264 is converted straight from YUV to HAM pixel bytes rather
+than through a full-resolution RGB24 frame - only the rows the downscale
+keeps are converted, cutting that conversion by about 45%. Other HAM
+geometries keep the established route.
+
   Play          starts the selected movie
   Pause         toggles playback
   Stop          exits the player
@@ -172,22 +179,24 @@ layouts fall back safely to graphics.library.
 
 @{b}H.264 performance modes@{ub}
 
-TurboGT is the 1.1.x default. Auto currently resolves to the same policy.
+TurboGT remains the default. Auto resolves to the same policy.
 
   Quality   full filtering and no deliberate frame skipping
-  Balanced  reduces work only on non-reference pictures; often little
-            faster than Quality on streams with few B-frames
-  Fast      cheaper filtering on non-key pictures; keeps every frame
+  Balanced  in-loop deblocking disabled; motion compensation stays exact
+  Fast      Balanced plus bilinear instead of six-tap interpolation; still
+            keeps every frame
   Turbo     Fast policy plus B-frame skipping; keeps the P-frame chain
-  Turbo+    skips both P- and B-frames and applies maximum degradation (incl.
-            no I-frame deblocking) to the keyframes it still shows, keeping
-            that decode short enough to hold audio through it; last-resort
-            keyframe/slideshow mode
-  TurboGT   skips B-frames, keeps P-frames, and applies maximum degradation
-            to every decoded picture; best aggressive PiStorm/Emu68 mode
+  Turbo+    skips both P- and B-frames, so only keyframes are decoded and
+            shown, keeping that decode short enough to hold audio through it;
+            last-resort keyframe/slideshow mode
+  TurboGT   same policy as Turbo, kept as a selectable name
 
-Use Fast when keeping every frame matters more than maximum speed. TurboGT is
-normally preferable to Turbo+ because it retains useful P-frames.
+Use Fast when keeping every frame matters more than maximum speed. Turbo and
+TurboGT are now the same setting: what used to separate them was
+disabling deblocking on keyframes as well, and every mode from Balanced down
+now does that, because leaving some pictures undegraded corrupted the
+decoder's per-macroblock deblocking state (it made Fast slower than Quality).
+All of these modes are substantially faster than they were in 1.2.0.
 
 @{b}Fullscreen (RTG/CGX only)@{ub}
 

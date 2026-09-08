@@ -10,11 +10,21 @@
 #include "ih264d_function_selector.h"
 #include "ih264_m68k_optim.h"
 #include "ih264_m68k_bs.h"
+#include "ih264_mc_degrade.h"
 #include "ih264d_stage_profile.h"
 
 void ih264d_init_function_ptr(dec_struct_t *codec)
 {
     ih264d_init_function_ptr_generic(codec);
+    /* Inter prediction - the sixteen-entry six-tap luma table and the chroma
+     * filter - is owned by ih264_mc_degrade.c, which also supplies the
+     * reduced-quality filter sets mr_h264_set_speed_mode() switches to when
+     * the application asks libavc to degrade (see that file for why libavc's
+     * own i4_degrade_type inter-prediction bits no longer do anything).
+     * Installed unconditionally rather than under MR_M68K_ASM, so the exact
+     * chroma fast paths run - and the host conformance suite validates them -
+     * on every build, not only the Amiga one. */
+    mr_h264_port_install_inter_pred(codec, MR_MC_QUALITY_FULL);
     /* MR_M68K_ASM is an explicit build flag (set by Makefile.amiga and
      * tests/run_m68k_check.sh), not GCC's own __mc68000__ predefine: a real
      * m68k-amigaos-gcc build hit an undefined-reference link error against
@@ -34,31 +44,6 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
     /* Replace only bit-exact leaf primitives.  Keeping selection here, rather
      * than modifying the imported libavc tree, makes the port auditable and
      * leaves every non-m68k build on Ittiam's reference C implementation. */
-    codec->apf_inter_pred_luma[0] = mr_ih264_inter_pred_luma_copy_m68k;
-    codec->apf_inter_pred_luma[2] = mr_ih264_inter_pred_luma_horz_m68k;
-    codec->apf_inter_pred_luma[8] = mr_ih264_inter_pred_luma_vert_m68k;
-    codec->apf_inter_pred_luma[5] =
-        mr_ih264_inter_pred_luma_horz_qpel_vert_qpel_m68k;
-    codec->apf_inter_pred_luma[7] =
-        mr_ih264_inter_pred_luma_horz_qpel_vert_qpel_m68k;
-    codec->apf_inter_pred_luma[13] =
-        mr_ih264_inter_pred_luma_horz_qpel_vert_qpel_m68k;
-    codec->apf_inter_pred_luma[15] =
-        mr_ih264_inter_pred_luma_horz_qpel_vert_qpel_m68k;
-    codec->apf_inter_pred_luma[1] = mr_ih264_inter_pred_luma_horz_qpel_m68k;
-    codec->apf_inter_pred_luma[3] = mr_ih264_inter_pred_luma_horz_qpel_m68k;
-    codec->apf_inter_pred_luma[4] = mr_ih264_inter_pred_luma_vert_qpel_m68k;
-    codec->apf_inter_pred_luma[12] = mr_ih264_inter_pred_luma_vert_qpel_m68k;
-    codec->apf_inter_pred_luma[10] =
-        mr_ih264_inter_pred_luma_horz_hpel_vert_hpel_m68k;
-    codec->apf_inter_pred_luma[9] =
-        mr_ih264_inter_pred_luma_horz_qpel_vert_hpel_m68k;
-    codec->apf_inter_pred_luma[11] =
-        mr_ih264_inter_pred_luma_horz_qpel_vert_hpel_m68k;
-    codec->apf_inter_pred_luma[6] =
-        mr_ih264_inter_pred_luma_horz_hpel_vert_qpel_m68k;
-    codec->apf_inter_pred_luma[14] =
-        mr_ih264_inter_pred_luma_horz_hpel_vert_qpel_m68k;
     codec->pf_default_weighted_pred_luma =
         mr_ih264_default_weighted_pred_luma_m68k;
     codec->pf_default_weighted_pred_chroma =
@@ -108,7 +93,6 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
     codec->pf_deblk_chroma_horz_bs4 = mr_ih264_deblk_chroma_horz_bs4_m68k;
     codec->pf_deblk_chroma_vert_bslt4 = mr_ih264_deblk_chroma_vert_bslt4_m68k;
     codec->pf_deblk_chroma_horz_bslt4 = mr_ih264_deblk_chroma_horz_bslt4_m68k;
-    codec->pf_inter_pred_chroma = mr_ih264_inter_pred_chroma_m68k;
     codec->pf_iquant_itrans_recon_luma_4x4 =
         mr_ih264_iquant_itrans_recon_4x4_m68k;
     codec->pf_iquant_itrans_recon_luma_4x4_dc =

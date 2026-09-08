@@ -327,6 +327,12 @@ CGX playback opens a size-gadget window and scales the video as that window is
 resized. The **C2P** chooser selects the standard graphics.library path, CD32 Akiko
 hardware, or the Kalms converter for chipset playback. Kalms is the default;
 unsupported geometry or bitmap layouts fall back safely to graphics.library.
+For H.264 on a HAM6 or HAM8 screen whose height is an exact whole fraction of
+the decoded height — the 640x360-into-640x180 shape a non-laced AGA fit
+normally produces — the player converts the decoder's YUV planes straight to
+HAM pixel bytes instead of building a full-resolution RGB24 frame and encoding
+that, converting only the rows the downscale keeps and cutting the conversion
+by about 45%. Other HAM geometries keep the established RGB24 route.
 Changing output mode restores Kalms whenever the new mode has a matching
 kernel. CD32 is only offered when Akiko's hardware ID is detected; an explicit
 Akiko selection is preserved. The chooser is disabled for CGX. Play starts the
@@ -335,18 +341,29 @@ unpaced decode.
 
 **H.264 performance modes**
 
-TurboGT is the 1.1.x default. The choices trade picture quality and/or decoded
+TurboGT remains the default. The choices trade picture quality and/or decoded
 frames for throughput:
 
 | Mode | Decoder policy | When to use it |
 |------|----------------|----------------|
-| **Auto** | Currently resolves to TurboGT. | Keep the release default. |
+| **Auto** | Resolves to TurboGT. | Keep the release default. |
 | **Quality** | Full filtering; no deliberate frame skipping. | Quality comparisons or very fast systems. |
-| **Balanced** | Reduces work only on non-reference pictures. | Mild quality/performance trade-off; often close to Quality on streams with few B-frames. |
-| **Fast** | Cheaper filtering on non-key pictures; keeps every frame. | Prefer this when avoiding deliberate frame skips matters more than maximum speed. |
+| **Balanced** | In-loop deblocking disabled; motion compensation stays spec-exact. | Mild quality/performance trade-off. |
+| **Fast** | Balanced plus bilinear rather than six-tap interpolation; keeps every frame. | Prefer this when avoiding deliberate frame skips matters more than maximum speed. |
 | **Turbo** | Fast policy plus B-frame skipping. | Extra speed while preserving the P-frame reference chain. |
 | **Turbo+** | Skips both P- and B-frames. | Last-resort keyframe/slideshow mode; not recommended for normal viewing. |
-| **TurboGT** | Skips B-frames and applies maximum degradation to every decoded picture while retaining P-frames. | Best aggressive mode for PiStorm/Emu68 and the normal default. |
+| **TurboGT** | Same policy as Turbo. | Kept as a selectable name; see below. |
+
+Turbo and TurboGT are now the same setting. TurboGT used to differ by
+disabling deblocking on keyframes too, and every mode from Balanced down now
+does that unconditionally: leaving some pictures undegraded made the decoder
+filter the remaining ones against stale per-macroblock deblocking parameters,
+which was both wrong and slow enough that Fast ran *slower* than Quality. The
+one candidate replacement lever for TurboGT - truncating motion vectors to
+whole samples - was implemented and measured at 3-4% for a 17 dB PSNR loss, so
+it is not shipped. Every mode below Quality is markedly faster than in 1.2.0;
+measured on a 320x180 CABAC stream, Fast by 53%, Turbo by 49%, Balanced by 30%
+and TurboGT by 15%, with Quality itself 8% faster at bit-identical output.
 
 In RTG/CGX mode, `F` switches the live player between its resizeable window and
 a borderless public-screen-sized view without restarting decoding; `--fullscreen`

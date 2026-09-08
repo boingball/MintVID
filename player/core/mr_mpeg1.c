@@ -111,6 +111,21 @@ int mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, int64_t *pts_us)
     if (!m) return 0;
     fr = plm_decode_video(m->plm);
     if (!fr) return 0;
+    /*
+     * Deliberately pl_mpeg's own converter, not MintVID's shared
+     * mr_yuv420_to_rgb24(), even though every other codec uses the shared
+     * one. Switching this over was tried and measured worse: both are
+     * multiply-free (GCC strength-reduces pl_mpeg's constant multiplies into
+     * shift/add chains - checking the disassembly rather than the source is
+     * what settled that) and both step 2x2 quads, but on a 352x288 frame
+     * under qemu-m68k pl_mpeg's costs 649ms/300 against the shared
+     * converter's 821ms with core/mr_yuv_m68k.S active, and its output is
+     * also marginally closer to the ffmpeg reference (worst MAE 0.963 vs
+     * 1.161). Revisit if the YUV_ASM=0 question settles in the portable C's
+     * favour on real hardware - the shared C form measures 661ms, a wash with
+     * this, and then one validated converter for everything would win on
+     * merit rather than only on tidiness.
+     */
     plm_frame_to_rgb(fr, m->fb, m->w * 3);
     out->width  = m->w;
     out->height = m->h;

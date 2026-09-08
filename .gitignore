@@ -9,6 +9,7 @@ player/mr_c2p_check
 player/mr_ham_check
 player/mr_dither_check
 player/mr_yuv_dither_check
+player/mr_yuv_ham_check
 player/mr_mpeg1_probe_check
 player/mr_ps_check
 player/mr_ts_mp2_check
@@ -19,6 +20,7 @@ player/mr_pcm_u8_check
 player/mr_audio_rate_check
 player/mr_aspect_check
 player/mr_h264_m68k_check
+player/mr_h264_mc_degrade_check
 player/mr_iptv_check
 player/mr_youtube_check
 player/mr_youtube_search_check

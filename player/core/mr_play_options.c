@@ -58,7 +58,8 @@ void mr_play_options_default(mr_play_options *o)
      * off. Disable with --no-live-resync. */
     o->live_resync = 1;
     /* TurboGT keeps the P-frame reference chain while applying the strongest
-     * practical libavc degradation policy and skipping B pictures. */
+     * practical libavc degradation policy and skipping B pictures. It now
+     * resolves to the same policy as Turbo - see mr_h264_set_speed_mode(). */
     o->h264_performance = MR_H264_PERF_TURBO_GT;
     o->audio_rate = MR_AUDIO_RATE_NORMAL;
 }

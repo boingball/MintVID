@@ -585,9 +585,30 @@ static int aga_supports_indexed(void *handle, int *indexed_depth)
 
 /*
  * Non-zero whenever this AGA geometry can go straight from H.264's decoded
- * YUV420P planes to indexed pixels (core/mr_yuv_dither.h) instead of the
- * ordinary mr_yuv420_to_rgb24() -> mr_scale_resize_rgb24() -> mr_dither_rgb8()
- * pipeline, for any plain 4-, 5- or 8-plane configuration. Three shapes exist:
+ * YUV420P planes to chunky pixels instead of the ordinary
+ * mr_yuv420_to_rgb24() -> mr_scale_resize_rgb24() -> encode pipeline.
+ *
+ * Two encodings qualify, reported through *ham:
+ *
+ *   - *ham == 0: any plain 4-, 5- or 8-plane indexed configuration, via
+ *     core/mr_yuv_dither.h's ordered dither;
+ *   - *ham == 6 or 8: a HAM6/HAM8 screen, via core/mr_yuv_ham.h, and only
+ *     for the exact vertical-downscale shape. Hold-and-modify resets at every
+ *     row start, so it fuses with YUV->RGB just as the dither does, and the
+ *     resulting HAM pixel bytes are one chunky byte per pixel that reach the
+ *     screen through the same aga_show_indexed() copy, C2P and blit as
+ *     palette indices. The restriction to one shape is a measured one, not a
+ *     structural limit: the three-stage path aga_show() uses converts YUV to
+ *     RGB in hand-written assembly, and only where the fused encoder converts
+ *     *fewer samples* - the surviving rows of a vertical downscale - does it
+ *     beat that reliably. See core/mr_yuv_ham.h.
+ *
+ * Pixel doubling is not offered for HAM (see the s->scale test below): the
+ * scale==2 shapes go through aga_show()'s own encode-then-mr_scale2x_u8()
+ * ordering, and the Kalms 2x2 kernel enlarges while converting, neither of
+ * which this has any way to reproduce for HAM control bytes.
+ *
+ * Three geometry shapes exist (HAM takes only the second):
  *
  *   - identity, no resize at all (s->dw==src_w, s->dh==src_h) - reported as
  *     vscale == 1 (mr_yuv420_dither_indexed() accepts it as a valid no-op,
@@ -612,24 +633,29 @@ static int aga_supports_indexed(void *handle, int *indexed_depth)
  */
 static int aga_supports_yuv_indexed(void *handle, int src_w, int src_h,
                                     int *dst_w, int *dst_h, int *vscale,
-                                    int *indexed_depth)
+                                    int *indexed_depth, int *ham)
 {
     aga_state *s = (aga_state *)handle;
-    if (!s || s->ham ||
-        (s->depth != 4 && s->depth != 5 && s->depth != 8)) return 0;
+    if (!s) return 0;
+    if (!s->ham && s->depth != 4 && s->depth != 5 && s->depth != 8) return 0;
     if (src_w <= 0 || src_h <= 0) return 0;
     if (indexed_depth) *indexed_depth = s->depth;
+    if (ham) *ham = s->ham;
     /* Kalms' fused 2x2 converter consumes the source-sized indexed image and
      * performs the enlargement while producing the bitplanes. Let H.264 use
      * the existing direct YUV420P -> indexed path here too: this removes the
      * RGB24 queue/intermediate and the later RGB -> indexed pass, in addition
-     * to the scale pass that the Kalms kernel already removed. */
-    if (s->kalms_kind == KALMS_2X2_8 && src_w == s->w && src_h == s->h) {
+     * to the scale pass that the Kalms kernel already removed. HAM never
+     * selects this kernel (it needs depth 8 and scale 2, and the HAM shapes
+     * below require scale 1). */
+    if (!s->ham && s->kalms_kind == KALMS_2X2_8 &&
+        src_w == s->w && src_h == s->h) {
         *dst_w = src_w; *dst_h = src_h; *vscale = 1;
         return 1;
     }
     if (s->scale != 1) return 0;
     if (!s->resize) {
+        if (s->ham) return 0;
         *dst_w = s->w; *dst_h = s->h; *vscale = 1;
         return 1;
     }
@@ -639,6 +665,7 @@ static int aga_supports_yuv_indexed(void *handle, int src_w, int src_h,
         int vs = src_h / s->dh;
         if (vs > 1) { *vscale = vs; return 1; }
     }
+    if (s->ham) return 0;
     *vscale = 0;
     return 1;
 }

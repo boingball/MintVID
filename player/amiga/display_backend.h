@@ -42,17 +42,26 @@ typedef struct {
                           int h, int idx_stride, int dy0, int dy1,
                           mr_display_service_fn service, void *service_opaque);
     /* Optional: report whether this handle can accept direct YUV420P ->
-     * indexed conversion, filling the indexed-buffer geometry, fast-path vscale
-     * (1 or an exact vertical divisor; 0 selects general resize), and active
-     * 4/5/8-plane palette depth. A caller should prefer this over the RGB
-     * supports_indexed() route when both apply.
+     * chunky conversion, filling the destination geometry, fast-path vscale
+     * (1 or an exact vertical divisor; 0 selects general resize), the active
+     * plane depth, and the pixel encoding. A caller should prefer this over
+     * the RGB supports_indexed() route when both apply.
+     *
+     * *ham is 0 when the bytes are palette indices in the active 4/5/8-plane
+     * cube (core/mr_yuv_dither.h), or 6/8 when they are HAM6/HAM8 pixel bytes
+     * (core/mr_yuv_ham.h). Both are one chunky byte per pixel bound for the
+     * same C2P and blit, so they are produced into the same buffer and
+     * consumed the same way; only the converter the caller runs differs.
+     * *indexed_depth is the screen's plane count either way (HAM6 -> 6,
+     * HAM8 -> 8).
+     *
      * Produced buffers are consumed the same way as supports_indexed()'s -
      * via show_indexed(), called with *dst_w and *dst_h instead of the source
-     * dimensions. A backend may subsequently scale those indices while
+     * dimensions. A backend may subsequently scale those bytes while
      * presenting them (the AGA Kalms 2x2 path does this). */
     int   (*supports_yuv_indexed)(void *handle, int src_w, int src_h,
                                   int *dst_w, int *dst_h, int *vscale,
-                                  int *indexed_depth);
+                                  int *indexed_depth, int *ham);
 } display_backend;
 
 extern const display_backend backend_cgx;

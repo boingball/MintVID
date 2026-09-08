@@ -32,8 +32,11 @@ typedef struct mr_h264_stage_us {
     unsigned long intra_us;
 } mr_h264_stage_us;
 
-/* Wrap this codec instance's apf_inter_pred_luma[]/deblock/recon function
- * pointers with timing instrumentation. Call once, after
+/* Wrap this codec instance's apf_inter_pred_luma[]/pf_inter_pred_chroma/
+ * deblock/recon function pointers with timing instrumentation. mc_us covers
+ * chroma prediction as well as luma - chroma is motion compensation too, and
+ * was the hottest single function in a decode before ih264_mc_degrade.c's
+ * exact dx/dy shortcuts. Call once, after
  * ih264d_init_function_ptr_generic() and any MR_M68K_ASM overrides have set
  * up the real implementations to measure - this captures whatever is
  * sitting in each slot at that point (generic C or our asm) and installs a
@@ -43,6 +46,13 @@ typedef struct mr_h264_stage_us {
  * mr_h264.c, which is portable core code - never has to pull in libavc's
  * ih264d_structs.h just to spell the parameter type. */
 void mr_h264_stage_profile_install(void *codec);
+
+/* Re-apply the motion-compensation wrappers after something else has
+ * rewritten apf_inter_pred_luma[] - mr_h264_set_speed_mode() switching filter
+ * sets, via ih264_mc_degrade.c. No-op until mr_h264_stage_profile_install()
+ * has run, so a normal playback build (and the install-time call order) costs
+ * nothing. */
+void mr_h264_stage_profile_rewrap_mc(void *codec);
 
 /* Zero the accumulators before a libavc decode sub-call. */
 void mr_h264_stage_profile_reset(void);
