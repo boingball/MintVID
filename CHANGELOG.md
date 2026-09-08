@@ -4,6 +4,9 @@
 
 ### Added
 
+- `make check-audio` gained an MPEG-2.5 MP3 fixture (11.025 kHz stereo in AVI),
+  which covers both the newly reachable Helix path and MintVID's own
+  `mp3_frame_bytes()`, whose MPEG-2.5 frame-length arithmetic had never run.
 - `make check-audio` gained `mr_mp2_check`, which decodes a .mpg through the
   MPEG-1 program-stream source - the path `play_mpeg1()` uses, and the only
   audio path in the player that does not go through the MintAMP adapter - and
@@ -46,6 +49,19 @@
 
 ### Fixed
 
+- MP3 at 8, 11.025 or 12 kHz decoded to silence. Below 16 kHz, Layer III is
+  MPEG-2.5 - a third header version - and the vendored Helix decoder shipped
+  with the 12-bit syncword, which matches only MPEG-1 and MPEG-2 frames. An
+  MPEG-2.5 frame's second header byte is `0xe2`/`0xe3`, so `MP3FindSyncWord()`
+  never found one and every frame was rejected: no error, no samples. Fixed in
+  MintAMP (boingball/MintAMP#498, submodule bumped here) by enabling the 11-bit
+  syncword the decoder's own tables were always ready for; MPEG-1 and MPEG-2
+  streams decode byte-for-byte as before. This is the same shape as the MP2
+  defect below, in the other of the two Layer decoders.
+- `mr_audio_check` required the low-rate run's output to be exactly half the
+  normal run's. The decoder divides integers, so an odd rate reports 5512 Hz
+  against 11025 and the check failed on a correct decode - which is exactly the
+  rate an MPEG-2.5 fixture has.
 - MPEG-1 files with 16, 22.05 or 24 kHz audio played silently, and `.mpg`
   clips encoded for Paula land on exactly those rates. Below 32 kHz, Layer II
   is MPEG-2 audio (ISO/IEC 13818-3, "low sampling frequency"), and pl_mpeg's

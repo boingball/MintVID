@@ -421,6 +421,7 @@ check-audio: mr_audio_check mr_ac3_check mr_mp2_check
 	    -a -f tests/assets/test_mp3_stereo.avi \
 	    -a -f tests/assets/test_mpeg1_mp2.mpg \
 	    -a -f tests/assets/ref_mpeg1_mp2.raw \
+	    -a -f tests/assets/test_mp3_mpeg25.avi \
 	    -a -f tests/assets/test_mp2_stereo.ts \
 	    -a -f tests/assets/test_ac3_stereo.mkv \
 	    || sh tests/gen_audio_assets.sh
@@ -435,6 +436,7 @@ check-audio: mr_audio_check mr_ac3_check mr_mp2_check
 	./mr_audio_check tests/assets/test_h264_ac3.mkv ac3
 	./mr_audio_check tests/assets/test_h264_ac3.ts ac3
 	./mr_audio_check tests/assets/test_mp3_stereo.avi mp3
+	./mr_audio_check tests/assets/test_mp3_mpeg25.avi mp3
 	./mr_audio_check tests/assets/test_mp2_stereo.ts mp2
 	./mr_audio_check tests/assets/test_ac3_stereo.mkv ac3
 	@test -f tests/assets/ref_ac3_mkv.raw -a -f tests/assets/ref_ac3_ts.raw \

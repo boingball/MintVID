@@ -14,6 +14,15 @@ ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=25:duration=2 \
     -f lavfi -i sine=frequency=659:sample_rate=44100:duration=2 \
     -c:v mpeg4 -bf 0 -qscale:v 5 -c:a aac -b:a 96k \
     -shortest test_aac.mp4 -y
+# 11.025 kHz is below MPEG-2 audio's lowest rate, so this is MPEG-2.5 Layer
+# III - a third header version, with its own halved-again sample rates, that
+# Helix shipped unable to find a syncword for. Stereo, with a different tone
+# per channel, so the mono fold is checked on it too.
+ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=25:duration=2 \
+    -f lavfi -i "sine=frequency=440:sample_rate=11025:duration=2[l];\
+sine=frequency=1320:sample_rate=11025:duration=2[r];[l][r]amerge=inputs=2" \
+    -c:v mpeg4 -bf 0 -qscale:v 8 -c:a libmp3lame -b:a 32k -ar 11025 -ac 2 \
+    -shortest test_mp3_mpeg25.avi -y
 
 # Stereo fixtures with a different tone in each channel: the mono fixtures
 # above cannot tell "kept one channel" apart from "kept both", so these are the
