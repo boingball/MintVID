@@ -184,9 +184,15 @@ int main(int argc, char **argv)
                            &mono);
     if (rc) { free(left.capture); free(mono.capture); return rc; }
 
-    if (rate_low * 2 != rate_normal) {
+    /* The low-rate run halves whatever stride normal mode picked, so its
+     * output rate is the normal one divided by two - truncated, since
+     * mr_audio_decoder_open() divides integers. An odd rate like 11025 comes
+     * back as 5512, not 5512.5, so the two are compared with that truncation
+     * allowed for rather than requiring an exact doubling. */
+    if (rate_low != rate_normal / 2) {
         fprintf(stderr, "low-rate mismatch: normal=%u Hz low=%u Hz "
-                        "(expected exactly half)\n", rate_normal, rate_low);
+                        "(expected %u Hz)\n", rate_normal, rate_low,
+                rate_normal / 2);
         free(left.capture); free(mono.capture);
         return 1;
     }
