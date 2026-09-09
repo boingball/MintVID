@@ -3,9 +3,18 @@
 #include <stdio.h>
 #include <string.h>
 #include <limits.h>
+/* The m68k test wants to call the IDCT asm explicitly, but enabling the global
+ * MR_M68K_ASM dispatch while instantiating all of pl_mpeg also creates link
+ * dependencies on every unrelated video/audio asm helper. Keep the portable
+ * pl_mpeg implementation as the oracle and select only the primitive under
+ * test explicitly. */
+#if defined(MR_M68K_ASM)
+#define MR_TEST_M68K_IDCT 1
+#undef MR_M68K_ASM
+#endif
 #define PL_MPEG_IMPLEMENTATION
 #include "../core/pl_mpeg.h"
-#if defined(MR_M68K_ASM)
+#if defined(MR_TEST_M68K_IDCT)
 extern void plm_audio_idct36_m68k(int s[32][3], int ss, int32_t *d, int dp);
 #endif
 
@@ -53,7 +62,7 @@ int main(void)
                 memset(expected, 0xa5, sizeof expected);
                 memset(actual, 0xa5, sizeof actual);
                 reference_idct36(input, ss, expected+1, dp);
-#if defined(MR_M68K_ASM)
+#if defined(MR_TEST_M68K_IDCT)
                 plm_audio_idct36_m68k(input, ss, actual+1, dp);
 #else
                 plm_audio_idct36(input, ss, actual+1, dp);
