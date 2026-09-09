@@ -211,8 +211,8 @@ $M68K_CC -O2 -std=c99 -m68030 -static -o "$BUILD/mr_mp2_idct_check.m68k" \
     tests/mr_mp2_idct_check.c
 
 echo "== building mr_mp2_synth_check.m68k =="
-$M68K_CC -O2 -std=c99 -m68030 -static -o "$BUILD/mr_mp2_synth_check.m68k" \
-    tests/mr_mp2_synth_check.c
+$M68K_CC -O2 -std=c99 -m68030 -static -DMR_M68K_ASM=1 -o "$BUILD/mr_mp2_synth_check.m68k" \
+    tests/mr_mp2_synth_check.c core/plm_audio_synth_window_m68k.S
 
 echo "== building mr_yuv_dither_check.m68k =="
 # Links against the real hand-asm mr_yuv420_to_rgb24_m68k/mr_dither_rgb8_m68k

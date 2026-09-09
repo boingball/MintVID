@@ -5,6 +5,9 @@
 #include <string.h>
 #define PL_MPEG_IMPLEMENTATION
 #include "../core/pl_mpeg.h"
+#if defined(MR_M68K_ASM)
+extern void plm_audio_synth_window_m68k(const int32_t *, const int32_t *, int, int64_t *);
+#endif
 
 static void reference(const int32_t *d, const int32_t *v, int pos, int64_t *u)
 {
@@ -45,7 +48,11 @@ int main(void)
             reference(d, v, pos, expected);
             actual[0] = actual[33] = INT64_C(0x123456789abcdef);
             memset(actual + 1, 0xa5, 32 * sizeof(int64_t));
+#if defined(MR_M68K_ASM)
+            plm_audio_synth_window_m68k(d, v, pos, actual + 1);
+#else
             plm_audio_synth_window(d, v, pos, actual + 1);
+#endif
             if (memcmp(expected, actual + 1, sizeof expected) ||
                 actual[0] != INT64_C(0x123456789abcdef) ||
                 actual[33] != INT64_C(0x123456789abcdef)) {

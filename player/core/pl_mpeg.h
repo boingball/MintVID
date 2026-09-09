@@ -4217,6 +4217,11 @@ int plm_audio_decode_header(plm_audio_t *self) {
  * walks has eight taps for every reachable v_pos (0, 64, ..., 960).
  * Keep the original tap order and signed 64-bit products, but write U only
  * once per lane instead of loading/storing it for every contribution. */
+#if defined(MR_M68K_ASM) && !defined(__mc68060__)
+extern void plm_audio_synth_window_m68k(const int32_t *, const int32_t *, int,
+                                        int64_t *);
+#endif
+
 static void plm_audio_synth_window(const int32_t *d, const int32_t *v,
                                  int v_pos, int64_t *u) {
 	int d_start = 512 - (v_pos >> 1);
@@ -4360,7 +4365,11 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 				for (int ch = 0; ch < synth_channels; ch++) {
 					plm_audio_idct36(self->sample[ch], p, self->V[ch], self->v_pos);
 
+#if defined(MR_M68K_ASM) && !defined(__mc68060__)
+					plm_audio_synth_window_m68k(self->D, self->V[ch], self->v_pos, self->U);
+#else
 					plm_audio_synth_window(self->D, self->V[ch], self->v_pos, self->U);
+#endif
 
 					// Output samples
 					#ifdef PLM_AUDIO_SEPARATE_CHANNELS
