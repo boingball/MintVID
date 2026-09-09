@@ -34,6 +34,7 @@ jobs:
             tests/mr_yuv_planar_queue_check.c \
             core/mr_yuv_planar_queue.c \
             core/mr_yuv_dither.c core/mr_yuv_dither_planar_m68k.S \
+            core/mr_yuv_dither_planar_direct_m68k.S \
             core/mr_c2p.c core/mr_c2p_m68k.S \
             core/mr_c2p_riva_native_m68k.S
           qemu-m68k /tmp/mr_yuv_planar_queue_check.m68k
