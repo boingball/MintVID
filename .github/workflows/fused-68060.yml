@@ -19,6 +19,24 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install m68k/QEMU correctness toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-m68k-linux-gnu qemu-user
+
+      - name: Bit-exact fused planar check on m68k
+        working-directory: player
+        run: |
+          set -e
+          m68k-linux-gnu-gcc -O2 -std=c99 -m68030 -static \
+            -DMR_M68K_ASM=1 \
+            -o /tmp/mr_yuv_planar_queue_check.m68k \
+            tests/mr_yuv_planar_queue_check.c \
+            core/mr_yuv_planar_queue.c \
+            core/mr_yuv_dither.c core/mr_yuv_dither_planar_m68k.S \
+            core/mr_c2p.c core/mr_c2p_m68k.S
+          qemu-m68k /tmp/mr_yuv_planar_queue_check.m68k
+
       - name: Build experimental 68060 mrplay
         run: |
           docker run --rm -v "$PWD":/src -w /src/player \
