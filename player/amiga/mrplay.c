@@ -22,6 +22,7 @@
 #include "../core/mr_cinepak.h"
 #include "../core/mr_rawvideo.h"
 #include "../core/mr_mpeg1.h"
+#include "../core/mr_mpeg1_sched.h"
 #include "../core/mr_h264.h"
 #include "../core/mr_dither.h"
 #include "../core/mr_media_clock.h"
@@ -1289,6 +1290,8 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     unsigned       sr;
     int            w, h, frames = 0, decoded_frames = 0;
     int            paused = 0, quit = 0, fast_forward = 0;
+    int            drop_run = 0;                 /* consecutive frames dropped */
+    int            audio_dry = 0;                /* MP2 track exhausted        */
     int            channels = 2;                 /* 1 under --audio-mono      */
     unsigned long  period, clock_base = 0;
     long           ntick;
@@ -1361,7 +1364,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         }
         if (!got) {
             if (loop) { mr_mpeg1_rewind(mp); frames = 0; decoded_frames = 0;
-                        have_pts_base = 0;
+                        have_pts_base = 0; drop_run = 0; audio_dry = 0;
                         clock_base = audio ? audio_elapsed_ms(audio) : 0; continue; }
             break;
         }
@@ -1371,22 +1374,43 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
             clock_base = audio ? audio_elapsed_ms(audio) : 0;
         }
         if (audio) {                             /* top up audio (bounded)    */
-            int n, k = 0;
+            int n, k = 0, pulled = 0;
             /* Build one complete Paula request before opening its playback
              * gate.  The generic streaming player does this explicitly, but
              * this older MPEG-1 path pre-dates the gate.  Leaving it closed
              * queues PCM forever and deadlocks on the second video frame while
-             * waiting for an audio clock that cannot advance. */
-            int limit = decoded_frames == 0 ? 4 : 2;
-            while (k < limit && (n = mr_mpeg1_audio(mp, abuf)) > 0) {
+             * waiting for an audio clock that cannot advance.
+             *
+             * Refill to a cushion measured in milliseconds of buffered audio
+             * rather than a fixed count of MP2 frames - see
+             * mr_mpeg1_want_audio() for why counting frames over-queues a
+             * 22.05 kHz stream by 2.6x and silences most of the clip. */
+            while (mr_mpeg1_want_audio(audio_buffered_ms(audio),
+                                       decoded_frames != 0, k)) {
+                if ((n = mr_mpeg1_audio(mp, abuf)) <= 0) break;
                 audio_write(audio, abuf, (unsigned)(n * 2 * channels));
                 audio_service(audio);
+                pulled = 1;
                 k++;
             }
             if (decoded_frames == 0) audio_set_running(audio, 1);
+            /* The audio track can be shorter than the video - and on a machine
+             * that cannot decode at the stream's frame rate the video always
+             * outlasts it, because the loop needs longer than the clip's own
+             * duration to walk the frames. Once the MP2 is gone the audio
+             * clock freezes, so fall back to frame-period pacing rather than
+             * racing the rest of the file against a stopped clock, and close
+             * the Paula gate so the device is left silent instead of sitting
+             * on its last buffer. A later successful pull re-opens both. */
+            if (pulled) {
+                if (audio_dry) { audio_set_running(audio, 1); audio_dry = 0; }
+            } else if (!audio_dry && audio_starved(audio)) {
+                audio_dry = 1;
+                audio_set_running(audio, 0);
+            }
         }
 
-        if (audio) {                             /* pace to the audio clock   */
+        if (audio && !audio_dry) {               /* pace to the audio clock   */
             unsigned long target = clock_base +
                 (unsigned long)(pts_us >= pts_base_us
                     ? (pts_us - pts_base_us) / 1000
@@ -1409,14 +1433,20 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
             /* The old MPEG-1 path displayed every decoded frame even after
              * decode/conversion had fallen behind the playing MP2 clock. That
              * makes A/V drift grow for the rest of the clip. Drop a video
-             * frame only when it is already more than one frame late; decode
-             * continues so a faster following frame can catch back up. */
+             * frame only when it is already more than one frame late, and
+             * never more than MPEG1_MAX_DROP_RUN in a row: this path decodes
+             * serially with no queue to skip into, so an uncapped rule drops
+             * every frame after the first on any machine that cannot decode at
+             * the stream's frame rate, and the picture freezes on frame 1. */
             if (!fast_forward &&
-                audio_elapsed_ms(audio) > target + period) {
+                mr_mpeg1_drop_frame(audio_elapsed_ms(audio), target, period,
+                                    drop_run)) {
+                drop_run++;
                 decoded_frames++;
                 audio_service(audio);
                 continue;
             }
+            drop_run = 0;
         } else {
             int ev = player_event(disp);
             if (ev == MR_EV_QUIT) quit = 1;
