@@ -52,6 +52,24 @@ static unsigned char *slurp(const char *path, size_t *len)
     return data;
 }
 
+static int check_display_pts(mr_decoder *dec, int frame,
+                             uint64_t *last_pts, int *have_last, int *count)
+{
+    uint64_t pts;
+    if (!mr_mpeg2_output_pts(dec, &pts)) return 1;
+    if (*have_last && pts <= *last_pts) {
+        fprintf(stderr,
+                "FAIL: MPEG display PTS not increasing at frame %d: %llu after %llu\n",
+                frame, (unsigned long long)pts,
+                (unsigned long long)*last_pts);
+        return 0;
+    }
+    *last_pts = pts;
+    *have_last = 1;
+    (*count)++;
+    return 1;
+}
+
 /* Decode every displayed picture, appending each to `out` as RGB24. In YUV
  * mode the planes are converted here with the shared converter. */
 static int decode_all(const unsigned char *data, size_t len, int w, int h,
@@ -62,6 +80,8 @@ static int decode_all(const unsigned char *data, size_t len, int w, int h,
     mr_packet pkt;
     size_t frame_bytes = (size_t)w * h * 3;
     size_t cap = 16, n = 0;
+    uint64_t last_pts = 0;
+    int have_last_pts = 0, tagged_frames = 0;
     unsigned char *buf = (unsigned char *)malloc(cap * frame_bytes);
     if (!buf) return 0;
     if (mr_ps_open(&ps, data, len) != MR_OK) { free(buf); return 0; }
@@ -76,8 +96,13 @@ static int decode_all(const unsigned char *data, size_t len, int w, int h,
         int got;
         if (mr_ps_next_packet(&ps, &pkt) != MR_OK) break;
         if (!pkt.is_video) continue;
+        mr_mpeg2_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
         st = mr_codec_mpeg2.decode(&dec, pkt.data, pkt.len);
         for (got = (st == MR_OK); got; ) {
+            if (!check_display_pts(&dec, (int)n, &last_pts, &have_last_pts,
+                                   &tagged_frames)) {
+                free(buf); mr_codec_mpeg2.close(&dec); return 0;
+            }
             if (n == cap) {
                 unsigned char *p;
                 cap *= 2;
@@ -110,6 +135,10 @@ static int decode_all(const unsigned char *data, size_t len, int w, int h,
         }
     }
     while (mr_codec_mpeg2.flush && mr_codec_mpeg2.flush(&dec) == MR_OK) {
+        if (!check_display_pts(&dec, (int)n, &last_pts, &have_last_pts,
+                               &tagged_frames)) {
+            free(buf); mr_codec_mpeg2.close(&dec); return 0;
+        }
         if (n == cap) {
             unsigned char *p;
             cap *= 2;
@@ -126,6 +155,11 @@ static int decode_all(const unsigned char *data, size_t len, int w, int h,
         else
             memcpy(buf + n * frame_bytes, dec.frame.data, frame_bytes);
         n++;
+    }
+    if (tagged_frames < 2) {
+        fprintf(stderr, "FAIL: only %d displayed MPEG frames carried PTS tags\n",
+                tagged_frames);
+        free(buf); mr_codec_mpeg2.close(&dec); return 0;
     }
     mr_codec_mpeg2.close(&dec);
     *out = buf;

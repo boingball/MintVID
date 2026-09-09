@@ -19,4 +19,8 @@ extern const mr_codec mr_codec_mpeg2;
  * decoder that is not this codec, so callers need not test first. */
 void mr_mpeg2_set_yuv_output(mr_decoder *dec, int enabled);
 
+/* Preserve PES timestamps across libmpeg2 display reordering. */
+void mr_mpeg2_set_input_pts(mr_decoder *dec, int has_pts, uint64_t pts_us);
+int mr_mpeg2_output_pts(mr_decoder *dec, uint64_t *pts_us);
+
 #endif /* MR_MPEG2_H */

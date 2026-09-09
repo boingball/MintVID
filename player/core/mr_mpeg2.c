@@ -17,6 +17,8 @@
 
 typedef struct mpeg2_frame_node {
     uint8_t *rgb;                /* RGB24, or packed YUV420P under yuv_output */
+    int has_pts;                 /* display-picture tag is valid */
+    uint64_t pts_us;             /* PTS belonging to this displayed picture */
     struct mpeg2_frame_node *next;
 } mpeg2_frame_node;
 
@@ -141,12 +143,23 @@ static mr_status queue_display_frame(mr_decoder *dec)
     mpeg2_frame_node *node = alloc_frame(s);
     mr_status st;
     if (!node) return MR_ENOMEM;
+    node->has_pts = 0;
+    node->pts_us = 0;
     st = s->yuv_output ? emit_yuv(dec, node->rgb)
                        : emit_rgb(dec, node->rgb);
     if (st != MR_OK) {
         node->next = s->free_nodes;
         s->free_nodes = node;
         return st;
+    }
+    /* mpeg2_tag_picture() follows the compressed picture through
+     * libmpeg2's I/P/B reordering. Capture the tag from the DISPLAY
+     * picture, not from whichever PES packet mrplay is draining. */
+    if (s->info->display_picture &&
+        (s->info->display_picture->flags & PIC_FLAG_TAGS)) {
+        node->has_pts = 1;
+        node->pts_us = ((uint64_t)s->info->display_picture->tag << 32) |
+                       (uint64_t)s->info->display_picture->tag2;
     }
     if (s->pending_tail) s->pending_tail->next = node;
     else s->pending_head = node;
@@ -301,6 +314,29 @@ void mr_mpeg2_set_yuv_output(mr_decoder *dec, int enabled)
     dec->frame.data = NULL;
     dec->frame.dirty_y0 = 0;
     dec->frame.dirty_y1 = 0;
+}
+
+/* Tag the next MPEG picture with the container PTS. libmpeg2 carries this
+ * through decode reordering and exposes it again on display_picture. */
+void mr_mpeg2_set_input_pts(mr_decoder *dec, int has_pts, uint64_t pts_us)
+{
+    mpeg2_state *s;
+    if (!dec || dec->codec != &mr_codec_mpeg2 || !has_pts) return;
+    s = (mpeg2_state *)dec->priv;
+    if (!s || !s->decoder) return;
+    mpeg2_tag_picture(s->decoder, (uint32_t)(pts_us >> 32),
+                      (uint32_t)(pts_us & 0xffffffffu));
+}
+
+/* Return the timestamp attached to the picture currently exposed in dec->frame. */
+int mr_mpeg2_output_pts(mr_decoder *dec, uint64_t *pts_us)
+{
+    mpeg2_state *s;
+    if (!dec || dec->codec != &mr_codec_mpeg2 || !pts_us) return 0;
+    s = (mpeg2_state *)dec->priv;
+    if (!s || !s->current || !s->current->has_pts) return 0;
+    *pts_us = s->current->pts_us;
+    return 1;
 }
 
 static mr_status mpeg2_decode_packet(mr_decoder *dec,
