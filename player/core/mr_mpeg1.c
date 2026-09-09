@@ -9,66 +9,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(MR_M68K_ASM) && !defined(MR_HOST_BUILD) && defined(__GNUC__)
-/*
- * pl_mpeg's Layer-II synthesis finishes every PCM sample with
- *
- *     U[j] / -66562
- *
- * where U is int64_t.  GCC lowers that constant signed 64-bit divide to
- * libgcc's __divdi3 on m68k; Copperline profiling on a 68040 found that helper
- * alone taking ~7.7% of an audio-heavy instruction sample.  The accumulator is
- * normally only around the range needed to produce signed-16 PCM, so its
- * magnitude fits in uint32_t even though the synthesis MACs correctly remain
- * 64-bit.
- *
- * Provide the libgcc ABI symbol from this translation unit.  For that one hot
- * divisor, when the numerator magnitude fits 32 bits, perform the *exact* same
- * truncating quotient with a 32-bit divide.  Everything else (other divisors,
- * or an unusually large synthesis accumulator) falls through to libgcc's
- * unsigned 64-bit primitive with ordinary signed quotient handling.  Thus this
- * is a strength reduction only: it does not depend on the following PCM clamp
- * and does not change __divdi3 semantics for values outside the fast range.
- *
- * Keep this here rather than in pl_mpeg.h: the latter is vendored upstream
- * source, while mr_mpeg1.c is already MintVID's implementation wrapper around
- * it.  It also makes the optimisation trivially removable for A/B profiling.
- */
-extern unsigned long long __udivdi3(unsigned long long numerator,
-                                    unsigned long long denominator);
-
-long long __divdi3(long long numerator, long long denominator)
-{
-    if (denominator == -66562LL &&
-        numerator >= -(long long)UINT32_MAX &&
-        numerator <=  (long long)UINT32_MAX) {
-        uint32_t magnitude = numerator < 0
-            ? (uint32_t)(0ULL - (unsigned long long)numerator)
-            : (uint32_t)numerator;
-        uint32_t quotient = magnitude / 66562U;
-
-        /* Denominator is negative: a positive numerator gives a negative
-         * quotient, while a negative numerator gives a positive quotient.
-         * Integer division truncates toward zero; unsigned magnitude division
-         * followed by the sign therefore matches C exactly. */
-        return numerator > 0 ? -(long long)quotient : (long long)quotient;
-    }
-
-    {
-        unsigned long long un = (unsigned long long)numerator;
-        unsigned long long ud = (unsigned long long)denominator;
-        unsigned long long quotient;
-        int negative = (numerator < 0) != (denominator < 0);
-
-        /* Unsigned negation is defined modulo 2^64, including LLONG_MIN. */
-        if (numerator < 0) un = 0ULL - un;
-        if (denominator < 0) ud = 0ULL - ud;
-        quotient = __udivdi3(un, ud);
-        return negative ? (long long)(0ULL - quotient)
-                        : (long long)quotient;
-    }
-}
-#endif
 
 #define PL_MPEG_IMPLEMENTATION
 #include "pl_mpeg.h"

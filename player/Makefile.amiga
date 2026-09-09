@@ -288,6 +288,7 @@ KALMS_HAM6_SRC = vendor/kalms-c2p/bitmap/c2p1x1_6_c5_bm_040.s
 KALMS_OBJ = $(KALMS_1X1_OBJ) $(KALMS_2X2_OBJ) $(KALMS_HAM6_OBJ)
 SYNTH_OBJ = build/plm_audio_synth_window_m68k.o
 IDCT_OBJ = build/plm_audio_idct36_m68k.o
+SCALE_OBJ = build/plm_audio_scale_clamp_m68k.o
 VERSION_HEADER = amiga/mintvid_version.h
 KALMS_VASM ?= $(firstword \
     $(wildcard $(dir $(AMIGA_GCC))vasmm68k_mot) \
@@ -357,9 +358,9 @@ check-cc:
 	  exit 1; }
 	@echo "using CC = $(CC)"
 
-mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) $(KALMS_OBJ) $(SYNTH_OBJ) $(IDCT_OBJ) $(VERSION_HEADER) | check-libavc
+mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) $(KALMS_OBJ) $(SYNTH_OBJ) $(IDCT_OBJ) $(SCALE_OBJ) $(VERSION_HEADER) | check-libavc
 	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) $(LIBA52_FLAGS) -o $@ $(PLAY) $(CORE) \
-	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LIBA52_SRC) $(KALMS_OBJ) $(SYNTH_OBJ) $(IDCT_OBJ) $(LDFLAGS)
+	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LIBA52_SRC) $(KALMS_OBJ) $(SYNTH_OBJ) $(IDCT_OBJ) $(SCALE_OBJ) $(LDFLAGS)
 
 check-kalms:
 	@test -n "$(KALMS_VASM)" -a -x "$(KALMS_VASM)" || { \
@@ -534,5 +535,9 @@ $(SYNTH_OBJ): core/plm_audio_synth_window_m68k.S
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(IDCT_OBJ): core/plm_audio_idct36_m68k.S
+	mkdir -p build
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(SCALE_OBJ): core/plm_audio_scale_clamp_m68k.S
 	mkdir -p build
 	$(CC) $(CFLAGS) -c $< -o $@

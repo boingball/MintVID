@@ -4217,6 +4217,10 @@ int plm_audio_decode_header(plm_audio_t *self) {
 extern void plm_audio_idct36_m68k(int s[32][3], int ss, int32_t *d, int dp);
 #endif
 
+#if defined(MR_M68K_ASM)
+extern void scale_clamp_m68k(const int64_t *, int16_t *, int);
+#endif
+
 /* MintVID: accumulate one PCM lane at a time. Each of the two window
  * walks has eight taps for every reachable v_pos (0, 64, ..., 960).
  * Keep the original tap order and signed 64-bit products, but write U only
@@ -4384,22 +4388,32 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 						int16_t *out_channel = ch == 0
 							? self->samples.left
 							: self->samples.right;
-						for (int j = 0; j < 32; j++) {
-							out_channel[out_pos + j] = plm_audio_clamp(self->U[j] / -66562);
-						}
+						#if defined(MR_M68K_ASM)
+                        scale_clamp_m68k(self->U, out_channel + out_pos, 1);
+                    #else
+                        for (int j = 0; j < 32; j++) {
+                            out_channel[out_pos + j] = plm_audio_clamp(self->U[j] / -66562);
+                        }
+                    #endif
 					#else
 						if (self->mono) {
 							/* One channel, packed at the front of the buffer. */
-							for (int j = 0; j < 32; j++) {
-								self->samples.interleaved[out_pos + j] =
-									plm_audio_clamp(self->U[j] / -66562);
-							}
+							#if defined(MR_M68K_ASM)
+                            scale_clamp_m68k(self->U, self->samples.interleaved + out_pos, 1);
+                        #else
+                            for (int j = 0; j < 32; j++) {
+                                self->samples.interleaved[out_pos + j] = plm_audio_clamp(self->U[j] / -66562);
+                            }
+                        #endif
 						}
 						else {
-							for (int j = 0; j < 32; j++) {
-								self->samples.interleaved[((out_pos + j) << 1) + ch] =
-									plm_audio_clamp(self->U[j] / -66562);
-							}
+							#if defined(MR_M68K_ASM)
+                            scale_clamp_m68k(self->U, self->samples.interleaved + (out_pos << 1) + ch, 2);
+                        #else
+                            for (int j = 0; j < 32; j++) {
+                                self->samples.interleaved[((out_pos + j) << 1) + ch] = plm_audio_clamp(self->U[j] / -66562);
+                            }
+                        #endif
 						}
 					#endif
 				} // End of synthesis channel loop
