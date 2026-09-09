@@ -25,13 +25,35 @@
  * what will not fit. Refilling to a cushion self-corrects in both directions:
  * it stops early when the device is well ahead, and keeps pulling when a slow
  * machine's iteration costs more than one MP2 frame of audio. */
-#define MPEG1_AUDIO_STARTUP_MS 400UL
-#define MPEG1_AUDIO_CUSHION_MS 1000UL
+#define MPEG1_AUDIO_CUSHION_MS 800UL
 
-/* Upper bound on MP2 frames decoded in one video-frame iteration, so a long
- * refill cannot stall event handling. Sized to reach MPEG1_AUDIO_STARTUP_MS
- * from empty at 22.05 kHz (52 ms per MP2 frame) in a single iteration. */
-#define MPEG1_AUDIO_MAX_PULLS 12
+/* Upper bound on MP2 frames decoded in one video-frame iteration - loose while
+ * priming, tight once Paula is playing.
+ *
+ * This is not just an event-handling guard: it is what keeps the refill from
+ * shunting the picture out of sync. play_mpeg1() decodes MP2 with pl_mpeg's
+ * own portable C Layer II decoder, not MintAMP's m68k-optimised one, and every
+ * pull happens inline between showing one frame and the next. Time spent
+ * pulling *after* the playback gate opens is time Paula spends playing while
+ * video pts does not advance, so a burst there puts the audio clock
+ * permanently ahead of the video timeline. The loop can only work that deficit
+ * off by free-running - decoding flat out so pts gains on real time - and
+ * while it does, the drop-run cap shows one frame in three.
+ *
+ * That is exactly what filling the cushion in two stages produced: priming to
+ * 400 ms before the gate, then ramping to the full cushion afterwards, cost a
+ * dozen post-gate pulls in one iteration. On an 060/50 that read as the player
+ * locking up on frame 1, stepping to frame 3 and 6 with stuttery sound, and
+ * only then running clean once the cushion was full and the pulls stopped.
+ *
+ * So prime the whole cushion before opening the gate, where nothing is playing
+ * and the cost is paid once, invisibly, ahead of the first frame. After that
+ * the top-up only replaces what Paula has drained - about one MP2 frame per
+ * video frame - and MPEG1_AUDIO_MAX_PULLS keeps a recovery burst to ~200 ms of
+ * 22.05 kHz audio, still refilling faster than it drains without opening a
+ * deficit the picture has to pay for. */
+#define MPEG1_AUDIO_PRIME_PULLS 20
+#define MPEG1_AUDIO_MAX_PULLS 4
 
 /* Longest run of consecutive video frames the pacer may drop.
  *
@@ -47,8 +69,9 @@
 
 /* Whether another MP2 frame should be decoded into the audio device now.
  * `buffered_ms` is audio_buffered_ms(): FIFO plus submitted-but-unplayed.
- * `started` is 0 only while priming, before the playback gate is opened.
- * `pulls` counts MP2 frames already taken in this iteration. */
+ * `started` is 0 only while priming, before the playback gate is opened, which
+ * is the one time a long burst is free. `pulls` counts MP2 frames already
+ * taken in this iteration. */
 int mr_mpeg1_want_audio(unsigned long buffered_ms, int started, int pulls);
 
 /* Whether the just-decoded video frame should be dropped instead of shown.

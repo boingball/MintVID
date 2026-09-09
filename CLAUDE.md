@@ -110,6 +110,20 @@ bite, and both did on an A1200/AGA:
   ~6 s of clip) and leaving the rest of the file with nothing queued, which
   Paula plays as its last buffer repeating. On a machine slower than real time
   the same fixed count *under*-feeds. A cushion in ms self-corrects both ways.
+- **Prime that cushion before opening the Paula gate, never after.** This path
+  decodes MP2 with pl_mpeg's own portable C Layer II decoder, not MintAMP's
+  m68k one, inline between one shown frame and the next. Every pull *after* the
+  gate opens is time Paula spends playing while video pts stands still, so a
+  refill burst there puts the audio clock permanently ahead of the video
+  timeline; the loop can only work that off by free-running until pts catches
+  up, and the drop-run cap shows one frame in three while it does. Filling to
+  400 ms pre-gate and ramping to the full cushion afterwards cost a dozen
+  post-gate pulls in one iteration, which on an **060/50** — a machine that
+  decodes this clip with room to spare — read as a lock-up on frame 1, stepping
+  to frames 3 and 6 with stuttery sound, then clean playback once the cushion
+  filled and the pulls stopped. Prime the whole cushion while the gate is shut
+  (the cost is paid once, before the first frame) and keep the post-gate cap
+  tight.
 
 The policy lives in `core/mr_mpeg1_sched.c` precisely so it is host-testable —
 `tests/mr_mpeg1_sched_check.c` replays the real loop around it with a modelled

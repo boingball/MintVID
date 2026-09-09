@@ -77,7 +77,10 @@ typedef struct {
     unsigned decoded, presented, dropped;
     unsigned long audio_dropped_ms;     /* lost to FIFO overrun            */
     unsigned long max_buffered_ms;      /* peak audio queued ahead of Paula */
+    unsigned long longest_gap_ms;       /* longest freeze between shown frames */
     unsigned      dry_iters;            /* iterations with Paula run dry    */
+    unsigned      max_run_pulls;        /* most MP2 frames decoded in one
+                                         * iteration once playback started  */
 } sim_stats;
 
 /*
@@ -87,7 +90,7 @@ typedef struct {
  */
 static int simulate(const unsigned char *data, size_t len,
                     unsigned long decode_ms, unsigned long show_ms,
-                    int legacy, sim_stats *st)
+                    unsigned long mp2_ms, int legacy, sim_stats *st)
 {
     mr_mpeg1 *mp = mr_mpeg1_open(data, len, 0, 0, 0);
     unsigned char *abuf;
@@ -98,6 +101,7 @@ static int simulate(const unsigned char *data, size_t len,
     int have_pts_base = 0;
     sim_audio au;
     mr_frame fr;
+    unsigned long last_shown_ms;
 
     if (!mp) return -1;
     abuf = (unsigned char *)malloc(1152 * 4);
@@ -112,6 +116,8 @@ static int simulate(const unsigned char *data, size_t len,
     au.play_start_ms = 0; au.started = 0;
     st->decoded = st->presented = st->dropped = 0;
     st->audio_dropped_ms = 0; st->max_buffered_ms = 0; st->dry_iters = 0;
+    st->longest_gap_ms = 0; st->max_run_pulls = 0;
+    last_shown_ms = 0;
 
     while (mr_mpeg1_next(mp, &fr, &pts_us)) {
         unsigned long target;
@@ -131,11 +137,19 @@ static int simulate(const unsigned char *data, size_t len,
                           : mr_mpeg1_want_audio(sim_buffered(&au),
                                                 au.started, k)) {
                 if ((n = mr_mpeg1_audio(mp, abuf)) <= 0) break;
+                /* Decoding an MP2 frame is not free: play_mpeg1() uses
+                 * pl_mpeg's portable C Layer II decoder, inline between one
+                 * shown frame and the next. Charging for it is what makes a
+                 * refill burst visible as a freeze. */
+                au.now_ms += mp2_ms;
                 sim_write(&au, (unsigned long)n * 1000UL / rate);
                 pulled = 1;
                 k++;
             }
-            if (!au.started) { au.started = 1; au.play_start_ms = au.now_ms; }
+            if (au.started && (unsigned)k > st->max_run_pulls)
+                st->max_run_pulls = (unsigned)k;
+            if (!au.started) { au.started = 1; au.play_start_ms = au.now_ms;
+                               last_shown_ms = au.now_ms; }
             if (sim_buffered(&au) > st->max_buffered_ms)
                 st->max_buffered_ms = sim_buffered(&au);
             if (!legacy) {
@@ -159,6 +173,9 @@ static int simulate(const unsigned char *data, size_t len,
         } else {
             au.now_ms += period;
         }
+        if (st->presented && au.now_ms - last_shown_ms > st->longest_gap_ms)
+            st->longest_gap_ms = au.now_ms - last_shown_ms;
+        last_shown_ms = au.now_ms;
         st->presented++;
         au.now_ms += show_ms;
     }
@@ -191,17 +208,24 @@ static unsigned char *slurp(const char *path, size_t *len)
 static void report(const char *what, const sim_stats *s)
 {
     printf("%-22s presented=%u/%u dropped=%u peak-queued=%lu ms "
-           "fifo-lost=%lu ms dry-iters=%u\n",
+           "fifo-lost=%lu ms dry-iters=%u burst=%u pulls gap=%lu ms\n",
            what, s->presented, s->decoded, s->dropped,
-           s->max_buffered_ms, s->audio_dropped_ms, s->dry_iters);
+           s->max_buffered_ms, s->audio_dropped_ms, s->dry_iters,
+           s->max_run_pulls, s->longest_gap_ms);
 }
 
-/* A stock A1200: decode plus c2p costs well over the 40 ms frame period. */
-#define SLOW_DECODE_MS 90
-#define SLOW_SHOW_MS   60
-/* An 060 or emulation, comfortably inside the frame period. */
+/* A machine well under the 40 ms frame period - the reported 060/50 decodes
+ * this 134x100 clip comfortably, which is why it plays clean once started. */
 #define FAST_DECODE_MS 10
 #define FAST_SHOW_MS    5
+/* A machine that cannot keep up at all, exercising the drop-run cap. */
+#define SLOW_DECODE_MS 90
+#define SLOW_SHOW_MS   60
+/* One MP2 frame through pl_mpeg's portable C Layer II decoder. Not free on
+ * 68k, and charged inline between one shown frame and the next - the cost the
+ * first version of this test wrongly treated as zero, which is why it did not
+ * predict the startup freeze. */
+#define MP2_DECODE_MS   8
 
 int main(int argc, char **argv)
 {
@@ -219,13 +243,13 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    if (simulate(data, len, FAST_DECODE_MS, FAST_SHOW_MS, 0, &fast) < 0) {
+    if (simulate(data, len, FAST_DECODE_MS, FAST_SHOW_MS, MP2_DECODE_MS, 0, &fast) < 0) {
         fprintf(stderr, "cannot open %s as MPEG-1\n", argv[1]);
         free(data); return 2;
     }
-    if (simulate(data, len, SLOW_DECODE_MS, SLOW_SHOW_MS, 0, &slow) < 0 ||
-        simulate(data, len, SLOW_DECODE_MS, SLOW_SHOW_MS, 1, &old_slow) < 0 ||
-        simulate(data, len, FAST_DECODE_MS, FAST_SHOW_MS, 1, &old_fast) < 0) {
+    if (simulate(data, len, SLOW_DECODE_MS, SLOW_SHOW_MS, MP2_DECODE_MS, 0, &slow) < 0 ||
+        simulate(data, len, SLOW_DECODE_MS, SLOW_SHOW_MS, MP2_DECODE_MS, 1, &old_slow) < 0 ||
+        simulate(data, len, FAST_DECODE_MS, FAST_SHOW_MS, MP2_DECODE_MS, 1, &old_fast) < 0) {
         free(data); return 2;
     }
     report("fast machine", &fast);
@@ -249,6 +273,32 @@ int main(int argc, char **argv)
     if (slow.presented < slow.decoded / (MPEG1_MAX_DROP_RUN + 1)) {
         fprintf(stderr, "FAIL: only %u of %u frames reached the screen\n",
                 slow.presented, slow.decoded);
+        rc = 1;
+    }
+
+    /* The cushion is primed before the playback gate opens, not ramped up
+     * after it. Once Paula is playing, a machine that keeps up only replaces
+     * what has drained - about one MP2 frame per video frame. A post-gate ramp
+     * shows up here as a burst that runs into MPEG1_AUDIO_MAX_PULLS, and on
+     * hardware as the startup freeze and one-frame-in-three stepping this
+     * bound exists to prevent. */
+    if (fast.max_run_pulls > 2) {
+        fprintf(stderr, "FAIL: %u MP2 frames decoded in one iteration with "
+                        "Paula playing; the cushion is being ramped after the "
+                        "gate opens, not primed before it\n",
+                fast.max_run_pulls);
+        rc = 1;
+    }
+    if (slow.max_run_pulls > MPEG1_AUDIO_MAX_PULLS ||
+        fast.max_run_pulls > MPEG1_AUDIO_MAX_PULLS) {
+        fprintf(stderr, "FAIL: post-gate refill burst exceeded the cap\n");
+        rc = 1;
+    }
+    /* No freeze at the start on a machine that keeps up: consecutive shown
+     * frames stay within a couple of frame periods of each other. */
+    if (fast.longest_gap_ms > 120) {
+        fprintf(stderr, "FAIL: %lu ms between consecutive shown frames on a "
+                        "machine that keeps up\n", fast.longest_gap_ms);
         rc = 1;
     }
 
