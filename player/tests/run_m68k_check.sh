@@ -54,6 +54,13 @@ test -d tests/assets/ref_h264_high -a -d tests/assets/ref_h263 \
 BUILD=/tmp/mr_m68k_check_build
 mkdir -p "$BUILD"
 
+# Any m68k translation unit that compiles pl_mpeg with MR_M68K_ASM enabled
+# references this complete MP2 helper set. Keep it in one list so full decoder
+# and focused audio tests cannot silently drift from the production link.
+MP2_ASM_SRC="core/plm_audio_synth_window_m68k.S \
+             core/plm_audio_idct36_m68k.S \
+             core/plm_audio_scale_clamp_m68k.S"
+
 CORE="core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
       core/mr_youtube.c core/mr_demux.c core/mr_latm.c core/mr_mkv.c \
       core/mr_avi.c core/mr_mov.c core/mr_ts.c core/mr_ps.c \
@@ -61,7 +68,7 @@ CORE="core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
       core/mr_dither.c core/mr_dither_m68k.S core/mr_ham.c core/mr_scale.c \
       core/mr_c2p.c core/mr_c2p_m68k.S \
       core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c core/mr_mpeg1_blockset_m68k.S \
-      core/mr_mpeg1_idct_m68k.S \
+      core/mr_mpeg1_idct_m68k.S $MP2_ASM_SRC \
       core/mr_mpeg2.c \
       vendor/libmpeg2/libmpeg2/alloc.c vendor/libmpeg2/libmpeg2/cpu_accel.c \
       vendor/libmpeg2/libmpeg2/cpu_state.c vendor/libmpeg2/libmpeg2/decode.c \
@@ -141,7 +148,7 @@ test -f tests/assets/test_ac3.ac3 -a -f tests/assets/ref_ac3_mkv.raw \
 $CC -DMR_AC3_CHECK_NO_DEMUX $MINTAMP_FLAGS -o "$BUILD/mr_ac3_check.m68k" \
     tests/mr_ac3_check.c audio/mr_audio_decode.c audio/mr_pcm.c \
     core/mr_mpeg1.c core/mr_mpeg1_idct_m68k.S \
-    core/mr_mpeg1_blockset_m68k.S core/mr_latm.c $MINTAMP_SRC -lm
+    core/mr_mpeg1_blockset_m68k.S $MP2_ASM_SRC core/mr_latm.c $MINTAMP_SRC -lm
 
 # MP2 out of a .mpg on a real big-endian target. The MPEG-1 source decodes
 # audio with pl_mpeg's own integer Layer II code and hands it back as
@@ -150,11 +157,10 @@ $CC -DMR_AC3_CHECK_NO_DEMUX $MINTAMP_FLAGS -o "$BUILD/mr_ac3_check.m68k" \
 echo "== building mr_mp2_check.m68k =="
 test -f tests/assets/test_mpeg1_mp2.mpg -a -f tests/assets/ref_mpeg1_mp2.raw \
     || sh tests/gen_audio_assets.sh
-# pl_mpeg's video path calls out to the hand-written m68k IDCT and block
-# routines on this target, so they have to be linked in even though only its
-# audio side is under test here.
+# pl_mpeg's video path and MP2 audio path both call hand-written m68k helpers
+# on this target, so keep the complete helper set in the focused decode link.
 $CC -o "$BUILD/mr_mp2_check.m68k" tests/mr_mp2_check.c core/mr_mpeg1.c \
-    core/mr_mpeg1_idct_m68k.S core/mr_mpeg1_blockset_m68k.S
+    core/mr_mpeg1_idct_m68k.S core/mr_mpeg1_blockset_m68k.S $MP2_ASM_SRC
 
 echo "== building mr_h264_m68k_check.m68k =="
 $CC -o "$BUILD/mr_h264_m68k_check.m68k" tests/mr_h264_m68k_check.c \
