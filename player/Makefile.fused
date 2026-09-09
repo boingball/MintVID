@@ -5,7 +5,7 @@
 # a win.  It replaces only:
 #   - display_aga.c with display_aga_fused.c (which includes the normal backend)
 #   - mr_yuv_dither_m68k.S with a dispatcher that includes the normal asm
-# and adds the planar-queue helper plus the native RiVA 32-pixel C2P kernel.
+# and adds the direct q6 YUV->planar worker plus the queue helper.
 #
 # Build the user's hardware test binary with:
 #   make -f Makefile.fused mrplay-fused CPU=68060 SSL=1 SSLCERTS=1
@@ -16,6 +16,7 @@ include Makefile.amiga
 
 FUSED_CORE := $(filter-out core/mr_yuv_dither_m68k.S,$(CORE)) \
               core/mr_yuv_dither_planar_m68k.S \
+              core/mr_yuv_dither_planar_direct_m68k.S \
               core/mr_yuv_planar_queue.c \
               core/mr_c2p_riva_native_m68k.S
 FUSED_PLAY := $(filter-out amiga/display_aga.c,$(PLAY)) \
@@ -24,7 +25,7 @@ FUSED_PLAY := $(filter-out amiga/display_aga.c,$(PLAY)) \
 .PHONY: mrplay-fused
 mrplay-fused: check-cc check-mintamp check-kalms $(FUSED_PLAY) $(FUSED_CORE) \
               $(KALMS_OBJ) $(VERSION_HEADER) | check-libavc
-	@echo "building experimental RiVA-native fused YUV->AGA planar mrplay ($(CPU))"
+	@echo "building experimental direct-q6 fused YUV->AGA planar mrplay ($(CPU))"
 	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) $(LIBA52_FLAGS) -o mrplay \
 	    $(FUSED_PLAY) $(FUSED_CORE) $(MINTAMP_MP3) $(MINTAMP_AAC) \
 	    $(LIBA52_SRC) $(KALMS_OBJ) $(LDFLAGS)
