@@ -1,15 +1,15 @@
 /*
  * Regression test for play_mpeg1()'s pacing, run against a real .mpg.
  *
- * amiga/mrplay.c cannot be compiled on the dev host, so the two policy calls
- * it makes per iteration live in core/mr_mpeg1_sched.c and are exercised here
+ * amiga/mrplay.c cannot be compiled on the dev host, so its pacing decisions
+ * live in core/mr_mpeg1_sched.c and are exercised here
  * inside a model of the loop that surrounds them: a virtual clock, a Paula
  * device with audio_paula.c's 4 s ring FIFO and its played-samples clock, and
  * the real MPEG-1 decoder supplying frames, timestamps and MP2 audio. The
  * `legacy` runs reproduce the loop exactly as it was before this fix, so each
  * assertion below is known to be able to fail.
  *
- * Two defects, both reported on a 134x100 25 fps clip with a 22.05 kHz MP2
+ * Three defects, all reported on a 134x100 25 fps clip with a 22.05 kHz MP2
  * track played on an A1200/AGA, where a loop iteration costs far more than the
  * stream's 40 ms frame period:
  *
@@ -28,6 +28,12 @@
  *    picture frozen the loop then ground through the remaining frames for
  *    another ten-odd seconds with Paula holding its last buffer. Counting MP2
  *    frames is wrong in both directions; the cushion is in milliseconds.
+ *
+ *  - Capping the drop run changed the frozen picture into frames 0,3,6...21,
+ *    then silent slow-motion video: every B picture was still fully decoded
+ *    before being discarded, so the 060 could not advance video time as fast
+ *    as Paula consumed the finite audio track. The fixed path skips B-picture
+ *    slices inside the decoder when late, retaining the complete I/P chain.
  */
 #include "../core/mr_mpeg1.h"
 #include "../core/mr_mpeg1_sched.h"
@@ -98,6 +104,7 @@ static int simulate(const unsigned char *data, size_t len,
     int audio_dry = 0, drop_run = 0;
     unsigned long period, clock_base = 0;
     int64_t pts_us, pts_base_us = 0;
+    int64_t last_pts_us = 0;
     int have_pts_base = 0;
     sim_audio au;
     mr_frame fr;
@@ -119,9 +126,22 @@ static int simulate(const unsigned char *data, size_t len,
     st->longest_gap_ms = 0; st->max_run_pulls = 0;
     last_shown_ms = 0;
 
-    while (mr_mpeg1_next(mp, &fr, &pts_us)) {
+    for (;;) {
         unsigned long target;
         int n, k = 0, pulled = 0;
+
+        if (!legacy && have_pts_base) {
+            unsigned long next_target = clock_base +
+                (unsigned long)(last_pts_us >= pts_base_us
+                    ? (last_pts_us - pts_base_us) / 1000 + period
+                    : (int64_t)st->decoded * period);
+            mr_mpeg1_set_skip_b_frames(mp,
+                mr_mpeg1_skip_b_frames(sim_elapsed(&au), next_target,
+                                       period));
+        } else {
+            mr_mpeg1_set_skip_b_frames(mp, 0);
+        }
+        if (!mr_mpeg1_next(mp, &fr, &pts_us)) break;
 
         au.now_ms += decode_ms;
         st->decoded++;
@@ -130,6 +150,7 @@ static int simulate(const unsigned char *data, size_t len,
             have_pts_base = 1;
             clock_base = sim_elapsed(&au);
         }
+        last_pts_us = pts_us;
 
         if (rate) {                              /* top up audio             */
             if (sim_starved(&au)) st->dry_iters++;
@@ -218,6 +239,10 @@ static void report(const char *what, const sim_stats *s)
  * this 134x100 clip comfortably, which is why it plays clean once started. */
 #define FAST_DECODE_MS 10
 #define FAST_SHOW_MS    5
+/* Approximate measured cost after the direct-YUV change on the reported
+ * 68060/50 MHz system. */
+#define M68K060_DECODE_MS 50
+#define M68K060_SHOW_MS    7
 /* A machine that cannot keep up at all, exercising the drop-run cap. */
 #define SLOW_DECODE_MS 90
 #define SLOW_SHOW_MS   60
@@ -231,7 +256,7 @@ int main(int argc, char **argv)
 {
     unsigned char *data;
     size_t len = 0;
-    sim_stats fast, slow, old_slow, old_fast;
+    sim_stats fast, m68k_060, slow, old_slow, old_fast;
     int rc = 0;
 
     if (argc != 2) {
@@ -247,12 +272,15 @@ int main(int argc, char **argv)
         fprintf(stderr, "cannot open %s as MPEG-1\n", argv[1]);
         free(data); return 2;
     }
-    if (simulate(data, len, SLOW_DECODE_MS, SLOW_SHOW_MS, MP2_DECODE_MS, 0, &slow) < 0 ||
+    if (simulate(data, len, M68K060_DECODE_MS, M68K060_SHOW_MS,
+                 MP2_DECODE_MS, 0, &m68k_060) < 0 ||
+        simulate(data, len, SLOW_DECODE_MS, SLOW_SHOW_MS, MP2_DECODE_MS, 0, &slow) < 0 ||
         simulate(data, len, SLOW_DECODE_MS, SLOW_SHOW_MS, MP2_DECODE_MS, 1, &old_slow) < 0 ||
         simulate(data, len, FAST_DECODE_MS, FAST_SHOW_MS, MP2_DECODE_MS, 1, &old_fast) < 0) {
         free(data); return 2;
     }
     report("fast machine", &fast);
+    report("060/50 model", &m68k_060);
     report("slow machine", &slow);
     report("legacy, slow machine", &old_slow);
     report("legacy, fast machine", &old_fast);
@@ -264,6 +292,21 @@ int main(int argc, char **argv)
     }
     if (fast.dry_iters != 0 || fast.audio_dropped_ms != 0) {
         fprintf(stderr, "FAIL: audio mis-fed on a machine that keeps up\n");
+        rc = 1;
+    }
+
+    /* The reported 060/50 takes roughly 50 ms to decode a reference picture
+     * and 7 ms to present the new direct-YUV path. Decoder-level B skipping
+     * must keep that profile with the MP2 clock for the full clip; the old
+     * display-only drop policy exhausted audio around source frame 21. */
+    if (m68k_060.dry_iters > 1 || m68k_060.audio_dropped_ms != 0) {
+        fprintf(stderr, "FAIL: 060/50 model exhausted audio early "
+                        "(dry iterations %u, FIFO loss %lu ms)\n",
+                m68k_060.dry_iters, m68k_060.audio_dropped_ms);
+        rc = 1;
+    }
+    if (m68k_060.decoded >= fast.decoded) {
+        fprintf(stderr, "FAIL: 060/50 model did not skip any B pictures\n");
         rc = 1;
     }
 

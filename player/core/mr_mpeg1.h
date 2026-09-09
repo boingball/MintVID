@@ -67,6 +67,12 @@ int        mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, int64_t *pts_us);
  * the next mr_mpeg1_next*() or mr_mpeg1_rewind() call. */
 int        mr_mpeg1_next_yuv(mr_mpeg1 *m, mr_frame *out, int64_t *pts_us);
 
+/* Enable/disable decoder-level B-picture skipping. MPEG-1 B pictures are not
+ * references, so this preserves the I/P prediction chain and advances their
+ * presentation time without paying to reconstruct pixels the player would
+ * immediately drop. */
+void       mr_mpeg1_set_skip_b_frames(mr_mpeg1 *m, int skip);
+
 /* Decode one audio frame into `dst` as little-endian signed-16 interleaved
  * bytes, mr_mpeg1_channels() per sample frame (room for 1152*4 bytes needed;
  * explicit LE so it is correct on the big-endian 68k). Returns the output

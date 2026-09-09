@@ -17,3 +17,10 @@ int mr_mpeg1_drop_frame(unsigned long audio_elapsed_ms, unsigned long target_ms,
     if (drop_run >= MPEG1_MAX_DROP_RUN) return 0;
     return audio_elapsed_ms > target_ms + period_ms;
 }
+
+int mr_mpeg1_skip_b_frames(unsigned long audio_elapsed_ms,
+                           unsigned long next_target_ms,
+                           unsigned long period_ms)
+{
+    return audio_elapsed_ms > next_target_ms + period_ms;
+}

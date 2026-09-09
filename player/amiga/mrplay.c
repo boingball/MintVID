@@ -1303,6 +1303,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     mr_frame       fr;
     int64_t        pts_us;
     int64_t        pts_base_us = 0;
+    int64_t        last_pts_us = 0;
     int            have_pts_base = 0;
     unsigned       fps_millihz;
 
@@ -1383,6 +1384,24 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
 
         {
             clock_t a = 0;
+            /* Dropping an already-decoded frame only saves its final display
+             * cost. If audio is more than one frame ahead, let pl_mpeg skip B
+             * pictures at the bitstream level instead: they are not reference
+             * pictures, so the I/P chain remains valid and their timeline is
+             * still accounted for. This is what lets a 50 MHz 060 catch up
+             * instead of decoding frames 1/2 only to discard them and showing
+             * 0,3,6... while Paula consumes the entire track. */
+            if (audio && !audio_dry && have_pts_base) {
+                unsigned long next_target = clock_base +
+                    (unsigned long)(last_pts_us >= pts_base_us
+                        ? (last_pts_us - pts_base_us) / 1000 + period
+                        : (int64_t)decoded_frames * period);
+                mr_mpeg1_set_skip_b_frames(mp,
+                    mr_mpeg1_skip_b_frames(audio_elapsed_ms(audio),
+                                           next_target, period));
+            } else {
+                mr_mpeg1_set_skip_b_frames(mp, 0);
+            }
             if (want_time) a = clock();
             got = yuv_direct ? mr_mpeg1_next_yuv(mp, &fr, &pts_us)
                              : mr_mpeg1_next(mp, &fr, &pts_us);
@@ -1391,6 +1410,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         if (!got) {
             if (loop) { mr_mpeg1_rewind(mp); frames = 0; decoded_frames = 0;
                         have_pts_base = 0; drop_run = 0; audio_dry = 0;
+                        last_pts_us = 0;
                         clock_base = audio ? audio_elapsed_ms(audio) : 0; continue; }
             break;
         }
@@ -1399,6 +1419,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
             have_pts_base = 1;
             clock_base = audio ? audio_elapsed_ms(audio) : 0;
         }
+        last_pts_us = pts_us;
         if (audio) {                             /* top up audio (bounded)    */
             int n, k = 0, pulled = 0;
             /* Build one complete Paula request before opening its playback

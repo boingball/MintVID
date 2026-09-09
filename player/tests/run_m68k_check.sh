@@ -172,6 +172,11 @@ $CC -o "$BUILD/mr_mpeg1_sched_check.m68k" tests/mr_mpeg1_sched_check.c \
     core/mr_mpeg1.c core/mr_mpeg1_sched.c \
     core/mr_mpeg1_idct_m68k.S core/mr_mpeg1_blockset_m68k.S
 
+echo "== building mr_mpeg1_skip_check.m68k =="
+$CC -o "$BUILD/mr_mpeg1_skip_check.m68k" tests/mr_mpeg1_skip_check.c \
+    core/mr_mpeg1.c core/mr_mpeg1_idct_m68k.S \
+    core/mr_mpeg1_blockset_m68k.S
+
 echo "== building mr_h264_m68k_check.m68k =="
 $CC -o "$BUILD/mr_h264_m68k_check.m68k" tests/mr_h264_m68k_check.c \
     vendor/libavc_port/ih264_m68k_optim.c \
@@ -286,6 +291,9 @@ run "$BUILD/mr_mpeg1_yuv_check.m68k" tests/assets/test_mpeg1_audio.mpg
 
 echo "[play_mpeg1() pacing policy, real m68k/big-endian]"
 run "$BUILD/mr_mpeg1_sched_check.m68k" tests/assets/test_mpeg1_audio.mpg
+
+echo "[MPEG-1 decoder-level B-picture skipping, real m68k/big-endian]"
+run "$BUILD/mr_mpeg1_skip_check.m68k" tests/assets/test_mpeg1_audio.mpg
 
 echo "[H.264 High Profile avc1 + B-frames, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_h264_high.mp4 \

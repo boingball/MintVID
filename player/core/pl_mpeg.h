@@ -328,6 +328,14 @@ int plm_get_video_enabled(plm_t *self);
 void plm_set_video_enabled(plm_t *self, int enabled);
 
 
+// MintVID: skip B pictures without decoding their slices. B pictures are not
+// reference pictures, so this preserves the I/P prediction chain while
+// allowing a slow machine to catch up to an audio master clock. The video
+// timeline still advances for every skipped picture. Default FALSE.
+
+void plm_set_video_skip_b_frames(plm_t *self, int skip);
+
+
 // Get the number of video streams (0--1) reported in the system header.
 
 int plm_get_num_video_streams(plm_t *self);
@@ -426,10 +434,10 @@ void plm_set_video_decode_callback(plm_t *self, plm_video_decode_callback fp, vo
 void plm_set_audio_decode_callback(plm_t *self, plm_audio_decode_callback fp, void *user);
 
 
-// Advance the internal timer by microseconds and decode video/audio up to this time.
-// This will call the video_decode_callback and audio_decode_callback any number
-// of times. A frame-skip is not implemented, i.e. everything up to current time
-// will be decoded.
+// Advance the internal timer by microseconds and decode video/audio up to this
+// time. This will call the video_decode_callback and audio_decode_callback any
+// number of times. By default every picture is decoded; MintVID's optional
+// plm_set_video_skip_b_frames() extension may discard non-reference B pictures.
 
 void plm_decode(plm_t *self, int64_t microseconds);
 
@@ -718,6 +726,14 @@ int plm_video_get_height(plm_video_t *self);
 // The default is FALSE.
 
 void plm_video_set_no_delay(plm_video_t *self, int no_delay);
+
+
+// MintVID: skip B pictures without decoding their slices. Unlike no-delay
+// mode, this is safe for streams that actually contain B pictures: skipped
+// pictures advance time but are not returned, while I/P references continue
+// to be decoded normally. Default FALSE.
+
+void plm_video_set_skip_b_frames(plm_video_t *self, int skip);
 
 
 // Get the current internal time in microseconds.
@@ -1066,6 +1082,12 @@ void plm_set_video_enabled(plm_t *self, int enabled) {
 	self->video_packet_type = (plm_init_decoders(self) && self->video_decoder)
 		? PLM_DEMUX_PACKET_VIDEO_1
 		: 0;
+}
+
+void plm_set_video_skip_b_frames(plm_t *self, int skip) {
+	if (plm_init_decoders(self) && self->video_decoder) {
+		plm_video_set_skip_b_frames(self->video_decoder, skip);
+	}
 }
 
 int plm_get_num_video_streams(plm_t *self) {
@@ -2776,6 +2798,8 @@ struct plm_video_t {
 
 	int has_reference_frame;
 	int assume_no_b_frames;
+	int skip_b_frames;
+	int picture_skipped;
 };
 
 static inline uint8_t plm_clamp(int n) {
@@ -2857,6 +2881,10 @@ void plm_video_set_no_delay(plm_video_t *self, int no_delay) {
 	self->assume_no_b_frames = no_delay;
 }
 
+void plm_video_set_skip_b_frames(plm_video_t *self, int skip) {
+	self->skip_b_frames = skip ? TRUE : FALSE;
+}
+
 int64_t plm_video_get_time(plm_video_t *self) {
 	return self->time;
 }
@@ -2922,6 +2950,16 @@ plm_frame_t *plm_video_decode(plm_video_t *self) {
 		plm_buffer_discard_read_bytes(self->buffer);
 		
 		plm_video_decode_picture(self);
+
+		/* A skipped B picture has no reference value and produces no frame,
+		 * but it still occupies one display period. Advance the decoder clock
+		 * here, then continue directly to the next picture. */
+		if (self->picture_skipped) {
+			self->frames_decoded++;
+			self->time = (int64_t)self->frames_decoded * PLM_TIME_SCALE *
+				PLM_RATE_SCALE / self->framerate;
+			continue;
+		}
 
 		if (self->assume_no_b_frames) {
 			frame = &self->frame_backward;
@@ -3064,12 +3102,26 @@ void plm_video_init_frame(plm_video_t *self, plm_frame_t *frame, uint8_t *base) 
 }
 
 void plm_video_decode_picture(plm_video_t *self) {
+	self->picture_skipped = FALSE;
 	plm_buffer_skip(self->buffer, 10); // skip temporalReference
 	self->picture_type = plm_buffer_read(self->buffer, 3);
 	plm_buffer_skip(self->buffer, 16); // skip vbv_delay
 
 	// D frames or unknown coding type
 	if (self->picture_type <= 0 || self->picture_type > PLM_VIDEO_PICTURE_TYPE_B) {
+		return;
+	}
+
+	/* B pictures are never used as prediction references. When the player is
+	 * behind its audio clock, jump to the next picture start code instead of
+	 * spending most of a frame period reconstructing pixels that will be
+	 * discarded immediately afterwards. plm_video_decode() accounts for the
+	 * skipped display period and keeps looking for the next output frame. */
+	if (self->skip_b_frames &&
+		self->picture_type == PLM_VIDEO_PICTURE_TYPE_B) {
+		self->picture_skipped = TRUE;
+		self->start_code = plm_buffer_find_start_code(self->buffer,
+			PLM_START_PICTURE);
 		return;
 	}
 

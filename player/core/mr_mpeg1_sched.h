@@ -80,4 +80,12 @@ int mr_mpeg1_want_audio(unsigned long buffered_ms, int started, int pulls);
 int mr_mpeg1_drop_frame(unsigned long audio_elapsed_ms, unsigned long target_ms,
                         unsigned long period_ms, int drop_run);
 
+/* Whether the next decoder call should discard any B pictures it encounters
+ * before producing an I/P reference picture. This is the useful form of frame
+ * dropping for the serial MPEG-1 path: it avoids the expensive reconstruction
+ * instead of discarding an already-decoded result. */
+int mr_mpeg1_skip_b_frames(unsigned long audio_elapsed_ms,
+                           unsigned long next_target_ms,
+                           unsigned long period_ms);
+
 #endif

@@ -181,6 +181,11 @@ int mr_mpeg1_next_yuv(mr_mpeg1 *m, mr_frame *out, int64_t *pts_us)
     return 1;
 }
 
+void mr_mpeg1_set_skip_b_frames(mr_mpeg1 *m, int skip)
+{
+    if (m) plm_set_video_skip_b_frames(m->plm, skip);
+}
+
 int mr_mpeg1_audio(mr_mpeg1 *m, unsigned char *dst)
 {
     plm_samples_t *s;

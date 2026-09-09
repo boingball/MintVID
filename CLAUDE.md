@@ -94,13 +94,19 @@ generic streaming player, has **no queue of decoded frames**: it decodes one
 frame, paces it against the Paula clock, shows it, repeats. Two consequences
 bite, and both did on an A1200/AGA:
 
-- **A frame drop buys nothing but the display cost.** The generic scheduler
+- **A post-decode frame drop buys nothing but the display cost.** The generic
+  scheduler
   only drops while `*qcount > 1` — it skips a frame to reach a *newer* one it
   already has. Here there is no newer frame, so an uncapped "drop when more
   than one period late" rule never clears once the machine falls behind: the
   audio clock stays ahead of video pts, every frame after the first is dropped,
   and the picture freezes on frame 1 for the whole clip. Cap the run
-  (`MPEG1_MAX_DROP_RUN`).
+  (`MPEG1_MAX_DROP_RUN`), but when audio is more than one frame ahead also
+  skip B pictures *inside* pl_mpeg, before slice reconstruction. MPEG-1 B
+  pictures are not references, so `plm_set_video_skip_b_frames()` can advance
+  their timestamps and preserve the I/P prediction chain without paying to
+  decode pixels that would immediately be thrown away. On the reported file
+  that reduces a catch-up pass from all 125 pictures to its 43 I/P pictures.
 - **Audio top-up must be measured in milliseconds, never in MP2 frames.** An
   MP2 frame is always 1152 samples, but that is 26 ms of a 44.1 kHz stream
   decimated to 22.05 kHz for Paula and **52 ms of a stream already at
@@ -118,8 +124,8 @@ bite, and both did on an A1200/AGA:
   timeline; the loop can only work that off by free-running until pts catches
   up, and the drop-run cap shows one frame in three while it does. Filling to
   400 ms pre-gate and ramping to the full cushion afterwards cost a dozen
-  post-gate pulls in one iteration, which on an **060/50** — a machine that
-  decodes this clip with room to spare — read as a lock-up on frame 1, stepping
+  post-gate pulls in one iteration, which on an **060/50** read as a lock-up
+  on frame 1, stepping
   to frames 3 and 6 with stuttery sound, then clean playback once the cushion
   filled and the pulls stopped. Prime the whole cushion while the gate is shut
   (the cost is paid once, before the first frame) and keep the post-gate cap
@@ -145,14 +151,18 @@ Both mistakes are silent: a swap only shifts the colour, a visible-width stride
 only skews the picture. `tests/mr_mpeg1_yuv_check.c` pins both, and refuses to
 run on a clip whose width is a multiple of 16, where a stride bug cannot show.
 
-For scale, that machine still only reaches ~13 fps on this clip against a
-25 fps stream; pl_mpeg's MPEG-1 decode itself is ~46 ms/frame. The pacing
-cannot fix a 2x shortfall, only choose how to fail.
+For scale, that machine reaches only ~13 fps when it fully decodes every picture
+in this 25 fps stream; pl_mpeg's MPEG-1 decode itself is ~46 ms/frame. Pacing
+alone cannot fix that shortfall. Decoder-level B skipping is the necessary
+escape hatch: it removes work rather than merely hiding its result.
 
 The policy lives in `core/mr_mpeg1_sched.c` precisely so it is host-testable —
 `tests/mr_mpeg1_sched_check.c` replays the real loop around it with a modelled
-Paula device at two machine speeds, and asserts the pre-fix policy still fails,
-so the test cannot quietly stop proving anything.
+Paula device at fast, measured 060/50 and deliberately too-slow profiles, and
+asserts the pre-fix policy still fails, so the test cannot quietly stop proving
+anything. `tests/mr_mpeg1_skip_check.c` separately proves that skipped B-picture
+timestamps advance and every retained I/P reference still matches a full
+decode.
 
 ## Microsoft RLE (BI_RLE8) notes
 Running out of data is a **normal end of frame**, not an error: encoders often

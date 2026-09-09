@@ -17,14 +17,15 @@ ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=25:duration=1 \
 # MPEG-1 program stream (25 fps - MPEG-1 only allows standard rates).
 ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=25:duration=2 \
     -c:v mpeg1video -b:v 800k -f mpeg test_mpeg1.mpg -y
-# MPEG-1 with a 22.05 kHz MP2 track, for the play_mpeg1() pacing check. The
+# MPEG-1 with B pictures and a 22.05 kHz MP2 track, for the play_mpeg1()
+# pacing and decoder-level frame-skip checks. The
 # sample rate matters: at 22.05 kHz an MP2 frame is 52 ms of audio and needs no
 # decimation for Paula, so a top-up counting MP2 frames rather than
 # milliseconds over-queues by 2.6x. The odd 134x100 size is deliberate too -
 # neither dimension is a multiple of 16.
 ffmpeg -v error -f lavfi -i testsrc2=size=134x100:rate=25:duration=5 \
     -f lavfi -i sine=frequency=440:sample_rate=22050:duration=5 \
-    -c:v mpeg1video -b:v 500k -c:a mp2 -b:a 96k -ac 1 \
+    -c:v mpeg1video -bf 2 -g 12 -b:v 500k -c:a mp2 -b:a 96k -ac 1 \
     -f mpeg test_mpeg1_audio.mpg -y
 # Same Cinepak content in a QuickTime MOV, with PCM audio, to exercise the
 # MOV demuxer (sample-table frame reconstruction).
