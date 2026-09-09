@@ -207,8 +207,8 @@ $CC -o "$BUILD/mr_cinepak_indexed_check.m68k" \
     core/mr_cinepak.c core/mr_dither.c core/mr_dither_m68k.S
 
 echo "== building mr_mp2_idct_check.m68k =="
-$M68K_CC -O2 -std=c99 -m68030 -static -o "$BUILD/mr_mp2_idct_check.m68k" \
-    tests/mr_mp2_idct_check.c
+$M68K_CC -O2 -std=c99 -m68030 -static -DMR_M68K_ASM=1 -o "$BUILD/mr_mp2_idct_check.m68k" \
+    tests/mr_mp2_idct_check.c core/plm_audio_idct36_m68k.S
 
 echo "== building mr_mp2_synth_check.m68k =="
 $M68K_CC -O2 -std=c99 -m68030 -static -DMR_M68K_ASM=1 -o "$BUILD/mr_mp2_synth_check.m68k" \

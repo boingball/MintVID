@@ -4213,6 +4213,10 @@ int plm_audio_decode_header(plm_audio_t *self) {
 	return frame_size - (hasCRC ? 6 : 4);
 }
 
+#if defined(MR_M68K_ASM) && !defined(__mc68060__)
+extern void plm_audio_idct36_m68k(int s[32][3], int ss, int32_t *d, int dp);
+#endif
+
 /* MintVID: accumulate one PCM lane at a time. Each of the two window
  * walks has eight taps for every reachable v_pos (0, 64, ..., 960).
  * Keep the original tap order and signed 64-bit products, but write U only
@@ -4363,7 +4367,11 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 				self->v_pos = (self->v_pos - 64) & 1023;
 
 				for (int ch = 0; ch < synth_channels; ch++) {
-					plm_audio_idct36(self->sample[ch], p, self->V[ch], self->v_pos);
+					#if defined(MR_M68K_ASM) && !defined(__mc68060__)
+                    plm_audio_idct36_m68k(self->sample[ch], p, self->V[ch], self->v_pos);
+#else
+                    plm_audio_idct36(self->sample[ch], p, self->V[ch], self->v_pos);
+#endif
 
 #if defined(MR_M68K_ASM) && !defined(__mc68060__)
 					plm_audio_synth_window_m68k(self->D, self->V[ch], self->v_pos, self->U);

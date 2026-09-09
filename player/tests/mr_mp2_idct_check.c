@@ -5,6 +5,9 @@
 #include <limits.h>
 #define PL_MPEG_IMPLEMENTATION
 #include "../core/pl_mpeg.h"
+#if defined(MR_M68K_ASM)
+extern void plm_audio_idct36_m68k(int s[32][3], int ss, int32_t *d, int dp);
+#endif
 
 static int32_t reference_mul_q15(int32_t value, int32_t coefficient)
 {
@@ -50,7 +53,11 @@ int main(void)
                 memset(expected, 0xa5, sizeof expected);
                 memset(actual, 0xa5, sizeof actual);
                 reference_idct36(input, ss, expected+1, dp);
+#if defined(MR_M68K_ASM)
+                plm_audio_idct36_m68k(input, ss, actual+1, dp);
+#else
                 plm_audio_idct36(input, ss, actual+1, dp);
+#endif
                 if (memcmp(expected, actual, sizeof actual) ||
                     memcmp(saved, input, sizeof input)) {
                     printf("FAIL trial=%d ss=%d dp=%d\n",trial,ss,dp);
