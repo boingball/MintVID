@@ -4456,9 +4456,12 @@ void plm_audio_read_samples(plm_audio_t *self, int ch, int sb, int part) {
 /* Q15 coefficient multiply with symmetric, half-away-from-zero rounding. */
 static int32_t plm_audio_mul_q15(int32_t value, int32_t coefficient) {
 	int64_t product = (int64_t)value * coefficient;
-	return product < 0
-		? -(int32_t)((-product + 16384) >> 15)
-		:  (int32_t)(( product + 16384) >> 15);
+	/* floor((product + 16384 - (product < 0)) / 32768) is the
+	 * same half-away-from-zero result without negating a 64-bit product.
+	 * Shift unsigned: the low 32 result bits are identical to an arithmetic
+	 * shift, without relying on signed right-shift behavior. */
+	uint32_t bias = 16384u - (uint32_t)(product < 0);
+	return (int32_t)(((uint64_t)product + bias) >> 15);
 }
 
 static int16_t plm_audio_clamp(int64_t value) {

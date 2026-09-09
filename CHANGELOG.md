@@ -4,6 +4,11 @@
 
 ### Performance
 
+- Simplify the MP2 IDCT's Q15 multiply rounding to a sign-dependent bias
+  and unsigned shift, preserving half-away-from-zero results. Add rounding
+  residue and full-transform equivalence tests to the audio and m68k suites.
+  Playback speed has not yet been measured for this change.
+
 - Select the indexed YUV dithering palette kernel once per conversion,
   removing repeated per-pixel mode branches while retaining the compact
   4 KB quantizer. Complete calls sampled in Copperline used about 13.6%
