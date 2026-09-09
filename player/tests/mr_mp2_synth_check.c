@@ -3,9 +3,16 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+/* The m68k test calls the synthesis asm directly. Do not turn on pl_mpeg's
+ * global MR_M68K_ASM dispatch here: that would make this focused test depend
+ * on every other MPEG video/audio asm helper as well. */
+#if defined(MR_M68K_ASM)
+#define MR_TEST_M68K_SYNTH 1
+#undef MR_M68K_ASM
+#endif
 #define PL_MPEG_IMPLEMENTATION
 #include "../core/pl_mpeg.h"
-#if defined(MR_M68K_ASM)
+#if defined(MR_TEST_M68K_SYNTH)
 extern void plm_audio_synth_window_m68k(const int32_t *, const int32_t *, int, int64_t *);
 #endif
 
@@ -48,7 +55,7 @@ int main(void)
             reference(d, v, pos, expected);
             actual[0] = actual[33] = INT64_C(0x123456789abcdef);
             memset(actual + 1, 0xa5, 32 * sizeof(int64_t));
-#if defined(MR_M68K_ASM)
+#if defined(MR_TEST_M68K_SYNTH)
             plm_audio_synth_window_m68k(d, v, pos, actual + 1);
 #else
             plm_audio_synth_window(d, v, pos, actual + 1);
