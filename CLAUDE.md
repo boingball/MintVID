@@ -54,6 +54,19 @@ alignment) cannot catch an endianness bug in a demuxer or an alignment bug in
 passing on the host is not proof those are safe on the actual target. See
 `player/tests/run_m68k_check.sh`.
 
+**qemu-m68k proves correctness, not speed — and it scores cache work
+backwards.** qemu-user models instruction execution, not the 68060's caches, so
+it is a fair proxy only for changes that alter *how much work* is done. Any
+change trading memory footprint for arithmetic will read the wrong way round.
+The compact 8-bit dither LUT is the worked example: replacing three 16x256
+tables (~12 KB, far over the 060's 8 KB data cache) with one 4 KB quantiser
+plus a couple of weight multiplies measures **0.44 -> 0.53 ms/frame (20%
+*slower*) under qemu**, because qemu sees only the added multiplies — and
+**25.10 -> 23.09 ms/frame (8% *faster*) on a real 68060/50**, because the
+working set now fits. Taking the qemu number would have rejected a real win.
+So: use qemu for bit-exactness and for instruction-count questions, and settle
+anything memory-bound on hardware.
+
 ## Cinepak notes (hard-won)
 Strip and chunk headers are **1 byte of id + a 24-bit big-endian size**, not two
 16-bit fields — reading them as 16/16 only appears to work while everything
