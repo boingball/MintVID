@@ -7,9 +7,62 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  apply-mpeg-pts-followup:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Suppress duplicate/non-advancing MPEG display tags
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('player/core/mr_mpeg2.c')
+          s = p.read_text()
+          changed = False
+
+          old = '''    mpeg2_frame_node  *free_nodes;\n    int                flushing;\n    int                flush_done;\n} mpeg2_state;'''
+          new = '''    mpeg2_frame_node  *free_nodes;\n    int                flushing;\n    int                flush_done;\n    int                have_last_output_pts;\n    uint64_t           last_output_pts;\n} mpeg2_state;'''
+          if new not in s:
+              if s.count(old) != 1:
+                  raise SystemExit('mpeg2_state insertion point missing')
+              s = s.replace(old, new)
+              changed = True
+
+          old = '''/* Return the timestamp attached to the picture currently exposed in dec->frame. */\nint mr_mpeg2_output_pts(mr_decoder *dec, uint64_t *pts_us)\n{\n    mpeg2_state *s;\n    if (!dec || dec->codec != &mr_codec_mpeg2 || !pts_us) return 0;\n    s = (mpeg2_state *)dec->priv;\n    if (!s || !s->current || !s->current->has_pts) return 0;\n    *pts_us = s->current->pts_us;\n    return 1;\n}\n'''
+          new = '''/* Return a usable anchor timestamp for the picture currently exposed in\n * dec->frame. MPEG PES packets can contain more than one picture, so\n * libmpeg2 may legitimately propagate the same packet tag onto consecutive\n * displayed pictures. Such a duplicate is NOT a second frame timestamp.\n * Suppress duplicate/backward tags and let mrplay's existing display-order\n * synthetic clock advance that picture by one frame period instead. The next\n * genuinely newer tag remains an authoritative container anchor. */\nint mr_mpeg2_output_pts(mr_decoder *dec, uint64_t *pts_us)\n{\n    mpeg2_state *s;\n    uint64_t cur;\n    if (!dec || dec->codec != &mr_codec_mpeg2 || !pts_us) return 0;\n    s = (mpeg2_state *)dec->priv;\n    if (!s || !s->current || !s->current->has_pts) return 0;\n    cur = s->current->pts_us;\n    if (s->have_last_output_pts && cur <= s->last_output_pts) return 0;\n    s->last_output_pts = cur;\n    s->have_last_output_pts = 1;\n    *pts_us = cur;\n    return 1;\n}\n'''
+          if new not in s:
+              if s.count(old) != 1:
+                  raise SystemExit('mr_mpeg2_output_pts replacement point missing')
+              s = s.replace(old, new)
+              changed = True
+
+          p.write_text(s)
+          if not changed:
+              Path('/tmp/nochanges').write_text('already applied')
+          PY
+
+      - name: Validate and push
+        run: |
+          if [ -f /tmp/nochanges ]; then
+            echo "follow-up already applied"
+            exit 0
+          fi
+          git diff --check
+          git diff -- player/core/mr_mpeg2.c
+          git config user.name "Darren Banfi"
+          git config user.email "33876110+boingball@users.noreply.github.com"
+          git add player/core/mr_mpeg2.c
+          git commit -m "Treat duplicate MPEG PES tags as synthetic frame timing"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+
   fused-68060:
     runs-on: ubuntu-latest
     timeout-minutes: 30
