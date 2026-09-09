@@ -125,6 +125,30 @@ bite, and both did on an A1200/AGA:
   (the cost is paid once, before the first frame) and keep the post-gate cap
   tight.
 
+**MP2 cannot go via MintAMP.** MintAMP is Helix, which is Layer III only —
+`vendor/MintAMP/mp3dec.c` rejects `layer != 3` outright. pl_mpeg is the
+project's MP2 decoder everywhere, including the shared `audio/mr_audio_decode.c`
+the generic player uses, so `play_mpeg1` is not an outlier here and there is no
+faster in-tree decoder to switch to.
+
+**Take the YUV planes, not RGB24, wherever the backend accepts them.**
+`display_backend.h`'s `supports_yuv_indexed` route exists because dithering
+straight from YUV420P to palette indices skips a colour round-trip this player
+never needed. Measured on an 060/50 playing 134x100 at 25 fps: 58.4 ms/frame
+decode + 18.7 ms/frame display, of which ~12 ms is `plm_frame_to_rgb` (21% of
+decode on real m68k, measured under qemu) and 12.1 ms is the RGB→indexed
+dither. That is ~24 ms of a 77 ms frame spent converting to RGB24 and straight
+back out again. `mr_mpeg1_next_yuv()` hands the planes over borrowed, with the
+**macroblock-aligned pitch** as the stride (144 for a 134-wide clip) — and note
+`MR_PIX_YUV420P` is Y, **Cb, Cr**, so `u` is pl_mpeg's `cb` and `v` its `cr`.
+Both mistakes are silent: a swap only shifts the colour, a visible-width stride
+only skews the picture. `tests/mr_mpeg1_yuv_check.c` pins both, and refuses to
+run on a clip whose width is a multiple of 16, where a stride bug cannot show.
+
+For scale, that machine still only reaches ~13 fps on this clip against a
+25 fps stream; pl_mpeg's MPEG-1 decode itself is ~46 ms/frame. The pacing
+cannot fix a 2x shortfall, only choose how to fail.
+
 The policy lives in `core/mr_mpeg1_sched.c` precisely so it is host-testable —
 `tests/mr_mpeg1_sched_check.c` replays the real loop around it with a modelled
 Paula device at two machine speeds, and asserts the pre-fix policy still fails,

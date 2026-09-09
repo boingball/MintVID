@@ -57,6 +57,16 @@ int        mr_mpeg1_channels(mr_mpeg1 *m);
  * end of stream. */
 int        mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, int64_t *pts_us);
 
+/* As mr_mpeg1_next(), but hands back the decoder's own YUV420P planes instead
+ * of converting to RGB24. For a caller that is going to dither to palette
+ * indices anyway (the display_supports_yuv_indexed() route), the RGB24 buffer
+ * is pure overhead: on real m68k the conversion alone is ~21% of decode, and
+ * the RGB->indexed pass that follows it costs about as much again.
+ *
+ * The returned planes are borrowed from the decoder and are valid only until
+ * the next mr_mpeg1_next*() or mr_mpeg1_rewind() call. */
+int        mr_mpeg1_next_yuv(mr_mpeg1 *m, mr_frame *out, int64_t *pts_us);
+
 /* Decode one audio frame into `dst` as little-endian signed-16 interleaved
  * bytes, mr_mpeg1_channels() per sample frame (room for 1152*4 bytes needed;
  * explicit LE so it is correct on the big-endian 68k). Returns the output

@@ -160,6 +160,13 @@ $CC -o "$BUILD/mr_mp2_check.m68k" tests/mr_mp2_check.c core/mr_mpeg1.c \
 # decoder: the pts and MP2 frame counts driving it come from pl_mpeg, whose
 # demuxer reads big-endian fields, so this exercises the whole loop on the
 # actual target byte order rather than only the arithmetic.
+# The YUV-direct path's plane pointers and strides are read as packed bytes at
+# a macroblock-aligned pitch, so this belongs on the real big-endian target.
+echo "== building mr_mpeg1_yuv_check.m68k =="
+$CC -o "$BUILD/mr_mpeg1_yuv_check.m68k" tests/mr_mpeg1_yuv_check.c \
+    core/mr_mpeg1.c core/mr_yuv.c core/mr_yuv_m68k.S \
+    core/mr_mpeg1_idct_m68k.S core/mr_mpeg1_blockset_m68k.S
+
 echo "== building mr_mpeg1_sched_check.m68k =="
 $CC -o "$BUILD/mr_mpeg1_sched_check.m68k" tests/mr_mpeg1_sched_check.c \
     core/mr_mpeg1.c core/mr_mpeg1_sched.c \
@@ -273,6 +280,9 @@ run "$BUILD/mr_ac3_check.m68k" tests/assets/test_ac3.ac3 \
 echo "[MP2 from an MPEG-1 program stream vs ffmpeg, real m68k/big-endian]"
 run "$BUILD/mr_mp2_check.m68k" tests/assets/test_mpeg1_mp2.mpg \
     tests/assets/ref_mpeg1_mp2.raw 22050 1
+
+echo "[MPEG-1 YUV420P plane handoff, real m68k/big-endian]"
+run "$BUILD/mr_mpeg1_yuv_check.m68k" tests/assets/test_mpeg1_audio.mpg
 
 echo "[play_mpeg1() pacing policy, real m68k/big-endian]"
 run "$BUILD/mr_mpeg1_sched_check.m68k" tests/assets/test_mpeg1_audio.mpg

@@ -1296,6 +1296,9 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     unsigned long  period, clock_base = 0;
     long           ntick;
     unsigned char *abuf;                         /* heap, not stack (4.6 KB)  */
+    unsigned char *chunky = NULL;                /* YUV-direct pixel buffer   */
+    int            yuv_direct = 0, yuv_w = 0, yuv_h = 0;
+    int            yuv_vscale = 0, yuv_depth = 0, yuv_ham = 0;
     clock_t        t_dec = 0, t_show = 0;
     mr_frame       fr;
     int64_t        pts_us;
@@ -1324,6 +1327,28 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
                                "cannot open a display");
                  status_hold(); mr_mpeg1_close(mp); return 10; }
     printf("display backend: %s\n", display_backend_name(disp));
+
+    /*
+     * Prefer the decoder's YUV planes straight to chunky pixels where the
+     * backend takes them (display_backend.h says to prefer this over the RGB
+     * route whenever both apply). Measured on the reported 060/50, decoding
+     * 134x100 at 25 fps: 58.4 ms/frame decode plus 18.7 ms/frame display, of
+     * which ~12 ms is plm_frame_to_rgb inside "decode" (21% of it on real
+     * m68k) and 12.1 ms is the RGB->indexed dither inside "display". Both are
+     * a colour round-trip this path never needed - it dithers to palette
+     * indices either way - so taking the planes direct returns about 24 ms of
+     * a 77 ms frame. Queried once: the answer cannot change for a fixed
+     * source size and screen mode.
+     */
+    yuv_direct = display_supports_yuv_indexed(disp, w, h, &yuv_w, &yuv_h,
+                                              &yuv_vscale, &yuv_depth,
+                                              &yuv_ham);
+    if (yuv_direct) {
+        chunky = (unsigned char *)malloc((size_t)yuv_w * (size_t)yuv_h);
+        if (!chunky) yuv_direct = 0;      /* fall back to the RGB24 path */
+    }
+    printf("pixel path: %s\n", yuv_direct ? "YUV420P -> indexed (direct)"
+                                          : "YUV420P -> RGB24 -> indexed");
 
     sr = mr_mpeg1_samplerate(mp);
     channels = mr_mpeg1_channels(mp);
@@ -1359,7 +1384,8 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         {
             clock_t a = 0;
             if (want_time) a = clock();
-            got = mr_mpeg1_next(mp, &fr, &pts_us);
+            got = yuv_direct ? mr_mpeg1_next_yuv(mp, &fr, &pts_us)
+                             : mr_mpeg1_next(mp, &fr, &pts_us);
             if (want_time) t_dec += clock() - a;
         }
         if (!got) {
@@ -1459,8 +1485,35 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
         {
             clock_t a = 0;
             if (want_time) a = clock();
-            display_show_rgb(disp, fr.data, fr.width, fr.height, fr.stride,
-                             fr.dirty_y0, fr.dirty_y1);
+            if (yuv_direct) {
+                /* Same conversion the generic player's queue_copy_yuv_indexed()
+                 * runs, minus the queue: this path has one frame in flight and
+                 * converts it in place. ham is 0 for palette indices
+                 * (core/mr_yuv_dither.h) or 6/8 for HAM pixel bytes
+                 * (core/mr_yuv_ham.h), and both fill the same one-byte-per-
+                 * pixel buffer that display_show_indexed() presents. */
+                if (yuv_ham)
+                    mr_yuv420_ham_encode(fr.data, fr.stride, fr.u_data,
+                                         fr.u_stride, fr.v_data, fr.v_stride,
+                                         fr.width, fr.height, yuv_vscale,
+                                         yuv_ham, chunky, yuv_w);
+                else if (yuv_vscale > 0)
+                    mr_yuv420_dither_indexed(fr.data, fr.stride, fr.u_data,
+                                             fr.u_stride, fr.v_data,
+                                             fr.v_stride, fr.width, fr.height,
+                                             yuv_vscale, yuv_depth,
+                                             chunky, yuv_w, 0);
+                else
+                    mr_yuv420_dither_indexed_resize(
+                        fr.data, fr.stride, fr.u_data, fr.u_stride, fr.v_data,
+                        fr.v_stride, fr.width, fr.height, yuv_depth, chunky,
+                        yuv_w, yuv_h, yuv_w, 0);
+                display_show_indexed(disp, chunky, yuv_w, yuv_h, yuv_w,
+                                     0, yuv_h);
+            } else {
+                display_show_rgb(disp, fr.data, fr.width, fr.height, fr.stride,
+                                 fr.dirty_y0, fr.dirty_y1);
+            }
             if (want_time) t_show += clock() - a;
         }
         decoded_frames++;
@@ -1495,6 +1548,7 @@ static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_tim
     display_close(disp);
     mr_mpeg1_close(mp);
     free(abuf);
+    free(chunky);
     return 0;
 }
 
