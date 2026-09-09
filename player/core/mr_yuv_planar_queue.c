@@ -1,26 +1,18 @@
 /*
  * MintVID - experimental small-tile-fused YUV420P -> AGA planar queue.
  *
- * The normal fast path is deliberately built out of two already-proven m68k
- * kernels rather than introducing new colour maths in the same experiment:
+ * Four scanlines at a time are dithered into a small aligned scratch tile and
+ * immediately converted into the queue slot's FINAL plane-major representation.
+ * The C2P step now uses an adaptation of RiVA's actual GrayC2P 32-pixel register
+ * network rather than MintVID's earlier generic transpose8-based "RiVA-style"
+ * path.  Presentation therefore performs no C2P at all: display_aga_fused.c
+ * only copies the eight already-planar row bands from Fast RAM to the AGA bitmap.
  *
- *   mr_yuv420_dither8_m68k_base()  - exact 6x6x6/Bayer palette indices
- *   mr_c2p8_riva32()               - exact 32-pixel chunky->planar transpose
- *
- * The important difference is locality and destination.  Four scanlines at a
- * time are dithered into a small aligned scratch tile and immediately
- * transposed while hot into the queue slot's FINAL plane-major representation.
- * Four rows keep the scratch working set small while avoiding the C/asm
- * prologue/dispatch cost of calling both established kernels once per row.
- * Presentation therefore performs no C2P at all: display_aga_fused.c only
- * copies the eight already-planar row bands from Fast RAM to the AGA bitmap.
- *
- * This preserves MintVID's established indexed palette bit-for-bit.  It is not
- * RiVA's DHAM/STORM colour model; only the useful architectural idea (do not
- * materialise a whole chunky frame and later walk it again) is borrowed.
+ * This remains bit-exact with MintVID's established 6x6x6/Bayer palette.  It is
+ * not RiVA's DHAM/STORM colour model; the experiment borrows the real RiVA C2P
+ * schedule while keeping MintVID's existing colour output unchanged.
  */
 #include "mr_yuv_planar_queue.h"
-#include "mr_c2p.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -97,6 +89,14 @@ void mr_yuv_planar_queue_m68k(
     const uint8_t *lut_r, const uint8_t *lut_g, const uint8_t *lut_b)
     __asm__("mr_yuv_planar_queue_m68k");
 
+/* Adapted from RiVA's actual GrayC2P register-scheduled 32-pixel kernel.
+ * Destination is eight consecutive plane-major buffers rather than RiVA's
+ * patched screen displacements. */
+void mr_c2p8_riva_native_m68k(const uint8_t *chunky, int pw, int h,
+                              int chunky_stride, uint8_t *planar,
+                              int plane_size, int bpr, int y0)
+    __asm__("mr_c2p8_riva_native_m68k");
+
 /* Called by the assembly dispatcher with the *same* ABI as the original
  * dither routine.  The configured AGA capability guarantees identity scaling,
  * depth 8 and a padded queue stride.  Keep validation here anyway: if that
@@ -113,10 +113,9 @@ void mr_yuv_planar_queue_m68k(
 {
     uint8_t raw_tile[MR_PLANAR_MAX_WIDTH * MR_PLANAR_TILE_ROWS + 15];
     uint8_t *tile = (uint8_t *)(((uintptr_t)(raw_tile + 15)) & ~(uintptr_t)15);
-    uint8_t *planes[8];
     size_t plane_size;
     int pw = g_padded_width;
-    int bpr, left, oy, p;
+    int bpr, left, oy;
 
     if (!y_plane || !u_plane || !v_plane || !out || !lut_b ||
         !mr_yuv_planar_queue_active || width != g_visible_width ||
@@ -140,8 +139,6 @@ void mr_yuv_planar_queue_m68k(
 
     bpr = pw >> 3;
     plane_size = (size_t)bpr * (size_t)dst_h;
-    for (p = 0; p < 8; p++)
-        planes[p] = out + (size_t)p * plane_size;
 
     /* Centre the real image inside the 32-pixel C2P padding. Dither phase is
      * still source-relative because the base converter writes at x=0 into each
@@ -157,7 +154,6 @@ void mr_yuv_planar_queue_m68k(
         const uint8_t *ry;
         const uint8_t *ru;
         const uint8_t *rv;
-        int r;
         if (rows > MR_PLANAR_TILE_ROWS) rows = MR_PLANAR_TILE_ROWS;
 
         ry = y_plane + (size_t)oy * (size_t)y_stride;
@@ -168,23 +164,19 @@ void mr_yuv_planar_queue_m68k(
          * chroma pair boundary. The final short tile starts on one too. */
         memset(tile, 0, (size_t)pw * (size_t)rows);
 
-        /* Dither all rows in the tile with one asm entry/exit.  Because tile
-         * starts are even, local chroma row n>>1 is exactly global
-         * (oy+n)>>1.  y_base preserves the global 4x4 Bayer row phase. */
+        /* Dither all rows in the tile with one asm entry/exit. */
         mr_yuv420_dither8_m68k_base(
             ry, y_stride, ru, u_stride, rv, v_stride,
             width, rows, 1, tile + left, pw, y_base + oy,
             luma_x298, e_x409, d_xm100, e_xm208, d_x516,
             lut_r, lut_g, lut_b);
 
-        /* Transpose the hot tile directly into the queue's final plane-major
-         * representation, again with one asm entry/exit for up to four rows. */
-        mr_c2p8_riva32(tile, pw, rows, pw, 8, planes, bpr, 0, oy);
-
-        /* Keep the compiler from treating rows as unused if future conditional
-         * padding work is added here; the loop's memset already clears every
-         * row, so no per-row pad stores are needed today. */
-        for (r = 0; r < rows; r++) (void)r;
+        /* RiVA's actual 32-pixel register transpose writes directly into the
+         * queue's final plane-major representation.  Keeping this immediately
+         * after the dither means the <=2.5 KB tile is still hot while avoiding
+         * the four transpose8 sub-calls per 32-pixel group used previously. */
+        mr_c2p8_riva_native_m68k(tile, pw, rows, pw, out,
+                                 (int)plane_size, bpr, oy);
     }
     mr_yuv_planar_queue_active = 1;
 }
