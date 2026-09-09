@@ -330,6 +330,16 @@ $CC -o "$BUILD/mr_mpeg2_yuv_check.m68k" tests/mr_mpeg2_yuv_check.c \
 echo "[MPEG-1/2 YUV420P output handoff, real m68k/big-endian]"
 run "$BUILD/mr_mpeg2_yuv_check.m68k" tests/assets/test_mpeg1_odd.mpg 134 100
 
+# A PES timestamp is a 33-bit value assembled out of five bytes by shifting
+# past marker bits, so it is exactly the kind of thing that can come out right
+# on the host and wrong on a big-endian target.
+echo "== building mr_ps_pts_check.m68k =="
+$CC -o "$BUILD/mr_ps_pts_check.m68k" tests/mr_ps_pts_check.c core/mr_ps.c
+echo "[MPEG-PS PES timestamps, real m68k/big-endian]"
+run "$BUILD/mr_ps_pts_check.m68k" tests/assets/test_mpeg1_odd.mpg 540000 40000
+run "$BUILD/mr_ps_pts_check.m68k" tests/assets/test_mpeg1_mp2.mpg \
+    540000 40000 518188
+
 echo "[MPEG-1, real m68k/big-endian - exercises the new motion-comp asm]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_mpeg1.mpg \
     --check tests/assets/ref_mpeg1

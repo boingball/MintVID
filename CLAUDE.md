@@ -125,6 +125,21 @@ libmpeg2's planes over packed instead, feeding the player's existing
 its framebuffers between reference and display use — but it moves 1.5 bytes per
 pixel with no arithmetic instead of writing 3 with a colour transform.
 
+**MPEG-PS timestamps come from the PES header, and only for the *first*
+picture that starts in each PES packet.** `mr_ps` used to walk straight past
+those fields without setting `mr_packet::has_pts`, so every MPEG-PS clip
+reached the player untimed: `mr_mpeg2_set_input_pts()` was always told "no
+timestamp", `mr_mpeg2_output_pts()` always answered 0, and A/V sync fell back
+to the synthetic display-order clock with no audio anchor at all. Nothing
+failed — it just drifted. Note the shape of the real data before "fixing" a
+gap in it: where one PES starts two pictures the second genuinely has no
+timestamp in the container, so the stamps step by two frame periods there.
+ffprobe interpolates those, so its `packet=pts_time` list is longer than the
+set of stamps that actually exist (25 vs 22 on `test_mpeg1_mp2.mpg`); every
+stamp we do emit must match it exactly. `tests/mr_ps_pts_check.c` pins that
+against the fixtures and `tests/mr_ps_check.c` pins the header-walking rules
+(both PES forms, and the one-tag-per-PES rule) on synthetic streams.
+
 Two things about that handoff are silent when wrong, so `tests/mr_mpeg2_yuv_check.c`
 pins both: rows must be read at libmpeg2's **macroblock-aligned pitch**
 (`seq->width`, 144 for a 134-wide picture), not the visible width, and

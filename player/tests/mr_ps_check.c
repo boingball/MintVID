@@ -36,8 +36,26 @@ int main(void)
      * PES payload.  The scheduler-facing demux contract must bound this to
      * 512-byte packets so one pl_mpeg feed cannot decode a whole PES worth of
      * audio before mrplay gets another chance to present video/service Paula. */
-    uint8_t split_audio_stream[39 + 6 + 3 + 1200];
+    uint8_t split_audio_stream[39 + 6 + 8 + 1200];
     size_t apos;
+    /* The same shape again, but every PES now carries a PTS: the MPEG-2 form
+     * (flags byte, header length, then five marker-interleaved bytes) on the
+     * video, the MPEG-1 form (stuffing, then a bare 0x2x PTS) on the audio.
+     * 90000 ticks is 1 s; 135000 is 1.5 s. */
+    static const uint8_t pts_stream[] = {
+        0x00,0x00,0x01,0xba, 0x44,0x00,0x04,0x00,
+        /* Video PES, PTS = 90000 ticks (1.000000 s), three pictures. */
+        0x00,0x00,0x01,0xe0, 0x00,0x22,
+        0x80,0x80,0x05, 0x21,0x00,0x05,0xbf,0x21,
+        0x00,0x00,0x01,0xb3, 0x04,0x20,0x32,0x13,
+        0x00,0x00,0x01,0x00, 0x11,0x22,
+        0x00,0x00,0x01,0x00, 0x33,0x44,
+        0x00,0x00,0x01,0x00, 0x55,0x66,
+        /* MPEG-1-style audio PES: 0xff stuffing, then a lone PTS of 135000
+         * ticks (1.500000 s), then four payload bytes. */
+        0x00,0x00,0x01,0xc0, 0x00,0x0a,
+        0xff, 0x21,0x00,0x09,0x1e,0xb1, 0xff,0xfd,0x80,0x00
+    };
 
     if (mr_ps_open(&ps, stream, sizeof stream) != MR_OK) {
         fprintf(stderr, "could not open synthetic MPEG-PS\n");
@@ -115,11 +133,17 @@ int main(void)
     split_audio_stream[apos++] = 0x00;
     split_audio_stream[apos++] = 0x01;
     split_audio_stream[apos++] = 0xc0;
-    split_audio_stream[apos++] = 0x04; /* PES length = 3-byte header + 1200 */
-    split_audio_stream[apos++] = 0xb3;
+    split_audio_stream[apos++] = 0x04; /* PES length = 8-byte header + 1200 */
+    split_audio_stream[apos++] = 0xb8;
     split_audio_stream[apos++] = 0x80;
+    split_audio_stream[apos++] = 0x80; /* PTS present */
+    split_audio_stream[apos++] = 0x05;
+    /* 90000 ticks = 1.000000 s. */
+    split_audio_stream[apos++] = 0x21;
     split_audio_stream[apos++] = 0x00;
-    split_audio_stream[apos++] = 0x00;
+    split_audio_stream[apos++] = 0x05;
+    split_audio_stream[apos++] = 0xbf;
+    split_audio_stream[apos++] = 0x21;
     memset(split_audio_stream + apos, 0x55, 1200);
     split_audio_stream[apos + 0] = 0xff;
     split_audio_stream[apos + 1] = 0xfd;
@@ -138,23 +162,71 @@ int main(void)
         fprintf(stderr, "split-audio stream lost its video packet\n");
         return 1;
     }
+    /* The PES timestamp points at where the payload starts, so the first
+     * bounded chunk carries it and the rest of the same PES must not. */
     if (mr_ps_next_packet(&ps, &packet) != MR_OK || packet.is_video ||
-        packet.len != 512 || packet.data[0] != 0xff) {
-        fprintf(stderr, "first bounded audio chunk is wrong\n");
+        packet.len != 512 || packet.data[0] != 0xff ||
+        !packet.has_pts || packet.pts_us != 1000000u) {
+        fprintf(stderr, "first bounded audio chunk is wrong (has_pts=%d "
+                        "pts_us=%lu)\n",
+                packet.has_pts, (unsigned long)packet.pts_us);
         return 1;
     }
     if (mr_ps_next_packet(&ps, &packet) != MR_OK || packet.is_video ||
-        packet.len != 512) {
+        packet.len != 512 || packet.has_pts) {
         fprintf(stderr, "second bounded audio chunk is wrong\n");
         return 1;
     }
     if (mr_ps_next_packet(&ps, &packet) != MR_OK || packet.is_video ||
-        packet.len != 176) {
+        packet.len != 176 || packet.has_pts) {
         fprintf(stderr, "final bounded audio chunk is wrong\n");
         return 1;
     }
     if (mr_ps_next_packet(&ps, &packet) != MR_EAGAIN) {
         fprintf(stderr, "bounded audio stream did not end cleanly\n");
+        return 1;
+    }
+    mr_ps_close(&ps);
+
+    /* PES timestamps. The player's A/V sync and the libmpeg2 adapter's
+     * reorder tagging both key off mr_packet::has_pts, and an MPEG-PS clip
+     * whose timestamps never arrive falls back to a synthetic frame counter
+     * without ever failing - so pin the values, and pin which chunk carries
+     * them. */
+    if (mr_ps_open(&ps, pts_stream, sizeof pts_stream) != MR_OK) {
+        fprintf(stderr, "could not open timestamped MPEG-PS\n");
+        return 1;
+    }
+    /* A PES packet's PTS belongs to the first picture that starts in it, so
+     * only the first of its picture-sized chunks may claim it. */
+    if (mr_ps_next_packet(&ps, &packet) != MR_OK || !packet.is_video ||
+        !packet.has_pts || packet.pts_us != 1000000u) {
+        fprintf(stderr, "MPEG-2 PES video PTS not decoded (has_pts=%d "
+                        "pts_us=%lu, expected 1 1000000)\n",
+                packet.has_pts, (unsigned long)packet.pts_us);
+        return 1;
+    }
+    if (mr_ps_next_packet(&ps, &packet) != MR_OK || !packet.is_video ||
+        packet.has_pts) {
+        fprintf(stderr, "second picture of a PES must not reuse its PTS\n");
+        return 1;
+    }
+    if (mr_ps_next_packet(&ps, &packet) != MR_OK || !packet.is_video ||
+        packet.has_pts) {
+        fprintf(stderr, "third picture of a PES must not reuse its PTS\n");
+        return 1;
+    }
+    /* MPEG-1 PES puts the PTS after the stuffing bytes instead, with no
+     * flags/length pair in front of it. */
+    if (mr_ps_next_packet(&ps, &packet) != MR_OK || packet.is_video ||
+        !packet.has_pts || packet.pts_us != 1500000u) {
+        fprintf(stderr, "MPEG-1 PES audio PTS not decoded (has_pts=%d "
+                        "pts_us=%lu, expected 1 1500000)\n",
+                packet.has_pts, (unsigned long)packet.pts_us);
+        return 1;
+    }
+    if (packet.len != 4 || packet.data[0] != 0xff) {
+        fprintf(stderr, "MPEG-1 PES PTS was not skipped before the payload\n");
         return 1;
     }
     mr_ps_close(&ps);

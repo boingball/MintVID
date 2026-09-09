@@ -84,6 +84,7 @@ static int decode_all(const unsigned char *data, size_t len, int w, int h,
     int have_last_pts = 0, tagged_frames = 0;
     unsigned char *buf = (unsigned char *)malloc(cap * frame_bytes);
     if (!buf) return 0;
+    memset(&pkt, 0, sizeof pkt);
     if (mr_ps_open(&ps, data, len) != MR_OK) { free(buf); return 0; }
     memset(&dec, 0, sizeof dec);
     dec.codec = &mr_codec_mpeg2;
