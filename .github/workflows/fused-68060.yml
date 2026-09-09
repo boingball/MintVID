@@ -1,0 +1,48 @@
+name: Fused AGA 68060
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fused-68060:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out code and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build experimental 68060 mrplay
+        run: |
+          docker run --rm -v "$PWD":/src -w /src/player \
+            sacredbanana/amiga-compiler:m68k-amigaos \
+            bash -c '
+              set -e
+              AMIGA_GCC="$(command -v m68k-amigaos-gcc)"
+              AMIGA_ROOT="$(dirname "$(dirname "$AMIGA_GCC")")"
+              "$AMIGA_GCC" --version | head -1
+              make -f Makefile.fused mrplay-fused \
+                CPU=68060 \
+                AMIGA_ROOT="$AMIGA_ROOT" \
+                SSL=1 SSLCERTS=1
+            '
+
+      - name: Confirm fused player
+        run: |
+          ls -la player/mrplay
+          file player/mrplay || true
+
+      - name: Upload fused 68060 player
+        uses: actions/upload-artifact@v4
+        with:
+          name: MintVID-Fused-68060
+          path: player/mrplay
+          if-no-files-found: error
+          retention-days: 14
