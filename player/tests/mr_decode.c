@@ -16,9 +16,6 @@
 #include "../core/mr_ham.h"
 #include "../core/mr_h264.h"
 #include "../amiga/mintvid_version.h"
-#ifdef MR_HAVE_MPEG1               /* host only - pl_mpeg pulls in soft-float */
-#include "../core/mr_mpeg1.h"
-#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -87,62 +84,6 @@ static long check_ppm(const char *path, const mr_frame *fr, int *maxerr)
     return (long)((sum * 1000) / n);
 }
 
-#ifdef MR_HAVE_MPEG1
-/* MPEG-1 program streams use the pl_mpeg source, not the demux+codec path. */
-static int run_mpeg1(const uint8_t *buf, size_t len, const char *mode,
-                     const char *dir)
-{
-    mr_mpeg1 *m = mr_mpeg1_open(buf, len, 0, 0, 0);
-    if (!m) { fprintf(stderr, "not a decodable MPEG-1 stream\n"); return 2; }
-    printf("mpeg1: %dx%d\n", mr_mpeg1_width(m), mr_mpeg1_height(m));
-    int frame = 0, bad = 0; long worst = 0;
-    mr_frame fr;
-    /* The audio track is pulled alongside the video, as play_mpeg1() does, and
-     * reported: "no audio" on a .mpg that has an MP2 track is a real failure
-     * mode (an unsupported header leaves the source reporting a rate of 0) and
-     * silence is otherwise indistinguishable from a stream that simply has no
-     * audio. */
-    unsigned rate = mr_mpeg1_samplerate(m);
-    int channels = mr_mpeg1_channels(m);
-    unsigned char *abuf = (unsigned char *)malloc(1152 * 4);
-    unsigned long audio_frames = 0, audio_sample_frames = 0;
-    if (rate)
-        printf("audio: MP2 %s %u Hz\n", channels == 1 ? "mono" : "stereo", rate);
-    else
-        printf("audio: none\n");
-    while (mr_mpeg1_next(m, &fr, NULL)) {
-        frame++;
-        if (abuf && rate) {
-            int n;
-            while ((n = mr_mpeg1_audio(m, abuf)) > 0) {
-                audio_frames++;
-                audio_sample_frames += (unsigned long)n;
-            }
-        }
-        char path[512];
-        if (mode && !strcmp(mode, "--ppm") && dir) {
-            snprintf(path, sizeof path, "%s/f%03d.ppm", dir, frame);
-            write_ppm(path, &fr);
-        } else if (mode && !strcmp(mode, "--check") && dir) {
-            int mxe = 0;
-            snprintf(path, sizeof path, "%s/f%03d.ppm", dir, frame);
-            long mae = check_ppm(path, &fr, &mxe);
-            if (mae >= 0) { if (mae > worst) worst = mae;
-                            if (mae > 6000) bad++; }
-        }
-    }
-    printf("decoded %d frames\n", frame);
-    if (rate)
-        printf("audio: %lu frames, %lu sample frames\n",
-               audio_frames, audio_sample_frames);
-    if (mode && !strcmp(mode, "--check"))
-        printf("worst per-frame MAE=%ld.%03ld, frames over threshold=%d\n",
-               worst / 1000, worst % 1000, bad);
-    free(abuf);
-    mr_mpeg1_close(m);
-    return bad ? 1 : 0;
-}
-#endif /* MR_HAVE_MPEG1 */
 
 int main(int argc, char **argv)
 {
@@ -216,18 +157,10 @@ int main(int argc, char **argv)
         buf = slurp(argv[1], &len);
         if (!buf) { fprintf(stderr, "cannot read %s\n", argv[1]); return 2; }
 
-#ifdef MR_HAVE_MPEG1
-        if (mr_mpeg1_probe(buf, len)) {          /* .mpg -> pl_mpeg source   */
-            int rc = run_mpeg1(buf, len, mode, dir);
-            free(buf);
-            return rc;
-        }
-#endif
-
         dx = mr_demux_open(buf, len);
         if (!dx) {
             fprintf(stderr, "not a supported container "
-                            "(need AVI, MOV/MP4 or MPEG-TS)\n");
+                            "(need AVI, MOV/MP4, MKV, MPEG-TS/PS or raw video)\n");
             free(buf);
             return 2;
         }

@@ -27,6 +27,23 @@ static size_t find_picture_start(const uint8_t *b, size_t end, size_t from)
     return end;
 }
 
+/* MPEG-1 and MPEG-2 share the sequence header. MPEG-2 identifies itself with
+ * a sequence extension (extension id 1) before the first picture. Keep the
+ * distinction in the stream metadata even though libmpeg2 decodes both. */
+static uint32_t video_fourcc(const uint8_t *b, size_t len, size_t sequence)
+{
+    size_t pos = sequence + 8;
+    while ((pos = find_start(b, len, pos)) < len) {
+        unsigned code = b[pos + 3];
+        if (code == 0x00 || code == 0xb3 || code == 0xb7)
+            break;
+        if (code == 0xb5 && pos + 5 <= len && (b[pos + 4] >> 4) == 1)
+            return MR_FOURCC('m','p','g','2');
+        pos += 4;
+    }
+    return MR_FOURCC('m','p','g','1');
+}
+
 /* libmpeg2's adapter returns one display frame per decode call.  A small,
  * low-bitrate MPEG-PS PES packet can contain several complete pictures, so
  * handing over the whole PES makes the adapter overflow its one-frame return
@@ -66,7 +83,7 @@ static int parse_sequence(mr_ps *p)
         height = ((unsigned)(p->buf[i + 5] & 15) << 8) | p->buf[i + 6];
         rate_code = p->buf[i + 7] & 15;
         if (!width || !height || !rate_code || rate_code > 8) return 0;
-        p->video.fourcc = MR_FOURCC('m','p','g','2');
+        p->video.fourcc = video_fourcc(p->buf, p->len, i);
         p->video.width = (int)width;
         p->video.height = (int)height;
         p->video.rate = rates[rate_code];

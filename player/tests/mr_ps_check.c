@@ -9,10 +9,12 @@ int main(void)
         /* MPEG-2 pack header (the demuxer only needs its start code). */
         0x00,0x00,0x01,0xba, 0x44,0x00,0x04,0x00,
         /* Video PES: MPEG-2 PES header, then a 720x480, 29.97 sequence. */
-        0x00,0x00,0x01,0xe0, 0x00,0x0f,
+        0x00,0x00,0x01,0xe0, 0x00,0x19,
         0x80,0x00,0x00,
         0x00,0x00,0x01,0xb3, 0x2d,0x01,0xe0,0x34,
         0x12,0x34,0x56,0x78,
+        /* MPEG-2 sequence extension (extension_start_code_identifier 1). */
+        0x00,0x00,0x01,0xb5, 0x14,0x8a,0x00,0x01,0x00,0x00,
         /* MPEG-1 Layer II audio PES, 44.1 kHz stereo. */
         0x00,0x00,0x01,0xc0, 0x00,0x07,
         0x80,0x00,0x00, 0xff,0xfd,0x80,0x00
@@ -34,7 +36,9 @@ int main(void)
         fprintf(stderr, "could not open synthetic MPEG-PS\n");
         return 1;
     }
-    if (!ps.video.valid || ps.video.width != 720 || ps.video.height != 480 ||
+    if (!ps.video.valid ||
+        ps.video.fourcc != MR_FOURCC('m','p','g','2') ||
+        ps.video.width != 720 || ps.video.height != 480 ||
         ps.video.rate != 30000 || ps.video.scale != 1001) {
         fprintf(stderr, "bad MPEG video metadata\n");
         return 1;
@@ -45,7 +49,7 @@ int main(void)
         return 1;
     }
     if (mr_ps_next_packet(&ps, &packet) != MR_OK || !packet.is_video ||
-        packet.len != 12 || packet.data[3] != 0xb3) {
+        packet.len != 22 || packet.data[3] != 0xb3) {
         fprintf(stderr, "bad video PES payload\n");
         return 1;
     }
@@ -68,6 +72,10 @@ int main(void)
     if (mr_ps_open(&ps, multi_picture_stream,
                    sizeof multi_picture_stream) != MR_OK) {
         fprintf(stderr, "could not open multi-picture MPEG-PS\n");
+        return 1;
+    }
+    if (ps.video.fourcc != MR_FOURCC('m','p','g','1')) {
+        fprintf(stderr, "MPEG-1 stream was not identified as MPEG-1\n");
         return 1;
     }
     if (mr_ps_next_packet(&ps, &packet) != MR_OK || !packet.is_video ||

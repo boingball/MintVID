@@ -82,15 +82,14 @@ HEADERS  += amiga/mintvid_version.h
 
 all: mr_decode
 
-# pl_mpeg is integer-only; MR_HAVE_MPEG1 enables the harness path.
 mr_decode: $(TESTSRC) $(CORE) $(HEADERS) | check-libavc
-	$(CC) $(CFLAGS) -DMR_HAVE_MPEG1 -o $@ $(TESTSRC) $(CORE)
+	$(CC) $(CFLAGS) -o $@ $(TESTSRC) $(CORE)
 
 # Optional host HTTPS build used by the local TLS integration test. The Amiga
 # build uses AmiSSL instead; this only validates the shared HTTP/TLS parser and
 # response lifecycle on the development host.
 mr_decode_ssl: $(TESTSRC) $(CORE) $(HEADERS) | check-libavc
-	$(CC) $(CFLAGS) -DMR_HAVE_MPEG1 -DMR_HTTP_HAVE_OPENSSL \
+	$(CC) $(CFLAGS) -DMR_HTTP_HAVE_OPENSSL \
 	    -o $@ $(TESTSRC) $(CORE) -lm -lssl -lcrypto
 
 mr_scale_check: tests/mr_scale_check.c core/mr_scale.c core/mr_scale.h \
@@ -132,21 +131,6 @@ mr_mpeg1_probe_check: tests/mr_mpeg1_probe_check.c core/mr_mpeg1.c \
 mr_mpeg1_timing_check: tests/mr_mpeg1_timing_check.c core/mr_mpeg1.c \
                        core/mr_mpeg1.h core/pl_mpeg.h core/mr_types.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_timing_check.c core/mr_mpeg1.c
-
-mr_mpeg1_sched_check: tests/mr_mpeg1_sched_check.c core/mr_mpeg1.c \
-                      core/mr_mpeg1_sched.c core/mr_mpeg1_sched.h \
-                      core/mr_mpeg1.h core/pl_mpeg.h core/mr_types.h
-	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_sched_check.c core/mr_mpeg1.c \
-	    core/mr_mpeg1_sched.c
-
-mr_mpeg1_yuv_check: tests/mr_mpeg1_yuv_check.c core/mr_mpeg1.c core/mr_yuv.c \
-                    core/mr_mpeg1.h core/mr_yuv.h core/pl_mpeg.h core/mr_types.h
-	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_yuv_check.c core/mr_mpeg1.c \
-	    core/mr_yuv.c
-
-mr_mpeg1_skip_check: tests/mr_mpeg1_skip_check.c core/mr_mpeg1.c \
-                     core/mr_mpeg1.h core/pl_mpeg.h core/mr_types.h
-	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_skip_check.c core/mr_mpeg1.c
 
 mr_ps_check: tests/mr_ps_check.c core/mr_ps.c core/mr_ps.h \
              core/mr_demux.h core/mr_types.h
@@ -315,7 +299,7 @@ mr_youtube_search_check: tests/mr_youtube_search_check.c \
 	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_search_check.c \
 	    youtube/mr_youtube_search.c
 
-check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg1_sched_check mr_mpeg1_yuv_check mr_mpeg1_skip_check mr_ps_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_cinepak_indexed_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_h264_m68k_check mr_h264_mc_degrade_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check
+check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_ps_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_cinepak_indexed_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_h264_m68k_check mr_h264_mc_degrade_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check
 	./mr_youtube_search_check
 	./mr_youtube_check
 	./mr_hls_override_check
@@ -339,9 +323,6 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	./mr_yuv_ham_check
 	./mr_mpeg1_probe_check
 	./mr_mpeg1_timing_check tests/assets/test_mpeg1.mpg
-	./mr_mpeg1_sched_check tests/assets/test_mpeg1_audio.mpg
-	./mr_mpeg1_yuv_check tests/assets/test_mpeg1_audio.mpg
-	./mr_mpeg1_skip_check tests/assets/test_mpeg1_audio.mpg
 	./mr_ps_check
 	./mr_ts_mp2_check
 	@test -d tests/assets/ref_cinepak && test -d tests/assets/ref_mov \
@@ -517,7 +498,7 @@ check-m68k:
 clean:
 	rm -f mr_decode mr_decode_ssl mr_audio_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check \
 	      mr_ac3_check \
-	      mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg1_sched_check mr_mpeg1_yuv_check mr_mpeg1_skip_check mr_ps_check mr_ts_mp2_check mr_mkv_check \
+	      mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_ps_check mr_ts_mp2_check mr_mkv_check \
 	      mr_mov_seek_check
 	rm -f mr_legacy_video_check mr_cinepak_indexed_check
 	rm -f mr_rawvideo_check mr_codec_registry_check

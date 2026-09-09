@@ -146,46 +146,6 @@ int mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, int64_t *pts_us)
     return 1;
 }
 
-int mr_mpeg1_next_yuv(mr_mpeg1 *m, mr_frame *out, int64_t *pts_us)
-{
-    plm_frame_t *fr;
-    if (!m) return 0;
-    fr = plm_decode_video(m->plm);
-    if (!fr) return 0;
-    /*
-     * The planes as pl_mpeg decoded them, with no RGB24 buffer in between.
-     * plm_frame_t's plane `width` is the macroblock-aligned allocation pitch
-     * (144 for a 134-wide clip), not the visible width, which is exactly the
-     * stride mr_frame wants; frame->width/height stay the display size. Note
-     * the naming: MR_PIX_YUV420P is Y, Cb, Cr, so u is pl_mpeg's cb and v is
-     * its cr - the one thing here that is silent if swapped, and shows up
-     * only as wrong colour.
-     *
-     * Borrowed, not copied: these point into the decoder's own frame and stay
-     * valid only until the next mr_mpeg1_next*() call, which is all the
-     * caller needs - it converts straight to chunky pixels before decoding
-     * again.
-     */
-    out->width  = m->w;
-    out->height = m->h;
-    out->fmt    = MR_PIX_YUV420P;
-    out->data   = fr->y.data;
-    out->stride = (int)fr->y.width;
-    out->u_data = fr->cb.data;
-    out->v_data = fr->cr.data;
-    out->u_stride = (int)fr->cb.width;
-    out->v_stride = (int)fr->cr.width;
-    out->dirty_y0 = 0;
-    out->dirty_y1 = m->h;
-    if (pts_us) *pts_us = fr->time;
-    return 1;
-}
-
-void mr_mpeg1_set_skip_b_frames(mr_mpeg1 *m, int skip)
-{
-    if (m) plm_set_video_skip_b_frames(m->plm, skip);
-}
-
 int mr_mpeg1_audio(mr_mpeg1 *m, unsigned char *dst)
 {
     plm_samples_t *s;
