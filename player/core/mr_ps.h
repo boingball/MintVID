@@ -10,6 +10,8 @@ typedef struct {
     size_t         cursor;
     size_t         video_cursor;
     size_t         video_end;
+    size_t         audio_cursor;
+    size_t         audio_end;
     uint8_t        video_stream;
     uint8_t        audio_stream;
     mr_video_info  video;
