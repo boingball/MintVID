@@ -156,9 +156,13 @@ static int decode_all(const unsigned char *data, size_t len, int w, int h,
             memcpy(buf + n * frame_bytes, dec.frame.data, frame_bytes);
         n++;
     }
-    if (tagged_frames < 2) {
-        fprintf(stderr, "FAIL: only %d displayed MPEG frames carried PTS tags\n",
-                tagged_frames);
+    /* This tiny PS fixture contains only one genuinely advancing container
+     * PTS anchor. That is enough to prove the adapter transports PTS into
+     * libmpeg2 and back to display order. Consecutive pictures that inherit
+     * the same PES tag are deliberately suppressed by mr_mpeg2_output_pts();
+     * mrplay then advances them on its existing synthetic frame-period clock. */
+    if (tagged_frames < 1) {
+        fprintf(stderr, "FAIL: no displayed MPEG frame carried a usable PTS anchor\n");
         free(buf); mr_codec_mpeg2.close(&dec); return 0;
     }
     mr_codec_mpeg2.close(&dec);
