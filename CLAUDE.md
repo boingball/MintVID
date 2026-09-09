@@ -2,9 +2,14 @@
 
 ## What this is
 MintVID: a codec-agnostic 68k AmigaOS video player. New code is portable C in
-`player/`. RiVA 0.54's assembly was studied for design ideas (renderers,
-IDCT/motion macros) but is not vendored in this repository — there is no
-`src/` to extend. Read `DESIGN.md` before making structural decisions.
+`player/`. RiVA 0.54's assembly was mostly studied for design ideas (renderers,
+IDCT/motion macros) rather than vendored — there is no `src/` to extend. The
+one exception is `core/mr_c2p_riva_native_m68k.S`, which **adapts** RiVA's
+`GrayC2P` register-scheduled 32-pixel kernel from `RendererAGAC2P.i` under the
+MIT licence, carrying its original copyright alongside the adaptation notice.
+Anything else derived from RiVA must do the same: reproduce the licence, keep
+the original copyright, and say in the header what was changed. Read
+`DESIGN.md` before making structural decisions.
 
 ## Core principles
 - **Portable core, thin platform layer.** `player/core/` must stay
