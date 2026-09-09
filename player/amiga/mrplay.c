@@ -8,8 +8,8 @@
  * there is no audio. ESC or the close gadget quits.
  *
  * AVI, MOV/MP4 and MPEG-TS containers are file-backed: only metadata and the
- * current compressed packet live in RAM. Raw elementary streams and MPEG-1
- * retain the original whole-file fallback.
+ * current compressed packet live in RAM. MPEG program streams and raw
+ * elementary streams retain the whole-file fallback.
  *
  *   mrplay <file.avi|file.mov>
  */
@@ -21,7 +21,6 @@
 #include "../core/mr_codec.h"
 #include "../core/mr_cinepak.h"
 #include "../core/mr_rawvideo.h"
-#include "../core/mr_mpeg1.h"
 #include "../core/mr_h264.h"
 #include "../core/mr_dither.h"
 #include "../core/mr_media_clock.h"
@@ -1277,196 +1276,6 @@ static int hls_wait_service(void *opaque, unsigned wait_ms)
     }
 }
 
-/* MPEG-1 program streams (.mpg/.mpeg) play through pl_mpeg (video + MP2 audio),
- * reusing the display and Paula audio backends. Separate from the AVI/MOV +
- * codec path because .mpg is a self-contained stream. */
-static int play_mpeg1(const unsigned char *buf, long len, int loop, int want_time,
-                      int audio_low_rate, int no_audio, int audio_mono)
-{
-    mr_mpeg1      *mp;
-    amiga_display *disp;
-    mr_audio      *audio = NULL;
-    unsigned       sr;
-    int            w, h, frames = 0, decoded_frames = 0;
-    int            paused = 0, quit = 0, fast_forward = 0;
-    int            channels = 2;                 /* 1 under --audio-mono      */
-    unsigned long  period, clock_base = 0;
-    long           ntick;
-    unsigned char *abuf;                         /* heap, not stack (4.6 KB)  */
-    clock_t        t_dec = 0, t_show = 0;
-    mr_frame       fr;
-    int64_t        pts_us;
-    int64_t        pts_base_us = 0;
-    int            have_pts_base = 0;
-    unsigned       fps_millihz;
-
-    mp = mr_mpeg1_open((const uint8_t *)buf, (size_t)len, audio_low_rate,
-                       no_audio, audio_mono);
-    if (!mp) { printf("cannot open MPEG-1 stream\n");
-               player_status(MR_PLAYER_STATE_ERROR, "MPEG-1",
-                             "cannot open MPEG-1 stream");
-               status_hold(); return 10; }
-    abuf = (unsigned char *)malloc(1152 * 4);    /* max: 1152 frames stereo16 */
-    if (!abuf) { mr_mpeg1_close(mp); return 10; }
-    w = mr_mpeg1_width(mp); h = mr_mpeg1_height(mp);
-    printf("mpeg1: %dx%d, opening display...\n", w, h);
-    {
-        char line[MR_PLAYER_STATUS_TEXT_MAX];
-        snprintf(line, sizeof line, "%dx%d, MPEG-1", w, h);
-        player_status(MR_PLAYER_STATE_PLAYING, "MPEG-1", line);
-    }
-    disp = display_open(w, h, "MintVID");
-    if (!disp) { printf("cannot open a display\n");
-                 player_status(MR_PLAYER_STATE_ERROR, "MPEG-1",
-                               "cannot open a display");
-                 status_hold(); mr_mpeg1_close(mp); return 10; }
-    printf("display backend: %s\n", display_backend_name(disp));
-
-    sr = mr_mpeg1_samplerate(mp);
-    channels = mr_mpeg1_channels(mp);
-    if (sr) {
-        audio = audio_open(sr, channels, 16);
-        control_audio = audio;
-        if (audio) audio_set_volume(audio, control_volume);
-        printf(audio ? (channels == 1 ? "audio: Paula out, %u Hz (MP2 mono)\n"
-                                      : "audio: Paula out, %u Hz (MP2 stereo)\n")
-                     : "audio: Paula open failed, silent\n", sr);
-    }
-    fps_millihz = mr_mpeg1_framerate_millihz(mp);
-    period = fps_millihz ? (1000000UL + fps_millihz / 2) / fps_millihz : 40;
-    if (period < 1) period = 1;
-    ntick = (long)((period + 19) / 20);
-    if (ntick < 1) ntick = 1;
-
-    printf("playing: space=pause, ESC=quit%s...\n", loop ? ", loop on" : "");
-
-    while (!quit) {
-        int got;
-        while (paused && !quit) {
-            int ev = player_event(disp);
-            if (ev == MR_EV_QUIT) quit = 1;
-            else if (ev == MR_EV_PAUSE) {
-                paused = 0;
-                if (audio) audio_set_running(audio, 1);
-            }
-            Delay(2);
-        }
-        if (quit) break;
-
-        {
-            clock_t a = 0;
-            if (want_time) a = clock();
-            got = mr_mpeg1_next(mp, &fr, &pts_us);
-            if (want_time) t_dec += clock() - a;
-        }
-        if (!got) {
-            if (loop) { mr_mpeg1_rewind(mp); frames = 0; decoded_frames = 0;
-                        have_pts_base = 0;
-                        clock_base = audio ? audio_elapsed_ms(audio) : 0; continue; }
-            break;
-        }
-        if (!have_pts_base) {
-            pts_base_us = pts_us;
-            have_pts_base = 1;
-            clock_base = audio ? audio_elapsed_ms(audio) : 0;
-        }
-        if (audio) {                             /* top up audio (bounded)    */
-            int n, k = 0;
-            /* Build one complete Paula request before opening its playback
-             * gate.  The generic streaming player does this explicitly, but
-             * this older MPEG-1 path pre-dates the gate.  Leaving it closed
-             * queues PCM forever and deadlocks on the second video frame while
-             * waiting for an audio clock that cannot advance. */
-            int limit = decoded_frames == 0 ? 4 : 2;
-            while (k < limit && (n = mr_mpeg1_audio(mp, abuf)) > 0) {
-                audio_write(audio, abuf, (unsigned)(n * 2 * channels));
-                audio_service(audio);
-                k++;
-            }
-            if (decoded_frames == 0) audio_set_running(audio, 1);
-        }
-
-        if (audio) {                             /* pace to the audio clock   */
-            unsigned long target = clock_base +
-                (unsigned long)(pts_us >= pts_base_us
-                    ? (pts_us - pts_base_us) / 1000
-                    : (int64_t)decoded_frames * period);
-            for (;;) {
-                int ev = player_event(disp);
-                if (ev == MR_EV_QUIT)  { quit = 1; break; }
-                if (ev == MR_EV_PAUSE) {
-                    paused = 1;
-                    audio_set_running(audio, 0);
-                    break;
-                }
-                if (ev == MR_EV_SEEK_FWD) fast_forward = !fast_forward;
-                audio_service(audio);
-                if (fast_forward) break;
-                if (audio_elapsed_ms(audio) >= target) break;
-                if (audio_starved(audio)) break;
-                Delay(1);
-            }
-            /* The old MPEG-1 path displayed every decoded frame even after
-             * decode/conversion had fallen behind the playing MP2 clock. That
-             * makes A/V drift grow for the rest of the clip. Drop a video
-             * frame only when it is already more than one frame late; decode
-             * continues so a faster following frame can catch back up. */
-            if (!fast_forward &&
-                audio_elapsed_ms(audio) > target + period) {
-                decoded_frames++;
-                audio_service(audio);
-                continue;
-            }
-        } else {
-            int ev = player_event(disp);
-            if (ev == MR_EV_QUIT) quit = 1;
-            else if (ev == MR_EV_PAUSE) paused = 1;
-            else if (ev == MR_EV_SEEK_FWD) fast_forward = !fast_forward;
-            if (!fast_forward) Delay(ntick);
-        }
-        if (quit) break;
-
-        {
-            clock_t a = 0;
-            if (want_time) a = clock();
-            display_show_rgb(disp, fr.data, fr.width, fr.height, fr.stride,
-                             fr.dirty_y0, fr.dirty_y1);
-            if (want_time) t_show += clock() - a;
-        }
-        decoded_frames++;
-        frames++;
-        if (audio) audio_service(audio);
-    }
-
-    if (want_time && frames > 0) {
-        unsigned long e = 0, bl = 0;
-        display_aga_timing(&e, &bl);
-        printf("timing/%d frames: decode=%lu ms, display=%lu ms (encode=%lu, blit=%lu)\n",
-               frames, (unsigned long)(t_dec * 1000 / CLOCKS_PER_SEC),
-               (unsigned long)(t_show * 1000 / CLOCKS_PER_SEC), e, bl);
-        if (display_aga_kalms_timing(&bl))
-            printf("Kalms conversion: %lu ms\n", bl);
-    }
-    if (audio) {
-        int g = 0;
-        while (!audio_starved(audio) && g++ < 4000) {
-            if (player_event(disp) == MR_EV_QUIT) {
-                quit = 1;
-                break;
-            }
-            audio_service(audio);
-            Delay(1);
-        }
-    }
-    if (!quit) printf("played %d frames\n", frames);
-    player_status(MR_PLAYER_STATE_ENDED, "MPEG-1", "stream ended");
-    control_audio = NULL;
-    if (audio) audio_close(audio);
-    display_close(disp);
-    mr_mpeg1_close(mp);
-    free(abuf);
-    return 0;
-}
 
 int main(int argc, char **argv)
 {
@@ -1791,8 +1600,8 @@ int main(int argc, char **argv)
             status_hold();
             return mrplay_exit(10);
         }
-        /* MPEG-1 and raw elementary streams still require a contiguous input
-         * buffer because their current decoders parse directly from it. */
+        /* MPEG program streams and raw elementary streams still require a
+         * contiguous input buffer because their demuxers parse it directly. */
         buf = slurp(media_path, &len);
         if (!buf) { printf("cannot read %s\n", media_path);
                     player_status(MR_PLAYER_STATE_ERROR, "",
@@ -1800,19 +1609,13 @@ int main(int argc, char **argv)
                     status_hold(); return mrplay_exit(10); }
         printf("loaded %ld bytes\n", len);
 
-        if (mr_mpeg1_probe(buf, (size_t)len)) {  /* .mpg via pl_mpeg         */
-            int rc = play_mpeg1(buf, len, loop, want_time, audio_low_rate,
-                                no_audio, audio_mono);
-            free(buf);
-            return mrplay_exit(rc);
-        }
         dx = mr_demux_open(buf, (size_t)len);
         if (!dx) {
             printf("unsupported container (need AVI, MOV/MP4, MKV, "
-                   "MPEG-TS/PS, raw MJPEG/M4V or MPEG-1)\n");
+                   "MPEG-TS/PS or raw MJPEG/M4V)\n");
             player_status(MR_PLAYER_STATE_UNSUPPORTED, "",
                           "unsupported container (not AVI/MOV/MP4/MKV/TS/PS/"
-                          "MJPEG/M4V/MPEG-1)");
+                          "MJPEG/M4V)");
             status_hold();
             free(buf);
             return mrplay_exit(10);

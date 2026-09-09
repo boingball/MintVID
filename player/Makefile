@@ -82,15 +82,14 @@ HEADERS  += amiga/mintvid_version.h
 
 all: mr_decode
 
-# pl_mpeg is integer-only; MR_HAVE_MPEG1 enables the harness path.
 mr_decode: $(TESTSRC) $(CORE) $(HEADERS) | check-libavc
-	$(CC) $(CFLAGS) -DMR_HAVE_MPEG1 -o $@ $(TESTSRC) $(CORE)
+	$(CC) $(CFLAGS) -o $@ $(TESTSRC) $(CORE)
 
 # Optional host HTTPS build used by the local TLS integration test. The Amiga
 # build uses AmiSSL instead; this only validates the shared HTTP/TLS parser and
 # response lifecycle on the development host.
 mr_decode_ssl: $(TESTSRC) $(CORE) $(HEADERS) | check-libavc
-	$(CC) $(CFLAGS) -DMR_HAVE_MPEG1 -DMR_HTTP_HAVE_OPENSSL \
+	$(CC) $(CFLAGS) -DMR_HTTP_HAVE_OPENSSL \
 	    -o $@ $(TESTSRC) $(CORE) -lm -lssl -lcrypto
 
 mr_scale_check: tests/mr_scale_check.c core/mr_scale.c core/mr_scale.h \
