@@ -181,6 +181,10 @@ mr_ac3_check: tests/mr_ac3_check.c audio/mr_audio_decode.c audio/mr_pcm.c \
 	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LIBA52_SRC) $(WMA_FFT_OBJ) -lm
 mr_ac3_check: | check-libavc
 
+# Exact window-synthesis comparison across every circular-buffer phase.
+mr_mp2_synth_check: tests/mr_mp2_synth_check.c core/pl_mpeg.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_mp2_synth_check.c
+
 # Decoded MP2 from a .mpg against an ffmpeg reference. The MPEG-1 program
 # stream source has its own audio path (pl_mpeg, not the MintAMP adapter), so
 # it needs its own oracle; nothing else in the suite reaches it.
@@ -448,7 +452,7 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	@echo "[H.263+ unrestricted motion vectors]"
 	./mr_decode tests/assets/test_h263p_umv.avi --check tests/assets/ref_h263p_umv
 
-check-audio: mr_audio_check mr_ac3_check mr_mp2_check
+check-audio: mr_audio_check mr_ac3_check mr_mp2_check mr_mp2_synth_check
 	@test -f tests/assets/test_mp3.avi -a -f tests/assets/test_aac.mp4 \
 	    -a -f tests/assets/test_mp3_stereo.avi \
 	    -a -f tests/assets/test_mpeg1_mp2.mpg \
@@ -479,6 +483,7 @@ check-audio: mr_audio_check mr_ac3_check mr_mp2_check
 	    32000 1
 	./mr_ac3_check tests/assets/test_ac3_stereo.mkv \
 	    tests/assets/ref_ac3_stereo.raw 44100 2
+	./mr_mp2_synth_check
 	./mr_mp2_check tests/assets/test_mpeg1_mp2.mpg \
 	    tests/assets/ref_mpeg1_mp2.raw 22050 1
 
@@ -511,7 +516,7 @@ check-m68k:
 
 clean:
 	rm -f mr_decode mr_decode_ssl mr_audio_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check \
-	      mr_ac3_check \
+	      mr_ac3_check mr_mp2_synth_check \
 	      mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg2_yuv_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_mkv_check \
 	      mr_mov_seek_check
 	rm -f mr_legacy_video_check mr_cinepak_indexed_check

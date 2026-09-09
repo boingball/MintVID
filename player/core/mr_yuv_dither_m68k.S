@@ -46,7 +46,7 @@
  *   8 blue_add (long)
  *  12 row's four Bayer taps
  *  16 tap << 8 (word)
- *  18 shared-q6 mode flag (word)
+ *  18 padding (word; preserves the existing stack argument offsets)
  */
 mr_yuv420_dither8_m68k:
 	movem.l	%d2-%d7/%a2-%a6,-(%sp)
@@ -73,21 +73,23 @@ mr_yuv420_dither8_m68k:
 	 * blue quantiser (depth=8), but 1 for the 2-level blue quantiser used by
 	 * depth=4/5.  In q6 mode a5 becomes lut_b and a6 becomes the tiny
 	 * contribution-weight table. */
-	clr.w	18(%sp)
 	movea.l	144(%sp),%a4
 	clr.l	%d6
 	move.b	2176(%a4),%d6		/* 8 * 256 + 128 */
 	cmpi.b	#3,%d6
-	bne.b	.Lyd_mode_ready
-	move.w	#1,18(%sp)
+	bne	.Lyd_weighted_kernel
 	movea.l	%a4,%a5
 	lea	.Lyd_q6_weights,%a6
-.Lyd_mode_ready:
+	bra	.Lyd_q6_kernel
 
+	/* Assemble two compact kernels: choose the palette once per call,
+	 * removing three mode tests and their branches from every pixel.
+	 * Both retain the original clipping, Bayer taps and LUT footprint. */
+	.macro yd_kernel q6
 	cmpi.l	#2,100(%sp)
-	beq	.Lyd_v2_init
+	beq	.Lyd_v2_init\@
 
-.Lyd_row:
+.Lyd_row\@:
 	move.l	%d0,%d6
 	cmp.l	96(%sp),%d6
 	bge	.Lyd_done
@@ -114,21 +116,21 @@ mr_yuv420_dither8_m68k:
 	muls.l	108(%sp),%d6
 	movea.l	104(%sp),%a3
 	adda.l	%d6,%a3
-	bra	.Lyd_row_ready
+	bra	.Lyd_row_ready\@
 
-.Lyd_v2_init:
+.Lyd_v2_init\@:
 	movea.l	68(%sp),%a0
 	adda.l	72(%sp),%a0
 	movea.l	76(%sp),%a1
 	movea.l	84(%sp),%a2
 	movea.l	104(%sp),%a3
 
-.Lyd_v2_row:
+.Lyd_v2_row\@:
 	move.l	%d0,%d6
 	cmp.l	96(%sp),%d6
 	bge	.Lyd_done
 
-.Lyd_row_ready:
+.Lyd_row_ready\@:
 	lea	.Lyd_bayer4,%a4
 	move.l	%d3,%d6
 	lsl.l	#2,%d6
@@ -138,11 +140,11 @@ mr_yuv420_dither8_m68k:
 
 	clr.l	%d4
 
-.Lyd_pair_test:
+.Lyd_pair_test\@:
 	move.l	%d2,%d6
 	subq.l	#1,%d6
 	cmp.l	%d6,%d4
-	bge	.Lyd_pair_done
+	bge	.Lyd_pair_done\@
 
 	move.l	%d4,%d5
 	asr.l	#1,%d5
@@ -173,9 +175,9 @@ mr_yuv420_dither8_m68k:
 	clr.l	%d6
 	move.b	(0,%a0,%d4.l),%d6
 	sub.l	#16,%d6
-	bge.b	.Lyd_l0ok
+	bge.b	.Lyd_l0ok\@
 	moveq	#0,%d6
-.Lyd_l0ok:
+.Lyd_l0ok\@:
 	movea.l	116(%sp),%a4
 	move.l	(%a4,%d6.l*4),%d5
 
@@ -199,15 +201,13 @@ mr_yuv420_dither8_m68k:
 1:	moveq	#0,%d6
 2:
 	add.w	16(%sp),%d6
-	tst.w	18(%sp)
-	beq.b	3f
+	.if \q6
 	move.b	(%a5,%d6.w),%d6
 	and.l	#255,%d6
 	move.b	(%a6,%d6.w),%d7
-	bra.b	4f
-3:
+	.else
 	move.b	(%a5,%d6.w),%d7
-4:
+	.endif
 	/* green */
 	move.l	%d5,%d6
 	add.l	4(%sp),%d6
@@ -221,15 +221,13 @@ mr_yuv420_dither8_m68k:
 1:	moveq	#0,%d6
 2:
 	add.w	16(%sp),%d6
-	tst.w	18(%sp)
-	beq.b	3f
+	.if \q6
 	move.b	(%a5,%d6.w),%d6
 	and.l	#255,%d6
 	add.b	8(%a6,%d6.w),%d7
-	bra.b	4f
-3:
+	.else
 	add.b	(%a6,%d6.w),%d7
-4:
+	.endif
 	/* blue */
 	move.l	%d5,%d6
 	add.l	8(%sp),%d6
@@ -243,23 +241,21 @@ mr_yuv420_dither8_m68k:
 1:	moveq	#0,%d6
 2:
 	add.w	16(%sp),%d6
-	tst.w	18(%sp)
-	beq.b	3f
+	.if \q6
 	add.b	(%a5,%d6.w),%d7
-	bra.b	4f
-3:
+	.else
 	movea.l	144(%sp),%a4
 	add.b	(%a4,%d6.w),%d7
-4:
+	.endif
 	move.b	%d7,(0,%a3,%d4.l)
 
 	/* lane 1 */
 	clr.l	%d6
 	move.b	(1,%a0,%d4.l),%d6
 	sub.l	#16,%d6
-	bge.b	.Lyd_l1ok
+	bge.b	.Lyd_l1ok\@
 	moveq	#0,%d6
-.Lyd_l1ok:
+.Lyd_l1ok\@:
 	movea.l	116(%sp),%a4
 	move.l	(%a4,%d6.l*4),%d5
 
@@ -284,15 +280,13 @@ mr_yuv420_dither8_m68k:
 1:	moveq	#0,%d6
 2:
 	add.w	16(%sp),%d6
-	tst.w	18(%sp)
-	beq.b	3f
+	.if \q6
 	move.b	(%a5,%d6.w),%d6
 	and.l	#255,%d6
 	move.b	(%a6,%d6.w),%d7
-	bra.b	4f
-3:
+	.else
 	move.b	(%a5,%d6.w),%d7
-4:
+	.endif
 	/* green */
 	move.l	%d5,%d6
 	add.l	4(%sp),%d6
@@ -306,15 +300,13 @@ mr_yuv420_dither8_m68k:
 1:	moveq	#0,%d6
 2:
 	add.w	16(%sp),%d6
-	tst.w	18(%sp)
-	beq.b	3f
+	.if \q6
 	move.b	(%a5,%d6.w),%d6
 	and.l	#255,%d6
 	add.b	8(%a6,%d6.w),%d7
-	bra.b	4f
-3:
+	.else
 	add.b	(%a6,%d6.w),%d7
-4:
+	.endif
 	/* blue */
 	move.l	%d5,%d6
 	add.l	8(%sp),%d6
@@ -328,22 +320,20 @@ mr_yuv420_dither8_m68k:
 1:	moveq	#0,%d6
 2:
 	add.w	16(%sp),%d6
-	tst.w	18(%sp)
-	beq.b	3f
+	.if \q6
 	add.b	(%a5,%d6.w),%d7
-	bra.b	4f
-3:
+	.else
 	movea.l	144(%sp),%a4
 	add.b	(%a4,%d6.w),%d7
-4:
+	.endif
 	move.b	%d7,(1,%a3,%d4.l)
 
 	addq.l	#2,%d4
-	bra	.Lyd_pair_test
+	bra	.Lyd_pair_test\@
 
-.Lyd_pair_done:
+.Lyd_pair_done\@:
 	cmp.l	%d2,%d4
-	bge	.Lyd_tail_done
+	bge	.Lyd_tail_done\@
 
 	move.l	%d4,%d5
 	asr.l	#1,%d5
@@ -373,9 +363,9 @@ mr_yuv420_dither8_m68k:
 	clr.l	%d6
 	move.b	(0,%a0,%d4.l),%d6
 	sub.l	#16,%d6
-	bge.b	.Lyd_tok
+	bge.b	.Lyd_tok\@
 	moveq	#0,%d6
-.Lyd_tok:
+.Lyd_tok\@:
 	movea.l	116(%sp),%a4
 	move.l	(%a4,%d6.l*4),%d5
 
@@ -399,15 +389,13 @@ mr_yuv420_dither8_m68k:
 1:	moveq	#0,%d6
 2:
 	add.w	16(%sp),%d6
-	tst.w	18(%sp)
-	beq.b	3f
+	.if \q6
 	move.b	(%a5,%d6.w),%d6
 	and.l	#255,%d6
 	move.b	(%a6,%d6.w),%d7
-	bra.b	4f
-3:
+	.else
 	move.b	(%a5,%d6.w),%d7
-4:
+	.endif
 	/* green */
 	move.l	%d5,%d6
 	add.l	4(%sp),%d6
@@ -421,15 +409,13 @@ mr_yuv420_dither8_m68k:
 1:	moveq	#0,%d6
 2:
 	add.w	16(%sp),%d6
-	tst.w	18(%sp)
-	beq.b	3f
+	.if \q6
 	move.b	(%a5,%d6.w),%d6
 	and.l	#255,%d6
 	add.b	8(%a6,%d6.w),%d7
-	bra.b	4f
-3:
+	.else
 	add.b	(%a6,%d6.w),%d7
-4:
+	.endif
 	/* blue */
 	move.l	%d5,%d6
 	add.l	8(%sp),%d6
@@ -443,33 +429,37 @@ mr_yuv420_dither8_m68k:
 1:	moveq	#0,%d6
 2:
 	add.w	16(%sp),%d6
-	tst.w	18(%sp)
-	beq.b	3f
+	.if \q6
 	add.b	(%a5,%d6.w),%d7
-	bra.b	4f
-3:
+	.else
 	movea.l	144(%sp),%a4
 	add.b	(%a4,%d6.w),%d7
-4:
+	.endif
 	move.b	%d7,(0,%a3,%d4.l)
 
-.Lyd_tail_done:
+.Lyd_tail_done\@:
 	addq.l	#1,%d0
 	addq.l	#1,%d3
 	and.l	#3,%d3
 	add.l	100(%sp),%d1
 	cmpi.l	#2,100(%sp)
-	beq	.Lyd_v2_advance
-	bra	.Lyd_row
+	beq	.Lyd_v2_advance\@
+	bra	.Lyd_row\@
 
-.Lyd_v2_advance:
+.Lyd_v2_advance\@:
 	move.l	72(%sp),%d6
 	add.l	%d6,%d6
 	adda.l	%d6,%a0
 	adda.l	80(%sp),%a1
 	adda.l	88(%sp),%a2
 	adda.l	108(%sp),%a3
-	bra	.Lyd_v2_row
+	bra	.Lyd_v2_row\@
+	.endm
+
+.Lyd_weighted_kernel:
+	yd_kernel 0
+.Lyd_q6_kernel:
+	yd_kernel 1
 
 .Lyd_done:
 	add.l	#20,%sp

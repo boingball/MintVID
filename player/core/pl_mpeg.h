@@ -4213,6 +4213,30 @@ int plm_audio_decode_header(plm_audio_t *self) {
 	return frame_size - (hasCRC ? 6 : 4);
 }
 
+/* MintVID: accumulate one PCM lane at a time. Each of the two window
+ * walks has eight taps for every reachable v_pos (0, 64, ..., 960).
+ * Keep the original tap order and signed 64-bit products, but write U only
+ * once per lane instead of loading/storing it for every contribution. */
+static void plm_audio_synth_window(const int32_t *d, const int32_t *v,
+                                 int v_pos, int64_t *u) {
+	int d_start = 512 - (v_pos >> 1);
+	int v_start = (v_pos & 127) >> 1;
+	for (int i = 0; i < 32; ++i) {
+		const int32_t *dp = d + d_start + i;
+		const int32_t *vp = v + v_start + i;
+		int64_t sum = 0;
+		for (int tap = 0; tap < 8; ++tap) {
+			sum += (int64_t)dp[tap * 64] * vp[tap * 128];
+		}
+		dp = d + d_start + 32 + i;
+		vp = v + 96 - v_start + i;
+		for (int tap = 0; tap < 8; ++tap) {
+			sum += (int64_t)dp[tap * 64] * vp[tap * 128];
+		}
+		u[i] = sum;
+	}
+}
+
 void plm_audio_decode_frame(plm_audio_t *self) {
 	// Prepare the quantizer table lookups
 	int tab3 = 0;
@@ -4336,30 +4360,7 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 				for (int ch = 0; ch < synth_channels; ch++) {
 					plm_audio_idct36(self->sample[ch], p, self->V[ch], self->v_pos);
 
-					// Build U, windowing, calculate output
-					memset(self->U, 0, sizeof(self->U));
-
-					int d_index = 512 - (self->v_pos >> 1);
-					int v_index = (self->v_pos % 128) >> 1;
-					while (v_index < 1024) {
-						for (int i = 0; i < 32; ++i) {
-							self->U[i] += (int64_t)self->D[d_index++] * self->V[ch][v_index++];
-						}
-
-						v_index += 128 - 32;
-						d_index += 64 - 32;
-					}
-
-					d_index -= (512 - 32);
-					v_index = (128 - 32 + 1024) - v_index;
-					while (v_index < 1024) {
-						for (int i = 0; i < 32; ++i) {
-							self->U[i] += (int64_t)self->D[d_index++] * self->V[ch][v_index++];
-						}
-
-						v_index += 128 - 32;
-						d_index += 64 - 32;
-					}
+					plm_audio_synth_window(self->D, self->V[ch], self->v_pos, self->U);
 
 					// Output samples
 					#ifdef PLM_AUDIO_SEPARATE_CHANNELS

@@ -206,6 +206,10 @@ $CC -o "$BUILD/mr_cinepak_indexed_check.m68k" \
     tests/mr_cinepak_indexed_check.c core/mr_avi.c core/mr_rawvideo.c \
     core/mr_cinepak.c core/mr_dither.c core/mr_dither_m68k.S
 
+echo "== building mr_mp2_synth_check.m68k =="
+$M68K_CC -O2 -std=c99 -m68030 -static -o "$BUILD/mr_mp2_synth_check.m68k" \
+    tests/mr_mp2_synth_check.c
+
 echo "== building mr_yuv_dither_check.m68k =="
 # Links against the real hand-asm mr_yuv420_to_rgb24_m68k/mr_dither_rgb8_m68k
 # (via core/mr_yuv.c core/mr_dither.c's own MR_M68K_ASM dispatch, active in
@@ -251,6 +255,7 @@ run "$BUILD/mr_ham_check.m68k"
 run "$BUILD/mr_dither_check.m68k"
 run "$BUILD/mr_cinepak_indexed_check.m68k" tests/assets/test_cinepak.avi
 run "$BUILD/mr_cinepak_indexed_check.m68k" tests/assets/test_cinepak_strips.avi
+run "$BUILD/mr_mp2_synth_check.m68k"
 run "$BUILD/mr_yuv_dither_check.m68k"
 run "$BUILD/mr_yuv_ham_check.m68k"
 run "$BUILD/mr_mpeg1_blockset_check.m68k"
