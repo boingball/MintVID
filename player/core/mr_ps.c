@@ -9,6 +9,14 @@
 
 #include <string.h>
 
+/* Keep one local-audio scheduler iteration small.  A low-bitrate PS PES can
+ * carry several complete MP2 frames; handing the whole payload to feed_mp2()
+ * makes pl_mpeg decode all of them synchronously before mrplay can present a
+ * due video frame or re-evaluate the audio clock.  pl_mpeg's input buffer is
+ * explicitly streaming, so arbitrary byte boundaries are safe: a partial MP2
+ * frame simply completes on a later call. */
+#define MR_PS_AUDIO_CHUNK_MAX 512U
+
 static size_t find_start(const uint8_t *b, size_t len, size_t from)
 {
     size_t i;
@@ -63,6 +71,24 @@ static mr_status next_video_chunk(mr_ps *p, mr_packet *pkt)
     pkt->len = (uint32_t)(end - p->video_cursor);
     p->video_cursor = end;
     return pkt->len ? MR_OK : MR_EAGAIN;
+}
+
+/* MP2 uses a streaming input buffer in mr_audio_decode.c.  Unlike video there
+ * is no need to discover codec frame boundaries here: bounded byte chunks are
+ * enough to prevent one large PES from monopolising the single Amiga task,
+ * while a frame split across two chunks is transparently reassembled by
+ * plm_buffer_write()/plm_audio_decode(). */
+static mr_status next_audio_chunk(mr_ps *p, mr_packet *pkt)
+{
+    size_t left, take;
+    if (p->audio_cursor >= p->audio_end) return MR_EAGAIN;
+    left = p->audio_end - p->audio_cursor;
+    take = left > MR_PS_AUDIO_CHUNK_MAX ? MR_PS_AUDIO_CHUNK_MAX : left;
+    pkt->is_video = 0;
+    pkt->data = p->buf + p->audio_cursor;
+    pkt->len = (uint32_t)take;
+    p->audio_cursor += take;
+    return take ? MR_OK : MR_EAGAIN;
 }
 
 static int parse_sequence(mr_ps *p)
@@ -197,6 +223,8 @@ mr_status mr_ps_next_packet(mr_ps *p, mr_packet *pkt)
     size_t start = p->cursor;
     if (p->video_cursor < p->video_end)
         return next_video_chunk(p, pkt);
+    if (p->audio_cursor < p->audio_end)
+        return next_audio_chunk(p, pkt);
     while ((start = find_start(p->buf, p->len, start)) < p->len) {
         unsigned code = p->buf[start + 3];
         size_t payload, end;
@@ -215,10 +243,9 @@ mr_status mr_ps_next_packet(mr_ps *p, mr_packet *pkt)
             p->video_end = end;
             return next_video_chunk(p, pkt);
         }
-        pkt->is_video = 0;
-        pkt->data = p->buf + payload;
-        pkt->len = (uint32_t)(end - payload);
-        return pkt->len ? MR_OK : MR_EAGAIN;
+        p->audio_cursor = payload;
+        p->audio_end = end;
+        return next_audio_chunk(p, pkt);
     }
     p->cursor = p->len;
     return MR_EAGAIN;
@@ -229,5 +256,7 @@ void mr_ps_rewind(mr_ps *p)
     p->cursor = 0;
     p->video_cursor = 0;
     p->video_end = 0;
+    p->audio_cursor = 0;
+    p->audio_end = 0;
 }
 void mr_ps_close(mr_ps *p) { (void)p; }
