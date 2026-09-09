@@ -132,9 +132,19 @@ mr_mpeg1_timing_check: tests/mr_mpeg1_timing_check.c core/mr_mpeg1.c \
                        core/mr_mpeg1.h core/pl_mpeg.h core/mr_types.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_timing_check.c core/mr_mpeg1.c
 
+mr_mpeg2_yuv_check: tests/mr_mpeg2_yuv_check.c core/mr_mpeg2.c core/mr_ps.c \
+                    core/mr_yuv.c core/mr_mpeg2.h core/mr_ps.h core/mr_yuv.h \
+                    core/mr_codec.h core/mr_types.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg2_yuv_check.c core/mr_mpeg2.c \
+	    core/mr_ps.c core/mr_yuv.c $(LIBMPEG2_SRC)
+
 mr_ps_check: tests/mr_ps_check.c core/mr_ps.c core/mr_ps.h \
              core/mr_demux.h core/mr_types.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_ps_check.c core/mr_ps.c
+
+mr_ps_pts_check: tests/mr_ps_pts_check.c core/mr_ps.c core/mr_ps.h \
+             core/mr_demux.h core/mr_types.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_ps_pts_check.c core/mr_ps.c
 
 mr_ts_mp2_check: tests/mr_ts_mp2_check.c core/mr_ts.c core/mr_ts.h \
                  core/mr_latm.c core/mr_latm.h
@@ -170,6 +180,13 @@ mr_ac3_check: tests/mr_ac3_check.c audio/mr_audio_decode.c audio/mr_pcm.c \
 	    tests/mr_ac3_check.c audio/mr_audio_decode.c audio/mr_pcm.c $(CORE) \
 	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LIBA52_SRC) $(WMA_FFT_OBJ) -lm
 mr_ac3_check: | check-libavc
+
+# Exact window-synthesis comparison across every circular-buffer phase.
+mr_mp2_idct_check: tests/mr_mp2_idct_check.c tests/mr_mp2_idct_reference.h core/pl_mpeg.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_mp2_idct_check.c
+
+mr_mp2_synth_check: tests/mr_mp2_synth_check.c core/pl_mpeg.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_mp2_synth_check.c
 
 # Decoded MP2 from a .mpg against an ffmpeg reference. The MPEG-1 program
 # stream source has its own audio path (pl_mpeg, not the MintAMP adapter), so
@@ -299,7 +316,7 @@ mr_youtube_search_check: tests/mr_youtube_search_check.c \
 	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_search_check.c \
 	    youtube/mr_youtube_search.c
 
-check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_ps_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_cinepak_indexed_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_h264_m68k_check mr_h264_mc_degrade_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check
+check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg2_yuv_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_cinepak_indexed_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_h264_m68k_check mr_h264_mc_degrade_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check
 	./mr_youtube_search_check
 	./mr_youtube_check
 	./mr_hls_override_check
@@ -323,7 +340,11 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	./mr_yuv_ham_check
 	./mr_mpeg1_probe_check
 	./mr_mpeg1_timing_check tests/assets/test_mpeg1.mpg
+	./mr_mpeg2_yuv_check tests/assets/test_mpeg1_odd.mpg 134 100
 	./mr_ps_check
+	./mr_ps_pts_check tests/assets/test_mpeg1_odd.mpg 540000 40000
+	./mr_ps_pts_check tests/assets/test_mpeg1_mp2.mpg 540000 40000 518188
+	./mr_ps_pts_check tests/assets/test_mpeg1.mpg 540000 40000
 	./mr_ts_mp2_check
 	@test -d tests/assets/ref_cinepak && test -d tests/assets/ref_mov \
 	    && test -d tests/assets/ref_cinepak_strips \
@@ -434,7 +455,7 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	@echo "[H.263+ unrestricted motion vectors]"
 	./mr_decode tests/assets/test_h263p_umv.avi --check tests/assets/ref_h263p_umv
 
-check-audio: mr_audio_check mr_ac3_check mr_mp2_check
+check-audio: mr_audio_check mr_ac3_check mr_mp2_check mr_mp2_synth_check mr_mp2_idct_check
 	@test -f tests/assets/test_mp3.avi -a -f tests/assets/test_aac.mp4 \
 	    -a -f tests/assets/test_mp3_stereo.avi \
 	    -a -f tests/assets/test_mpeg1_mp2.mpg \
@@ -465,6 +486,8 @@ check-audio: mr_audio_check mr_ac3_check mr_mp2_check
 	    32000 1
 	./mr_ac3_check tests/assets/test_ac3_stereo.mkv \
 	    tests/assets/ref_ac3_stereo.raw 44100 2
+	./mr_mp2_synth_check
+	./mr_mp2_idct_check
 	./mr_mp2_check tests/assets/test_mpeg1_mp2.mpg \
 	    tests/assets/ref_mpeg1_mp2.raw 22050 1
 
@@ -497,8 +520,8 @@ check-m68k:
 
 clean:
 	rm -f mr_decode mr_decode_ssl mr_audio_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check \
-	      mr_ac3_check \
-	      mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_ps_check mr_ts_mp2_check mr_mkv_check \
+	      mr_ac3_check mr_mp2_synth_check mr_mp2_idct_check \
+	      mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg2_yuv_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_mkv_check \
 	      mr_mov_seek_check
 	rm -f mr_legacy_video_check mr_cinepak_indexed_check
 	rm -f mr_rawvideo_check mr_codec_registry_check

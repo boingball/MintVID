@@ -206,6 +206,14 @@ $CC -o "$BUILD/mr_cinepak_indexed_check.m68k" \
     tests/mr_cinepak_indexed_check.c core/mr_avi.c core/mr_rawvideo.c \
     core/mr_cinepak.c core/mr_dither.c core/mr_dither_m68k.S
 
+echo "== building mr_mp2_idct_check.m68k =="
+$M68K_CC -O2 -std=c99 -m68030 -static -o "$BUILD/mr_mp2_idct_check.m68k" \
+    tests/mr_mp2_idct_check.c
+
+echo "== building mr_mp2_synth_check.m68k =="
+$M68K_CC -O2 -std=c99 -m68030 -static -o "$BUILD/mr_mp2_synth_check.m68k" \
+    tests/mr_mp2_synth_check.c
+
 echo "== building mr_yuv_dither_check.m68k =="
 # Links against the real hand-asm mr_yuv420_to_rgb24_m68k/mr_dither_rgb8_m68k
 # (via core/mr_yuv.c core/mr_dither.c's own MR_M68K_ASM dispatch, active in
@@ -251,6 +259,8 @@ run "$BUILD/mr_ham_check.m68k"
 run "$BUILD/mr_dither_check.m68k"
 run "$BUILD/mr_cinepak_indexed_check.m68k" tests/assets/test_cinepak.avi
 run "$BUILD/mr_cinepak_indexed_check.m68k" tests/assets/test_cinepak_strips.avi
+run "$BUILD/mr_mp2_synth_check.m68k"
+run "$BUILD/mr_mp2_idct_check.m68k"
 run "$BUILD/mr_yuv_dither_check.m68k"
 run "$BUILD/mr_yuv_ham_check.m68k"
 run "$BUILD/mr_mpeg1_blockset_check.m68k"
@@ -317,6 +327,29 @@ run "$BUILD/mr_decode.m68k" tests/assets/test_h263.avi \
 echo "[H.263+ custom picture format / slice structured, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_h263p.avi \
     --check tests/assets/ref_h263p
+# The YUV handoff reads libmpeg2's planes at their macroblock-aligned pitch and
+# packs them, so it belongs on the real big-endian target. Built here rather
+# than with the shared CORE list because it drives the codec vtable directly.
+echo "== building mr_mpeg2_yuv_check.m68k =="
+$CC -o "$BUILD/mr_mpeg2_yuv_check.m68k" tests/mr_mpeg2_yuv_check.c \
+    core/mr_mpeg2.c core/mr_ps.c core/mr_yuv.c core/mr_yuv_m68k.S \
+    vendor/libmpeg2/libmpeg2/alloc.c vendor/libmpeg2/libmpeg2/cpu_accel.c \
+    vendor/libmpeg2/libmpeg2/cpu_state.c vendor/libmpeg2/libmpeg2/decode.c \
+    vendor/libmpeg2/libmpeg2/header.c vendor/libmpeg2/libmpeg2/idct.c \
+    vendor/libmpeg2/libmpeg2/motion_comp.c vendor/libmpeg2/libmpeg2/slice.c
+echo "[MPEG-1/2 YUV420P output handoff, real m68k/big-endian]"
+run "$BUILD/mr_mpeg2_yuv_check.m68k" tests/assets/test_mpeg1_odd.mpg 134 100
+
+# A PES timestamp is a 33-bit value assembled out of five bytes by shifting
+# past marker bits, so it is exactly the kind of thing that can come out right
+# on the host and wrong on a big-endian target.
+echo "== building mr_ps_pts_check.m68k =="
+$CC -o "$BUILD/mr_ps_pts_check.m68k" tests/mr_ps_pts_check.c core/mr_ps.c
+echo "[MPEG-PS PES timestamps, real m68k/big-endian]"
+run "$BUILD/mr_ps_pts_check.m68k" tests/assets/test_mpeg1_odd.mpg 540000 40000
+run "$BUILD/mr_ps_pts_check.m68k" tests/assets/test_mpeg1_mp2.mpg \
+    540000 40000 518188
+
 echo "[MPEG-1, real m68k/big-endian - exercises the new motion-comp asm]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_mpeg1.mpg \
     --check tests/assets/ref_mpeg1

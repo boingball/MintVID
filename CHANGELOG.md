@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Performance
+
+- Simplify the MP2 IDCT's Q15 multiply rounding to a sign-dependent bias
+  and unsigned shift, preserving half-away-from-zero results. Add rounding
+  residue and full-transform equivalence tests to the audio and m68k suites.
+  Playback speed has not yet been measured for this change.
+
+- Select the indexed YUV dithering palette kernel once per conversion,
+  removing repeated per-pixel mode branches while retaining the compact
+  4 KB quantizer. Complete calls sampled in Copperline used about 13.6%
+  fewer instructions; this is not a whole-playback timing result.
+- Accumulate MP2 synthesis one output lane at a time, retaining signed
+  64-bit products and the original tap order. Copperline traces confirm
+  eight instructions per inner-loop tap versus twelve previously. Exact
+  regression checks cover all 16 synthesis phases and run in the host audio
+  and m68k suites. Real 68060 timing remains unverified; cache behavior can
+  affect the benefit of the changed access order.
+
+
 ### Added
 
 - `make check-audio` gained an MPEG-2.5 MP3 fixture (11.025 kHz stereo in AVI),
