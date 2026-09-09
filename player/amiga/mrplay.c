@@ -22,6 +22,7 @@
 #include "../core/mr_cinepak.h"
 #include "../core/mr_rawvideo.h"
 #include "../core/mr_h264.h"
+#include "../core/mr_mpeg2.h"
 #include "../core/mr_dither.h"
 #include "../core/mr_media_clock.h"
 #include "../core/mr_yuv.h"
@@ -1721,7 +1722,12 @@ int main(int argc, char **argv)
      * is strictly the cheaper of the two. */
     int use_yuv_indexed_queue = 0, yuv_dst_w = 0, yuv_dst_h = 0;
     int yuv_vscale = 1, indexed_depth = 8, yuv_ham = 0;
-    if (codec == &mr_codec_h264)
+    /* MPEG-1/2 joins H.264 here: mr_mpeg2_set_yuv_output() lets libmpeg2's
+     * adapter hand over its planes instead of converting each displayed
+     * picture to RGB24, which on real m68k is about a third of that adapter's
+     * decode time - and the RGB->indexed dither this path then skips costs
+     * about as much again. */
+    if (codec == &mr_codec_h264 || codec == &mr_codec_mpeg2)
         use_yuv_indexed_queue = display_supports_yuv_indexed(
             disp, vi->width, vi->height, &yuv_dst_w, &yuv_dst_h, &yuv_vscale,
             &indexed_depth, &yuv_ham);
@@ -1752,6 +1758,10 @@ int main(int argc, char **argv)
                             display_supports_bgr24(disp);
     if (use_yuv_indexed_queue || use_yuv_rgb_queue)
         mr_h264_set_yuv_output(&dec, 1);
+    /* Only the indexed route: an RGB display is better served by the adapter's
+     * own emit_rgb() than by handing planes over for the player to convert. */
+    if (use_yuv_indexed_queue)
+        mr_mpeg2_set_yuv_output(&dec, 1);
     if (want_time) {
         int diag_depth, diag_ham, diag_scale, diag_resize;
         const char *diag_c2p;
@@ -2351,6 +2361,10 @@ int main(int argc, char **argv)
                     mr_h264_set_timing_enabled(&dec, want_time);
                     if (use_yuv_indexed_queue || use_yuv_rgb_queue)
                         mr_h264_set_yuv_output(&dec, 1);
+                    /* Only the indexed route - see the same pairing at the
+                     * decoder-open site above. */
+                    if (use_yuv_indexed_queue)
+                        mr_mpeg2_set_yuv_output(&dec, 1);
                     if (use_cinepak_indexed_queue &&
                         !mr_cinepak_set_indexed_output(&dec, indexed_depth))
                         break;
@@ -2611,6 +2625,10 @@ int main(int argc, char **argv)
             mr_h264_set_timing_enabled(&dec, want_time);
             if (use_yuv_indexed_queue || use_yuv_rgb_queue)
                 mr_h264_set_yuv_output(&dec, 1);
+            /* Only the indexed route - see the same pairing at the
+             * decoder-open site above. */
+            if (use_yuv_indexed_queue)
+                mr_mpeg2_set_yuv_output(&dec, 1);
             if (use_cinepak_indexed_queue &&
                 !mr_cinepak_set_indexed_output(&dec, indexed_depth))
                 break;
@@ -2693,6 +2711,10 @@ int main(int argc, char **argv)
             mr_h264_set_timing_enabled(&dec, want_time);
             if (use_yuv_indexed_queue || use_yuv_rgb_queue)
                 mr_h264_set_yuv_output(&dec, 1);
+            /* Only the indexed route - see the same pairing at the
+             * decoder-open site above. */
+            if (use_yuv_indexed_queue)
+                mr_mpeg2_set_yuv_output(&dec, 1);
             if (use_cinepak_indexed_queue &&
                 !mr_cinepak_set_indexed_output(&dec, indexed_depth))
                 break;

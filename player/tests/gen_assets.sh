@@ -17,6 +17,12 @@ ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=25:duration=1 \
 # MPEG-1 program stream (25 fps - MPEG-1 only allows standard rates).
 ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=25:duration=2 \
     -c:v mpeg1video -b:v 800k -f mpeg test_mpeg1.mpg -y
+# MPEG-1 whose width is not a multiple of 16, so libmpeg2's macroblock-aligned
+# plane pitch (144 for a 134-wide picture) differs from the visible width. The
+# YUV-output path hands those strides to the caller, and on a 128x96 clip the
+# two are equal and a stride bug cannot show at all.
+ffmpeg -v error -f lavfi -i testsrc2=size=134x100:rate=25:duration=2 \
+    -c:v mpeg1video -b:v 500k -f mpeg test_mpeg1_odd.mpg -y
 # Same Cinepak content in a QuickTime MOV, with PCM audio, to exercise the
 # MOV demuxer (sample-table frame reconstruction).
 ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=2 \

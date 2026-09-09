@@ -317,6 +317,19 @@ run "$BUILD/mr_decode.m68k" tests/assets/test_h263.avi \
 echo "[H.263+ custom picture format / slice structured, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_h263p.avi \
     --check tests/assets/ref_h263p
+# The YUV handoff reads libmpeg2's planes at their macroblock-aligned pitch and
+# packs them, so it belongs on the real big-endian target. Built here rather
+# than with the shared CORE list because it drives the codec vtable directly.
+echo "== building mr_mpeg2_yuv_check.m68k =="
+$CC -o "$BUILD/mr_mpeg2_yuv_check.m68k" tests/mr_mpeg2_yuv_check.c \
+    core/mr_mpeg2.c core/mr_ps.c core/mr_yuv.c core/mr_yuv_m68k.S \
+    vendor/libmpeg2/libmpeg2/alloc.c vendor/libmpeg2/libmpeg2/cpu_accel.c \
+    vendor/libmpeg2/libmpeg2/cpu_state.c vendor/libmpeg2/libmpeg2/decode.c \
+    vendor/libmpeg2/libmpeg2/header.c vendor/libmpeg2/libmpeg2/idct.c \
+    vendor/libmpeg2/libmpeg2/motion_comp.c vendor/libmpeg2/libmpeg2/slice.c
+echo "[MPEG-1/2 YUV420P output handoff, real m68k/big-endian]"
+run "$BUILD/mr_mpeg2_yuv_check.m68k" tests/assets/test_mpeg1_odd.mpg 134 100
+
 echo "[MPEG-1, real m68k/big-endian - exercises the new motion-comp asm]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_mpeg1.mpg \
     --check tests/assets/ref_mpeg1
