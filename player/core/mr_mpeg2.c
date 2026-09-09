@@ -37,6 +37,8 @@ typedef struct {
     mpeg2_frame_node  *free_nodes;
     int                flushing;
     int                flush_done;
+    int                have_last_output_pts;
+    uint64_t           last_output_pts;
 } mpeg2_state;
 
 static mr_status mpeg2_drain_decoder(mr_decoder *dec);
@@ -328,14 +330,25 @@ void mr_mpeg2_set_input_pts(mr_decoder *dec, int has_pts, uint64_t pts_us)
                       (uint32_t)(pts_us & 0xffffffffu));
 }
 
-/* Return the timestamp attached to the picture currently exposed in dec->frame. */
+/* Return a usable anchor timestamp for the picture currently exposed in
+ * dec->frame. MPEG PES packets can contain more than one picture, so
+ * libmpeg2 may legitimately propagate the same packet tag onto consecutive
+ * displayed pictures. Such a duplicate is NOT a second frame timestamp.
+ * Suppress duplicate/backward tags and let mrplay's existing display-order
+ * synthetic clock advance that picture by one frame period instead. The next
+ * genuinely newer tag remains an authoritative container anchor. */
 int mr_mpeg2_output_pts(mr_decoder *dec, uint64_t *pts_us)
 {
     mpeg2_state *s;
+    uint64_t cur;
     if (!dec || dec->codec != &mr_codec_mpeg2 || !pts_us) return 0;
     s = (mpeg2_state *)dec->priv;
     if (!s || !s->current || !s->current->has_pts) return 0;
-    *pts_us = s->current->pts_us;
+    cur = s->current->pts_us;
+    if (s->have_last_output_pts && cur <= s->last_output_pts) return 0;
+    s->last_output_pts = cur;
+    s->have_last_output_pts = 1;
+    *pts_us = cur;
     return 1;
 }
 
