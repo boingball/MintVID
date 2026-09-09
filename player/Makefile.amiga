@@ -96,6 +96,7 @@ CORE  = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
         core/mr_cinepak.c core/mr_dither.c core/mr_dither_m68k.S core/mr_ham.c core/mr_scale.c \
         core/mr_c2p.c core/mr_c2p_m68k.S core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c \
         core/mr_mpeg1_blockset_m68k.S core/mr_mpeg1_idct_m68k.S \
+        core/mr_mpeg1_sched.c \
         core/mr_mpeg2.c $(LIBMPEG2_SRC) \
         core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_wmv.c core/mr_wmv2.c core/mr_h263.c core/mr_msvideo1.c core/mr_rle.c \
         core/mr_rawvideo.c core/mr_yuv.c core/mr_yuv_m68k.S core/mr_yuv_dither.c \
