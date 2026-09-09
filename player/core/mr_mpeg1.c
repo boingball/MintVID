@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(AMIGA_M68K) && defined(__GNUC__)
+#if (defined(AMIGA_M68K) || defined(MR_M68K_ASM)) && defined(__GNUC__)
 /*
  * pl_mpeg's Layer-II synthesis finishes every PCM sample with
  *
