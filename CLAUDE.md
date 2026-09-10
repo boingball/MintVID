@@ -345,6 +345,30 @@ scores MAE 50, the chroma swap 99. It refuses to run on a clip whose width is a
 multiple of 16, where the aligned pitch equals the visible width and no stride
 bug can show; `test_mpeg1_odd.mpg` exists for that reason.
 
+**`Makefile.amiga` was compiling MintAMP/liba52 at the wrong optimization
+level.** MintAMP's own validated release recipe (`vendor/MintAMP/Makefile.amiga`,
+`FAST030_CFLAGS`) builds its decoders with `-std=gnu89 -O3
+-fomit-frame-pointer` — that's the actual, hardware-tested tuning behind e.g.
+`ASM60_GROUPS="lowrate060 huffman midside planars8"` for CPU=60. `mrplay`
+was instead compiling those same `.c` files straight into its own link line
+under MintVID's `-O2 -std=c99`, so the polyphase/Huffman/IMDCT decode loops
+these asm groups were tuned against never actually ran through the compiler
+settings they were validated with. Fixed by giving MintAMP/liba52 sources
+their own object files (`build/vendor/...`, via a `build/%.o: %.c`/`%.S`
+pattern rule and `MINTAMP_CFLAGS := $(CPUFLAGS) -std=gnu89 -O3
+-fomit-frame-pointer -noixemul $(MINTAMP_FLAGS) $(LIBA52_FLAGS)`) instead of
+listing them as raw sources on `mrplay`'s/`mrplay-fused`'s compile-and-link
+line — MintVID's own code is untouched and still builds at `-O2 -std=c99`.
+Only `mrplay`/`mrplay-fused` link MintAMP/liba52 at all; the GUI targets
+(`MintVID`, `iptvgui`, `ytgui`, their `-GT` variants) don't reference them.
+Verified via `make -f Makefile.amiga -n mrplay CPU=68060
+AMIGA_GCC=/fake/m68k-amigaos-gcc` dry-run output (real cross-compilation
+needs a real Amiga toolchain, unavailable on this dev host); actual playback
+impact — this was the leading suspect for a "Morse code"-pattern audio
+stutter reported on real 68060 hardware that survived every 64-bit
+multiply/divide trap fix above — still needs a real-hardware pass to
+confirm.
+
 ## Microsoft RLE (BI_RLE8) notes
 Running out of data is a **normal end of frame**, not an error: encoders often
 omit the end-of-bitmap escape, and AVI's zero-length chunk (an unchanged frame)

@@ -249,6 +249,35 @@ LIBA52_SRC = $(LIBA52_ROOT)/bit_allocate.c $(LIBA52_ROOT)/bitstream.c \
              $(MINTAMP_ROOT)/decoders/wma/fft-ffmpeg.c \
              $(MINTAMP_ROOT)/decoders/wma/mdct_lookup.c
 
+# vendor/MintAMP/Makefile.amiga's own release/fast030 build (which is what
+# `make -f Makefile.amiga release CPU=60 ASM60_GROUPS="..."` actually means
+# upstream, and how MintAMP's own binaries are validated) compiles its
+# decoders with FAST030_CFLAGS = $(CPU_MFLAG) -std=gnu89 -O3
+# -fomit-frame-pointer - not whatever CFLAGS a host application happens to
+# link them with. mrplay was compiling these exact same source files
+# through MintVID's own $(CFLAGS) (-O2 -std=c99) instead, a real gap from
+# how MintAMP's decode throughput was actually tuned - worth closing given
+# these are precisely the tight per-sample decode loops (polyphase
+# synthesis etc.) where the difference between keeping up with real-time
+# playback and not can come down to the optimizer. Compile MintAMP/liba52
+# sources to their own object files with MintAMP's own validated flags,
+# then link those objects into mrplay/mrplay-fused alongside the rest
+# (still -O2) - this only changes how MintAMP itself gets compiled, never
+# any of MintVID's own code.
+MINTAMP_CFLAGS := $(CPUFLAGS) -std=gnu89 -O3 -fomit-frame-pointer -noixemul \
+                   $(MINTAMP_FLAGS) $(LIBA52_FLAGS)
+MINTAMP_MP3_OBJ := $(patsubst %.c,build/%.o,$(patsubst %.S,build/%.o,$(MINTAMP_MP3)))
+MINTAMP_AAC_OBJ := $(patsubst %.c,build/%.o,$(MINTAMP_AAC))
+LIBA52_OBJ      := $(patsubst %.c,build/%.o,$(LIBA52_SRC))
+
+build/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(MINTAMP_CFLAGS) -c $< -o $@
+
+build/%.o: %.S
+	@mkdir -p $(dir $@)
+	$(CC) $(MINTAMP_CFLAGS) -c $< -o $@
+
 # Prefer whatever m68k-amigaos-gcc is on PATH (your chosen default); only if
 # none is on PATH, fall back to Bebbo's usual install prefixes.
 AMIGA_ROOT ?= /opt/amiga
@@ -360,9 +389,10 @@ check-cc:
 	  exit 1; }
 	@echo "using CC = $(CC)"
 
-mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) $(KALMS_OBJ) $(MP2_ASM_OBJ) $(VERSION_HEADER) | check-libavc
+mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) $(KALMS_OBJ) $(MP2_ASM_OBJ) \
+        $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) $(VERSION_HEADER) | check-libavc
 	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) $(LIBA52_FLAGS) -o $@ $(PLAY) $(CORE) \
-	    $(MINTAMP_MP3) $(MINTAMP_AAC) $(LIBA52_SRC) $(KALMS_OBJ) $(MP2_ASM_OBJ) $(LDFLAGS)
+	    $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) $(KALMS_OBJ) $(MP2_ASM_OBJ) $(LDFLAGS)
 
 check-kalms:
 	@test -n "$(KALMS_VASM)" -a -x "$(KALMS_VASM)" || { \
@@ -448,6 +478,7 @@ clean:
 	      build/c2p1x1_8_c5_040.o build/c2p2x2_8_c5_bm.o \
 	      build/c2p1x1_6_c5_bm_040.o $(MP2_ASM_OBJ)
 	rm -f audio_task_stress
+	rm -rf build/vendor
 
 # Build every supported CPU profile into its own ready-to-run directory.
 # The final recursive build is 68030, leaving the ordinary working binaries on
