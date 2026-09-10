@@ -484,6 +484,27 @@ now calls `plm_set_audio_decim(m->plm, m->decim)` and `mr_mpeg1_audio()` no
 longer strides over the output at all - `plm_decode_audio()` already hands
 back only the kept samples.
 
+**The same waste existed a second time, independently, in
+`audio/mr_audio_decode.c`'s generic MP2 path** - the one used when a
+container carries an MP2 audio track alongside a *different* video codec,
+not muxed MPEG-1 PS/TS. `compute_stride()` there is a separate 1/2/4
+decimation-factor computation (base 2 above Paula's ~28kHz ceiling, doubled
+again under `--audio-rate=low`, so always a value `plm_audio_set_decim()`
+accepts), applied generically to every codec's decoded PCM by
+`emit_pcm()`/`decimate()` after the fact. `plm_audio_set_decim(d->mp2,
+d->stride)` is now called at both places `d->mp2` is created (open and
+`mr_audio_decoder_reset()`), and `emit_pcm()` was split into
+`emit_pcm_stride(..., stride, ...)` taking the stride explicitly - every
+other codec (PCM/MP3/AAC/AC-3) still calls it via the unchanged `emit_pcm()`
+wrapper with `d->stride`, but `feed_mp2()` now calls `emit_pcm_stride(...,
+1, ...)` directly, since pl_mpeg's polyphase stage already did the
+decimation and `samples->count` is already the reduced count - passing
+`d->stride` there again would decimate an already-decimated stream a second
+time. Verified via `make check-audio` (identical frame counts/rates for
+`test_mp2_stereo.ts`'s normal/low/mono cases as before) and a real-m68k
+rebuild of `mr_ac3_check.m68k` (which links this file), matching its known
+baseline exactly.
+
 ## Microsoft RLE (BI_RLE8) notes
 Running out of data is a **normal end of frame**, not an error: encoders often
 omit the end-of-bitmap escape, and AVI's zero-length chunk (an unchanged frame)

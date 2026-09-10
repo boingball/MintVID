@@ -136,10 +136,18 @@ static unsigned aac_adts_frame_bytes(const unsigned char *p)
 
 /* `channels` is what d->pcm actually holds; the sink may get fewer (mono mode
  * drops everything but the first channel of a stereo buffer, for codecs whose
- * own decoder could not be asked for one channel). */
-static long emit_pcm(mr_audio_decoder *d, unsigned total_shorts,
-                     unsigned rate, unsigned channels,
-                     mr_audio_pcm_sink sink, void *user)
+ * own decoder could not be asked for one channel). `stride` is normally
+ * d->stride (see emit_pcm() below), except for MP2: pl_mpeg's polyphase
+ * synthesis stage already decimates (see plm_audio_set_decim() in
+ * core/pl_mpeg.h, set on d->mp2 at creation/reset), so feed_mp2() below
+ * passes 1 here to avoid decimating that already-decimated output a second
+ * time. d->decim_phase
+ * is only ever advanced by the stride==1-bypassing path below, so it stays a
+ * correct free-running phase across both uses - MP2's stride-1 calls never
+ * touch it. */
+static long emit_pcm_stride(mr_audio_decoder *d, unsigned total_shorts,
+                            unsigned rate, unsigned channels, unsigned stride,
+                            mr_audio_pcm_sink sink, void *user)
 {
     unsigned frames, out, i, out_channels;
     if (!channels || channels > 2 || total_shorts > PCM_SHORTS_MAX)
@@ -149,7 +157,7 @@ static long emit_pcm(mr_audio_decoder *d, unsigned total_shorts,
     d->channels = out_channels;
     if (rate) d->source_rate = rate;
 
-    if (d->stride == 1 && out_channels == channels) {
+    if (stride == 1 && out_channels == channels) {
         if (sink && frames) sink(user, d->pcm, frames, channels);
         return (long)frames;
     }
@@ -162,7 +170,7 @@ static long emit_pcm(mr_audio_decoder *d, unsigned total_shorts,
      * any length. The destination index never runs ahead of the source, since
      * out <= i and out_channels <= channels. */
     out = 0;
-    for (i = d->decim_phase; i < frames; i += d->stride) {
+    for (i = d->decim_phase; i < frames; i += stride) {
         unsigned ch;
         for (ch = 0; ch < out_channels; ch++)
             d->pcm[out * out_channels + ch] = d->pcm[i * channels + ch];
@@ -171,6 +179,14 @@ static long emit_pcm(mr_audio_decoder *d, unsigned total_shorts,
     d->decim_phase = i - frames;
     if (sink && out) sink(user, d->pcm, out, out_channels);
     return (long)out;
+}
+
+static long emit_pcm(mr_audio_decoder *d, unsigned total_shorts,
+                     unsigned rate, unsigned channels,
+                     mr_audio_pcm_sink sink, void *user)
+{
+    return emit_pcm_stride(d, total_shorts, rate, channels, d->stride,
+                           sink, user);
 }
 
 static int parse_aac_asc(const mr_audio_info *info,
@@ -278,6 +294,14 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info,
         d->mp2 = plm_audio_create_with_buffer(d->mp2_buffer, 1);
         if (!d->mp2) goto fail;
         plm_audio_set_mono(d->mp2, d->mono);
+        /* Fast MP2 decode: have pl_mpeg's polyphase synthesis stage do the
+         * decimation (see plm_audio_set_decim() in core/pl_mpeg.h) instead of
+         * decoding every lane and throwing most of it away in emit_pcm()'s
+         * generic decimate() path afterwards - see feed_mp2(). d->stride is
+         * computed by compute_stride() just above and is always 1, 2 or 4,
+         * exactly the values plm_audio_set_decim() accepts (anything else
+         * silently falls back to 1). */
+        plm_audio_set_decim(d->mp2, (int)d->stride);
     } else if (info->format_tag == MR_AUDIO_FORMAT_MP3) {
         d->kind = AUDIO_KIND_MP3;
         d->mp3 = MP3InitDecoder();
@@ -409,12 +433,21 @@ static long feed_mp2(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
                          (uint8_t *)(uintptr_t)data, len) != len)
         return -1;
     while ((samples = plm_audio_decode(d->mp2)) != NULL) {
-        /* Mono mode has pl_mpeg synthesise and pack a single channel. */
+        /* Mono mode has pl_mpeg synthesise and pack a single channel, and
+         * plm_audio_set_decim(d->mp2, d->stride) (set at creation/reset) has
+         * pl_mpeg's polyphase synthesis stage already emit only the lanes
+         * that survive d->stride's decimation - samples->count is already
+         * PLM_AUDIO_SAMPLES_PER_FRAME/decim. So this feeds emit_pcm_stride()
+         * with an explicit stride of 1: the generic decimate-by-d->stride
+         * path in emit_pcm() must NOT run again here, or it would drop a
+         * further 1/stride of an already-decimated stream and both wreck the
+         * output rate and double the reduction. */
         unsigned channels = (unsigned)plm_audio_get_channels(d->mp2);
         unsigned shorts = samples->count * channels;
         long got;
         memcpy(d->pcm, samples->interleaved, shorts * sizeof d->pcm[0]);
-        got = emit_pcm(d, shorts, d->source_rate, channels, sink, user);
+        got = emit_pcm_stride(d, shorts, d->source_rate, channels, 1,
+                              sink, user);
         if (got < 0) return -1;
         produced += got;
     }
@@ -649,7 +682,11 @@ int mr_audio_decoder_reset(mr_audio_decoder *d)
         d->mp2_buffer = plm_buffer_create_with_capacity(8192);
         d->mp2 = d->mp2_buffer
                ? plm_audio_create_with_buffer(d->mp2_buffer, 1) : NULL;
-        if (d->mp2) plm_audio_set_mono(d->mp2, d->mono);
+        if (d->mp2) {
+            plm_audio_set_mono(d->mp2, d->mono);
+            /* See the matching call in mr_audio_decoder_open(). */
+            plm_audio_set_decim(d->mp2, (int)d->stride);
+        }
         return d->mp2 != NULL;
     }
     if (d->kind == AUDIO_KIND_AC3) {
