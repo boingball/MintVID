@@ -4076,13 +4076,35 @@ plm_samples_t *plm_audio_decode(plm_audio_t *self) {
 
 	plm_audio_decode_frame(self);
 	self->next_frame_data_size = 0;
-	
+
 	self->samples.time = self->time;
 
+#if defined(MR_M68K_ASM)
+	/* MintVID never reads plm_audio_get_time()/samples->time - it drives
+	 * mr_mpeg1_next()/mr_mpeg1_audio() directly (never plm_decode()'s own
+	 * scheduling loop or plm_seek()) and gets audio PTS from the
+	 * container's own PES timestamps (see mr_ps.c and CLAUDE.md's
+	 * "MPEG-PS timestamps" note), not from pl_mpeg's internal clock. That
+	 * makes this line dead weight, and an expensive one on m68k: with a
+	 * samplerate_index only known at runtime, GCC can't fold the divisor
+	 * to a compile-time constant, so `(int64_t)a * TIME_SCALE / rate`
+	 * lowers to two separate libgcc calls - jsr __muldi3 for the multiply
+	 * (only on 68060; it's a single hardware muls.l on 68020-68040) and
+	 * jsr __divdi3 for the divide on *every* m68k tier, since none of
+	 * them has a 64-bit-quotient divide instruction at all. That's two
+	 * software routines per decoded MP2 frame (~38/sec at 44.1kHz) for a
+	 * value nobody reads, so skip it here rather than speed it up -
+	 * samples_decoded stays in step with it since nothing else reads
+	 * either. Left fully intact on host builds (make check/check-audio
+	 * never exercise this field, but the cost there is one native
+	 * DIVQ/MULQ, not worth special-casing away from pl_mpeg's own
+	 * behaviour). */
+#else
 	self->samples_decoded += PLM_AUDIO_SAMPLES_PER_FRAME;
 	self->time = (int64_t)self->samples_decoded * PLM_TIME_SCALE /
 		PLM_AUDIO_SAMPLE_RATE[self->samplerate_index];
-	
+#endif
+
 	return &self->samples;
 }
 

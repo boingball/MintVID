@@ -145,6 +145,26 @@ divide at all, computing the quotient via a reciprocal-multiply constant
 built entirely from `mulu.w`, so it needs no CPU split and runs unchanged
 on 68040 and 68060 alike.
 
+**`plm_audio_decode()`'s own internal time bookkeeping was a second, bigger
+tax on the same audio path - and it was computing a value nobody reads.**
+Its `self->time = (int64_t)samples_decoded * PLM_TIME_SCALE /
+PLM_AUDIO_SAMPLE_RATE[self->samplerate_index]` ran on *every* decoded MP2
+frame (~38/sec at 44.1kHz), and unlike the two multiplies above, GCC can't
+fold this one at all: `self->samplerate_index` is only known at runtime, so
+the divisor is opaque to the compiler on every m68k tier, not just 68060 -
+confirmed with `m68k-linux-gnu-gcc -S`, both `-mcpu=68040` and `-mcpu=68060`
+lower it to `jsr __muldi3` + `jsr __divdi3` (only the multiply drops to a
+single hardware `muls.l` on 68040; the divide is `__divdi3` everywhere,
+since no m68k tier has a 64-bit-quotient divide instruction at all). Two
+software library calls per frame - and `mr_mpeg1.c` never calls
+`plm_audio_get_time()` or reads a decoded sample's `.time`: MintVID gets
+audio PTS from the container's own PES timestamps (see the PTS note below),
+not from pl_mpeg's internal clock, so the whole computation is dead weight
+on this target. `plm_audio_decode()` skips it under `MR_M68K_ASM` instead of
+speeding it up; host builds keep pl_mpeg's original behaviour byte for byte,
+since nothing there reads it either and the cost is one native
+divide/multiply, not worth diverging from upstream over.
+
 **The RGB24 round-trip is the expensive part, not the decode.** The adapter's
 `emit_rgb()` was about a third of its own decode time, and the display's
 RGB→indexed dither cost about as much again — so an AGA session paid for RGB24
