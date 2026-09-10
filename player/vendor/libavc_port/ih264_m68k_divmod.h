@@ -43,6 +43,31 @@
  * regardless of instruction sequence) - verified by
  * tests/mr_ih264_divmod_check.c and, for the actual MB x/y call shape
  * specifically, a real-m68k differential test under qemu.
+ *
+ * mr_ih264_divmod_s32() is the SIGNED counterpart, and call sites must use
+ * whichever one matches what the replaced C expression actually promoted
+ * to. This distinction is not cosmetic: ih264d_parse_slice.c's
+ * `ps_dec->u2_mbx = MOD(u2_first_mb_in_slice - 1, ...)` operates on
+ * `u2_first_mb_in_slice - 1` where u2_first_mb_in_slice is UWORD16 -
+ * ordinary C integer promotion makes the subtraction a signed `int`, and
+ * when the slice starts at macroblock 0 (the first slice of essentially
+ * every picture) that expression is -1, so the original MOD/DIV macros
+ * computed a SIGNED truncating '%'/'/ ' on a negative dividend. Passing
+ * that same -1 to mr_ih264_divmod_u32()'s UWORD32 parameter instead
+ * reinterprets it as 0xFFFFFFFF - a huge unsigned dividend - and produces
+ * a completely different, garbage quotient/remainder instead of the small
+ * signed ones the original code relied on. This was caught by a real
+ * regression (green/corrupted H.264 output on every frame, both 68040 and
+ * 68060 WinUAE, both streaming and local files - i.e. tier-independent,
+ * since the bug is in the call-site semantics, not the 68060-only asm
+ * path) after the initial (unsigned-only) version of this fix shipped.
+ * mr_ih264_divmod_s32() reuses the identical opaque-quotient technique
+ * with `divs.l` (the signed single-quotient hardware form, exactly as
+ * safe on 68060 as divu.l's unsigned single-quotient form - see the
+ * register-equality rule above, which applies identically regardless of
+ * signedness) so the remainder-via-multiply-subtract reconstruction stays
+ * valid: it depends only on q being the correctly-truncated quotient for
+ * the operation in question, not on unsignedness.
  */
 #ifndef MR_IH264_M68K_DIVMOD_H
 #define MR_IH264_M68K_DIVMOD_H
@@ -60,10 +85,26 @@ static __inline UWORD32 mr_ih264_divmod_u32(UWORD32 dividend, UWORD32 divisor,
     return q;
 }
 
+static __inline WORD32 mr_ih264_divmod_s32(WORD32 dividend, WORD32 divisor,
+                                            WORD32 *rem)
+{
+    WORD32 q = dividend;
+    __asm__ ("divs.l %1,%0" : "+d" (q) : "d" (divisor));
+    *rem = dividend - q * divisor;
+    return q;
+}
+
 #else
 
 static __inline UWORD32 mr_ih264_divmod_u32(UWORD32 dividend, UWORD32 divisor,
                                              UWORD32 *rem)
+{
+    *rem = dividend % divisor;
+    return dividend / divisor;
+}
+
+static __inline WORD32 mr_ih264_divmod_s32(WORD32 dividend, WORD32 divisor,
+                                            WORD32 *rem)
 {
     *rem = dividend % divisor;
     return dividend / divisor;
