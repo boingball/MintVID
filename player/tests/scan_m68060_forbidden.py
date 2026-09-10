@@ -43,6 +43,37 @@ import subprocess
 import sys
 
 
+def split_top_level_commas(operand_str):
+    """Split an objdump operand string on commas that separate real operands,
+    not the commas inside a parenthesised indexed addressing mode (GNU/AT&T
+    syntax renders e.g. "%sp@(74,%d3:l:4)" - displacement, index register,
+    scale - as ONE effective-address operand with an internal comma). A
+    naive str.split(',') would misparse that single-operand indexed EA as
+    three operands and misidentify an ordinary, hardware-safe two-operand
+    `MULS.L <ea>,Dn` as the forbidden three-operand extended-result form.
+    Bracket-depth tracking (only '(' / ')' appear in m68k operand syntax)
+    keeps commas inside any parenthesised group with the operand they
+    belong to."""
+    ops = []
+    depth = 0
+    current = []
+    for ch in operand_str:
+        if ch == '(':
+            depth += 1
+            current.append(ch)
+        elif ch == ')':
+            depth -= 1
+            current.append(ch)
+        elif ch == ',' and depth == 0:
+            ops.append(''.join(current))
+            current = []
+        else:
+            current.append(ch)
+    if current:
+        ops.append(''.join(current))
+    return ops
+
+
 def scan_disasm(dis_text, label):
     bad = []
     for line in dis_text.splitlines():
@@ -54,7 +85,7 @@ def scan_disasm(dis_text, label):
         if not m:
             continue
         mnem, operand_str = m.group(1).lower(), m.group(2)
-        ops = [o.strip() for o in operand_str.split(',')] if operand_str else []
+        ops = [o.strip() for o in split_top_level_commas(operand_str)] if operand_str else []
         if mnem.startswith(('muls', 'mulu')) and len(ops) == 3:
             bad.append(f"{label}: extended-result multiply: {line.strip()}")
         elif mnem.startswith(('divs', 'divu')) and len(ops) == 3:
