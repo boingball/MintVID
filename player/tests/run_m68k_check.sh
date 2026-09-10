@@ -364,6 +364,18 @@ echo "== building mr_muldiv64_check.m68k (68060) =="
 $M68K_CC -O2 -std=c99 -mcpu=68060 -static -DMR_M68K_ASM=1 \
     -o "$BUILD/mr_muldiv64_check_060.m68k" tests/mr_muldiv64_check.c
 
+# vendor/libavc_port/ih264_m68k_divmod.h's mr_ih264_divmod_u32() - only its
+# -mcpu=68060 build actually exercises the inline-asm DIVU.L path (68040
+# keeps the plain C fallback, same as the host); both are built to prove
+# neither tier's codegen regresses.
+echo "== building mr_ih264_divmod_check.m68k (68040) =="
+$M68K_CC -O2 -std=c99 -mcpu=68040 -static -Ivendor/libavc/common \
+    -o "$BUILD/mr_ih264_divmod_check_040.m68k" tests/mr_ih264_divmod_check.c
+
+echo "== building mr_ih264_divmod_check.m68k (68060) =="
+$M68K_CC -O2 -std=c99 -mcpu=68060 -static -Ivendor/libavc/common \
+    -o "$BUILD/mr_ih264_divmod_check_060.m68k" tests/mr_ih264_divmod_check.c
+
 echo "== building mr_yuv_dither_check.m68k =="
 # Links against the real hand-asm mr_yuv420_to_rgb24_m68k/mr_dither_rgb8_m68k
 # (via core/mr_yuv.c core/mr_dither.c's own MR_M68K_ASM dispatch, active in
@@ -421,6 +433,8 @@ run "$BUILD/mr_mpeg1_decim_synth_check.m68k"
 run "$BUILD/mr_mpeg1_decim_synth_check_060.m68k"
 run "$BUILD/mr_muldiv64_check_040.m68k"
 run "$BUILD/mr_muldiv64_check_060.m68k"
+run "$BUILD/mr_ih264_divmod_check_040.m68k"
+run "$BUILD/mr_ih264_divmod_check_060.m68k"
 run "$BUILD/mr_yuv_dither_check.m68k"
 run "$BUILD/mr_yuv_ham_check.m68k"
 run "$BUILD/mr_mpeg1_blockset_check.m68k"
