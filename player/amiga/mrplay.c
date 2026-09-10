@@ -25,6 +25,7 @@
 #include "../core/mr_mpeg2.h"
 #include "../core/mr_dither.h"
 #include "../core/mr_media_clock.h"
+#include "../core/mr_micro_rescue.h"
 #include "../core/mr_muldiv64.h"
 #include "../core/mr_yuv.h"
 #include "../core/mr_yuv_dither.h"
@@ -139,6 +140,69 @@ void __chkabort(void) { }
                                            * to ride out a flaky mobile link      */
 #define LIVE_RECONNECT_STALL_LIMIT 3      /* consecutive reopens with no playback
                                            * before giving up (avoids a spin)     */
+/* Micro-rescue: a milder, earlier tier than live-resync above. Catastrophic
+ * live-resync (LIVE_RESYNC_BEHIND_US, 4s) only fires once a stall is already
+ * severe, and its catch-up burst pays only H.264 core-decode cost (audio
+ * packets discarded, RGB/YUV conversion and display skipped entirely via
+ * mr_h264_set_skip_output()) - so the instant it exits, every subsequent
+ * frame resumes paying core-decode + conversion + display + AAC decode all
+ * at once. On hardware where that full stack only marginally fits the frame
+ * budget, this produces a "temporarily smooth, then gradually falls behind
+ * again" cycle: the queue drains during the burst, then lateness creeps back
+ * up at the same steady rate that caused the original stall, eventually
+ * re-tripping live-resync.
+ *
+ * skip_stale_output (see its declaration below) already sheds conversion
+ * cost reactively, per frame, but only once a single frame's own PTS is
+ * already a full period behind wall-clock - a slow multi-frame drift where
+ * no individual frame trips that threshold sails through untouched. Micro-
+ * rescue adds a second, persistent condition instead: once a decoded
+ * packet's own PTS is found more than MICRO_RESCUE_ENTRY_US behind
+ * mono_media_clock_us (comfortably above ordinary jitter and above any
+ * single-frame staleness skip_stale_output already handles, comfortably
+ * below LIVE_RESYNC_BEHIND_US so it intervenes well before the catastrophic
+ * path would even consider firing), fold into the exact same skip_stale_
+ * output path used above - decode reference-only, skip conversion+display -
+ * and keep doing so for every subsequent frame regardless of that frame's
+ * own individual lateness, while leaving audio decode and playback
+ * completely untouched (unlike live-resync, no discard, no re-prime, no
+ * black screen). This is a sustained absolute-lateness condition checked
+ * packet-by-packet, not a rate-of-change/derivative trend detector - it
+ * reacts to "still behind by more than X" on each packet, not to "getting
+ * later." Exits once a later packet's own lateness recovers under
+ * MICRO_RESCUE_EXIT_US, or after MICRO_RESCUE_MAX_US regardless - if
+ * shedding conversion/display cost alone hasn't recovered by then, the
+ * deficit is bigger than this mechanism can fix, and live-resync remains
+ * the backstop once/if lateness keeps climbing to LIVE_RESYNC_BEHIND_US.
+ *
+ * Both the entry and the lateness-recovery exit are decided in the
+ * per-packet H.264 decode section (near skip_stale_output's own
+ * declaration), not in the presentation/deadline-drop code below: the
+ * first version of this mechanism decided both there, using the
+ * audio-clock-preferred late_us computed only when qcount > 0 - which
+ * deadlocked, because once micro-rescue itself starts dropping every
+ * decoded frame instead of queueing it, qcount stays at 0 and that whole
+ * code path (entry, exit, all of it) stops running forever, leaving
+ * micro_rescue_active stuck at 1 permanently with a frozen last picture.
+ * The per-packet section runs on every decode regardless of queue state,
+ * using the same mono_media_clock_us-vs-this-packet's-PTS signal
+ * skip_stale_output's own second condition already relies on. The
+ * unconditional top-of-loop safety timeout (see mono_media_clock_us's own
+ * declaration) is the last-resort backstop for the case no further
+ * PTS-bearing packet ever arrives to trigger the recovery-exit check.
+ *
+ * These starting thresholds are conservative and deliberately not yet tuned
+ * from a real 68060 trace (see CLAUDE.md: only real hardware settles which
+ * pipeline stage - conversion/display vs AAC decode - actually dominates
+ * the recovered headroom); the mechanism itself sheds real per-frame cost
+ * regardless of which stage turns out to dominate. */
+#define MICRO_RESCUE_ENTRY_US   700000ULL  /* sustained rising lateness: begin
+                                             * shedding conversion+display    */
+#define MICRO_RESCUE_EXIT_US    200000ULL  /* resume full output once back
+                                             * under this                     */
+#define MICRO_RESCUE_MAX_US    2500000ULL  /* bail to the existing catastrophic
+                                             * path if shedding output alone
+                                             * hasn't recovered within this   */
 #define AUDIO_RESCUE_MAX_PACKETS 16U
 /* Was 100000 (100ms) - left unscaled when AUDIO_RESCUE_ENTRY_MS/TARGET_MS
  * doubled to match audio_paula.c's PAULA_REQUEST_MS going to 200ms, which
@@ -469,6 +533,10 @@ typedef struct playback_stats {
     uint64_t yuv_rgb_us;
     unsigned long yuv_rgb_max_us;
     unsigned yuv_rgb_frames;
+    uint64_t micro_rescue_us;
+    unsigned long micro_rescue_max_us;
+    unsigned micro_rescue_entries, micro_rescue_frames_skipped;
+    unsigned micro_rescue_exit_recovered, micro_rescue_exit_timeout;
 } playback_stats;
 
 /*
@@ -1087,6 +1155,16 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
                st->rescue_exit_target, st->rescue_exit_limit, st->rescue_exit_eof);
         if (audio) service_audio_for_display(trace);
     }
+    if (st->micro_rescue_entries) {
+        printf("micro rescue: entries=%u frames-skipped=%u duration-avg=%lu ms "
+               "max=%lu ms exit(recovered/timeout)=%u/%u\n",
+               st->micro_rescue_entries, st->micro_rescue_frames_skipped,
+               (unsigned long)(st->micro_rescue_us /
+                               st->micro_rescue_entries / 1000ULL),
+               st->micro_rescue_max_us / 1000,
+               st->micro_rescue_exit_recovered, st->micro_rescue_exit_timeout);
+        if (audio) service_audio_for_display(trace);
+    }
     if (st->last_rtg.src_w) {
         unsigned n = st->presented ? st->presented : 1;
         printf("rtg src=%ux%u dst=%ux%u srcfmt=%s dstfmt=%s "
@@ -1389,6 +1467,8 @@ int main(int argc, char **argv)
     int oom_warned = 0; /* set after first queue_copy OOM is logged */
     int rescue_active = 0;
     int rescue_priority = 0;
+    mr_micro_rescue_state micro_rescue;
+    mr_micro_rescue_init(&micro_rescue);
     unsigned rescue_cooldown = 0;
     unsigned rescue_episode_packets = 0, rescue_episode_audio = 0;
     unsigned rescue_episode_video = 0, rescue_episode_queued = 0;
@@ -2141,6 +2221,36 @@ int main(int argc, char **argv)
         uint64_t audio_media_clock_us = 0;
         uint64_t mono_media_clock_us = now - mono_base_us;
 
+        /* Micro-rescue's unconditional safety timeout - see
+         * MICRO_RESCUE_ENTRY_US's declaration above for the full
+         * rationale. Runs at the very top of every scheduler iteration,
+         * with no dependency on qcount/front/have_deadline or on a video
+         * packet actually having been read this pass, so it is the one
+         * part of the state machine guaranteed to remain evaluable no
+         * matter what else stalls - including the deadlock this fixes,
+         * where micro-rescue itself drives qcount to 0 and starves every
+         * other check that depends on a non-empty queue. Recovery (the
+         * lateness dropping back under MICRO_RESCUE_EXIT_US) is instead
+         * detected in the per-packet H.264 decode section below, where a
+         * real lateness estimate (this packet's own PTS vs
+         * mono_media_clock_us) is actually available; this check exists
+         * purely to bound how long the state can stay active if that
+         * never happens - e.g. no further packets arrive with a usable
+         * PTS. See core/mr_micro_rescue.h for the state machine itself. */
+        {
+            mr_micro_rescue_result mrr =
+                mr_micro_rescue_tick(&micro_rescue, now, MICRO_RESCUE_MAX_US);
+            if (mrr.exited_timeout) {
+                stats.micro_rescue_us += mrr.episode_us;
+                if (mrr.episode_us > stats.micro_rescue_max_us)
+                    stats.micro_rescue_max_us = (unsigned long)mrr.episode_us;
+                stats.micro_rescue_exit_timeout++;
+                if (want_time)
+                    printf("micro-rescue: exiting (timeout), duration=%lu ms\n",
+                           (unsigned long)(mrr.episode_us / 1000));
+            }
+        }
+
         /* Build the startup cushion in the software FIFO before starting
          * Paula; otherwise each small packet starts playing immediately and
          * the prebuffer can never grow to the warning threshold. */
@@ -2551,6 +2661,20 @@ int main(int argc, char **argv)
             stats.audio_clock_us = master_clock_us;
             stats.calculated_lateness_us = late_us;
             stats.queue_head = (unsigned)qhead;
+            /* Micro-rescue's own entry/recovery-exit logic lives in the
+             * per-packet H.264 decode section below (near
+             * skip_stale_output's declaration), not here - see
+             * MICRO_RESCUE_ENTRY_US's declaration above for why this
+             * presentation-gated block cannot host it: once micro-rescue
+             * starts dropping every decoded frame instead of queueing it,
+             * qcount stays at 0, front stays NULL, have_deadline never
+             * becomes true again, and this entire block (this line
+             * included) stops running - anything living here would then
+             * never run again either, leaving micro_rescue_active stuck
+             * at 1 forever. The unconditional top-of-loop safety timeout
+             * (right after mono_media_clock_us's declaration) is what
+             * bounds that regardless of whether this block ever runs
+             * again. */
             if (late_us < -(int64_t)PRESENTATION_GUARD_US) continue;
             /* now/audio_before here only ever feed the --time show_us/
              * rtg-timing bookkeeping below - skip both otherwise. */
@@ -2913,11 +3037,62 @@ int main(int argc, char **argv)
                      * below uses too - skip_output with no matching drop
                      * would let a stale, un-converted RGB buffer (emit_rgb()
                      * never ran) get copied into the queue as if it were this
-                     * frame's real picture. */
+                     * frame's real picture.
+                     *
+                     * micro_rescue.active folds in a third, independent
+                     * cause - see MICRO_RESCUE_ENTRY_US's declaration above.
+                     * Unlike the two conditions above (which each judge a
+                     * single frame against a one-period threshold), this
+                     * one persists across many frames once set: a slow
+                     * multi-frame drift where no individual frame ever
+                     * trips the one-period check above still needs shedding
+                     * before it compounds into a live-resync-triggering
+                     * stall. Reusing this exact flag gets the correct
+                     * drop-not-queue handling below for free, identically to
+                     * the other two causes.
+                     *
+                     * Entry/recovery-exit for micro_rescue itself is decided
+                     * right here, on this same packet's PTS against
+                     * mono_media_clock_us (identical signal to the check
+                     * just above) via core/mr_micro_rescue.h - deliberately
+                     * not in the presentation-gated block below, which
+                     * stops running entirely once qcount reaches 0 (exactly
+                     * what happens once this flag starts dropping every
+                     * decoded frame) and so cannot host logic that needs to
+                     * keep running to clear it. The top-of-loop safety
+                     * timeout (see mono_media_clock_us's declaration above)
+                     * is the unconditional backstop for the case no further
+                     * PTS-bearing packet arrives to trigger recovery here. */
+                    if (playback_started && pkt.has_pts) {
+                        int64_t pkt_late_us = (int64_t)mono_media_clock_us -
+                                              (int64_t)pkt.pts_us;
+                        mr_micro_rescue_result mrr = mr_micro_rescue_on_packet(
+                            &micro_rescue, pkt_late_us, monotonic_us(),
+                            (int64_t)MICRO_RESCUE_ENTRY_US,
+                            (int64_t)MICRO_RESCUE_EXIT_US);
+                        if (mrr.entered) {
+                            stats.micro_rescue_entries++;
+                            if (want_time)
+                                printf("micro-rescue: entering, late=%ld ms\n",
+                                       (long)(pkt_late_us / 1000));
+                        } else if (mrr.exited_recovered) {
+                            stats.micro_rescue_us += mrr.episode_us;
+                            if (mrr.episode_us > stats.micro_rescue_max_us)
+                                stats.micro_rescue_max_us =
+                                    (unsigned long)mrr.episode_us;
+                            stats.micro_rescue_exit_recovered++;
+                            if (want_time)
+                                printf("micro-rescue: exiting (recovered), "
+                                       "late=%ld ms duration=%lu ms\n",
+                                       (long)(pkt_late_us / 1000),
+                                       (unsigned long)(mrr.episode_us / 1000));
+                        }
+                    }
                     skip_stale_output = qcount >= video_cap ||
                         (playback_started && pkt.has_pts &&
                          (int64_t)mono_media_clock_us - (int64_t)pkt.pts_us >
-                             (int64_t)period_us);
+                             (int64_t)period_us) ||
+                        micro_rescue.active;
                     mr_h264_set_skip_output(&dec, skip_stale_output);
                     mr_h264_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
                     mr_mpeg2_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
@@ -3092,6 +3267,8 @@ int main(int argc, char **argv)
                                     rescue_episode_skipped++;
                                     stats.rescue_video_skipped++;
                                 }
+                                if (micro_rescue.active)
+                                    stats.micro_rescue_frames_skipped++;
                                 stats.dropped++;
                                 goto drain_decoded_output;
                             }

@@ -404,6 +404,9 @@ echo "== building mr_media_clock_check.m68k =="
 $CC -o "$BUILD/mr_media_clock_check.m68k" tests/mr_media_clock_check.c \
     core/mr_media_clock.c
 
+echo "== building mr_micro_rescue_check.m68k =="
+$CC -o "$BUILD/mr_micro_rescue_check.m68k" tests/mr_micro_rescue_check.c
+
 run() { echo "[qemu-m68k] $*"; "$QEMU_M68K" "$@"; }
 
 run "$BUILD/mr_h264_m68k_check.m68k"
@@ -440,6 +443,7 @@ run "$BUILD/mr_yuv_ham_check.m68k"
 run "$BUILD/mr_mpeg1_blockset_check.m68k"
 run "$BUILD/mr_mpeg1_idct_check.m68k"
 run "$BUILD/mr_media_clock_check.m68k"
+run "$BUILD/mr_micro_rescue_check.m68k"
 
 echo "[AC-3 vs ffmpeg, real m68k/big-endian]"
 run "$BUILD/mr_ac3_check.m68k" tests/assets/test_ac3.ac3 \
