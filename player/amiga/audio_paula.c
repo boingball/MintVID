@@ -98,6 +98,8 @@ struct mr_audio {
     unsigned        fifo_size;
     unsigned        head, tail, count;
     unsigned long   fifo_dropped_samples;
+    uint64_t        input_sample_frames;
+    uint64_t        output_samples_queued;
 
     uint64_t        completed_samples;
     uint64_t        next_sequence, timeline_end_us, last_reported_clock_us;
@@ -190,15 +192,16 @@ static void audio_worker_entry(void);
 
 /* ---- ring FIFO ---------------------------------------------------------- */
 
-static void fifo_push(mr_audio *a, signed char s)
+static int fifo_push(mr_audio *a, signed char s)
 {
     if (a->count >= a->fifo_size) {
         a->fifo_dropped_samples++;             /* explicit bounded overflow */
-        return;
+        return 0;
     }
     a->fifo[a->head] = s;
     a->head = (a->head + 1) % a->fifo_size;
     a->count++;
+    return 1;
 }
 
 static int fifo_pop_into(mr_audio *a, signed char *dst, int n)
@@ -321,7 +324,9 @@ void audio_close(mr_audio *a)
 static void fifo_push_resampled(mr_audio *a, signed char sample)
 {
     unsigned outputs = mr_audio_rate_outputs(&a->rate_state);
-    while (outputs--) fifo_push(a, sample);
+    while (outputs--) {
+        if (fifo_push(a, sample)) a->output_samples_queued++;
+    }
 }
 
 void audio_write(mr_audio *a, const unsigned char *pcm, unsigned bytes)
@@ -368,6 +373,7 @@ void audio_write_s16(mr_audio *a, const short *pcm,
     unsigned k;
     if (!a || !pcm || channels < 1) return;
     Forbid();
+    a->input_sample_frames += frames;
     for (k = 0; k < frames; k++) {
         int s = pcm[(size_t)k * channels];
         if (channels >= 2)
@@ -688,6 +694,9 @@ void audio_diagnostics(mr_audio *a, mr_audio_diagnostics *diag)
         (unsigned long)(a->longest_no_active * 1000 / CLOCKS_PER_SEC);
     diag->fifo_samples = a->count;
     diag->fifo_dropped_samples = a->fifo_dropped_samples;
+    diag->input_sample_frames = a->input_sample_frames;
+    diag->output_samples_queued = a->output_samples_queued;
+    diag->completed_samples = a->completed_samples;
     diag->audio_clock_us = clock_snapshot;
     diag->fifo_buffered_ms = a->count * 1000UL / a->output_rate;
     diag->clock_largest_step_us = a->clock_largest_step_us;

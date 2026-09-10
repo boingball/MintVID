@@ -43,6 +43,9 @@ typedef struct mr_audio_diagnostics {
     uint64_t oldest_request_sequence;
     unsigned char request_timeline_state[2]; /* enum mr_audio_request_state */
     unsigned char timeline_covered;
+    uint64_t input_sample_frames;
+    uint64_t output_samples_queued;
+    uint64_t completed_samples;
 } mr_audio_diagnostics;
 
 /* RIFF/WAVE PCM with 8 bits per sample is unsigned, centred at 0x80. */

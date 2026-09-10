@@ -1014,10 +1014,14 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            (unsigned)audio_diag.request_timeline_state[0],
            (unsigned)audio_diag.request_timeline_state[1]);
     printf("audio hardware: timeline-covered=%u actual-active-requests=%u "
-           "actual-no-active-duration=%lu ms\n",
+           "actual-no-active-duration=%lu ms input-frames=%lu "
+           "paula-samples=%lu completed=%lu\n",
            (unsigned)audio_diag.timeline_covered,
            (unsigned)audio_diag.active_requests,
-           audio_diag.longest_no_active_ms);
+           audio_diag.longest_no_active_ms,
+           (unsigned long)audio_diag.input_sample_frames,
+           (unsigned long)audio_diag.output_samples_queued,
+           (unsigned long)audio_diag.completed_samples);
     if (audio) service_audio_for_display(trace);
     printf("demux timing: calls=%lu max-call=%lu us max-scanned=%lu "
            "service=%lu\n", demux_timing.calls, demux_timing.call_max_us,
@@ -3355,6 +3359,28 @@ drain_decoded_output:
         }
     }
     if (audio) audio_set_running(audio, 0);
+
+    if (want_time && audio_dec) {
+        mr_audio_decoder_diagnostics ad;
+        mr_audio_decoder_get_diagnostics(audio_dec, &ad);
+        if (ad.codec_frames) {
+            /* MP2 lifecycle audit. source-sample-frames is before synthesis
+             * decimation; output-sample-frames is what decoded_audio_sink()
+             * handed to Paula. Their rates make the represented durations
+             * identical. need-more is expected for arbitrary <=512-byte PS
+             * slices and is not an error or an audio gap. */
+            printf("audio decode lifecycle: feeds=%lu bytes=%lu need-more=%lu "
+                   "codec-frames=%lu source-frames=%lu@%uHz "
+                   "output-frames=%lu@%uHz channels=%u\n",
+                   (unsigned long)ad.feed_calls,
+                   (unsigned long)ad.compressed_bytes,
+                   (unsigned long)ad.need_more_calls,
+                   (unsigned long)ad.codec_frames,
+                   (unsigned long)ad.source_sample_frames, ad.source_rate,
+                   (unsigned long)ad.output_sample_frames, ad.output_rate,
+                   ad.channels);
+        }
+    }
 
     if (!quit && !auto_close_eof) {
         printf("played %d frames - press ESC or close the window to exit\n",

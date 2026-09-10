@@ -13,6 +13,18 @@
 
 typedef struct mr_audio_decoder mr_audio_decoder;
 
+typedef struct mr_audio_decoder_diagnostics {
+    uint64_t compressed_bytes;
+    uint64_t feed_calls;
+    uint64_t need_more_calls;
+    uint64_t codec_frames;
+    uint64_t source_sample_frames;
+    uint64_t output_sample_frames;
+    unsigned source_rate;
+    unsigned output_rate;
+    unsigned channels;
+} mr_audio_decoder_diagnostics;
+
 typedef void (*mr_audio_pcm_sink)(void *user, const int16_t *pcm,
                                   unsigned frames, unsigned channels);
 
@@ -49,5 +61,7 @@ int  mr_audio_decoder_reset(mr_audio_decoder *dec);
 unsigned    mr_audio_decoder_rate(const mr_audio_decoder *dec);
 unsigned    mr_audio_decoder_channels(const mr_audio_decoder *dec);
 const char *mr_audio_decoder_name(const mr_audio_decoder *dec);
+void mr_audio_decoder_get_diagnostics(const mr_audio_decoder *dec,
+                                      mr_audio_decoder_diagnostics *diag);
 
 #endif /* MR_AUDIO_DECODE_H */

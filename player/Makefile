@@ -531,6 +531,9 @@ check-audio: mr_audio_check mr_ac3_check mr_mp2_check mr_mp2_synth_check mr_mp2_
 	    tests/assets/ref_ac3_stereo.raw 44100 2
 	./mr_mp2_synth_check
 	./mr_mp2_idct_check
+	# gen_audio_assets.sh fixes this oracle at 22050 Hz mono.  These arguments
+	# describe the raw reference layout, not pl_mpeg's pre-decimation stream
+	# defaults; changing them makes mr_mp2_check index the oracle incorrectly.
 	./mr_mp2_check tests/assets/test_mpeg1_mp2.mpg \
 	    tests/assets/ref_mpeg1_mp2.raw 22050 1
 	./mr_mpeg1_decim_check tests/assets/test_mp2_stereo.ts

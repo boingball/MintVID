@@ -67,6 +67,7 @@ struct mr_audio_decoder {
     unsigned char *latm_au;
     size_t latm_au_cap;
     short pcm[PCM_SHORTS_MAX];
+    mr_audio_decoder_diagnostics diagnostics;
 };
 
 static int reserve_pending(mr_audio_decoder *d, size_t add)
@@ -450,10 +451,24 @@ static long feed_mp2(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
         unsigned channels = (unsigned)plm_audio_get_channels(d->mp2);
         unsigned shorts = samples->count * channels;
         long got;
+        unsigned decoded_rate = (unsigned)plm_audio_get_samplerate(d->mp2);
+        /* Layer II always represents 1152 source sample frames.  count is
+         * frames-per-channel after synthesis decimation, never interleaved
+         * shorts or bytes.  Refuse to pass a broken unit/rate contract to
+         * Paula: on hardware that failure is otherwise heard as exactly the
+         * discontinuous, wrong-duration output this adapter must prevent. */
+        if (!channels || channels > 2 || channels != d->channels ||
+            samples->count * d->stride != PLM_AUDIO_SAMPLES_PER_FRAME ||
+            decoded_rate != d->source_rate || shorts > PCM_SHORTS_MAX)
+            return -1;
         memcpy(d->pcm, samples->interleaved, shorts * sizeof d->pcm[0]);
         got = emit_pcm_stride(d, shorts, d->source_rate, channels, 1,
                               sink, user);
         if (got < 0) return -1;
+        if ((unsigned long)got != samples->count) return -1;
+        d->diagnostics.codec_frames++;
+        d->diagnostics.source_sample_frames += PLM_AUDIO_SAMPLES_PER_FRAME;
+        d->diagnostics.output_sample_frames += (uint64_t)got;
         produced += got;
     }
     return produced;
@@ -628,8 +643,11 @@ long mr_audio_decoder_feed(mr_audio_decoder *d,
                            const uint8_t *data, uint32_t len,
                            mr_audio_pcm_sink sink, void *sink_user)
 {
+    long result;
     if (!d || (!data && len)) return -1;
     if (!len) return 0;
+    d->diagnostics.feed_calls++;
+    d->diagnostics.compressed_bytes += len;
     if (d->kind == AUDIO_KIND_PCM) {
         long produced = 0;
         size_t frame_bytes = d->pcm_info.block_align;
@@ -655,8 +673,11 @@ long mr_audio_decoder_feed(mr_audio_decoder *d,
     }
     if (d->kind == AUDIO_KIND_MP3)
         return feed_mp3(d, data, len, sink, sink_user);
-    if (d->kind == AUDIO_KIND_MP2)
-        return feed_mp2(d, data, len, sink, sink_user);
+    if (d->kind == AUDIO_KIND_MP2) {
+        result = feed_mp2(d, data, len, sink, sink_user);
+        if (result == 0) d->diagnostics.need_more_calls++;
+        return result;
+    }
     if (d->kind == AUDIO_KIND_AAC_RAW)
         return feed_aac_raw(d, data, len, sink, sink_user);
     if (d->kind == AUDIO_KIND_AAC_LATM)
@@ -728,6 +749,18 @@ const char *mr_audio_decoder_name(const mr_audio_decoder *d)
              ? (d->he_aac ? "HE-AAC/mp4a" : "AAC-LC/mp4a")
          : d->kind == AUDIO_KIND_AAC_LATM ? "AAC-LC/LATM"
          : "AAC-LC/ADTS";
+}
+
+void mr_audio_decoder_get_diagnostics(const mr_audio_decoder *d,
+                                      mr_audio_decoder_diagnostics *diag)
+{
+    if (!diag) return;
+    memset(diag, 0, sizeof *diag);
+    if (!d) return;
+    *diag = d->diagnostics;
+    diag->source_rate = d->source_rate;
+    diag->output_rate = d->output_rate;
+    diag->channels = d->channels;
 }
 
 void mr_audio_decoder_close(mr_audio_decoder *d)
