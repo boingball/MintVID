@@ -61,6 +61,14 @@ MP2_ASM_SRC="core/plm_audio_synth_window_m68k.S \
              core/plm_audio_idct36_m68k.S \
              core/plm_audio_scale_clamp_m68k.S"
 
+# A -mcpu=68060 translation unit never references plm_audio_idct36_m68k or
+# plm_audio_synth_window_m68k (both stay gated !defined(__mc68060__) - see
+# pl_mpeg.h), but MR_M68K_ASM still pulls in the video-path IDCT/blockset
+# helpers and the CPU-independent scale_clamp_m68k.
+MP2_ASM_060_SRC="core/mr_mpeg1_idct_m68k.S \
+                 core/mr_mpeg1_blockset_m68k.S \
+                 core/plm_audio_scale_clamp_m68k.S"
+
 CORE="core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
       core/mr_youtube.c core/mr_demux.c core/mr_latm.c core/mr_mkv.c \
       core/mr_avi.c core/mr_mov.c core/mr_ts.c core/mr_ps.c \
@@ -224,6 +232,26 @@ echo "== building mr_mp2_scale_check.m68k =="
 $M68K_CC -O2 -std=c99 -m68030 -static -DMR_M68K_ASM=1 -o "$BUILD/mr_mp2_scale_check.m68k" \
     tests/mr_mp2_scale_check.c core/plm_audio_scale_clamp_m68k.S
 
+# 68060 has no hardware 64-bit-result MULS.L/MULU.L (see pl_mpeg.h's
+# plm_audio_smul64_060 comment), so these build with -mcpu=68060 rather than
+# -m68030 to actually exercise that CPU's code path, and deliberately do not
+# use the MR_TEST_M68K_*/undef-MR_M68K_ASM isolation the 68040 checks above
+# use - that trick would also disable the 68060 guard under test here.
+echo "== building mr_mp2_mul64_060_check.m68k =="
+$M68K_CC -O2 -std=c99 -mcpu=68060 -static -DMR_M68K_ASM=1 \
+    -o "$BUILD/mr_mp2_mul64_060_check.m68k" \
+    tests/mr_mp2_mul64_060_check.c $MP2_ASM_060_SRC
+
+echo "== building mr_mp2_idct_060_check.m68k =="
+$M68K_CC -O2 -std=c99 -mcpu=68060 -static -DMR_M68K_ASM=1 \
+    -o "$BUILD/mr_mp2_idct_060_check.m68k" \
+    tests/mr_mp2_idct_060_check.c $MP2_ASM_060_SRC
+
+echo "== building mr_mp2_synth_060_check.m68k =="
+$M68K_CC -O2 -std=c99 -mcpu=68060 -static -DMR_M68K_ASM=1 \
+    -o "$BUILD/mr_mp2_synth_060_check.m68k" \
+    tests/mr_mp2_synth_060_check.c $MP2_ASM_060_SRC
+
 echo "== building mr_yuv_dither_check.m68k =="
 # Links against the real hand-asm mr_yuv420_to_rgb24_m68k/mr_dither_rgb8_m68k
 # (via core/mr_yuv.c core/mr_dither.c's own MR_M68K_ASM dispatch, active in
@@ -272,6 +300,9 @@ run "$BUILD/mr_cinepak_indexed_check.m68k" tests/assets/test_cinepak_strips.avi
 run "$BUILD/mr_mp2_synth_check.m68k"
 run "$BUILD/mr_mp2_scale_check.m68k"
 run "$BUILD/mr_mp2_idct_check.m68k"
+run "$BUILD/mr_mp2_mul64_060_check.m68k"
+run "$BUILD/mr_mp2_idct_060_check.m68k"
+run "$BUILD/mr_mp2_synth_060_check.m68k"
 run "$BUILD/mr_yuv_dither_check.m68k"
 run "$BUILD/mr_yuv_ham_check.m68k"
 run "$BUILD/mr_mpeg1_blockset_check.m68k"

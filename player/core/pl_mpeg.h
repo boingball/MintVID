@@ -4230,6 +4230,102 @@ extern void plm_audio_synth_window_m68k(const int32_t *, const int32_t *, int,
                                         int64_t *);
 #endif
 
+#if defined(MR_M68K_ASM) && defined(__mc68060__)
+/* The 68060 has no hardware 64-bit-result MULS.L/MULU.L (nor a 64-bit
+ * DIVS.L/DIVU.L - see scale_clamp_m68k.S's reciprocal-multiply divide for
+ * the same story on the division side): the extended `muls.l <ea>,Dh:Dl`
+ * form the hand-tuned 68040 kernels below use is an "unimplemented integer
+ * instruction" there, trapped and emulated by the OS at a heavy per-call
+ * cost. That's exactly why plm_audio_idct36_m68k/plm_audio_synth_window_m68k
+ * stay gated off this CPU above and 68060 keeps running the portable C.
+ *
+ * What's less obvious: GCC already knows this. Compiling
+ *   int64_t product = (int64_t)value * coefficient;
+ * with m68k-linux-gnu-gcc confirms the split -
+ *   -mcpu=68040  -> muls.l  16(%sp),%d0:%d1      (hardware, one instruction)
+ *   -mcpu=68060  -> jsr     __muldi3              (libgcc software fallback)
+ * so the portable C path was never actually trapping on 68060 - it was
+ * paying for a generic 64x64->64 libgcc call (full sign-extension of both
+ * operands plus a call/return) on every single multiply instead. Both of
+ * pl_mpeg's hot multiplies only need a 32x32->64 product, so a hand-written
+ * replacement can beat __muldi3 without touching the trapping instruction:
+ * do the widening with plain MULU.W (16x16->32, hardware on every m68k,
+ * 68060 included) via the standard four-partial-product schoolbook
+ * multiply, then fix up the sign once at the end. Verified bit-exact
+ * against the C `*` operator by tests/mr_mp2_mul64_060_check.c. */
+static int64_t plm_audio_smul64_060(int32_t a, int32_t b) {
+    int32_t hi, lo;
+    __asm__ __volatile__ (
+        "move.l %2,%%d0\n\t"          /* d0 = a */
+        "move.l %3,%%d1\n\t"          /* d1 = b */
+        "moveq  #0,%%d2\n\t"          /* d2 = result sign (0 = positive) */
+        "tst.l  %%d0\n\t"
+        "jge    1f\n\t"
+        "neg.l  %%d0\n\t"
+        "moveq  #1,%%d2\n\t"
+        "1:\n\t"
+        "tst.l  %%d1\n\t"
+        "jge    2f\n\t"
+        "neg.l  %%d1\n\t"
+        "eori.l #1,%%d2\n\t"
+        "2:\n\t"
+        /* d0 = |a|, d1 = |b|, d2 = sign of the result (0/1). */
+        "move.l %%d0,%%d3\n\t"
+        "swap   %%d3\n\t"
+        "and.l  #0xffff,%%d3\n\t"      /* d3 = ah */
+        "and.l  #0xffff,%%d0\n\t"      /* d0 = al */
+        "move.l %%d1,%%d4\n\t"
+        "swap   %%d4\n\t"
+        "and.l  #0xffff,%%d4\n\t"      /* d4 = bh */
+        "and.l  #0xffff,%%d1\n\t"      /* d1 = bl */
+        "move.l %%d0,%%d5\n\t"
+        "mulu.w %%d1,%%d5\n\t"         /* d5 = al*bl */
+        "move.l %%d0,%%d6\n\t"
+        "mulu.w %%d4,%%d6\n\t"         /* d6 = al*bh */
+        "move.l %%d3,%%d7\n\t"
+        "mulu.w %%d1,%%d7\n\t"         /* d7 = ah*bl */
+        "mulu.w %%d4,%%d3\n\t"         /* d3 = ah*bh */
+        /* Assemble the 64-bit unsigned magnitude product into d0:d1. A
+         * shift count of 16 doesn't fit the 3-bit immediate LSL/LSR encode,
+         * so each <<16/>>16 is a swap plus a mask instead (no extra
+         * register needed, and no register-count shift either). */
+        "move.l %%d5,%%d1\n\t"
+        "moveq  #0,%%d0\n\t"
+        "move.l %%d6,%%d5\n\t"
+        "swap   %%d5\n\t"
+        "and.l  #0xffff0000,%%d5\n\t"  /* d5 = (p1<<16) mod 2^32 */
+        "add.l  %%d5,%%d1\n\t"
+        "moveq  #0,%%d5\n\t"
+        "addx.l %%d5,%%d0\n\t"
+        "swap   %%d6\n\t"
+        "and.l  #0xffff,%%d6\n\t"      /* d6 = p1>>>16 */
+        "add.l  %%d6,%%d0\n\t"
+        "move.l %%d7,%%d5\n\t"
+        "swap   %%d5\n\t"
+        "and.l  #0xffff0000,%%d5\n\t"  /* d5 = (p2<<16) mod 2^32 */
+        "add.l  %%d5,%%d1\n\t"
+        "moveq  #0,%%d5\n\t"
+        "addx.l %%d5,%%d0\n\t"
+        "swap   %%d7\n\t"
+        "and.l  #0xffff,%%d7\n\t"      /* d7 = p2>>>16 */
+        "add.l  %%d7,%%d0\n\t"
+        "add.l  %%d3,%%d0\n\t"
+        /* Apply the sign to the 64-bit magnitude. */
+        "tst.l  %%d2\n\t"
+        "beq    3f\n\t"
+        "neg.l  %%d1\n\t"
+        "negx.l %%d0\n\t"
+        "3:\n\t"
+        "move.l %%d0,%0\n\t"
+        "move.l %%d1,%1\n\t"
+        : "=a"(hi), "=a"(lo)
+        : "a"(a), "a"(b)
+        : "d0","d1","d2","d3","d4","d5","d6","d7","cc"
+    );
+    return ((int64_t)hi << 32) | (uint32_t)lo;
+}
+#endif
+
 static void plm_audio_synth_window(const int32_t *d, const int32_t *v,
                                  int v_pos, int64_t *u) {
 	int d_start = 512 - (v_pos >> 1);
@@ -4239,12 +4335,20 @@ static void plm_audio_synth_window(const int32_t *d, const int32_t *v,
 		const int32_t *vp = v + v_start + i;
 		int64_t sum = 0;
 		for (int tap = 0; tap < 8; ++tap) {
+#if defined(MR_M68K_ASM) && defined(__mc68060__)
+			sum += plm_audio_smul64_060(dp[tap * 64], vp[tap * 128]);
+#else
 			sum += (int64_t)dp[tap * 64] * vp[tap * 128];
+#endif
 		}
 		dp = d + d_start + 32 + i;
 		vp = v + 96 - v_start + i;
 		for (int tap = 0; tap < 8; ++tap) {
+#if defined(MR_M68K_ASM) && defined(__mc68060__)
+			sum += plm_audio_smul64_060(dp[tap * 64], vp[tap * 128]);
+#else
 			sum += (int64_t)dp[tap * 64] * vp[tap * 128];
+#endif
 		}
 		u[i] = sum;
 	}
@@ -4486,7 +4590,11 @@ void plm_audio_read_samples(plm_audio_t *self, int ch, int sb, int part) {
 
 /* Q15 coefficient multiply with symmetric, half-away-from-zero rounding. */
 static int32_t plm_audio_mul_q15(int32_t value, int32_t coefficient) {
+#if defined(MR_M68K_ASM) && defined(__mc68060__)
+	int64_t product = plm_audio_smul64_060(value, coefficient);
+#else
 	int64_t product = (int64_t)value * coefficient;
+#endif
 	/* floor((product + 16384 - (product < 0)) / 32768) is the
 	 * same half-away-from-zero result without negating a 64-bit product.
 	 * Shift unsigned: the low 32 result bits are identical to an arithmetic

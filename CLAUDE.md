@@ -115,6 +115,36 @@ to decode; libmpeg2, which has no 68k acceleration at all, costs 0.51 ms/frame
 those two .S files are now dead on the video path (still linked by
 `Makefile.amiga`, never called, since pl_mpeg only decodes MP2 audio now).
 
+**MP2 (Layer II) audio, unlike the video path above, does have a measured
+asm win — and its 040/060 split is not optional.** `plm_audio_idct36_m68k.S`
+and `plm_audio_synth_window_m68k.S` are 040-class kernels: both use the
+extended `muls.l <ea>,Dh:Dl` (32x32->64) form, hardware on 68020/030/040 but
+an "unimplemented integer instruction" trap on the 68060 (which, like its
+missing 64-bit DIVS.L/DIVU.L — see the scale/clamp note below — only
+implements the 32x32->32 forms in silicon). Both are gated
+`!defined(__mc68060__)` for exactly that reason and 68060 keeps running the
+portable C `plm_audio_idct36`/`plm_audio_synth_window`. That C path was
+never actually trapping, but it wasn't free either: compiling
+`(int64_t)value * coefficient` with `m68k-linux-gnu-gcc -mcpu=68060` lowers
+it to `jsr __muldi3` — GCC already knows about the missing hardware
+widen and reaches for libgcc's generic 64x64->64 routine (full sign-extend
+of both operands, then a call). `plm_audio_smul64_060()` in `pl_mpeg.h`
+replaces just that one call with an inline-asm 32x32->64 widen built from
+`mulu.w` (16x16->32, hardware everywhere including the 060) via the
+four-partial-product schoolbook multiply, wired into `plm_audio_mul_q15`
+and `plm_audio_synth_window` behind `defined(__mc68060__)` — no change to
+either function's C control flow, no new dispatch, and the 68040 kernels
+above are untouched. Verified bit-exact against the C `*` operator by
+`tests/mr_mp2_mul64_060_check.c`, with `tests/mr_mp2_idct_060_check.c` and
+`tests/mr_mp2_synth_060_check.c` re-running the existing whole-transform
+oracles through the 68060 path end to end — all three `-mcpu=68060` builds
+in `make check-m68k`. `plm_audio_scale_clamp_m68k.S`'s division (PCM
+output scaling by the fixed `-66562`) sidesteps the same missing-hardware
+problem from the other direction: it never lets the compiler emit a 64-bit
+divide at all, computing the quotient via a reciprocal-multiply constant
+built entirely from `mulu.w`, so it needs no CPU split and runs unchanged
+on 68040 and 68060 alike.
+
 **The RGB24 round-trip is the expensive part, not the decode.** The adapter's
 `emit_rgb()` was about a third of its own decode time, and the display's
 RGB→indexed dither cost about as much again — so an AGA session paid for RGB24
