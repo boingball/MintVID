@@ -102,6 +102,15 @@ mr_mpeg1 *mr_mpeg1_open(const uint8_t *buf, size_t len, int low_rate,
          * of fully decoding all 1152 and throwing most of them away below -
          * see plm_set_audio_decim() in pl_mpeg.h. */
         plm_set_audio_decim(m->plm, m->decim);
+#if defined(MR_MPEG1_DECIM_DIAG)
+        /* Temporary real-hardware diagnostic: confirms which decode path is
+         * actually active (and that lanes matches 32/decim), since qemu-m68k
+         * cannot measure the speedup itself - see CLAUDE.md's "MPEG-1/2
+         * (libmpeg2) notes". Not gated behind --time; enable by building with
+         * -DMR_MPEG1_DECIM_DIAG=1. Remove once the real-hardware pass is
+         * done. */
+        fprintf(stderr, "MP2 decim=%d lanes=%d\n", m->decim, 32 / m->decim);
+#endif
     }
     return m;
 }

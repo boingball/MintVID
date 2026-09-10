@@ -1,7 +1,18 @@
 /* MP2 synthesis window: one 32-sample output block, 16 signed 32x32
- * products per lane. ABI: (d, v, v_pos, u). The C implementation remains
- * the reference and is used on 68060 until a trap-free long multiply kernel
- * is available for that CPU. */
+ * products per lane. ABI: (d, v, v_pos, u, decim). The C implementation
+ * remains the reference and is used on 68060 until a trap-free long
+ * multiply kernel is available for that CPU.
+ *
+ * decim (1, 2 or 4 - see plm_audio_set_decim() in pl_mpeg.h) steps the lane
+ * index by more than one instead of visiting every lane: u[i] only ever
+ * reads d/v at a fixed "+i" offset, never mixing with another lane (see the
+ * C plm_audio_synth_window_decim()'s comment for why that means skipping a
+ * lane's tap-sum entirely is safe), so this is the same loop with a
+ * different stride, writing its surviving lanes compacted and in order via
+ * the same sequential (%a4)+ store - not a new algorithm. decim always
+ * divides 32 evenly, so the loop still terminates exactly at lane 32
+ * regardless of stride. Kept in %a5, the one register this function does
+ * not otherwise touch, since the tap loops below clobber d0-d5 every lane. */
 	.text
 	.even
 	.globl	plm_audio_synth_window_m68k
@@ -14,6 +25,7 @@ _plm_audio_synth_window_m68k:
 	movea.l	12(%a6),%a3		/* V */
 	move.l	16(%a6),%d7		/* v_pos */
 	movea.l	20(%a6),%a4		/* U */
+	movea.l	24(%a6),%a5		/* decim */
 	move.l	%d7,%d6
 	lsr.l	#1,%d6			/* d_start = 512 - (v_pos >> 1) */
 	move.l	#512,%d5
@@ -70,7 +82,7 @@ _plm_audio_synth_window_m68k:
 	dbra	%d2,.Lsw_tap2
 	move.l	%d4,(%a4)+
 	move.l	%d5,(%a4)+
-	addq.l	#1,%d7
+	add.l	%a5,%d7
 	cmpi.l	#32,%d7
 	bne	.Lsw_lane
 	movem.l	(%sp)+,%d2-%d7/%a2-%a5

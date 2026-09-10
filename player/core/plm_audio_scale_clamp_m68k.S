@@ -1,4 +1,9 @@
-/* Exact PCM = clamp16(U / -66562), no compiler division helper. */
+/* Exact PCM = clamp16(U / -66562), no compiler division helper.
+ * ABI: (u, dst, channel_stride, count). count is the number of leading
+ * lanes of u[] to process (32 at decim=1, 32/decim otherwise - see
+ * plm_audio_set_decim() in pl_mpeg.h): the decimated synthesis path already
+ * compacts its surviving lanes into u[0..count), so this is a plain
+ * contiguous run, same as the decim=1 case, just shorter. */
 .text
 .even
 .globl scale_clamp_m68k
@@ -10,7 +15,10 @@ scale_clamp_m68k:
  movea.l 12(%a6),%a3
  move.l 16(%a6),%d7
  add.l %d7,%d7
- lea 256(%a2),%a4
+ move.l 20(%a6),%d6
+ lsl.l #3,%d6
+ movea.l %a2,%a4
+ adda.l %d6,%a4
 .Lsc_loop:
  move.l (%a2)+,%d0
  move.l (%a2)+,%d1

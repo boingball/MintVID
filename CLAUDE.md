@@ -505,6 +505,58 @@ time. Verified via `make check-audio` (identical frame counts/rates for
 rebuild of `mr_ac3_check.m68k` (which links this file), matching its known
 baseline exactly.
 
+**Correction: the Fast MP2 mode's first cut left two real performance holes
+on 68030/040 - decim>1 fell back to portable C for both the synthesis
+window and the scale/clamp division, giving up the existing hand-tuned asm
+kernels entirely instead of just doing less of their work.** `scale_clamp_m68k`
+(the reciprocal-multiply division that keeps PCM output off the trap-prone
+64-bit `DIVS.L`/`__divdi3` path - CPU-independent, used on every m68k tier
+including 68060) and `plm_audio_synth_window_m68k` (the 68040-class kernel,
+excluded on 68060 same as always) both now take the reduction directly as a
+parameter instead of assuming a fixed 32 lanes:
+
+- `scale_clamp_m68k(u, dst, channel_stride, count)` - `count` is the number
+  of leading `u[]` lanes to process (32 at decim=1, 32/decim otherwise); the
+  loop bound is computed from it instead of a hardcoded `lea 256(%a2),%a4`.
+- `plm_audio_synth_window_m68k(d, v, v_pos, u, decim)` - `decim` steps the
+  lane index (`add.l %a5,%d7`, decim held in the one register this function
+  didn't already use) instead of always incrementing by one; since decim
+  always divides 32 evenly, the existing `cmpi.l #32,%d7` / `bne` loop exit
+  needed no change at all.
+
+At decim=1 both are provably identical to the pre-existing behavior (a
+register holding 1/32 instead of an immediate produces the same instruction
+effect), so `plm_audio_decode_frame()` no longer needs two separate code
+paths: it always calls `plm_audio_synth_window_m68k(..., self->decim)` and
+`scale_clamp_m68k(..., lanes)` on `MR_M68K_ASM && !MR_CPU_68060` builds
+(portable `plm_audio_synth_window_decim()` still backs the 68060/host case,
+unchanged), for every decim value including 1 - one call shape, not an
+`if (self->decim == 1)` branch to keep in sync. This also means 68030/040
+decim=2/4 now does *less of the same asm work* rather than switching to a
+slower portable path doing *more* work than a fallback comparison would
+need to justify - not a memory-footprint trade-off in the qemu-vs-hardware
+sense this file warns about elsewhere, just fewer iterations of an unchanged
+per-lane cost, so no separate hardware benchmark is needed to trust the
+direction of the win (unlike the dither-LUT case above, this is a straight
+"same work, done less" reduction, not one that trades footprint for
+arithmetic).
+
+Verified bit-exact on real m68k: `tests/mr_mp2_synth_check.c` and
+`tests/mr_mp2_scale_check.c` (both asm-only, `run_m68k_check.sh`) now cover
+decim/count of 1/32, 2/16 and 4/8 against the same reference oracles as
+before, and `tests/mr_mpeg1_decim_check.c` was rebuilt and re-run with
+`MR_M68K_ASM=1` at `-m68030` - previously it only ever exercised the
+portable-C decim path even on that build, since decim>1 always fell back to
+C; it now exercises the real asm kernels end to end and still matches every
+kept sample exactly.
+
+A temporary, opt-in diagnostic (`-DMR_MPEG1_DECIM_DIAG=1`, off by default)
+prints `MP2 decim=N lanes=N` from both integration points
+(`mr_mpeg1_open()` in `core/mr_mpeg1.c` and the MP2 branch of
+`mr_audio_decoder_open()` in `audio/mr_audio_decode.c`) so a real-hardware
+test can confirm which path is actually active before/after this fix,
+without depending on `--time`. Remove once that pass is done.
+
 ## Microsoft RLE (BI_RLE8) notes
 Running out of data is a **normal end of frame**, not an error: encoders often
 omit the end-of-bitmap escape, and AVI's zero-length chunk (an unchanged frame)

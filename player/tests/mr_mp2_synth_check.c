@@ -1,5 +1,9 @@
 /* Exact regression against the original window walk, independent of PCM
- * clipping. Exercise every circular-buffer phase and both sign extremes. */
+ * clipping. Exercise every circular-buffer phase and both sign extremes, at
+ * decim=1 (the original fixed-32-lane shape) and decim=2/4 (see
+ * plm_audio_set_decim() in pl_mpeg.h - the ASM kernel takes decim directly
+ * and, at decim=1, computes exactly what it always did; see the .S file's
+ * own comment for why stepping the lane index is safe). */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -13,7 +17,7 @@
 #define PL_MPEG_IMPLEMENTATION
 #include "../core/pl_mpeg.h"
 #if defined(MR_TEST_M68K_SYNTH)
-extern void plm_audio_synth_window_m68k(const int32_t *, const int32_t *, int, int64_t *);
+extern void plm_audio_synth_window_m68k(const int32_t *, const int32_t *, int, int64_t *, int);
 #endif
 
 static void reference(const int32_t *d, const int32_t *v, int pos, int64_t *u)
@@ -41,6 +45,7 @@ int main(void)
 {
     int32_t d[1024], v[1024];
     int64_t expected[32], actual[34];
+    static const int decims[] = { 1, 2, 4 };
     for (int trial = 0; trial < 64; ++trial) {
         for (int i = 0; i < 1024; ++i) {
             d[i] = (int32_t)(next() & 65535) - 32768;
@@ -53,21 +58,32 @@ int main(void)
         }
         for (int pos = 0; pos < 1024; pos += 64) {
             reference(d, v, pos, expected);
-            actual[0] = actual[33] = INT64_C(0x123456789abcdef);
-            memset(actual + 1, 0xa5, 32 * sizeof(int64_t));
+            for (int di = 0; di < 3; ++di) {
+                int decim = decims[di];
+                int lanes = 32 / decim;
+                actual[0] = actual[33] = INT64_C(0x123456789abcdef);
+                memset(actual + 1, 0xa5, 32 * sizeof(int64_t));
 #if defined(MR_TEST_M68K_SYNTH)
-            plm_audio_synth_window_m68k(d, v, pos, actual + 1);
+                plm_audio_synth_window_m68k(d, v, pos, actual + 1, decim);
 #else
-            plm_audio_synth_window(d, v, pos, actual + 1);
+                plm_audio_synth_window_decim(d, v, pos, actual + 1, decim);
 #endif
-            if (memcmp(expected, actual + 1, sizeof expected) ||
-                actual[0] != INT64_C(0x123456789abcdef) ||
-                actual[33] != INT64_C(0x123456789abcdef)) {
-                printf("FAIL trial=%d phase=%d\n", trial, pos);
-                return 1;
+                for (int j = 0; j < lanes; j++) {
+                    if (actual[1 + j] != expected[j * decim]) {
+                        printf("FAIL trial=%d phase=%d decim=%d lane=%d\n",
+                               trial, pos, decim, j);
+                        return 1;
+                    }
+                }
+                if (actual[0] != INT64_C(0x123456789abcdef) ||
+                    actual[33] != INT64_C(0x123456789abcdef)) {
+                    printf("FAIL trial=%d phase=%d decim=%d: guard clobbered\n",
+                           trial, pos, decim);
+                    return 1;
+                }
             }
         }
     }
-    puts("MP2 synthesis: 1024 exact comparisons passed (all 16 phases)");
+    puts("MP2 synthesis: 1024 exact comparisons passed (all 16 phases, decim=1/2/4)");
     return 0;
 }

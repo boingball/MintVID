@@ -302,6 +302,11 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info,
          * exactly the values plm_audio_set_decim() accepts (anything else
          * silently falls back to 1). */
         plm_audio_set_decim(d->mp2, (int)d->stride);
+#if defined(MR_MPEG1_DECIM_DIAG)
+        /* Temporary real-hardware diagnostic - see the matching one in
+         * core/mr_mpeg1.c. Remove once the real-hardware pass is done. */
+        fprintf(stderr, "MP2 decim=%u lanes=%u\n", d->stride, 32u / d->stride);
+#endif
     } else if (info->format_tag == MR_AUDIO_FORMAT_MP3) {
         d->kind = AUDIO_KIND_MP3;
         d->mp3 = MP3InitDecoder();

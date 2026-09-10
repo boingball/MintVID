@@ -4300,17 +4300,24 @@ int plm_audio_decode_header(plm_audio_t *self) {
 extern void plm_audio_idct36_m68k(int s[32][3], int ss, int32_t *d, int dp);
 #endif
 
+/* count is the number of leading U[] lanes to scale/clamp - 32 at decim=1,
+ * 32/decim otherwise (see plm_audio_set_decim()). CPU-independent (used on
+ * every m68k tier, 68060 included), unlike the synth_window/idct36 asm
+ * kernels below. */
 #if defined(MR_M68K_ASM)
-extern void scale_clamp_m68k(const int64_t *, int16_t *, int);
+extern void scale_clamp_m68k(const int64_t *, int16_t *, int, int);
 #endif
 
 /* MintVID: accumulate one PCM lane at a time. Each of the two window
  * walks has eight taps for every reachable v_pos (0, 64, ..., 960).
  * Keep the original tap order and signed 64-bit products, but write U only
- * once per lane instead of loading/storing it for every contribution. */
+ * once per lane instead of loading/storing it for every contribution.
+ * decim (1, 2 or 4) steps the lane index instead of visiting every lane -
+ * see plm_audio_set_decim() and the .S file's own comment for why that's
+ * safe. */
 #if defined(MR_M68K_ASM) && !defined(MR_CPU_68060)
 extern void plm_audio_synth_window_m68k(const int32_t *, const int32_t *, int,
-                                        int64_t *);
+                                        int64_t *, int);
 #endif
 
 #if defined(MR_M68K_ASM) && defined(MR_CPU_68060)
@@ -4608,81 +4615,54 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 				self->v_pos = (self->v_pos - 64) & 1023;
 
 				for (int ch = 0; ch < synth_channels; ch++) {
+					/* plm_audio_synth_window_m68k()/plm_audio_synth_window_decim()
+					 * both take decim (1, 2 or 4) directly and, at decim=1,
+					 * compute exactly what plm_audio_synth_window()/the old
+					 * fixed-32-lane asm call used to - see plm_audio_set_decim()
+					 * and each function's own comment. So there is one call
+					 * shape for every decim value, asm included: no separate
+					 * "decim==1" path to keep in sync with this one. */
 					#if defined(MR_M68K_ASM) && !defined(MR_CPU_68060)
                     plm_audio_idct36_m68k(self->sample[ch], p, self->V[ch], self->v_pos);
+                    plm_audio_synth_window_m68k(self->D, self->V[ch], self->v_pos, self->U, self->decim);
 #else
                     plm_audio_idct36(self->sample[ch], p, self->V[ch], self->v_pos);
+                    plm_audio_synth_window_decim(self->D, self->V[ch], self->v_pos, self->U, self->decim);
 #endif
 
-					if (self->decim == 1) {
-#if defined(MR_M68K_ASM) && !defined(MR_CPU_68060)
-						plm_audio_synth_window_m68k(self->D, self->V[ch], self->v_pos, self->U);
-#else
-						plm_audio_synth_window(self->D, self->V[ch], self->v_pos, self->U);
-#endif
-
-						// Output samples
-						#ifdef PLM_AUDIO_SEPARATE_CHANNELS
-							int16_t *out_channel = ch == 0
-								? self->samples.left
-								: self->samples.right;
-							#if defined(MR_M68K_ASM)
-                        scale_clamp_m68k(self->U, out_channel + out_pos, 1);
+					// Output samples: the leading `lanes` entries of self->U.
+					#ifdef PLM_AUDIO_SEPARATE_CHANNELS
+						int16_t *out_channel = ch == 0
+							? self->samples.left
+							: self->samples.right;
+						#if defined(MR_M68K_ASM)
+                        scale_clamp_m68k(self->U, out_channel + out_pos, 1, lanes);
                     #else
-                        for (int j = 0; j < 32; j++) {
+                        for (int j = 0; j < lanes; j++) {
                             out_channel[out_pos + j] = plm_audio_clamp(self->U[j] / -66562);
                         }
                     #endif
-						#else
-							if (self->mono) {
-								/* One channel, packed at the front of the buffer. */
-								#if defined(MR_M68K_ASM)
-                            scale_clamp_m68k(self->U, self->samples.interleaved + out_pos, 1);
+					#else
+						if (self->mono) {
+							/* One channel, packed at the front of the buffer. */
+							#if defined(MR_M68K_ASM)
+                            scale_clamp_m68k(self->U, self->samples.interleaved + out_pos, 1, lanes);
                         #else
-                            for (int j = 0; j < 32; j++) {
+                            for (int j = 0; j < lanes; j++) {
                                 self->samples.interleaved[out_pos + j] = plm_audio_clamp(self->U[j] / -66562);
                             }
                         #endif
-							}
-							else {
-								#if defined(MR_M68K_ASM)
-                            scale_clamp_m68k(self->U, self->samples.interleaved + (out_pos << 1) + ch, 2);
+						}
+						else {
+							#if defined(MR_M68K_ASM)
+                            scale_clamp_m68k(self->U, self->samples.interleaved + (out_pos << 1) + ch, 2, lanes);
                         #else
-                            for (int j = 0; j < 32; j++) {
+                            for (int j = 0; j < lanes; j++) {
                                 self->samples.interleaved[((out_pos + j) << 1) + ch] = plm_audio_clamp(self->U[j] / -66562);
                             }
                         #endif
-							}
-						#endif
-					} else {
-						/* MintVID: Fast MP2 decode - see plm_audio_set_decim()
-						 * and plm_audio_synth_window_decim(). Portable C only:
-						 * the m68k asm synth/scale-clamp kernels assume a
-						 * fixed 32 contiguous lanes, so decimated decode does
-						 * not use them - a documented trade-off against doing
-						 * 1/decim of the (much larger) tap-sum work instead. */
-						plm_audio_synth_window_decim(self->D, self->V[ch], self->v_pos, self->U, self->decim);
-
-						#ifdef PLM_AUDIO_SEPARATE_CHANNELS
-							int16_t *out_channel = ch == 0
-								? self->samples.left
-								: self->samples.right;
-							for (int j = 0; j < lanes; j++) {
-								out_channel[out_pos + j] = plm_audio_clamp(self->U[j] / -66562);
-							}
-						#else
-							if (self->mono) {
-								for (int j = 0; j < lanes; j++) {
-									self->samples.interleaved[out_pos + j] = plm_audio_clamp(self->U[j] / -66562);
-								}
-							}
-							else {
-								for (int j = 0; j < lanes; j++) {
-									self->samples.interleaved[((out_pos + j) << 1) + ch] = plm_audio_clamp(self->U[j] / -66562);
-								}
-							}
-						#endif
-					}
+						}
+					#endif
 				} // End of synthesis channel loop
 				out_pos += lanes;
 			} // End of synthesis sub-block loop
