@@ -668,6 +668,32 @@ disassembly; the actual speedup on real 68060 silicon - the entire reason
 for doing this - still needs a hardware pass to confirm, same as every
 other 68060-specific claim in this file.
 
+**The two new kernels shipped without their AmigaOS underscore-prefixed C
+symbol aliases, and every check in this file's toolchain was blind to
+it.** The real Amiga cross-compile (`fused-68060` CI, `m68k-amigaos-gcc`)
+failed to link `mrplay-fused`: "undefined reference to
+`plm_audio_idct36_m68k_060`"/`plm_audio_synth_window_m68k_060`, even
+though both `.S` files compiled cleanly and were correctly listed on the
+link line. AmigaOS's a.out/hunk-based toolchain prepends an underscore to
+C-visible symbol names - exactly what the *existing* kernels already
+handle (`plm_audio_synth_window_m68k.S` declares both
+`plm_audio_synth_window_m68k` and `_plm_audio_synth_window_m68k` labels at
+the same address; `plm_audio_scale_clamp_m68k.S` does `_scale_clamp_m68k =
+scale_clamp_m68k`) - but the two new files only declared the bare name.
+Every `m68k-linux-gnu-gcc`/`qemu-m68k` check this whole family of fixes
+relies on was structurally incapable of catching this: that toolchain
+targets ELF, which uses no symbol prefix at all, so the bare name resolved
+just fine there regardless of whether the underscore alias existed. This
+is the sharpest illustration yet of "no AmigaOS toolchain on this dev
+host" from this file's very first section - qemu/ELF proves instruction
+safety and bit-exactness, but a *linking* convention that's specific to
+AmigaOS's object format can only ever be proven by attempting the real
+Amiga link, which only CI's Docker-hosted `m68k-amigaos-gcc` step can do
+here. Fixed by adding the matching `_`-prefixed `.globl`/label to both
+files, mirroring the existing kernels exactly - both files still assemble
+identically under `m68k-linux-gnu-gcc` (both symbol names resolve to the
+same address) and every qemu-based check from this section still passes.
+
 ## Microsoft RLE (BI_RLE8) notes
 Running out of data is a **normal end of frame**, not an error: encoders often
 omit the end-of-bitmap escape, and AVI's zero-length chunk (an unchanged frame)
