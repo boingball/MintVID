@@ -150,12 +150,13 @@ tax on the same audio path - and it was computing a value nobody reads.**
 Its `self->time = (int64_t)samples_decoded * PLM_TIME_SCALE /
 PLM_AUDIO_SAMPLE_RATE[self->samplerate_index]` ran on *every* decoded MP2
 frame (~38/sec at 44.1kHz), and unlike the two multiplies above, GCC can't
-fold this one at all: `self->samplerate_index` is only known at runtime, so
-the divisor is opaque to the compiler on every m68k tier, not just 68060 -
-confirmed with `m68k-linux-gnu-gcc -S`, both `-mcpu=68040` and `-mcpu=68060`
-lower it to `jsr __muldi3` + `jsr __divdi3` (only the multiply drops to a
-single hardware `muls.l` on 68040; the divide is `__divdi3` everywhere,
-since no m68k tier has a 64-bit-quotient divide instruction at all). Two
+fold this one at all - confirmed with `m68k-linux-gnu-gcc -S`, both
+`-mcpu=68040` and `-mcpu=68060` lower it to `jsr __muldi3` + `jsr __divdi3`
+(only the multiply drops to a single hardware `muls.l` on 68040; the divide
+is `__divdi3` everywhere, since no m68k tier has a 64-bit-quotient divide
+instruction at all - and, corrected below, that holds even for a
+compile-time-constant divisor, so `self->samplerate_index` being
+runtime-only was never the reason). Two
 software library calls per frame - and `mr_mpeg1.c` never calls
 `plm_audio_get_time()` or reads a decoded sample's `.time`: MintVID gets
 audio PTS from the container's own PES timestamps (see the PTS note below),
@@ -251,6 +252,62 @@ every video frame's pts/pixels and every decoded PCM byte between them -
 proving the skip is invisible through the one interface this player
 actually uses, rather than resting on a chain of "and nothing reads *that*
 either" reasoning.
+
+**GCC never folds *any* 64-bit division into a reciprocal multiply on m68k
+- constant divisor or not.** A correction to every claim above that pinned
+the cost on the divisor being "only known at runtime": tested directly with
+`m68k-linux-gnu-gcc -S`, `x / 90000ULL` and `x / CLOCKS_PER_SEC` (both
+compile-time constants) lower to `jsr __divdi3` exactly like a runtime
+divisor does, at every CPU tier including 68020. m68k's backend appears to
+simply lack the divide-by-constant DImode optimization other targets have -
+this is not a 68060 quirk, or even an "unknown divisor" quirk, it is
+apparently a blanket fact about 64-bit division on this target. That widens
+where this class of fix applies: anywhere doing 64-bit arithmetic with a
+64-bit divisor, constant included, on any m68k build.
+
+**`mrplay.c` had its own, separately-introduced copy of the exact same
+`ticks * 1000000ULL / frequency` bug in `monotonic_us()` - and this one is
+the player's main clock, not a Paula-specific helper.** Same shape as
+`audio_paula.c`'s `audio_now_us()` (fixed above) - ReadEClock ticks times a
+constant divided by ReadEClock's own runtime tick frequency - but
+`monotonic_us()` has 56 call sites in `mrplay.c`, most of them unconditional
+(real scheduling/pacing decisions: the deadline-drop check, pause/resume,
+live-resync, sleep pacing - not just `--time` diagnostics), driving both
+video and audio scheduling. A real-hardware `--time` trace is what surfaced
+this: `hw-starvations` climbing, the Paula FIFO staying at 0ms buffered for
+the whole run, and `adecode` readings up to 118ms for one MP2 frame that
+should cost low single-digit milliseconds - all symptoms of the scheduler
+loop's own per-iteration overhead crowding out the time available to keep
+Paula fed, not of MP2 decode itself being slow. Fixed with the same
+`mr_u64_mul_u32`/`mr_u64_div_u24` pair from `core/mr_muldiv64.h`. Three more
+sites in the same file recompute a video frame's period
+(`(scale/rate)*1e6`, `vi->rate`/`vi->scale` fixed per stream but only known
+at runtime) from scratch on *every main-loop iteration* - not gated by
+`--time`, not audio-specific, so this one also taxes video-only playback,
+just proportionally less since audio mode iterates that loop far more often
+(servicing the audio FIFO), which is the likely reason "video alone is
+smooth, video+audio is jerky" survived every audio-decode-side fix above:
+the dominant cost was in the scheduler's own clock, paid every iteration
+regardless of what's being scheduled. Hoisted into one `video_frame_period_us()`
+helper, fixed the same way; a fourth site (`synthetic_pts`, used when a
+decoded frame arrives without its own container PTS) needed the multiply
+done before the single final divide to match the original expression's
+truncation order exactly, not a separately-rounded period_us multiplied by
+the frame index, which would round twice instead of once. `mrplay.c` cannot
+be compiled on this dev host (see "Validate against ffmpeg" above) - this
+needs a real-hardware pass to confirm, but the bug and the fix are both the
+same well-verified shape as the already-proven `audio_paula.c` case.
+
+**The MPEG-PS/TS PTS-to-microseconds conversion (`ticks * 1000000ULL /
+90000ULL`) had the identical divide-by-constant cost, in portable code this
+time.** `core/mr_ps.c` (twice) and `core/mr_ts.c` (once) convert a 33-bit
+90kHz PES timestamp to microseconds on every packet that carries one - a
+compile-time-constant divisor, but per the correction above that's no
+protection on m68k. Fixed with `mr_u64_div_u24`/`mr_u64_mul_u32` (a PTS
+tick value is always well under `mr_u64_mul_u32`'s 64-bit-dividend room and
+90000 comfortably fits the 2^24 divisor bound) - verified against the exact
+existing PTS pinning tests (`tests/mr_ps_pts_check.c`, `tests/mr_ps_check.c`,
+`tests/mr_ts_mp2_check.c`), which still match ffprobe's timestamps exactly.
 
 **The RGB24 round-trip is the expensive part, not the decode.** The adapter's
 `emit_rgb()` was about a third of its own decode time, and the display's

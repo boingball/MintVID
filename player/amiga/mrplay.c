@@ -25,6 +25,7 @@
 #include "../core/mr_mpeg2.h"
 #include "../core/mr_dither.h"
 #include "../core/mr_media_clock.h"
+#include "../core/mr_muldiv64.h"
 #include "../core/mr_yuv.h"
 #include "../core/mr_yuv_dither.h"
 #include "../core/mr_yuv_ham.h"
@@ -525,6 +526,7 @@ typedef struct scheduler_trace {
 } scheduler_trace;
 
 static uint64_t monotonic_us(void);
+static uint64_t video_frame_period_us(uint32_t rate, uint32_t scale);
 
 static void trace_phase(scheduler_trace *trace, const char *phase)
 {
@@ -570,9 +572,7 @@ static void present_service_frame(video_presenter *vp)
 
     mc = vp->mc;
     now = monotonic_us();
-    period_us = vp->vi->rate
-        ? (uint64_t)(vp->vi->scale ? vp->vi->scale : 1) * 1000000ULL / vp->vi->rate
-        : 83333ULL;
+    period_us = video_frame_period_us(vp->vi->rate, vp->vi->scale);
 
     /* Same master clock the scheduler uses: the audio clock when present (with
      * its starvation holdover), the monotonic fallback otherwise. */
@@ -681,8 +681,47 @@ static uint64_t monotonic_us(void)
     struct EClockVal value;
     ULONG frequency = TimerBase ? ReadEClock(&value) : 0;
     uint64_t ticks = ((uint64_t)value.ev_hi << 32) | value.ev_lo;
-    return frequency ? ticks * 1000000ULL / frequency :
+    /* This is the player's main clock - called from dozens of sites in this
+     * file, many unconditional (real scheduling/pacing decisions, not just
+     * --time diagnostics). ticks grows for the whole session and frequency
+     * is only known at runtime, so plain `ticks * 1000000ULL / frequency`
+     * is a 64-bit multiply-then-divide by a runtime value on every call -
+     * GCC always routes that through libgcc's __muldi3/__udivdi3 on m68k,
+     * on every CPU tier (see core/mr_muldiv64.h and the identical fix
+     * already applied to audio_paula.c's own audio_now_us() - this is that
+     * same duplicated pattern, just in the player's main clock instead of
+     * the Paula backend's, and called far more often). frequency
+     * (ReadEClock's tick rate, a few hundred kHz on real Amiga hardware)
+     * comfortably fits mr_u64_div_u24's 2^24 bound. The clock() fallback
+     * only runs when timer.device is unavailable (uncommon on real Amiga
+     * hardware) and still divides by CLOCKS_PER_SEC - a compile-time
+     * constant, but m68k-linux-gnu-gcc -S confirms GCC never folds *any*
+     * 64-bit divide into a reciprocal multiply on m68k, constant divisor or
+     * not (jsr __divdi3 either way) - left as the plain divide since this
+     * path is rarely exercised, not because the constant makes it free. */
+    return frequency ? mr_u64_div_u24(mr_u64_mul_u32(ticks, 1000000u), frequency) :
            (uint64_t)clock() * 1000000ULL / CLOCKS_PER_SEC;
+}
+
+/* vi->rate/vi->scale (fps = rate/scale) are fixed for a stream's whole
+ * playback but only known at runtime, and this is recomputed from them on
+ * every single main-loop iteration (not gated by --time, not audio-
+ * specific: unlike the sites above, this one also runs for video-only
+ * playback) at four call sites in this file - same libgcc-call cost as
+ * monotonic_us() above, just for the frame period instead of the clock.
+ * rate is a real-file frame-rate denominator and every sane value
+ * comfortably fits mr_u64_div_u24's 2^24 bound, but unlike a Paula output
+ * rate (architecturally bounded by MIN_PERIOD) there is no hardware fact
+ * backing that here - only convention - so this falls back to the plain
+ * divide instead of trusting the bound blindly for a value that also drives
+ * A/V sync correctness, not just speed. */
+static uint64_t video_frame_period_us(uint32_t rate, uint32_t scale)
+{
+    uint32_t num = scale ? scale : 1;
+    if (!rate) return 83333ULL;
+    if (rate < (1u << 24))
+        return mr_u64_div_u24(mr_u64_mul_u32(num, 1000000u), rate);
+    return (uint64_t)num * 1000000ULL / rate;
 }
 
 static void paced_sleep(uint64_t usec, scheduler_trace *trace,
@@ -2020,9 +2059,7 @@ int main(int argc, char **argv)
         if (video_cap < 2) video_cap = 2;          /* ring needs >= 2 slots    */
         if (video_cap > VIDEO_QUEUE_CAP) video_cap = VIDEO_QUEUE_CAP;
         {
-            uint64_t frame_period_us = vi->rate
-                ? (uint64_t)(vi->scale ? vi->scale : 1) * 1000000ULL / vi->rate
-                : 83333ULL;
+            uint64_t frame_period_us = video_frame_period_us(vi->rate, vi->scale);
             uint64_t queue_cushion_us =
                 (uint64_t)(video_cap - 2) * frame_period_us;
             cushion_ms = (unsigned long)(queue_cushion_us / 1000ULL);
@@ -2077,9 +2114,7 @@ int main(int argc, char **argv)
                      (network_source && live_resync))) {
         queued_video *front = qcount ? &vq[qhead] : NULL;
         uint64_t now = monotonic_us();
-        uint64_t period_us = vi->rate
-            ? (uint64_t)(vi->scale ? vi->scale : 1) * 1000000ULL / vi->rate
-            : 83333ULL;
+        uint64_t period_us = video_frame_period_us(vi->rate, vi->scale);
         int64_t late_us = 0;
         uint64_t master_clock_us = 0;
         unsigned long audio_ms = 0;
@@ -2946,10 +2981,25 @@ int main(int argc, char **argv)
                         }
                         unsigned long decode_us = first_decoded_output
                             ? (unsigned long)(decode_end - a) : 0;
+                        /* Same libgcc-call cost as video_frame_period_us()
+                         * above, for the same reason - but this multiplies
+                         * decoded_index in first and divides only once at
+                         * the end (matching the original expression's own
+                         * truncation order exactly), not decoded_index times
+                         * a separately-rounded period_us, which would round
+                         * twice instead of once and drift the synthetic PTS
+                         * for large decoded_index. */
                         uint64_t synthetic_pts = vi->rate
-                            ? decoded_index *
-                              (uint64_t)(vi->scale ? vi->scale : 1) *
-                              1000000ULL / vi->rate
+                            ? (vi->rate < (1u << 24)
+                                ? mr_u64_div_u24(
+                                      mr_u64_mul_u32(
+                                          mr_u64_mul_u32(decoded_index,
+                                              vi->scale ? vi->scale : 1),
+                                          1000000u),
+                                      vi->rate)
+                                : decoded_index *
+                                  (uint64_t)(vi->scale ? vi->scale : 1) *
+                                  1000000ULL / vi->rate)
                             : decoded_index * 83333ULL;
                         uint64_t frame_pts_us = pkt.pts_us;
                         int frame_has_pts = pkt.has_pts;

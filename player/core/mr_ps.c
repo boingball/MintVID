@@ -6,6 +6,7 @@
  * existing libmpeg2 decoder.
  */
 #include "mr_ps.h"
+#include "mr_muldiv64.h"
 
 #include <string.h>
 
@@ -184,7 +185,7 @@ static int pes_payload(const uint8_t *b, size_t end, size_t start,
         if (pos + 3 > *packet_end || pos + 3 + b[pos + 2] > *packet_end)
             return 0;
         if ((b[pos + 1] & 0x80) && b[pos + 2] >= 5) {
-            *pts_us = read_pts_ticks(b + pos + 3) * 1000000ULL / 90000ULL;
+            *pts_us = mr_u64_div_u24(mr_u64_mul_u32(read_pts_ticks(b + pos + 3), 1000000u), 90000u);
             *has_pts = 1;
         }
         pos += 3 + b[pos + 2];
@@ -196,7 +197,7 @@ static int pes_payload(const uint8_t *b, size_t end, size_t start,
          * the five bytes starting here. 0x0f is a one-byte "neither". */
         if ((b[pos] & 0xf0) == 0x20 || (b[pos] & 0xf0) == 0x30) {
             if (pos + 5 <= *packet_end) {
-                *pts_us = read_pts_ticks(b + pos) * 1000000ULL / 90000ULL;
+                *pts_us = mr_u64_div_u24(mr_u64_mul_u32(read_pts_ticks(b + pos), 1000000u), 90000u);
                 *has_pts = 1;
             }
         }
