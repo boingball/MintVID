@@ -520,6 +520,7 @@ typedef struct scheduler_trace {
     uint64_t sleep_requested_us, sleep_actual_us;
     uint64_t last_clock_trace_us;
     uint64_t last_rescue_print_us;
+    uint64_t last_audio_gap_print_us;
     unsigned long delay_ticks;
     int enabled;
     video_presenter *presenter;        /* NULL until the scheduler wires it up   */
@@ -649,8 +650,23 @@ static void service_audio_for_display(void *opaque)
          * hair does not underflow into an "impossible" multi-day gap - as
          * seen in the field as audio-gap=1271310319 ms, i.e. (uint64_t)-1us
          * truncated to 32 bits. */
+        /* This callback runs from inside cgx_show()'s per-strip loop - up to
+         * ~22 times per decoded frame at 360p, 4 times even at this file's
+         * tiny 134x100 - so an unthrottled printf() here every time the gap
+         * exceeds 40ms turns --time itself into the dominant cost once
+         * things are already behind (each print competing for the same CPU
+         * that's trying to catch audio back up). Confirmed on real hardware:
+         * --time measurably slows playback down, which was inflating the
+         * very numbers meant to diagnose the slowdown. Rate-limit the print
+         * exactly like the other --time diagnostics (clock-trace,
+         * audio-rescue) already do, without touching the gap detection
+         * itself - last_service_us still updates every call so the *next*
+         * gap is measured from a real service point, not from whenever this
+         * function last got to print. */
         if (trace->last_service_us && now > trace->last_service_us &&
-            now - trace->last_service_us > 40000ULL) {
+            now - trace->last_service_us > 40000ULL &&
+            now - trace->last_audio_gap_print_us >= CLOCK_TRACE_MIN_INTERVAL_US) {
+            trace->last_audio_gap_print_us = now;
             printf("audio-gap=%lu ms phase=%s phase-duration=%lu ms previous-phase=%s "
                    "previous-duration=%lu ms sleep-request=%lu ms "
                    "sleep-actual=%lu ms delay-ticks=%lu\n",
