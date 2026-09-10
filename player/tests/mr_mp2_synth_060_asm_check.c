@@ -1,24 +1,14 @@
-/* Exact regression against the original window walk, independent of PCM
- * clipping. Exercise every circular-buffer phase and both sign extremes, at
- * decim=1 (the original fixed-32-lane shape) and decim=2/4 (see
- * plm_audio_set_decim() in pl_mpeg.h - the ASM kernel takes decim directly
- * and, at decim=1, computes exactly what it always did; see the .S file's
- * own comment for why stepping the lane index is safe). */
+/* Exact regression for the new 68060 hand kernel
+ * plm_audio_synth_window_m68k_060 (core/plm_audio_synth_window_m68k_060.S)
+ * against the same window-walk reference oracle mr_mp2_synth_check.c/
+ * mr_mp2_synth_060_check.c use, at decim=1/2/4 (see plm_audio_set_decim()
+ * in pl_mpeg.h and CLAUDE.md's "MPEG-1/2 (libmpeg2) notes"). */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-/* The m68k test calls the synthesis asm directly. Do not turn on pl_mpeg's
- * global MR_M68K_ASM dispatch here: that would make this focused test depend
- * on every other MPEG video/audio asm helper as well. */
-#if defined(MR_M68K_ASM)
-#define MR_TEST_M68K_SYNTH 1
-#undef MR_M68K_ASM
-#endif
-#define PL_MPEG_IMPLEMENTATION
-#include "../core/pl_mpeg.h"
-#if defined(MR_TEST_M68K_SYNTH)
-extern void plm_audio_synth_window_m68k(const int32_t *, const int32_t *, int, int64_t *, int);
-#endif
+
+extern void plm_audio_synth_window_m68k_060(const int32_t *, const int32_t *,
+                                            int, int64_t *, int);
 
 static void reference(const int32_t *d, const int32_t *v, int pos, int64_t *u)
 {
@@ -63,11 +53,7 @@ int main(void)
                 int lanes = 32 / decim;
                 actual[0] = actual[33] = INT64_C(0x123456789abcdef);
                 memset(actual + 1, 0xa5, 32 * sizeof(int64_t));
-#if defined(MR_TEST_M68K_SYNTH)
-                plm_audio_synth_window_m68k(d, v, pos, actual + 1, decim);
-#else
-                plm_audio_synth_window_decim(d, v, pos, actual + 1, decim);
-#endif
+                plm_audio_synth_window_m68k_060(d, v, pos, actual + 1, decim);
                 for (int j = 0; j < lanes; j++) {
                     if (actual[1 + j] != expected[j * decim]) {
                         printf("FAIL trial=%d phase=%d decim=%d lane=%d\n",
@@ -84,6 +70,6 @@ int main(void)
             }
         }
     }
-    puts("MP2 synthesis: 1024 exact comparisons passed (all 16 phases, decim=1/2/4)");
+    puts("MP2 68060 asm synthesis: 1024 exact comparisons passed (all 16 phases, decim=1/2/4)");
     return 0;
 }

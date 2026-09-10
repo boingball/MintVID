@@ -1,22 +1,25 @@
-/* Exact Q15 rounding and whole-transform regression for MP2 synthesis. */
+/* Whole-transform regression for the 68060 fast path: plm_audio_idct36
+ * (portable C) internally routes its multiplies through the trap-free
+ * plm_audio_smul64_060 primitive when MR_CPU_68060 is defined (see
+ * pl_mpeg.h and core/mr_cpu.h). Unlike mr_mp2_idct_check.c this
+ * deliberately does NOT undef MR_M68K_ASM - that redirection exists only to
+ * isolate the hand-tuned 68040 dump (plm_audio_idct36_m68k) from the rest
+ * of the file's asm dispatch, and would also disable the 68060 guard under
+ * test here. On 68060 plm_audio_idct36_m68k stays excluded regardless (see
+ * its own !defined(MR_CPU_68060) guard), so nothing else gets pulled in and
+ * no .S file needs linking. */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <limits.h>
-/* The m68k test wants to call the IDCT asm explicitly, but enabling the global
- * MR_M68K_ASM dispatch while instantiating all of pl_mpeg also creates link
- * dependencies on every unrelated video/audio asm helper. Keep the portable
- * pl_mpeg implementation as the oracle and select only the primitive under
- * test explicitly. */
-#if defined(MR_M68K_ASM)
-#define MR_TEST_M68K_IDCT 1
-#undef MR_M68K_ASM
+#include "../core/mr_cpu.h"
+
+#if !defined(MR_M68K_ASM) || !defined(MR_CPU_68060)
+#error "build with -DMR_M68K_ASM=1 -mcpu=68060"
 #endif
+
 #define PL_MPEG_IMPLEMENTATION
 #include "../core/pl_mpeg.h"
-#if defined(MR_TEST_M68K_IDCT)
-extern void plm_audio_idct36_m68k(int s[32][3], int ss, int32_t *d, int dp);
-#endif
 
 static int32_t reference_mul_q15(int32_t value, int32_t coefficient)
 {
@@ -42,7 +45,6 @@ int main(void)
     int input[32][3], saved[32][3];
     int32_t expected[1026], actual[1026];
     for (unsigned c = 0; c < sizeof coefficients / sizeof coefficients[0]; ++c) {
-        /* Includes every low-15-bit residue, either side of zero, and ties. */
         for (int32_t value = -32770; value <= 32770; ++value)
             if (plm_audio_mul_q15(value, coefficients[c]) !=
                 reference_mul_q15(value, coefficients[c])) return 1;
@@ -62,11 +64,7 @@ int main(void)
                 memset(expected, 0xa5, sizeof expected);
                 memset(actual, 0xa5, sizeof actual);
                 reference_idct36(input, ss, expected+1, dp);
-#if defined(MR_TEST_M68K_IDCT)
-                plm_audio_idct36_m68k(input, ss, actual+1, dp);
-#else
                 plm_audio_idct36(input, ss, actual+1, dp);
-#endif
                 if (memcmp(expected, actual, sizeof actual) ||
                     memcmp(saved, input, sizeof input)) {
                     printf("FAIL trial=%d ss=%d dp=%d\n",trial,ss,dp);
@@ -74,6 +72,7 @@ int main(void)
                 }
             }
     }
-    puts("MP2 IDCT: rounding checks and 4800 exact transform comparisons passed");
+    puts("MP2 68060 IDCT: rounding checks and 4800 exact transform "
+         "comparisons passed");
     return 0;
 }

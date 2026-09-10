@@ -188,12 +188,54 @@ mr_mp2_idct_check: tests/mr_mp2_idct_check.c tests/mr_mp2_idct_reference.h core/
 mr_mp2_synth_check: tests/mr_mp2_synth_check.c core/pl_mpeg.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_mp2_synth_check.c
 
+# amiga/audio_paula.c's session-invariant-divisor multiply/divide helpers -
+# portable and host-testable even though their caller isn't.
+mr_muldiv64_check: tests/mr_muldiv64_check.c core/mr_muldiv64.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_muldiv64_check.c
+
 # Decoded MP2 from a .mpg against an ffmpeg reference. The MPEG-1 program
 # stream source has its own audio path (pl_mpeg, not the MintAMP adapter), so
 # it needs its own oracle; nothing else in the suite reaches it.
 mr_mp2_check: tests/mr_mp2_check.c core/mr_mpeg1.c core/mr_mpeg1.h \
               core/pl_mpeg.h core/mr_types.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_mp2_check.c core/mr_mpeg1.c
+
+# Proves MR_PL_MPEG_SKIP_AUDIO_TIME (pl_mpeg.h's plm_audio_decode() dead
+# per-frame time bookkeeping skip) changes nothing mr_mpeg1.c actually hands
+# back: same source built with and without the flag, both decoding the same
+# fixture through the real mr_mpeg1_next()/mr_mpeg1_audio() alternation, and
+# diffed byte for byte.
+mr_mpeg1_audio_time_check_base: tests/mr_mpeg1_audio_time_check.c core/mr_mpeg1.c \
+              core/mr_mpeg1.h core/pl_mpeg.h core/mr_types.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_audio_time_check.c core/mr_mpeg1.c
+
+mr_mpeg1_audio_time_check_skip: tests/mr_mpeg1_audio_time_check.c core/mr_mpeg1.c \
+              core/mr_mpeg1.h core/pl_mpeg.h core/mr_types.h
+	$(CC) $(CFLAGS) -DMR_PL_MPEG_SKIP_AUDIO_TIME=1 \
+	    -o $@ tests/mr_mpeg1_audio_time_check.c core/mr_mpeg1.c
+
+# Proves plm_audio_set_decim()'s Fast MP2 mode (pl_mpeg.h) is bit-exact:
+# decoding at decim=2/4 must match decoding at decim=1 and keeping every
+# Nth sample, for every frame, stereo and mono alike. Needs mr_demux (not
+# just mr_mpeg1.c) to pull a real MP2 elementary stream out of an existing
+# TS fixture, so this links the full $(CORE) like mr_decode does.
+mr_mpeg1_decim_check: tests/mr_mpeg1_decim_check.c $(CORE) $(HEADERS) | check-libavc
+	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_decim_check.c $(CORE)
+
+# Focused synthetic counterpart: plm_audio_synth_window_decim() against
+# plm_audio_synth_window() directly, no real bitstream or mr_demux involved -
+# see the file header for why this is a distinct check from the one above.
+mr_mpeg1_decim_synth_check: tests/mr_mpeg1_decim_synth_check.c core/pl_mpeg.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_decim_synth_check.c
+
+mr_mpeg1_audio_time_check: mr_mpeg1_audio_time_check_base mr_mpeg1_audio_time_check_skip
+	test -f tests/assets/test_mpeg1_mp2.mpg || sh tests/gen_audio_assets.sh
+	./mr_mpeg1_audio_time_check_base tests/assets/test_mpeg1_mp2.mpg \
+	    > mr_mpeg1_audio_time_check_base.out
+	./mr_mpeg1_audio_time_check_skip tests/assets/test_mpeg1_mp2.mpg \
+	    > mr_mpeg1_audio_time_check_skip.out
+	diff -u mr_mpeg1_audio_time_check_base.out mr_mpeg1_audio_time_check_skip.out
+	@echo "mr_mpeg1 audio-time bookkeeping skip: identical output with/without MR_PL_MPEG_SKIP_AUDIO_TIME"
 
 check-libavc:
 	@test -f $(LIBAVC_ROOT)/decoder/ih264d.h || { \
@@ -316,7 +358,7 @@ mr_youtube_search_check: tests/mr_youtube_search_check.c \
 	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_search_check.c \
 	    youtube/mr_youtube_search.c
 
-check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg2_yuv_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_cinepak_indexed_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_h264_m68k_check mr_h264_mc_degrade_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check
+check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg1_audio_time_check mr_mpeg2_yuv_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_cinepak_indexed_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_muldiv64_check mr_h264_m68k_check mr_h264_mc_degrade_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check
 	./mr_youtube_search_check
 	./mr_youtube_check
 	./mr_hls_override_check
@@ -326,6 +368,7 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	./mr_audio_rate_check
 	./mr_aspect_check
 	./mr_media_clock_check
+	./mr_muldiv64_check
 	./mr_h264_m68k_check
 	./mr_h264_mc_degrade_check
 	./mr_decode ../testfiles/mov+cinepak+pcm_s8++grosspnt.mov 2>&1 \
@@ -455,7 +498,7 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	@echo "[H.263+ unrestricted motion vectors]"
 	./mr_decode tests/assets/test_h263p_umv.avi --check tests/assets/ref_h263p_umv
 
-check-audio: mr_audio_check mr_ac3_check mr_mp2_check mr_mp2_synth_check mr_mp2_idct_check
+check-audio: mr_audio_check mr_ac3_check mr_mp2_check mr_mp2_synth_check mr_mp2_idct_check mr_mpeg1_decim_check mr_mpeg1_decim_synth_check
 	@test -f tests/assets/test_mp3.avi -a -f tests/assets/test_aac.mp4 \
 	    -a -f tests/assets/test_mp3_stereo.avi \
 	    -a -f tests/assets/test_mpeg1_mp2.mpg \
@@ -490,6 +533,8 @@ check-audio: mr_audio_check mr_ac3_check mr_mp2_check mr_mp2_synth_check mr_mp2_
 	./mr_mp2_idct_check
 	./mr_mp2_check tests/assets/test_mpeg1_mp2.mpg \
 	    tests/assets/ref_mpeg1_mp2.raw 22050 1
+	./mr_mpeg1_decim_check tests/assets/test_mp2_stereo.ts
+	./mr_mpeg1_decim_synth_check
 
 check-http: mr_decode mr_youtube_check
 	@test -d tests/assets/ref_mpeg2_ts \
@@ -529,6 +574,9 @@ clean:
 	rm -f mr_audio_rate_check
 	rm -f mr_aspect_check
 	rm -f mr_media_clock_check
+	rm -f mr_muldiv64_check
+	rm -f mr_mpeg1_audio_time_check_base mr_mpeg1_audio_time_check_skip \
+	      mr_mpeg1_audio_time_check_base.out mr_mpeg1_audio_time_check_skip.out
 	rm -f mr_h264_m68k_check
 	rm -f mr_h264_mc_degrade_check
 	rm -f mr_iptv_check mr_youtube_check mr_youtube_search_check

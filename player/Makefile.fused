@@ -24,8 +24,10 @@ FUSED_PLAY := $(filter-out amiga/display_aga.c,$(PLAY)) \
 
 .PHONY: mrplay-fused
 mrplay-fused: check-cc check-mintamp check-kalms $(FUSED_PLAY) $(FUSED_CORE) \
-              $(KALMS_OBJ) $(VERSION_HEADER) | check-libavc
+              $(KALMS_OBJ) $(MP2_ASM_OBJ) \
+              $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) \
+              $(VERSION_HEADER) | check-libavc
 	@echo "building experimental direct-q6 fused YUV->AGA planar mrplay ($(CPU))"
 	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) $(LIBA52_FLAGS) -o mrplay \
-	    $(FUSED_PLAY) $(FUSED_CORE) $(MINTAMP_MP3) $(MINTAMP_AAC) \
-	    $(LIBA52_SRC) $(KALMS_OBJ) $(LDFLAGS)
+	    $(FUSED_PLAY) $(FUSED_CORE) $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) \
+	    $(LIBA52_OBJ) $(KALMS_OBJ) $(MP2_ASM_OBJ) $(LDFLAGS)

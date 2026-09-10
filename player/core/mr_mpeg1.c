@@ -9,66 +9,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(MR_M68K_ASM) && !defined(MR_HOST_BUILD) && defined(__GNUC__)
-/*
- * pl_mpeg's Layer-II synthesis finishes every PCM sample with
- *
- *     U[j] / -66562
- *
- * where U is int64_t.  GCC lowers that constant signed 64-bit divide to
- * libgcc's __divdi3 on m68k; Copperline profiling on a 68040 found that helper
- * alone taking ~7.7% of an audio-heavy instruction sample.  The accumulator is
- * normally only around the range needed to produce signed-16 PCM, so its
- * magnitude fits in uint32_t even though the synthesis MACs correctly remain
- * 64-bit.
- *
- * Provide the libgcc ABI symbol from this translation unit.  For that one hot
- * divisor, when the numerator magnitude fits 32 bits, perform the *exact* same
- * truncating quotient with a 32-bit divide.  Everything else (other divisors,
- * or an unusually large synthesis accumulator) falls through to libgcc's
- * unsigned 64-bit primitive with ordinary signed quotient handling.  Thus this
- * is a strength reduction only: it does not depend on the following PCM clamp
- * and does not change __divdi3 semantics for values outside the fast range.
- *
- * Keep this here rather than in pl_mpeg.h: the latter is vendored upstream
- * source, while mr_mpeg1.c is already MintVID's implementation wrapper around
- * it.  It also makes the optimisation trivially removable for A/B profiling.
- */
-extern unsigned long long __udivdi3(unsigned long long numerator,
-                                    unsigned long long denominator);
-
-long long __divdi3(long long numerator, long long denominator)
-{
-    if (denominator == -66562LL &&
-        numerator >= -(long long)UINT32_MAX &&
-        numerator <=  (long long)UINT32_MAX) {
-        uint32_t magnitude = numerator < 0
-            ? (uint32_t)(0ULL - (unsigned long long)numerator)
-            : (uint32_t)numerator;
-        uint32_t quotient = magnitude / 66562U;
-
-        /* Denominator is negative: a positive numerator gives a negative
-         * quotient, while a negative numerator gives a positive quotient.
-         * Integer division truncates toward zero; unsigned magnitude division
-         * followed by the sign therefore matches C exactly. */
-        return numerator > 0 ? -(long long)quotient : (long long)quotient;
-    }
-
-    {
-        unsigned long long un = (unsigned long long)numerator;
-        unsigned long long ud = (unsigned long long)denominator;
-        unsigned long long quotient;
-        int negative = (numerator < 0) != (denominator < 0);
-
-        /* Unsigned negation is defined modulo 2^64, including LLONG_MIN. */
-        if (numerator < 0) un = 0ULL - un;
-        if (denominator < 0) ud = 0ULL - ud;
-        quotient = __udivdi3(un, ud);
-        return negative ? (long long)(0ULL - quotient)
-                        : (long long)quotient;
-    }
-}
-#endif
 
 #define PL_MPEG_IMPLEMENTATION
 #include "pl_mpeg.h"
@@ -157,6 +97,20 @@ mr_mpeg1 *mr_mpeg1_open(const uint8_t *buf, size_t len, int low_rate,
         m->decim = (raw > 28000) ? 2 : 1;
         if (low_rate) m->decim *= 2;
         m->rate_eff = (unsigned)(raw / m->decim);
+        /* MintVID: let pl_mpeg itself skip the polyphase synthesis work for
+         * the samples this decimation was always going to discard, instead
+         * of fully decoding all 1152 and throwing most of them away below -
+         * see plm_set_audio_decim() in pl_mpeg.h. */
+        plm_set_audio_decim(m->plm, m->decim);
+#if defined(MR_MPEG1_DECIM_DIAG)
+        /* Temporary real-hardware diagnostic: confirms which decode path is
+         * actually active (and that lanes matches 32/decim), since qemu-m68k
+         * cannot measure the speedup itself - see CLAUDE.md's "MPEG-1/2
+         * (libmpeg2) notes". Not gated behind --time; enable by building with
+         * -DMR_MPEG1_DECIM_DIAG=1. Remove once the real-hardware pass is
+         * done. */
+        fprintf(stderr, "MP2 decim=%d lanes=%d\n", m->decim, 32 / m->decim);
+#endif
     }
     return m;
 }
@@ -211,27 +165,27 @@ int mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, int64_t *pts_us)
 int mr_mpeg1_audio(mr_mpeg1 *m, unsigned char *dst)
 {
     plm_samples_t *s;
-    unsigned j, out = 0;
-    int decim, channels;
+    unsigned j, channels;
     if (!m) return 0;
     s = plm_decode_audio(m->plm);
     if (!s) return 0;
-    decim = m->decim;
-    channels = m->channels;
-    /* Take every `decim`-th sample frame, emit little-endian signed-16 so it
-     * is correct on the big-endian 68k regardless of host byte order. In mono
-     * mode pl_mpeg has already packed one channel at the front of the buffer
-     * (see plm_set_audio_mono()), so the frame stride is one sample. */
-    for (j = 0; j < s->count; j += decim) {
-        int ch;
+    channels = (unsigned)m->channels;
+    /* plm_set_audio_decim() (see mr_mpeg1_open()) already made pl_mpeg
+     * synthesise only the samples this decimation keeps, so s->count is
+     * already the decimated count - no stride left to apply here. Emit
+     * little-endian signed-16 so it is correct on the big-endian 68k
+     * regardless of host byte order. In mono mode pl_mpeg has already
+     * packed one channel at the front of the buffer (see
+     * plm_set_audio_mono()), so the frame stride is one sample. */
+    for (j = 0; j < s->count; j++) {
+        unsigned ch;
         for (ch = 0; ch < channels; ch++) {
             int v = s->interleaved[j * channels + ch];
             *dst++ = (unsigned char)(v & 0xff);
             *dst++ = (unsigned char)((v >> 8) & 0xff);
         }
-        out++;
     }
-    return (int)out;
+    return (int)s->count;
 }
 
 void mr_mpeg1_rewind(mr_mpeg1 *m) { if (m) plm_rewind(m->plm); }

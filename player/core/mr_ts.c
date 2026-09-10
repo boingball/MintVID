@@ -3,6 +3,7 @@
  */
 #include "mr_ts.h"
 #include "mr_latm.h"
+#include "mr_muldiv64.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -781,7 +782,8 @@ static mr_status emit_pes(mr_ts *t, mr_ts_pes *p, int video, mr_packet *pkt)
     mr_status st;
     clock_t begin = t->timing_enabled ? clock() : 0;
     pkt->has_pts = p->has_pts;
-    pkt->pts_us = p->has_pts ? p->pts * 1000000ULL / 90000ULL : 0;
+    pkt->pts_us = p->has_pts
+        ? mr_u64_div_u24(mr_u64_mul_u32(p->pts, 1000000u), 90000u) : 0;
     /* MPEG-TS carries H.264 in genuine Annex-B (byte-stream) format already -
      * this used to be rewritten into AVCC (4-byte length prefixes) here via
      * annexb_to_avcc(), purely so mr_h264_decode() could feed it through the

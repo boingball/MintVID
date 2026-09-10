@@ -33,7 +33,14 @@ WARN_SILENCE="-Wno-unused-parameter -Wno-unused-variable -Wno-unused-function -W
 # them on deliberately so that code path keeps getting exercised on real
 # m68k/big-endian hardware, even though the MAE/exec checks below don't
 # consume the timing output themselves.
-CC="$M68K_CC -O2 -std=c99 -m68030 -static -g -DMR_HAVE_H264 -DMR_M68K_ASM=1 -DMR_H264_STAGE_PROFILE=1 $LIBAVC_FLAGS $LIBMPEG2_FLAGS $WARN_SILENCE"
+CC="$M68K_CC -O2 -std=c99 -m68030 -static -g -DMR_HAVE_H264 -DMR_M68K_ASM=1 -DMR_PL_MPEG_SKIP_AUDIO_TIME=1 -DMR_H264_STAGE_PROFILE=1 $LIBAVC_FLAGS $LIBMPEG2_FLAGS $WARN_SILENCE"
+# Same flags, -mcpu=68060 instead of -m68030 - used once below to prove the
+# Fast MP2 decode dispatch inside plm_audio_decode_frame() picks the
+# dedicated 68060 kernels correctly end to end (not just that the kernels
+# are individually bit-exact, or that the dispatch's own instructions are
+# safe - both already covered by the *_060_asm_check tests and
+# check_m68060_asm.sh respectively).
+CC_060="$M68K_CC -O2 -std=c99 -mcpu=68060 -static -g -DMR_HAVE_H264 -DMR_M68K_ASM=1 -DMR_PL_MPEG_SKIP_AUDIO_TIME=1 -DMR_H264_STAGE_PROFILE=1 $LIBAVC_FLAGS $LIBMPEG2_FLAGS $WARN_SILENCE"
 
 if ! command -v "$M68K_CC" >/dev/null 2>&1; then
     echo "ERROR: $M68K_CC not found. On Debian/Ubuntu:"
@@ -54,6 +61,25 @@ test -d tests/assets/ref_h264_high -a -d tests/assets/ref_h263 \
 BUILD=/tmp/mr_m68k_check_build
 mkdir -p "$BUILD"
 
+# Any m68k translation unit that compiles pl_mpeg with MR_M68K_ASM enabled
+# references this complete MP2 helper set. Keep it in one list so full decoder
+# and focused audio tests cannot silently drift from the production link.
+MP2_ASM_SRC="core/plm_audio_synth_window_m68k.S \
+             core/plm_audio_idct36_m68k.S \
+             core/plm_audio_scale_clamp_m68k.S"
+
+# A -mcpu=68060 translation unit never references plm_audio_idct36_m68k or
+# plm_audio_synth_window_m68k (both stay gated !defined(__mc68060__) - see
+# pl_mpeg.h), but MR_M68K_ASM still pulls in the video-path IDCT/blockset
+# helpers, the CPU-independent scale_clamp_m68k, and - since
+# plm_audio_decode_frame's dispatch now reaches them unconditionally
+# whenever MR_M68K_ASM && MR_CPU_68060 - the dedicated 68060 MP2 kernels.
+MP2_ASM_060_SRC="core/mr_mpeg1_idct_m68k.S \
+                 core/mr_mpeg1_blockset_m68k.S \
+                 core/plm_audio_scale_clamp_m68k.S \
+                 core/plm_audio_idct36_m68k_060.S \
+                 core/plm_audio_synth_window_m68k_060.S"
+
 CORE="core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
       core/mr_youtube.c core/mr_demux.c core/mr_latm.c core/mr_mkv.c \
       core/mr_avi.c core/mr_mov.c core/mr_ts.c core/mr_ps.c \
@@ -61,7 +87,27 @@ CORE="core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
       core/mr_dither.c core/mr_dither_m68k.S core/mr_ham.c core/mr_scale.c \
       core/mr_c2p.c core/mr_c2p_m68k.S \
       core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c core/mr_mpeg1_blockset_m68k.S \
-      core/mr_mpeg1_idct_m68k.S \
+      core/mr_mpeg1_idct_m68k.S $MP2_ASM_SRC \
+      core/mr_mpeg2.c \
+      vendor/libmpeg2/libmpeg2/alloc.c vendor/libmpeg2/libmpeg2/cpu_accel.c \
+      vendor/libmpeg2/libmpeg2/cpu_state.c vendor/libmpeg2/libmpeg2/decode.c \
+      vendor/libmpeg2/libmpeg2/header.c vendor/libmpeg2/libmpeg2/idct.c \
+      vendor/libmpeg2/libmpeg2/motion_comp.c vendor/libmpeg2/libmpeg2/slice.c \
+      core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_wmv.c core/mr_wmv2.c core/mr_h263.c core/mr_h264.c \
+      core/mr_msvideo1.c core/mr_rle.c core/mr_rawvideo.c core/mr_yuv.c \
+      core/mr_yuv_m68k.S"
+
+# Same as $CORE, but $MP2_ASM_060_SRC instead of $MP2_ASM_SRC - used with
+# $CC_060 below for the one 68060-dispatch end-to-end test (mr_mpeg1.c
+# built this way already assembles/links fine: $MP2_ASM_060_SRC is proven
+# by the *_060_check builds above, which link it at -mcpu=68060 too).
+CORE_060="core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
+      core/mr_youtube.c core/mr_demux.c core/mr_latm.c core/mr_mkv.c \
+      core/mr_avi.c core/mr_mov.c core/mr_ts.c core/mr_ps.c \
+      core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c core/mr_cinepak.c \
+      core/mr_dither.c core/mr_dither_m68k.S core/mr_ham.c core/mr_scale.c \
+      core/mr_c2p.c core/mr_c2p_m68k.S \
+      core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c $MP2_ASM_060_SRC \
       core/mr_mpeg2.c \
       vendor/libmpeg2/libmpeg2/alloc.c vendor/libmpeg2/libmpeg2/cpu_accel.c \
       vendor/libmpeg2/libmpeg2/cpu_state.c vendor/libmpeg2/libmpeg2/decode.c \
@@ -141,7 +187,7 @@ test -f tests/assets/test_ac3.ac3 -a -f tests/assets/ref_ac3_mkv.raw \
 $CC -DMR_AC3_CHECK_NO_DEMUX $MINTAMP_FLAGS -o "$BUILD/mr_ac3_check.m68k" \
     tests/mr_ac3_check.c audio/mr_audio_decode.c audio/mr_pcm.c \
     core/mr_mpeg1.c core/mr_mpeg1_idct_m68k.S \
-    core/mr_mpeg1_blockset_m68k.S core/mr_latm.c $MINTAMP_SRC -lm
+    core/mr_mpeg1_blockset_m68k.S $MP2_ASM_SRC core/mr_latm.c $MINTAMP_SRC -lm
 
 # MP2 out of a .mpg on a real big-endian target. The MPEG-1 source decodes
 # audio with pl_mpeg's own integer Layer II code and hands it back as
@@ -150,11 +196,32 @@ $CC -DMR_AC3_CHECK_NO_DEMUX $MINTAMP_FLAGS -o "$BUILD/mr_ac3_check.m68k" \
 echo "== building mr_mp2_check.m68k =="
 test -f tests/assets/test_mpeg1_mp2.mpg -a -f tests/assets/ref_mpeg1_mp2.raw \
     || sh tests/gen_audio_assets.sh
-# pl_mpeg's video path calls out to the hand-written m68k IDCT and block
-# routines on this target, so they have to be linked in even though only its
-# audio side is under test here.
+# pl_mpeg's video path and MP2 audio path both call hand-written m68k helpers
+# on this target, so keep the complete helper set in the focused decode link.
 $CC -o "$BUILD/mr_mp2_check.m68k" tests/mr_mp2_check.c core/mr_mpeg1.c \
-    core/mr_mpeg1_idct_m68k.S core/mr_mpeg1_blockset_m68k.S
+    core/mr_mpeg1_idct_m68k.S core/mr_mpeg1_blockset_m68k.S $MP2_ASM_SRC
+
+echo "== building mr_mpeg1_decim_check.m68k (Fast MP2 mode vs a real elementary stream) =="
+$CC -o "$BUILD/mr_mpeg1_decim_check.m68k" tests/mr_mpeg1_decim_check.c $CORE $LIBAVC_SRC \
+    -Wl,--wrap=ih264d_decode_bin \
+    -Wl,--wrap=ih264d_mvpred_nonmbaff \
+    -Wl,--wrap=ih264d_mvpred_nonmbaffB \
+    -Wl,--wrap=ih264d_parse_residual4x4_cabac \
+    -Wl,--wrap=ih264d_read_coeff4x4_cabac
+
+# Same test, -mcpu=68060 - proves the Fast MP2 dispatch inside
+# plm_audio_decode_frame() picks plm_audio_idct36_m68k_060/
+# plm_audio_synth_window_m68k_060 correctly end to end, not just that
+# each kernel is bit-exact in isolation (mr_mp2_idct_060_asm_check.c/
+# mr_mp2_synth_060_asm_check.c) or that the dispatch's own instructions are
+# safe (check_m68060_asm.sh).
+echo "== building mr_mpeg1_decim_check_060.m68k (same, -mcpu=68060 dispatch) =="
+$CC_060 -o "$BUILD/mr_mpeg1_decim_check_060.m68k" tests/mr_mpeg1_decim_check.c $CORE_060 $LIBAVC_SRC \
+    -Wl,--wrap=ih264d_decode_bin \
+    -Wl,--wrap=ih264d_mvpred_nonmbaff \
+    -Wl,--wrap=ih264d_mvpred_nonmbaffB \
+    -Wl,--wrap=ih264d_parse_residual4x4_cabac \
+    -Wl,--wrap=ih264d_read_coeff4x4_cabac
 
 echo "== building mr_h264_m68k_check.m68k =="
 $CC -o "$BUILD/mr_h264_m68k_check.m68k" tests/mr_h264_m68k_check.c \
@@ -207,12 +274,71 @@ $CC -o "$BUILD/mr_cinepak_indexed_check.m68k" \
     core/mr_cinepak.c core/mr_dither.c core/mr_dither_m68k.S
 
 echo "== building mr_mp2_idct_check.m68k =="
-$M68K_CC -O2 -std=c99 -m68030 -static -o "$BUILD/mr_mp2_idct_check.m68k" \
-    tests/mr_mp2_idct_check.c
+$M68K_CC -O2 -std=c99 -m68030 -static -DMR_M68K_ASM=1 -o "$BUILD/mr_mp2_idct_check.m68k" \
+    tests/mr_mp2_idct_check.c core/plm_audio_idct36_m68k.S
 
 echo "== building mr_mp2_synth_check.m68k =="
-$M68K_CC -O2 -std=c99 -m68030 -static -o "$BUILD/mr_mp2_synth_check.m68k" \
-    tests/mr_mp2_synth_check.c
+$M68K_CC -O2 -std=c99 -m68030 -static -DMR_M68K_ASM=1 -o "$BUILD/mr_mp2_synth_check.m68k" \
+    tests/mr_mp2_synth_check.c core/plm_audio_synth_window_m68k.S
+
+echo "== building mr_mpeg1_decim_synth_check.m68k (68030) =="
+$M68K_CC -O2 -std=c99 -m68030 -static -o "$BUILD/mr_mpeg1_decim_synth_check.m68k" \
+    tests/mr_mpeg1_decim_synth_check.c
+
+echo "== building mr_mp2_scale_check.m68k =="
+$M68K_CC -O2 -std=c99 -m68030 -static -DMR_M68K_ASM=1 -o "$BUILD/mr_mp2_scale_check.m68k" \
+    tests/mr_mp2_scale_check.c core/plm_audio_scale_clamp_m68k.S
+
+# 68060 has no hardware 64-bit-result MULS.L/MULU.L (see pl_mpeg.h's
+# plm_audio_smul64_060 comment), so these build with -mcpu=68060 rather than
+# -m68030 to actually exercise that CPU's code path, and deliberately do not
+# use the MR_TEST_M68K_*/undef-MR_M68K_ASM isolation the 68040 checks above
+# use - that trick would also disable the 68060 guard under test here.
+echo "== building mr_mp2_mul64_060_check.m68k =="
+$M68K_CC -O2 -std=c99 -mcpu=68060 -static -DMR_M68K_ASM=1 \
+    -o "$BUILD/mr_mp2_mul64_060_check.m68k" \
+    tests/mr_mp2_mul64_060_check.c $MP2_ASM_060_SRC
+
+echo "== building mr_mp2_idct_060_check.m68k =="
+$M68K_CC -O2 -std=c99 -mcpu=68060 -static -DMR_M68K_ASM=1 \
+    -o "$BUILD/mr_mp2_idct_060_check.m68k" \
+    tests/mr_mp2_idct_060_check.c $MP2_ASM_060_SRC
+
+echo "== building mr_mp2_synth_060_check.m68k =="
+$M68K_CC -O2 -std=c99 -mcpu=68060 -static -DMR_M68K_ASM=1 \
+    -o "$BUILD/mr_mp2_synth_060_check.m68k" \
+    tests/mr_mp2_synth_060_check.c $MP2_ASM_060_SRC
+
+# Dedicated 68060 hand kernels (real hand-tuned asm, not the portable-C
+# fallback the two checks above exercise) - see each .S file's own header.
+echo "== building mr_mp2_idct_060_asm_check.m68k (dedicated 68060 IDCT kernel) =="
+$M68K_CC -O2 -std=c99 -mcpu=68060 -static \
+    -o "$BUILD/mr_mp2_idct_060_asm_check.m68k" \
+    tests/mr_mp2_idct_060_asm_check.c core/plm_audio_idct36_m68k_060.S
+
+echo "== building mr_mp2_synth_060_asm_check.m68k (dedicated 68060 synth kernel) =="
+$M68K_CC -O2 -std=c99 -mcpu=68060 -static \
+    -o "$BUILD/mr_mp2_synth_060_asm_check.m68k" \
+    tests/mr_mp2_synth_060_asm_check.c core/plm_audio_synth_window_m68k_060.S
+
+echo "== building mr_mpeg1_decim_synth_check.m68k (68060, exercises plm_audio_smul64_060) =="
+$M68K_CC -O2 -std=c99 -mcpu=68060 -static -DMR_M68K_ASM=1 \
+    -o "$BUILD/mr_mpeg1_decim_synth_check_060.m68k" \
+    tests/mr_mpeg1_decim_synth_check.c $MP2_ASM_060_SRC
+
+# amiga/audio_paula.c's session-invariant-divisor multiply/divide helpers
+# (core/mr_muldiv64.h). Portable - no .S files to link - but its 68060 path
+# only compiles in with both MR_M68K_ASM and -mcpu=68060, so build it at
+# both CPU tiers actually used in production (Makefile.amiga's CPUFLAGS is
+# -m$(CPU)) to exercise the plain-C hardware-muls.l path on 68040 and the
+# mulu.w-based trap-free path on 68060.
+echo "== building mr_muldiv64_check.m68k (68040) =="
+$M68K_CC -O2 -std=c99 -mcpu=68040 -static -DMR_M68K_ASM=1 \
+    -o "$BUILD/mr_muldiv64_check_040.m68k" tests/mr_muldiv64_check.c
+
+echo "== building mr_muldiv64_check.m68k (68060) =="
+$M68K_CC -O2 -std=c99 -mcpu=68060 -static -DMR_M68K_ASM=1 \
+    -o "$BUILD/mr_muldiv64_check_060.m68k" tests/mr_muldiv64_check.c
 
 echo "== building mr_yuv_dither_check.m68k =="
 # Links against the real hand-asm mr_yuv420_to_rgb24_m68k/mr_dither_rgb8_m68k
@@ -260,7 +386,17 @@ run "$BUILD/mr_dither_check.m68k"
 run "$BUILD/mr_cinepak_indexed_check.m68k" tests/assets/test_cinepak.avi
 run "$BUILD/mr_cinepak_indexed_check.m68k" tests/assets/test_cinepak_strips.avi
 run "$BUILD/mr_mp2_synth_check.m68k"
+run "$BUILD/mr_mp2_scale_check.m68k"
 run "$BUILD/mr_mp2_idct_check.m68k"
+run "$BUILD/mr_mp2_mul64_060_check.m68k"
+run "$BUILD/mr_mp2_idct_060_check.m68k"
+run "$BUILD/mr_mp2_synth_060_check.m68k"
+run "$BUILD/mr_mp2_idct_060_asm_check.m68k"
+run "$BUILD/mr_mp2_synth_060_asm_check.m68k"
+run "$BUILD/mr_mpeg1_decim_synth_check.m68k"
+run "$BUILD/mr_mpeg1_decim_synth_check_060.m68k"
+run "$BUILD/mr_muldiv64_check_040.m68k"
+run "$BUILD/mr_muldiv64_check_060.m68k"
 run "$BUILD/mr_yuv_dither_check.m68k"
 run "$BUILD/mr_yuv_ham_check.m68k"
 run "$BUILD/mr_mpeg1_blockset_check.m68k"
@@ -274,6 +410,12 @@ run "$BUILD/mr_ac3_check.m68k" tests/assets/test_ac3.ac3 \
 echo "[MP2 from an MPEG-1 program stream vs ffmpeg, real m68k/big-endian]"
 run "$BUILD/mr_mp2_check.m68k" tests/assets/test_mpeg1_mp2.mpg \
     tests/assets/ref_mpeg1_mp2.raw 22050 1
+
+echo "[MP2 Fast decode mode (plm_audio_set_decim) vs a real elementary stream, real m68k/big-endian]"
+run "$BUILD/mr_mpeg1_decim_check.m68k" tests/assets/test_mp2_stereo.ts
+
+echo "[MP2 Fast decode mode, -mcpu=68060 dispatch (dedicated kernels), real m68k/big-endian]"
+run "$BUILD/mr_mpeg1_decim_check_060.m68k" tests/assets/test_mp2_stereo.ts
 
 echo "[H.264 High Profile avc1 + B-frames, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_h264_high.mp4 \
@@ -353,5 +495,9 @@ run "$BUILD/mr_ps_pts_check.m68k" tests/assets/test_mpeg1_mp2.mpg \
 echo "[MPEG-1, real m68k/big-endian - exercises the new motion-comp asm]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_mpeg1.mpg \
     --check tests/assets/ref_mpeg1
+
+echo "== 68060 disassembly check: MP2 hot path free of extended MULS.L/MULU.L, =="
+echo "== extended divide, and __muldi3/__divdi3/__udivdi3 =="
+sh tests/check_m68060_asm.sh
 
 echo "m68k/big-endian check: OK"
