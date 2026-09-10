@@ -369,6 +369,53 @@ stutter reported on real 68060 hardware that survived every 64-bit
 multiply/divide trap fix above — still needs a real-hardware pass to
 confirm.
 
+**MintAMP's own MP3 asm/fast-path acceleration was compiled in on every
+Amiga build and never once switched on.** `Makefile.amiga` already compiles
+MintAMP's Huffman asm substitution and its trap-free polyphase kernel into
+every default build (`FULL030` for CPU=68030/68040; `lowrate060`, in the
+default `ASM60_GROUPS`, for CPU=68060 - it pulls in
+`AMIGA_M68K_POLYPHASE_68060` specifically) - but both are gated behind a
+runtime switch, `MP3SetExperimentalHuffman()`/`MP3SetExperimentalPolyphase()`,
+that nothing in `player/` ever called. `MP3InitDecoder()` doesn't default
+them on either; they're plain process-global statics initialised to 0. So
+every MP3 decode, on every CPU tier, ran MintAMP's fully portable reference
+path - the same shape of gap as the `-O2`/`-O3` finding above, but this one
+means the accelerated code was never *reached* at all, not just compiled at
+the wrong optimization level. Confirmed via `real/huffman.c`'s and
+`real/polyphase_68060.h`'s own header comments (arithmetic substitutions
+documented as producing bit-identical output to their reference
+counterparts) and, since MintAMP's decoder is portable C with no AmigaOS
+dependency, verified directly: a standalone probe linking `mp3dec.c`/
+`mp3tabs.c`/`real/*.c` was cross-built for real m68k (`m68k-linux-gnu-gcc
+-static`, both `-mcpu=68030` with the FULL030 flags and `-mcpu=68060` with
+`AMIGA_M68K_POLYPHASE_68060`) and run under `qemu-m68k` against all three MP3
+test fixtures, decoding each once with both setters off and once with both
+on - **bit-identical PCM on every file, both CPU tiers** (maxdiff=0). Wired
+into `audio/mr_audio_decode.c`'s `mp3_enable_verified_fast_paths()`, called
+after every `MP3InitDecoder()` (there are two call sites - open and
+`mr_audio_decoder_reset()` - and the flags are never reset by
+`MP3InitDecoder()` itself, so one call per init is enough but harmless to
+repeat). No effect on host builds, where `AMIGA_FAST_POLYPHASE`/
+`AMIGA_M68K_ASM_HUFFMAN` aren't defined and both setters are no-op stubs -
+`make check-audio` is unaffected byte for byte.
+
+Two related MintAMP knobs were deliberately **not** wired in here:
+`MP3SetExperimentalReducedTaps()`/`MP3SetExperimentalFDCT32Quarter()` and
+`MP3SetFastLowrate()`/`MP3SetSuperfastLowrate()`/`MP3SetSubbandCap()`. Unlike
+the two above, MintAMP's own CLI (`amiga_mp3dec.c`) documents these as lossy,
+and - per its own runtime warnings - inert unless MintAMP's internal
+`fastLowrate` decimation is also active (stride 2/3/4, tied to a *reduced
+output rate*). That's a different mechanism from MintVID's own post-decode
+decimation (`compute_stride()`/`stride` in `mr_audio_decode.c`, used for
+`--audio-rate=low`): MintAMP's fastLowrate skips polyphase output samples
+*inside* the decoder, changing how many PCM samples `MP3Decode()` itself
+produces per frame, where MintVID's stride discards already-decoded samples
+afterward. Wiring the two together to let `--audio-rate=low` skip the
+decode-side work it currently throws away would be a real further win, but
+needs its own careful stride/rate bookkeeping and its own bit-exactness
+pass (`mr_audio_rate_check` pins the current 2x low-rate relationship
+exactly) - not something to bundle into a same-breath default change.
+
 ## Microsoft RLE (BI_RLE8) notes
 Running out of data is a **normal end of frame**, not an error: encoders often
 omit the end-of-bitmap escape, and AVI's zero-length chunk (an unchanged frame)

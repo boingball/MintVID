@@ -224,6 +224,28 @@ static int parse_aac_asc(const mr_audio_info *info,
     return 1;
 }
 
+/* MP3SetExperimentalHuffman()/MP3SetExperimentalPolyphase() route MintAMP's
+ * MP3 decode through its asm-accelerated Huffman pair decode and its
+ * trap-free polyphase synthesis (the 68060 build's MulShift68060 kernel,
+ * or the 32-bit-accumulator fast path on 68030/040) instead of the fully
+ * portable reference path. Both are compiled in by every default MintVID
+ * Amiga build already (Makefile.amiga's FULL030/lowrate060 flag sets), but
+ * nothing was ever calling these two setters, so every MP3 decode ran the
+ * slow reference path regardless. Verified bit-exact against that reference
+ * path on real m68k (qemu, 68030 and 68060) across every MP3 test fixture -
+ * see CLAUDE.md - so this is a pure speedup, safe to enable unconditionally.
+ * No effect on host builds, where AMIGA_FAST_POLYPHASE/AMIGA_M68K_ASM_HUFFMAN
+ * are not defined and both setters are no-op stubs. gExperimentalPolyphase/
+ * HuffmanEnabled are plain process-global statics (not per-decoder-instance
+ * and never reset by MP3InitDecoder()), so one call after each init is
+ * enough, but it costs nothing to keep this next to where the decoder is
+ * actually created/reset. */
+static void mp3_enable_verified_fast_paths(void)
+{
+    MP3SetExperimentalHuffman(1);
+    MP3SetExperimentalPolyphase(1);
+}
+
 mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info,
                                         int low_rate, int mono)
 {
@@ -260,6 +282,7 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info,
         d->kind = AUDIO_KIND_MP3;
         d->mp3 = MP3InitDecoder();
         if (!d->mp3) goto fail;
+        mp3_enable_verified_fast_paths();
         if (d->mono) {
             /* One channel out of Helix, and - on joint-stereo frames whose
              * side channel is only there to reconstruct L/R - its huffman,
@@ -614,6 +637,7 @@ int mr_audio_decoder_reset(mr_audio_decoder *d)
     if (d->kind == AUDIO_KIND_MP3) {
         MP3FreeDecoder(d->mp3);
         d->mp3 = MP3InitDecoder();
+        if (d->mp3) mp3_enable_verified_fast_paths();
         if (d->mp3 && d->mono) {
             MP3SetOutputMono(d->mp3, 1);
             MP3SetMonoMSSideSkip(d->mp3, 1);
