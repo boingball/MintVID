@@ -4300,6 +4300,16 @@ int plm_audio_decode_header(plm_audio_t *self) {
 extern void plm_audio_idct36_m68k(int s[32][3], int ss, int32_t *d, int dp);
 #endif
 
+/* 68060-safe dedicated kernels (core/plm_audio_idct36_m68k_060.S,
+ * core/plm_audio_synth_window_m68k_060.S) - real 68060 hand-tuned asm using
+ * only hardware-safe mulu.w-based widening (never the extended-result
+ * MULS.L/MULU.L, an extended divide, or a libgcc __muldi3/__divdi3 call),
+ * not the portable-C fallback this codebase used until now. See each .S
+ * file's own header for how they were produced and verified. */
+#if defined(MR_M68K_ASM) && defined(MR_CPU_68060)
+extern void plm_audio_idct36_m68k_060(int s[32][3], int ss, int32_t *d, int dp);
+#endif
+
 /* count is the number of leading U[] lanes to scale/clamp - 32 at decim=1,
  * 32/decim otherwise (see plm_audio_set_decim()). CPU-independent (used on
  * every m68k tier, 68060 included), unlike the synth_window/idct36 asm
@@ -4318,6 +4328,13 @@ extern void scale_clamp_m68k(const int64_t *, int16_t *, int, int);
 #if defined(MR_M68K_ASM) && !defined(MR_CPU_68060)
 extern void plm_audio_synth_window_m68k(const int32_t *, const int32_t *, int,
                                         int64_t *, int);
+#endif
+
+/* 68060-safe dedicated kernel - see plm_audio_idct36_m68k_060's comment
+ * above and core/plm_audio_synth_window_m68k_060.S's own header. */
+#if defined(MR_M68K_ASM) && defined(MR_CPU_68060)
+extern void plm_audio_synth_window_m68k_060(const int32_t *, const int32_t *,
+                                            int, int64_t *, int);
 #endif
 
 #if defined(MR_M68K_ASM) && defined(MR_CPU_68060)
@@ -4615,14 +4632,22 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 				self->v_pos = (self->v_pos - 64) & 1023;
 
 				for (int ch = 0; ch < synth_channels; ch++) {
-					/* plm_audio_synth_window_m68k()/plm_audio_synth_window_decim()
-					 * both take decim (1, 2 or 4) directly and, at decim=1,
-					 * compute exactly what plm_audio_synth_window()/the old
-					 * fixed-32-lane asm call used to - see plm_audio_set_decim()
-					 * and each function's own comment. So there is one call
-					 * shape for every decim value, asm included: no separate
-					 * "decim==1" path to keep in sync with this one. */
-					#if defined(MR_M68K_ASM) && !defined(MR_CPU_68060)
+					/* Every *_m68k/_060/portable variant of synth_window
+					 * takes decim (1, 2 or 4) directly and, at decim=1,
+					 * computes exactly what the old fixed-32-lane call used
+					 * to - see plm_audio_set_decim() and each function's own
+					 * comment. So there is one call shape for every decim
+					 * value on every CPU tier: no separate "decim==1" path
+					 * to keep in sync with this one. 68030/040 (MR_M68K_ASM,
+					 * !MR_CPU_68060) uses the hand-tuned 040-class kernels;
+					 * 68060 uses its own dedicated kernels (never the 040
+					 * ones - the extended muls.l they use traps there); host
+					 * and any other build uses the portable C, itself
+					 * trap-free on 68060 via plm_audio_smul64_060. */
+					#if defined(MR_M68K_ASM) && defined(MR_CPU_68060)
+                    plm_audio_idct36_m68k_060(self->sample[ch], p, self->V[ch], self->v_pos);
+                    plm_audio_synth_window_m68k_060(self->D, self->V[ch], self->v_pos, self->U, self->decim);
+#elif defined(MR_M68K_ASM)
                     plm_audio_idct36_m68k(self->sample[ch], p, self->V[ch], self->v_pos);
                     plm_audio_synth_window_m68k(self->D, self->V[ch], self->v_pos, self->U, self->decim);
 #else

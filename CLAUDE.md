@@ -557,6 +557,117 @@ prints `MP2 decim=N lanes=N` from both integration points
 test can confirm which path is actually active before/after this fix,
 without depending on `--time`. Remove once that pass is done.
 
+**68060 now has its own dedicated MP2 hot-path kernels -
+`plm_audio_idct36_m68k_060`/`plm_audio_synth_window_m68k_060` -
+`core/plm_audio_idct36_m68k_060.S`/`core/plm_audio_synth_window_m68k_060.S`
+- instead of falling back to the portable C path every fix above this one
+still routed 68060 through.** That portable path was always correct (it's
+what proved every claim in this file), but it was an interim measure, not a
+kernel of its own - the 68030/040 tier has hand-tuned `.S` files and 68060
+didn't.
+
+Both are **generated, not hand-typed**: a standalone C transliteration of
+`plm_audio_idct36()`/`plm_audio_synth_window_decim()` (renamed, otherwise
+identical), with the widening multiply as `__attribute__((always_inline))`
+GCC inline asm (the same `mulu.w` four-partial-product technique as
+`plm_audio_smul64_060`), compiled at `-mcpu=68060 -O2 -S`, then stripped of
+only the compiler's own bookkeeping directives (`#APP`/`#NO_APP`, `.file`,
+`.type`, `.size`, `.ident`, `.note.GNU-stack`) - verified byte-for-byte
+identical machine code before and after stripping. This mirrors how
+`plm_audio_idct36_m68k.S` itself already reads (mechanical `.LNNNN` labels,
+compiler-shaped register allocation) - freezing validated compiler output
+as a kernel is the established pattern here, not a new one.
+
+The two kernels made *different* inlining choices, and the reason why is
+itself worth recording: **idct36's butterfly network calls the multiply 33
+times as straight-line, statically-unrolled C (no loop) - synth_window's
+tap loops call it from only two static source sites** (the loop runs up to
+16 times per lane at runtime, but the compiled code for the call exists
+once per site, same as any loop body). Fully inlining the ~35-instruction
+widen at all 33 idct36 sites measured out to a **~35 KB function** - several
+times over the 68060's 8 KB icache, and a real regression by this file's
+own "settle memory-bound trade-offs on hardware, not by instruction count"
+rule. So idct36 instead keeps the widen as one local (non-exported)
+subroutine, `smul64_060_shared`, that all 33 sites reach through a plain
+`jsr`/`rts` - shrinking the kernel to ~12.5 KB, in the same ballpark as the
+existing 68040 kernel's ~10.8 KB, at the cost of 33 call/return pairs
+instead of zero. synth_window's two static sites cost nothing to inline
+fully (~600 bytes total), so it does - no local subroutine, matching the
+"inline the multiply" default this whole family of kernels aims for
+wherever the code-size trade-off doesn't argue against it. Neither
+`smul64_060_shared` nor its call sites cross into C at any point - it is
+pure hand/compiler-generated assembly calling assembly within the same
+file, the thing this design deliberately avoids being is a kernel that
+`jsr`s out to compiled C (a real, different anti-pattern: that would add
+C-ABI call overhead *and* make the `.S` file depend on how pl_mpeg.h
+happens to compile that C function on a given day).
+
+Both retain full `plm_audio_set_decim()` support (`decim` = 1, 2 or 4) via
+the same interface as their 68040/portable counterparts - `synth_window`'s
+signature carries `decim` straight through from the C source it was
+generated from, and idct36 needs no decim parameter at all (it never
+changes with decim - see the "Fast MP2 decode mode" note above for why).
+
+Verified bit-exact on real m68k under qemu, both independently of the
+wider dispatch and through it: `tests/mr_mp2_idct_060_asm_check.c`/
+`tests/mr_mp2_synth_060_asm_check.c` compare each new kernel directly
+against the same reference oracles the 68040/portable-060 checks already
+use (decim=1/2/4 for synth_window); `tests/mr_mpeg1_decim_check.c`,
+already proven against a real MP2 elementary stream, was rebuilt at
+`-mcpu=68060 -DMR_M68K_ASM=1` (previously that combination only ever
+exercised the portable-060 fallback, since the dispatch had nowhere else to
+go) and still matches every kept sample exactly, now through the real
+dispatch in `plm_audio_decode_frame()`
+(`#if defined(MR_M68K_ASM) && defined(MR_CPU_68060)` picks the new kernels;
+plain `MR_M68K_ASM` still picks the 68040 ones; neither picks the portable
+C, which remains the host/68060-fallback-proof oracle all of this is
+checked against).
+
+**A disassembly-level CI gate, not a source-level one, closes the loop
+this whole family of fixes has been making the same claim about since the
+first `plm_audio_smul64_060`: that a kernel avoiding the trap-prone
+extended `muls.l`/`divsl.l` forms and libgcc's 64-bit
+`__muldi3`/`__divdi3`/`__udivdi3` helpers is provably true of the *emitted
+machine code*, not just plausible from reading the C/asm source.**
+`tests/scan_m68060_forbidden.py` disassembles a real object with
+`m68k-linux-gnu-objdump`/`nm` and checks the actual instruction encodings:
+extended-result `MULS.L`/`MULU.L` always shows 3 operands (there is no
+2-register-safe degenerate case, unlike divide, so any 3-operand
+`muls*`/`mulu*` is unconditionally forbidden); `DIVS.L`/`DIVU.L` also shows
+3 operands for *both* the trapping 64-bit-dividend form and the ordinary
+32-bit form hardware since 68020 - objdump's own disassembly distinguishes
+them by whether the remainder and quotient registers are the same register
+(safe) or different registers (the operands genuinely span a 64-bit
+dividend - forbidden); libgcc calls are found via relocations against
+`__muldi3`/`__divdi3`/`__udivdi3`. `tests/check_m68060_asm.sh` runs it two
+ways: the whole object for each standalone kernel (nothing else lives in
+those files), and, for `core/mr_mpeg1.c` built with the real production
+flags, only the specific functions the MP2 hot path actually reaches
+(`plm_audio_decode_frame`, `plm_decode_audio`, `plm_audio_decode`,
+`mr_mpeg1_audio`) via `objdump --disassemble=<symbol>` - scoped, because
+`mr_mpeg1.c` carries the *entire* pl_mpeg.h implementation
+(`PL_MPEG_IMPLEMENTATION`), including video/seek/HTTP code this player
+never calls and has never been claimed trap-free on 68060 (`plm_seek`
+alone pulls in real `__muldi3`/`__divdi3` references); scanning the whole
+object would flag genuine but irrelevant dead code and make the gate
+useless. Two real objdump gotchas surfaced writing this and are worth
+recording so they don't get rediscovered the hard way: `--disassemble=<sym>`
+must be passed *without* a separate bare `-d` - combined, `-d` silently
+wins and dumps the whole object regardless of the requested symbol (this
+produced a false positive - reported violations in unrelated code - before
+being caught by checking that the addresses reported didn't even fall
+inside the target function's known range); `-r` (relocations) *does*
+combine safely with `--disassemble=<sym>` and stays scoped to it, which is
+what makes the per-function libgcc-reference check possible at all. Wired
+into `run_m68k_check.sh`/`make check-m68k` (and so into CI - see
+`.github/workflows/build.yml`'s `conformance` job) - the two new
+`_060_asm_check` tests and this gate all run on every push and PR.
+
+Bit-exactness and instruction-safety are proven on qemu and via
+disassembly; the actual speedup on real 68060 silicon - the entire reason
+for doing this - still needs a hardware pass to confirm, same as every
+other 68060-specific claim in this file.
+
 ## Microsoft RLE (BI_RLE8) notes
 Running out of data is a **normal end of frame**, not an error: encoders often
 omit the end-of-bitmap escape, and AVI's zero-length chunk (an unchanged frame)

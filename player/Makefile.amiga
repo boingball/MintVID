@@ -318,7 +318,13 @@ KALMS_OBJ = $(KALMS_1X1_OBJ) $(KALMS_2X2_OBJ) $(KALMS_HAM6_OBJ)
 SYNTH_OBJ = build/plm_audio_synth_window_m68k.o
 IDCT_OBJ = build/plm_audio_idct36_m68k.o
 SCALE_OBJ = build/plm_audio_scale_clamp_m68k.o
-MP2_ASM_OBJ = $(SYNTH_OBJ) $(IDCT_OBJ) $(SCALE_OBJ)
+# Dedicated 68060 kernels (see each .S file's own header) - dead code on
+# CPU=68030/68040 builds (pl_mpeg.h's dispatch never calls them there), but
+# linked unconditionally same as SYNTH_OBJ/IDCT_OBJ already are on CPU=68060
+# builds, where the reverse is true.
+SYNTH_060_OBJ = build/plm_audio_synth_window_m68k_060.o
+IDCT_060_OBJ = build/plm_audio_idct36_m68k_060.o
+MP2_ASM_OBJ = $(SYNTH_OBJ) $(IDCT_OBJ) $(SCALE_OBJ) $(SYNTH_060_OBJ) $(IDCT_060_OBJ)
 VERSION_HEADER = amiga/mintvid_version.h
 KALMS_VASM ?= $(firstword \
     $(wildcard $(dir $(AMIGA_GCC))vasmm68k_mot) \
@@ -572,5 +578,13 @@ $(IDCT_OBJ): core/plm_audio_idct36_m68k.S
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(SCALE_OBJ): core/plm_audio_scale_clamp_m68k.S
+	mkdir -p build
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(SYNTH_060_OBJ): core/plm_audio_synth_window_m68k_060.S
+	mkdir -p build
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(IDCT_060_OBJ): core/plm_audio_idct36_m68k_060.S
 	mkdir -p build
 	$(CC) $(CFLAGS) -c $< -o $@
