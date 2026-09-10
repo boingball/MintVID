@@ -214,6 +214,20 @@ mr_mpeg1_audio_time_check_skip: tests/mr_mpeg1_audio_time_check.c core/mr_mpeg1.
 	$(CC) $(CFLAGS) -DMR_PL_MPEG_SKIP_AUDIO_TIME=1 \
 	    -o $@ tests/mr_mpeg1_audio_time_check.c core/mr_mpeg1.c
 
+# Proves plm_audio_set_decim()'s Fast MP2 mode (pl_mpeg.h) is bit-exact:
+# decoding at decim=2/4 must match decoding at decim=1 and keeping every
+# Nth sample, for every frame, stereo and mono alike. Needs mr_demux (not
+# just mr_mpeg1.c) to pull a real MP2 elementary stream out of an existing
+# TS fixture, so this links the full $(CORE) like mr_decode does.
+mr_mpeg1_decim_check: tests/mr_mpeg1_decim_check.c $(CORE) $(HEADERS) | check-libavc
+	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_decim_check.c $(CORE)
+
+# Focused synthetic counterpart: plm_audio_synth_window_decim() against
+# plm_audio_synth_window() directly, no real bitstream or mr_demux involved -
+# see the file header for why this is a distinct check from the one above.
+mr_mpeg1_decim_synth_check: tests/mr_mpeg1_decim_synth_check.c core/pl_mpeg.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_decim_synth_check.c
+
 mr_mpeg1_audio_time_check: mr_mpeg1_audio_time_check_base mr_mpeg1_audio_time_check_skip
 	test -f tests/assets/test_mpeg1_mp2.mpg || sh tests/gen_audio_assets.sh
 	./mr_mpeg1_audio_time_check_base tests/assets/test_mpeg1_mp2.mpg \
@@ -484,7 +498,7 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	@echo "[H.263+ unrestricted motion vectors]"
 	./mr_decode tests/assets/test_h263p_umv.avi --check tests/assets/ref_h263p_umv
 
-check-audio: mr_audio_check mr_ac3_check mr_mp2_check mr_mp2_synth_check mr_mp2_idct_check
+check-audio: mr_audio_check mr_ac3_check mr_mp2_check mr_mp2_synth_check mr_mp2_idct_check mr_mpeg1_decim_check mr_mpeg1_decim_synth_check
 	@test -f tests/assets/test_mp3.avi -a -f tests/assets/test_aac.mp4 \
 	    -a -f tests/assets/test_mp3_stereo.avi \
 	    -a -f tests/assets/test_mpeg1_mp2.mpg \
@@ -519,6 +533,8 @@ check-audio: mr_audio_check mr_ac3_check mr_mp2_check mr_mp2_synth_check mr_mp2_
 	./mr_mp2_idct_check
 	./mr_mp2_check tests/assets/test_mpeg1_mp2.mpg \
 	    tests/assets/ref_mpeg1_mp2.raw 22050 1
+	./mr_mpeg1_decim_check tests/assets/test_mp2_stereo.ts
+	./mr_mpeg1_decim_synth_check
 
 check-http: mr_decode mr_youtube_check
 	@test -d tests/assets/ref_mpeg2_ts \

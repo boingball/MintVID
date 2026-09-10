@@ -416,6 +416,74 @@ needs its own careful stride/rate bookkeeping and its own bit-exactness
 pass (`mr_audio_rate_check` pins the current 2x low-rate relationship
 exactly) - not something to bundle into a same-breath default change.
 
+**Correction: the two MintAMP MP3 findings above do not apply to MPEG-1/2
+audio at all.** `mr_mpeg1_audio()` decodes through pl_mpeg's own integer
+Layer II implementation (`plm_decode_audio()` -> `plm_audio_decode()` in
+`pl_mpeg.h`), never through MintAMP's `mp3dec.c`. `MP3SetExperimentalHuffman`/
+`Polyphase`/`FastLowrate`/`SuperfastLowrate`/`SubbandCap` are MintAMP-only
+symbols with no reach into pl_mpeg's decoder state - useful and bit-exact for
+actual MP3 playback (see above), but irrelevant to why an MPEG-1 `.mpg`/`.ts`
+clip's audio might be slow. pl_mpeg needed its own equivalent, from scratch.
+
+**pl_mpeg now has a genuine Fast MP2 decode mode - `plm_audio_set_decim()` -
+and it replaces a decode-then-discard waste that both MPEG-1 integration
+points had.** Before this, `mr_mpeg1_open()` computed `decim` (2 above 28kHz,
+doubled again under `--audio-rate=low`) but `mr_mpeg1_audio()` called
+`plm_decode_audio()` first and only kept every `decim`-th sample afterward -
+`--audio-rate=low` saved Paula output bandwidth but essentially no MP2 decode
+CPU, since `plm_audio_decode_frame()` still computed and threw away most of
+what it synthesised.
+
+The fix follows directly from how `plm_audio_synth_window()`'s windowed sum
+is structured: `u[i]` (output lane `i` of 32) reads `d`/`v` only at a fixed
+"+i" offset across 16 historical slices - never mixing with any other lane -
+so once a decimation factor keeps the same subset of lanes in every
+sub-block (true here because `out_pos` always advances by a multiple of 32,
+so `j % decim` never shifts phase from one sub-block to the next), the
+discarded lanes' tap-sums can be skipped outright rather than computed and
+thrown away. The 32-point IDCT feeding it (`plm_audio_idct36`) **cannot** be
+similarly pruned and still runs in full every sub-block regardless of decim:
+its fast butterfly network shares intermediate values across all 32 outputs
+right up to the final write-out stage, and more fundamentally its full
+32-lane output is written into the `V` ring buffer that *every* future
+sub-block's synthesis reads from, kept lanes included - skipping any of it
+would corrupt future output, not just the discarded samples of this frame.
+`plm_audio_synth_window_decim()` is the new, portable-C-only function that
+computes just the surviving lanes, compacted in order so the caller's output
+loop stays a plain contiguous copy; it is *not* used at decim=1, where the
+original code path - existing 68040 asm kernels (`plm_audio_synth_window_m68k`
+etc.) and `MR_CPU_68060`'s `plm_audio_smul64_060` widen included - runs
+completely unchanged, byte for byte.
+
+`MP3SetFastLowrate`-style **input-side** reduction (capping/zeroing high
+subbands before synthesis, saving the dequantisation work while still
+consuming the same bit count from the stream, so bit-position sync isn't
+lost) was considered too, per the same design question that produced the
+MintAMP knobs above - but not implemented. Unlike lane-skipping in the
+synthesis stage, it changes actual output values (no longer bit-exact
+against ffmpeg's own MP2 decode) and needs its own MAE-style
+quality characterization the way the video decoders get, not just a
+bit-exactness proof; a real "SuperFast" lossy tier is a plausible follow-up
+but a separate piece of work from this one. Likewise, mono mode was already
+skipping the second channel's synthesis entirely (`synth_channels = self->mono
+? 1 : 2` predates this change) - decim composes with it for free, verified
+by `tests/mr_mpeg1_decim_check.c`'s mono cases.
+
+Verified bit-exact two ways: `tests/mr_mpeg1_decim_synth_check.c` checks
+`plm_audio_synth_window_decim()` directly against `plm_audio_synth_window()`
+with random and sign-extreme synthetic V/D history across all 16 ring-buffer
+phases (no real bitstream involved - the lane-independence claim itself),
+and `tests/mr_mpeg1_decim_check.c` decodes a real MP2 elementary stream
+(extracted from `test_mp2_stereo.ts` via `mr_demux`) once per frame at
+decim=1 and once at decim=2/4, requiring every kept sample to match exactly -
+stereo and mono alike. Both pass on host and, cross-built for real m68k
+under qemu at `-m68030` (`MR_M68K_ASM=1`) and `-mcpu=68060`, on real
+big-endian codegen too (the 68060 build specifically exercises
+`plm_audio_smul64_060` from inside the new decimated path). `mr_mpeg1_open()`
+now calls `plm_set_audio_decim(m->plm, m->decim)` and `mr_mpeg1_audio()` no
+longer strides over the output at all - `plm_decode_audio()` already hands
+back only the kept samples.
+
 ## Microsoft RLE (BI_RLE8) notes
 Running out of data is a **normal end of frame**, not an error: encoders often
 omit the end-of-bitmap escape, and AVI's zero-length chunk (an unchanged frame)

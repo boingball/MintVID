@@ -361,6 +361,24 @@ void plm_set_audio_enabled(plm_t *self, int enabled);
 void plm_set_audio_mono(plm_t *self, int enabled);
 
 
+// MintVID: Layer II "Fast" decode mode. decim is 1 (default), 2 or 4 - any
+// other value is treated as 1. The full 32-band polyphase IDCT still runs
+// every sub-block (its output feeds every future sub-block's synthesis
+// history regardless of decim), but the far more expensive windowed
+// synthesis sum only computes the 32/decim output lanes that will actually
+// be kept, instead of computing all 32 and discarding the rest afterward.
+// plm_audio_decode() then returns PLM_AUDIO_SAMPLES_PER_FRAME/decim samples
+// per channel - exactly the samples mr_mpeg1_audio()'s (or
+// mr_audio_decode.c's) pre-existing every-Nth-sample decimation would have
+// kept from a full decode, bit-for-bit (see tests/mr_mpeg1_decim_check.c).
+// This is bit-exact for the samples it keeps: it is a different, cheaper
+// way to compute the same subset of the reference output, not a lossy
+// approximation. Default 1 (no reduction, byte-for-byte the original
+// pl_mpeg synthesis path, asm kernels included).
+
+void plm_set_audio_decim(plm_t *self, int decim);
+
+
 // Get the number of audio streams (0--4) reported in the system header.
 
 int plm_get_num_audio_streams(plm_t *self);
@@ -827,6 +845,11 @@ plm_samples_t *plm_audio_decode(plm_audio_t *self);
 void plm_audio_set_mono(plm_audio_t *self, int enabled);
 int plm_audio_get_channels(plm_audio_t *self);
 
+// MintVID: see plm_set_audio_decim(). Also updates samples.count to
+// PLM_AUDIO_SAMPLES_PER_FRAME/decim.
+
+void plm_audio_set_decim(plm_audio_t *self, int decim);
+
 
 
 #ifdef __cplusplus
@@ -887,6 +910,7 @@ struct plm_t {
 
 	int audio_enabled;
 	int audio_mono;
+	int audio_decim;
 	int audio_stream_index;
 	int audio_packet_type;
 	int64_t audio_lead_time;
@@ -969,6 +993,7 @@ int plm_init_decoders(plm_t *self) {
 			plm_buffer_set_load_callback(self->audio_buffer, plm_read_audio_packet, self);
 			self->audio_decoder = plm_audio_create_with_buffer(self->audio_buffer, TRUE);
 			plm_audio_set_mono(self->audio_decoder, self->audio_mono);
+			plm_audio_set_decim(self->audio_decoder, self->audio_decim);
 		}
 	}
 
@@ -1041,6 +1066,13 @@ void plm_set_audio_mono(plm_t *self, int enabled) {
 	self->audio_mono = enabled ? TRUE : FALSE;
 	if (self->audio_decoder) {
 		plm_audio_set_mono(self->audio_decoder, self->audio_mono);
+	}
+}
+
+void plm_set_audio_decim(plm_t *self, int decim) {
+	self->audio_decim = decim;
+	if (self->audio_decoder) {
+		plm_audio_set_decim(self->audio_decoder, self->audio_decim);
 	}
 }
 
@@ -3958,6 +3990,7 @@ struct plm_audio_t {
 	int layer;
 	int mode;
 	int mono;                 /* MintVID: synthesise the first channel only */
+	int decim;                /* MintVID: 1, 2 or 4 - see plm_audio_set_decim() */
 	int bound;
 	int v_pos;
 	int next_frame_data_size;
@@ -3990,6 +4023,7 @@ plm_audio_t *plm_audio_create_with_buffer(plm_buffer_t *buffer, int destroy_when
 	memset(self, 0, sizeof(plm_audio_t));
 
 	self->samples.count = PLM_AUDIO_SAMPLES_PER_FRAME;
+	self->decim = 1;
 	self->buffer = buffer;
 	self->destroy_buffer_when_done = destroy_when_done;
 	self->samplerate_index = 3; // Indicates 0
@@ -4029,6 +4063,17 @@ void plm_audio_set_mono(plm_audio_t *self, int enabled) {
 	if (self) {
 		self->mono = enabled ? TRUE : FALSE;
 	}
+}
+
+void plm_audio_set_decim(plm_audio_t *self, int decim) {
+	if (!self) {
+		return;
+	}
+	if (decim != 2 && decim != 4) {
+		decim = 1;
+	}
+	self->decim = decim;
+	self->samples.count = PLM_AUDIO_SAMPLES_PER_FRAME / decim;
 }
 
 int plm_audio_get_channels(plm_audio_t *self) {
@@ -4397,6 +4442,50 @@ static void plm_audio_synth_window(const int32_t *d, const int32_t *v,
 	}
 }
 
+/* MintVID: decimated polyphase synthesis for plm_audio_set_decim()'s Fast
+ * mode. Each output lane i above is a self-contained FIR sum over history
+ * at that fixed lane offset - the two loops only ever address d/v at "+i",
+ * never mixing lanes - so once mr_mpeg1_audio()'s (or mr_audio_decode.c's)
+ * decimation is only ever going to keep every decim-th sample, and decim
+ * divides 32 evenly (2 or 4), the same lane index is discarded in every
+ * sub-block of every frame. The IDCT feeding this still runs in full
+ * regardless (its output is written into V history that every future
+ * sub-block's synthesis reads across all 32 lanes, kept or not), but this
+ * function - by far the more expensive stage at 32 lanes x 16 taps each -
+ * only computes the 32/decim lanes that survive. Writes them compacted, in
+ * increasing lane order, so the caller's output loop stays a plain
+ * contiguous copy: bit-identical to decoding at decim=1 and then keeping
+ * every decim-th sample (see tests/mr_mpeg1_decim_check.c), just without
+ * ever computing the discarded 1-1/decim of the sums. */
+static void plm_audio_synth_window_decim(const int32_t *d, const int32_t *v,
+                                       int v_pos, int64_t *u, int decim) {
+	int d_start = 512 - (v_pos >> 1);
+	int v_start = (v_pos & 127) >> 1;
+	int out = 0;
+	for (int i = 0; i < 32; i += decim) {
+		const int32_t *dp = d + d_start + i;
+		const int32_t *vp = v + v_start + i;
+		int64_t sum = 0;
+		for (int tap = 0; tap < 8; ++tap) {
+#if defined(MR_M68K_ASM) && defined(MR_CPU_68060)
+			sum += plm_audio_smul64_060(dp[tap * 64], vp[tap * 128]);
+#else
+			sum += (int64_t)dp[tap * 64] * vp[tap * 128];
+#endif
+		}
+		dp = d + d_start + 32 + i;
+		vp = v + 96 - v_start + i;
+		for (int tap = 0; tap < 8; ++tap) {
+#if defined(MR_M68K_ASM) && defined(MR_CPU_68060)
+			sum += plm_audio_smul64_060(dp[tap * 64], vp[tap * 128]);
+#else
+			sum += (int64_t)dp[tap * 64] * vp[tap * 128];
+#endif
+		}
+		u[out++] = sum;
+	}
+}
+
 void plm_audio_decode_frame(plm_audio_t *self) {
 	// Prepare the quantizer table lookups
 	int tab3 = 0;
@@ -4513,6 +4602,7 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 
 			// Synthesis loop
 			int synth_channels = self->mono ? 1 : 2;
+			int lanes = 32 / self->decim;
 			for (int p = 0; p < 3; p++) {
 				// Shifting step
 				self->v_pos = (self->v_pos - 64) & 1023;
@@ -4524,47 +4614,77 @@ void plm_audio_decode_frame(plm_audio_t *self) {
                     plm_audio_idct36(self->sample[ch], p, self->V[ch], self->v_pos);
 #endif
 
+					if (self->decim == 1) {
 #if defined(MR_M68K_ASM) && !defined(MR_CPU_68060)
-					plm_audio_synth_window_m68k(self->D, self->V[ch], self->v_pos, self->U);
+						plm_audio_synth_window_m68k(self->D, self->V[ch], self->v_pos, self->U);
 #else
-					plm_audio_synth_window(self->D, self->V[ch], self->v_pos, self->U);
+						plm_audio_synth_window(self->D, self->V[ch], self->v_pos, self->U);
 #endif
 
-					// Output samples
-					#ifdef PLM_AUDIO_SEPARATE_CHANNELS
-						int16_t *out_channel = ch == 0
-							? self->samples.left
-							: self->samples.right;
-						#if defined(MR_M68K_ASM)
+						// Output samples
+						#ifdef PLM_AUDIO_SEPARATE_CHANNELS
+							int16_t *out_channel = ch == 0
+								? self->samples.left
+								: self->samples.right;
+							#if defined(MR_M68K_ASM)
                         scale_clamp_m68k(self->U, out_channel + out_pos, 1);
                     #else
                         for (int j = 0; j < 32; j++) {
                             out_channel[out_pos + j] = plm_audio_clamp(self->U[j] / -66562);
                         }
                     #endif
-					#else
-						if (self->mono) {
-							/* One channel, packed at the front of the buffer. */
-							#if defined(MR_M68K_ASM)
+						#else
+							if (self->mono) {
+								/* One channel, packed at the front of the buffer. */
+								#if defined(MR_M68K_ASM)
                             scale_clamp_m68k(self->U, self->samples.interleaved + out_pos, 1);
                         #else
                             for (int j = 0; j < 32; j++) {
                                 self->samples.interleaved[out_pos + j] = plm_audio_clamp(self->U[j] / -66562);
                             }
                         #endif
-						}
-						else {
-							#if defined(MR_M68K_ASM)
+							}
+							else {
+								#if defined(MR_M68K_ASM)
                             scale_clamp_m68k(self->U, self->samples.interleaved + (out_pos << 1) + ch, 2);
                         #else
                             for (int j = 0; j < 32; j++) {
                                 self->samples.interleaved[((out_pos + j) << 1) + ch] = plm_audio_clamp(self->U[j] / -66562);
                             }
                         #endif
-						}
-					#endif
+							}
+						#endif
+					} else {
+						/* MintVID: Fast MP2 decode - see plm_audio_set_decim()
+						 * and plm_audio_synth_window_decim(). Portable C only:
+						 * the m68k asm synth/scale-clamp kernels assume a
+						 * fixed 32 contiguous lanes, so decimated decode does
+						 * not use them - a documented trade-off against doing
+						 * 1/decim of the (much larger) tap-sum work instead. */
+						plm_audio_synth_window_decim(self->D, self->V[ch], self->v_pos, self->U, self->decim);
+
+						#ifdef PLM_AUDIO_SEPARATE_CHANNELS
+							int16_t *out_channel = ch == 0
+								? self->samples.left
+								: self->samples.right;
+							for (int j = 0; j < lanes; j++) {
+								out_channel[out_pos + j] = plm_audio_clamp(self->U[j] / -66562);
+							}
+						#else
+							if (self->mono) {
+								for (int j = 0; j < lanes; j++) {
+									self->samples.interleaved[out_pos + j] = plm_audio_clamp(self->U[j] / -66562);
+								}
+							}
+							else {
+								for (int j = 0; j < lanes; j++) {
+									self->samples.interleaved[((out_pos + j) << 1) + ch] = plm_audio_clamp(self->U[j] / -66562);
+								}
+							}
+						#endif
+					}
 				} // End of synthesis channel loop
-				out_pos += 32;
+				out_pos += lanes;
 			} // End of synthesis sub-block loop
 
 		} // Decoding of the granule finished

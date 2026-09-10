@@ -170,6 +170,14 @@ test -f tests/assets/test_mpeg1_mp2.mpg -a -f tests/assets/ref_mpeg1_mp2.raw \
 $CC -o "$BUILD/mr_mp2_check.m68k" tests/mr_mp2_check.c core/mr_mpeg1.c \
     core/mr_mpeg1_idct_m68k.S core/mr_mpeg1_blockset_m68k.S $MP2_ASM_SRC
 
+echo "== building mr_mpeg1_decim_check.m68k (Fast MP2 mode vs a real elementary stream) =="
+$CC -o "$BUILD/mr_mpeg1_decim_check.m68k" tests/mr_mpeg1_decim_check.c $CORE $LIBAVC_SRC \
+    -Wl,--wrap=ih264d_decode_bin \
+    -Wl,--wrap=ih264d_mvpred_nonmbaff \
+    -Wl,--wrap=ih264d_mvpred_nonmbaffB \
+    -Wl,--wrap=ih264d_parse_residual4x4_cabac \
+    -Wl,--wrap=ih264d_read_coeff4x4_cabac
+
 echo "== building mr_h264_m68k_check.m68k =="
 $CC -o "$BUILD/mr_h264_m68k_check.m68k" tests/mr_h264_m68k_check.c \
     vendor/libavc_port/ih264_m68k_optim.c \
@@ -228,6 +236,10 @@ echo "== building mr_mp2_synth_check.m68k =="
 $M68K_CC -O2 -std=c99 -m68030 -static -DMR_M68K_ASM=1 -o "$BUILD/mr_mp2_synth_check.m68k" \
     tests/mr_mp2_synth_check.c core/plm_audio_synth_window_m68k.S
 
+echo "== building mr_mpeg1_decim_synth_check.m68k (68030) =="
+$M68K_CC -O2 -std=c99 -m68030 -static -o "$BUILD/mr_mpeg1_decim_synth_check.m68k" \
+    tests/mr_mpeg1_decim_synth_check.c
+
 echo "== building mr_mp2_scale_check.m68k =="
 $M68K_CC -O2 -std=c99 -m68030 -static -DMR_M68K_ASM=1 -o "$BUILD/mr_mp2_scale_check.m68k" \
     tests/mr_mp2_scale_check.c core/plm_audio_scale_clamp_m68k.S
@@ -251,6 +263,11 @@ echo "== building mr_mp2_synth_060_check.m68k =="
 $M68K_CC -O2 -std=c99 -mcpu=68060 -static -DMR_M68K_ASM=1 \
     -o "$BUILD/mr_mp2_synth_060_check.m68k" \
     tests/mr_mp2_synth_060_check.c $MP2_ASM_060_SRC
+
+echo "== building mr_mpeg1_decim_synth_check.m68k (68060, exercises plm_audio_smul64_060) =="
+$M68K_CC -O2 -std=c99 -mcpu=68060 -static -DMR_M68K_ASM=1 \
+    -o "$BUILD/mr_mpeg1_decim_synth_check_060.m68k" \
+    tests/mr_mpeg1_decim_synth_check.c $MP2_ASM_060_SRC
 
 # amiga/audio_paula.c's session-invariant-divisor multiply/divide helpers
 # (core/mr_muldiv64.h). Portable - no .S files to link - but its 68060 path
@@ -317,6 +334,8 @@ run "$BUILD/mr_mp2_idct_check.m68k"
 run "$BUILD/mr_mp2_mul64_060_check.m68k"
 run "$BUILD/mr_mp2_idct_060_check.m68k"
 run "$BUILD/mr_mp2_synth_060_check.m68k"
+run "$BUILD/mr_mpeg1_decim_synth_check.m68k"
+run "$BUILD/mr_mpeg1_decim_synth_check_060.m68k"
 run "$BUILD/mr_muldiv64_check_040.m68k"
 run "$BUILD/mr_muldiv64_check_060.m68k"
 run "$BUILD/mr_yuv_dither_check.m68k"
@@ -332,6 +351,9 @@ run "$BUILD/mr_ac3_check.m68k" tests/assets/test_ac3.ac3 \
 echo "[MP2 from an MPEG-1 program stream vs ffmpeg, real m68k/big-endian]"
 run "$BUILD/mr_mp2_check.m68k" tests/assets/test_mpeg1_mp2.mpg \
     tests/assets/ref_mpeg1_mp2.raw 22050 1
+
+echo "[MP2 Fast decode mode (plm_audio_set_decim) vs a real elementary stream, real m68k/big-endian]"
+run "$BUILD/mr_mpeg1_decim_check.m68k" tests/assets/test_mp2_stereo.ts
 
 echo "[H.264 High Profile avc1 + B-frames, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_h264_high.mp4 \

@@ -97,6 +97,11 @@ mr_mpeg1 *mr_mpeg1_open(const uint8_t *buf, size_t len, int low_rate,
         m->decim = (raw > 28000) ? 2 : 1;
         if (low_rate) m->decim *= 2;
         m->rate_eff = (unsigned)(raw / m->decim);
+        /* MintVID: let pl_mpeg itself skip the polyphase synthesis work for
+         * the samples this decimation was always going to discard, instead
+         * of fully decoding all 1152 and throwing most of them away below -
+         * see plm_set_audio_decim() in pl_mpeg.h. */
+        plm_set_audio_decim(m->plm, m->decim);
     }
     return m;
 }
@@ -151,27 +156,27 @@ int mr_mpeg1_next(mr_mpeg1 *m, mr_frame *out, int64_t *pts_us)
 int mr_mpeg1_audio(mr_mpeg1 *m, unsigned char *dst)
 {
     plm_samples_t *s;
-    unsigned j, out = 0;
-    int decim, channels;
+    unsigned j, channels;
     if (!m) return 0;
     s = plm_decode_audio(m->plm);
     if (!s) return 0;
-    decim = m->decim;
-    channels = m->channels;
-    /* Take every `decim`-th sample frame, emit little-endian signed-16 so it
-     * is correct on the big-endian 68k regardless of host byte order. In mono
-     * mode pl_mpeg has already packed one channel at the front of the buffer
-     * (see plm_set_audio_mono()), so the frame stride is one sample. */
-    for (j = 0; j < s->count; j += decim) {
-        int ch;
+    channels = (unsigned)m->channels;
+    /* plm_set_audio_decim() (see mr_mpeg1_open()) already made pl_mpeg
+     * synthesise only the samples this decimation keeps, so s->count is
+     * already the decimated count - no stride left to apply here. Emit
+     * little-endian signed-16 so it is correct on the big-endian 68k
+     * regardless of host byte order. In mono mode pl_mpeg has already
+     * packed one channel at the front of the buffer (see
+     * plm_set_audio_mono()), so the frame stride is one sample. */
+    for (j = 0; j < s->count; j++) {
+        unsigned ch;
         for (ch = 0; ch < channels; ch++) {
             int v = s->interleaved[j * channels + ch];
             *dst++ = (unsigned char)(v & 0xff);
             *dst++ = (unsigned char)((v >> 8) & 0xff);
         }
-        out++;
     }
-    return (int)out;
+    return (int)s->count;
 }
 
 void mr_mpeg1_rewind(mr_mpeg1 *m) { if (m) plm_rewind(m->plm); }
