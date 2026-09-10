@@ -14,7 +14,7 @@
 # the remainder/quotient registers differ; an ordinary two-operand
 # muls.l/mulu.l is real 68060 hardware and is never flagged either).
 #
-# Five things are checked:
+# Six things are checked:
 #   1. The two standalone MP2 kernels (core/plm_audio_idct36_m68k_060.S,
 #      core/plm_audio_synth_window_m68k_060.S) - the whole object, since
 #      each file contains only the one hand-tuned function (plus, for
@@ -28,16 +28,39 @@
 #      code this player never calls and was never claimed trap-free on
 #      68060 - scanning the whole object would flag real but irrelevant
 #      dead code and make this check useless as a gate.
-#   3. H.264: every vendor/libavc_port/*.S/*.c file (the hand asm plus its
-#      C dispatch/wrap glue, including ih264d_update_qp_wrap.c - see that
-#      file for the per-macroblock DIVSL.L it replaces) - whole objects,
-#      built with the real Makefile.amiga LIBAVC_FLAGS/-DMR_M68K_ASM=1.
-#      This does NOT scan vendor/libavc/ itself (Ittiam's reference C,
-#      pinned upstream submodule) - see the AAC exclusion note below for
-#      why a submodule's own C is a different, not-fixable-here class of
-#      finding; ih264d_update_qp is the one such libavc hole this port
-#      layer already neutralises via --wrap, which is what part 3 proves.
-#   4. AAC: MintAMP's decoders/aac/*.c (excluding sbr*.c, which this
+#   3. H.264 (vendor/libavc_port): every vendor/libavc_port/*.S/*.c file
+#      (the hand asm plus its C dispatch/wrap glue, including
+#      ih264d_update_qp_wrap.c - see that file for the per-macroblock
+#      DIVSL.L it replaces) - whole objects, built with the real
+#      Makefile.amiga LIBAVC_FLAGS/-DMR_M68K_ASM=1.
+#   4. H.264 (vendor/libavc itself): unlike every other vendored submodule
+#      here, libavc's own reachable-and-fixable holes are now fixed at the
+#      source, directly in boingball/libavc (a fork of the real, actively
+#      developed AOSP libavc - not read-only upstream) - see
+#      vendor/libavc_port/ih264_m68k_divmod.h for the technique and why it
+#      was needed (GCC fuses a MOD+DIV, or even a remainder-only
+#      expression, of the same runtime divisor into the forbidden extended
+#      DIVSL.L/DIVUL.L, and a plain "split the C expression" rewrite gets
+#      re-fused right back). Scoped (--symbols) to the specific functions
+#      fixed: ih264d_start_of_pic/ih264d_parse_decode_slice
+#      (ih264d_parse_slice.c), ih264d_recon_deblk_slice
+#      (ih264d_thread_compute_bs.c), ih264d_decode_slice_thread
+#      (ih264d_thread_parse_decode.c) - not the whole libavc tree, which
+#      still carries three confirmed-but-deliberately-unfixed holes this
+#      gate does not scan for: ih264d_parse_pslice.c's
+#      ih264d_mark_err_slice_skip (only reached on detected slice loss/
+#      corruption - error recovery, not the normal decode path),
+#      ih264d_sei.c's ih264d_parse_mdcv (Mastering Display Color Volume
+#      SEI - HDR metadata essentially never present in broadcast SD/low-
+#      res content), and ih264d_utils.c's ih264d_decode_pic_order_cnt's
+#      POC TYPE 1 branch (real-world encoders default to POC type 0; type
+#      1 additionally needs a nonzero reference-frame-cycle count to even
+#      reach this code, and the __muldi3 there is a genuine 64x64-bit
+#      multiply no register-pair-avoidance trick can fix on any m68k
+#      tier). Whole-object scanning any of ih264d_parse_pslice.c/
+#      ih264d_sei.c/ih264d_utils.c would flag these on purpose-documented,
+#      not-worth-it findings and make the gate a permanent false alarm.
+#   5. AAC: MintAMP's decoders/aac/*.c (excluding sbr*.c, which this
 #      player's build excludes too), built with the real AACASM=1
 #      production flags (-include audio/mr_aac_m68k_config.h). pns.c and
 #      tns.c are included: both used to reference __muldi3 on 68060
@@ -48,7 +71,7 @@
 #      decoders/esp8266audio (boingball/ESP8266Audio) and wired in via
 #      AMIGA_M68K_ASM_AAC_PNS/_TNS (audio/mr_aac_m68k_config.h) - see the
 #      MintAMP submodule bump that landed this.
-#   5. AC-3: MintAMP's decoders/wma/fft-ffmpeg.c (liba52's IMDCT calls its
+#   6. AC-3: MintAMP's decoders/wma/fft-ffmpeg.c (liba52's IMDCT calls its
 #      ff_fft_calc_c) built with -DAMIGA_M68K_WMA_ASM, exactly as
 #      Makefile.amiga's LIBA52_FFT_CPPFLAGS wires it in for CPU=68060 only
 #      (see the note above LIBA52_SRC there). Without that define this
@@ -116,6 +139,11 @@ for f in $LIBAVC_PORT/ih264_m68k_interp.S $LIBAVC_PORT/ih264_m68k_deblk.S \
     H264_OBJS="$H264_OBJS $BUILD/h264/$base.o"
 done
 
+echo "== building H.264 (vendor/libavc itself, the fixed sites) at the real 68060 production flags =="
+$M68K_CC $H264_FLAGS -c -o "$BUILD/h264/dec_parse_slice.o" "$LIBAVC_ROOT/decoder/ih264d_parse_slice.c"
+$M68K_CC $H264_FLAGS -c -o "$BUILD/h264/dec_thread_compute_bs.o" "$LIBAVC_ROOT/decoder/ih264d_thread_compute_bs.c"
+$M68K_CC $H264_FLAGS -c -o "$BUILD/h264/dec_thread_parse_decode.o" "$LIBAVC_ROOT/decoder/ih264d_thread_parse_decode.c"
+
 echo "== building AAC (vendor/MintAMP/decoders/aac, AACASM=1 production flags) =="
 MINTAMP_ROOT=vendor/MintAMP
 AAC_FLAGS="-mcpu=68060 -std=gnu89 -O3 -fomit-frame-pointer -DAMIGA_M68K \
@@ -146,6 +174,17 @@ python3 tests/scan_m68060_forbidden.py --symbols \
 
 echo "== scanning H.264 (vendor/libavc_port, whole objects) =="
 python3 tests/scan_m68060_forbidden.py $H264_OBJS
+
+echo "== scanning H.264 (vendor/libavc, fixed sites only - see header for the three deliberately-unscanned exceptions) =="
+python3 tests/scan_m68060_forbidden.py --symbols \
+    ih264d_start_of_pic,ih264d_parse_decode_slice \
+    "$BUILD/h264/dec_parse_slice.o"
+python3 tests/scan_m68060_forbidden.py --symbols \
+    ih264d_recon_deblk_slice \
+    "$BUILD/h264/dec_thread_compute_bs.o"
+python3 tests/scan_m68060_forbidden.py --symbols \
+    ih264d_decode_slice_thread \
+    "$BUILD/h264/dec_thread_parse_decode.o"
 
 echo "== scanning AAC (vendor/MintAMP/decoders/aac, whole objects) =="
 python3 tests/scan_m68060_forbidden.py $AAC_OBJS
