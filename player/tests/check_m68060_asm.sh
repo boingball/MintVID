@@ -39,20 +39,15 @@
 #      layer already neutralises via --wrap, which is what part 3 proves.
 #   4. AAC: MintAMP's decoders/aac/*.c (excluding sbr*.c, which this
 #      player's build excludes too), built with the real AACASM=1
-#      production flags (-include audio/mr_aac_m68k_config.h). This
-#      intentionally excludes pns.c and tns.c: both are CONFIRMED to still
-#      reference __muldi3 on 68060 (raac_PNS's MULSHIFT32 call never gets
-#      the amiga_m68k_aac.h override other AAC files use; raac_TNSFilter
-#      hand-inlines `long long` arithmetic with no macro to redirect at
-#      all) - real, per-frame AAC-LC decode cost (PNS/TNS are standard
-#      tools many broadcast encoders enable), but the fix lives inside
-#      vendor/MintAMP's own pns.c/tns.c source, a git submodule this repo
-#      cannot push to (see ih264d_cabac_wrap.c's header comment for why a
-#      submodule edit doesn't survive `git submodule update --init`).
-#      Scanning them here would make this gate permanently red for a
-#      problem it cannot fix - excluded on purpose, not by oversight; the
-#      proposed upstream patch is recorded outside the repo for
-#      vendor/MintAMP's maintainer to apply directly.
+#      production flags (-include audio/mr_aac_m68k_config.h). pns.c and
+#      tns.c are included: both used to reference __muldi3 on 68060
+#      (raac_PNS's MULSHIFT32 call had no amiga_m68k_aac.h override;
+#      raac_TNSFilter hand-inlined `long long` arithmetic with no macro to
+#      redirect at all) - real, per-frame AAC-LC decode cost (PNS/TNS are
+#      standard tools many broadcast encoders enable). Fixed upstream in
+#      decoders/esp8266audio (boingball/ESP8266Audio) and wired in via
+#      AMIGA_M68K_ASM_AAC_PNS/_TNS (audio/mr_aac_m68k_config.h) - see the
+#      MintAMP submodule bump that landed this.
 #   5. AC-3: MintAMP's decoders/wma/fft-ffmpeg.c (liba52's IMDCT calls its
 #      ff_fft_calc_c) built with -DAMIGA_M68K_WMA_ASM, exactly as
 #      Makefile.amiga's LIBA52_FFT_CPPFLAGS wires it in for CPU=68060 only
@@ -128,7 +123,7 @@ AAC_FLAGS="-mcpu=68060 -std=gnu89 -O3 -fomit-frame-pointer -DAMIGA_M68K \
     -I$MINTAMP_ROOT/decoders/aac -I$MINTAMP_ROOT/decoders/aac-arduino-shim \
     -I$MINTAMP_ROOT/decoders -include audio/mr_aac_m68k_config.h -w"
 AAC_OBJS=""
-for f in $(printf '%s\n' "$MINTAMP_ROOT"/decoders/aac/*.c | grep -v -e /sbr -e /pns.c -e /tns.c); do
+for f in $(printf '%s\n' "$MINTAMP_ROOT"/decoders/aac/*.c | grep -v -e /sbr); do
     base=$(basename "$f" .c)
     $M68K_CC $AAC_FLAGS -c -o "$BUILD/aac/$base.o" "$f"
     AAC_OBJS="$AAC_OBJS $BUILD/aac/$base.o"
@@ -152,7 +147,7 @@ python3 tests/scan_m68060_forbidden.py --symbols \
 echo "== scanning H.264 (vendor/libavc_port, whole objects) =="
 python3 tests/scan_m68060_forbidden.py $H264_OBJS
 
-echo "== scanning AAC (vendor/MintAMP/decoders/aac, whole objects, pns.c/tns.c excluded - see header) =="
+echo "== scanning AAC (vendor/MintAMP/decoders/aac, whole objects) =="
 python3 tests/scan_m68060_forbidden.py $AAC_OBJS
 
 echo "== scanning AC-3 FFT (whole object) =="
