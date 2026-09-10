@@ -207,6 +207,51 @@ itself can only be reviewed, not compiled, on this dev host (see "Validate
 against ffmpeg" above) - the arithmetic is proven exact, but the actual
 speedup on real 68060 silicon still needs a hardware pass to confirm.
 
+This is a shared backend, not an MPEG-specific one: `audio_paula.c` is the
+one Paula output path every audio codec plays through (H.264+AAC, MP3, AC-3,
+LATM, MP2 alike), so this fix changes the playback clock for all of them,
+not just the MP2 case that surfaced it. Give at least one non-MP2 clip
+(H.264+AAC/MP3) a real-hardware sanity pass alongside the MP2 one before
+relying on this.
+
+**68060 detection is hardened against compiler-spelling drift.**
+`core/mr_cpu.h` defines one macro, `MR_CPU_68060`, unioning every predefine
+spelling in use (`__mc68060__`, `__mc68060`, `mc68060` - this m68k-linux-gnu-gcc
+defines all three for `-mcpu=68060`, confirmed with `-dM -E`, but
+`vendor/MintAMP`'s own real-hardware-tested code checks all three
+defensively too, meaning a different GCC generation is not guaranteed to
+agree) and every 68060-conditional site in `pl_mpeg.h`/`mr_muldiv64.h` (and
+their tests) checks only that macro. The asymmetry that makes this worth
+hardening: a false positive just takes the slower fallback, but a false
+negative sends a real 68060 straight into the trap-prone extended
+`muls.l`/`divsl.l` path this entire family of fixes exists to avoid.
+
+**`plm_audio_smul64_060`'s bit-pattern assembly had a latent UB wart.**
+`((int64_t)hi << 32) | lo` left-shifts a *signed* `int32_t` that is
+frequently negative (whenever the product is negative) - technically
+undefined behaviour in C, even though every compiler this has been tested
+with does the intended thing. Fixed to build the pattern unsigned first:
+`(int64_t)(((uint64_t)(uint32_t)hi << 32) | (uint32_t)lo)`.
+`mr_muldiv64.h`'s own widen (`mr_u32_mul_u32_wide`) never had this problem -
+its halves are `uint32_t` throughout, so the shift was always well-defined.
+
+**The audio-time skip's "nobody reads this" claim needed a correction, not
+just a rewording.** `mr_mpeg1_audio()` calls `plm_decode_audio(plm_t*)` -
+not `plm_audio_decode(plm_audio_t*)`, a level down - and that function
+*does* read the very `samples->time` this optimization stops updating,
+copying it into the `plm_t`'s own `.time` field. The claim only becomes true
+one hop further: that field's only other readers in `pl_mpeg.h` are
+`plm_get_time()`, `plm_decode()`'s own scheduling loop, and
+`plm_seek()`/`plm_seek_frame()`, none of which `mr_mpeg1.c` ever calls (it
+drives `mr_mpeg1_next()`/`mr_mpeg1_audio()` directly). The skip is now its
+own flag, `MR_PL_MPEG_SKIP_AUDIO_TIME` (Makefile.amiga sets it alongside
+`MR_M68K_ASM`, decoupled on purpose so it's independently testable), and
+`tests/mr_mpeg1_audio_time_check.c` builds `mr_mpeg1.c` both ways and diffs
+every video frame's pts/pixels and every decoded PCM byte between them -
+proving the skip is invisible through the one interface this player
+actually uses, rather than resting on a chain of "and nothing reads *that*
+either" reasoning.
+
 **The RGB24 round-trip is the expensive part, not the decode.** The adapter's
 `emit_rgb()` was about a third of its own decode time, and the display's
 RGB→indexed dither cost about as much again — so an AGA session paid for RGB24

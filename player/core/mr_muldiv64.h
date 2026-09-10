@@ -28,9 +28,12 @@
  * bits - true of every real Paula output rate (Paula's colour clock is a
  * few MHz and its minimum period clamps the rate well under 65536, see
  * MIN_PERIOD in audio_paula.c) - using ONLY the ordinary 32-bit/32-bit
- * hardware divide (ordinary DIVU.L, ISA since the 68000, hardware
- * everywhere including 68060; only the *extended* 64-bit-dividend
- * DIVU.L/DIVS.L form is the trap-prone/libgcc-routed one). It does this via
+ * hardware divide (the plain 32-bit-dividend DIVU.L/DIVS.L, a 68020-and-up
+ * ISA addition - not in base 68000/010, which only has the 16-bit
+ * DIVU.W/DIVS.W, but MintVID's baseline is 68030 regardless; hardware
+ * everywhere from there up including 68060. Only the *extended*
+ * 64-bit-dividend DIVU.L/DIVS.L form is the trap-prone/libgcc-routed one).
+ * It does this via
  * base-2^16 schoolbook long division: the running remainder is always
  * smaller than a 16-bit divisor, so appending the next 16-bit digit of the
  * dividend always keeps the trial value inside 32 bits, safe for a plain
@@ -43,8 +46,11 @@
 #define MR_MULDIV64_H
 
 #include <stdint.h>
+#if defined(MR_M68K_ASM)
+#include "mr_cpu.h"    /* MR_CPU_68060 - see mr_cpu.h for why this matters */
+#endif
 
-#if defined(MR_M68K_ASM) && defined(__mc68060__)
+#if defined(MR_M68K_ASM) && defined(MR_CPU_68060)
 /* Unsigned 32x32->64 widen: d0:d1 = a * b, via the four-partial-product
  * schoolbook multiply (mulu.w only - hardware on every m68k, 68060
  * included). No sign step: both operands are plain unsigned magnitudes. */

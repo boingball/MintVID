@@ -850,6 +850,9 @@ int plm_audio_get_channels(plm_audio_t *self);
 #ifndef PLM_NO_STDIO
 #include <stdio.h>
 #endif
+#if defined(MR_M68K_ASM)
+#include "mr_cpu.h"    /* MR_CPU_68060 - see mr_cpu.h for why this matters */
+#endif
 
 #ifndef TRUE
 #define TRUE 1
@@ -4079,26 +4082,39 @@ plm_samples_t *plm_audio_decode(plm_audio_t *self) {
 
 	self->samples.time = self->time;
 
-#if defined(MR_M68K_ASM)
-	/* MintVID never reads plm_audio_get_time()/samples->time - it drives
-	 * mr_mpeg1_next()/mr_mpeg1_audio() directly (never plm_decode()'s own
-	 * scheduling loop or plm_seek()) and gets audio PTS from the
-	 * container's own PES timestamps (see mr_ps.c and CLAUDE.md's
-	 * "MPEG-PS timestamps" note), not from pl_mpeg's internal clock. That
-	 * makes this line dead weight, and an expensive one on m68k: with a
-	 * samplerate_index only known at runtime, GCC can't fold the divisor
-	 * to a compile-time constant, so `(int64_t)a * TIME_SCALE / rate`
-	 * lowers to two separate libgcc calls - jsr __muldi3 for the multiply
-	 * (only on 68060; it's a single hardware muls.l on 68020-68040) and
-	 * jsr __divdi3 for the divide on *every* m68k tier, since none of
-	 * them has a 64-bit-quotient divide instruction at all. That's two
-	 * software routines per decoded MP2 frame (~38/sec at 44.1kHz) for a
-	 * value nobody reads, so skip it here rather than speed it up -
-	 * samples_decoded stays in step with it since nothing else reads
-	 * either. Left fully intact on host builds (make check/check-audio
-	 * never exercise this field, but the cost there is one native
-	 * DIVQ/MULQ, not worth special-casing away from pl_mpeg's own
-	 * behaviour). */
+#if defined(MR_PL_MPEG_SKIP_AUDIO_TIME)
+	/* Decoupled from MR_M68K_ASM on purpose (Makefile.amiga sets both) so
+	 * this one optimization is independently switchable and testable - see
+	 * tests/mr_mpeg1_audio_time_check.c, which builds this file both ways
+	 * and diffs mr_mpeg1's actual decoded output between them.
+	 *
+	 * The full chain, traced honestly rather than asserting "nobody reads
+	 * this": mr_mpeg1_audio() calls plm_decode_audio(plm_t*) (not this
+	 * function directly - that's plm_audio_decode(plm_audio_t*), a level
+	 * down), and plm_decode_audio() *does* read the samples->time this
+	 * assigns, copying it into self->time - but that field belongs to the
+	 * plm_t, and its only other readers in this file are plm_get_time(),
+	 * plm_decode()'s own scheduling loop, and plm_seek()/plm_seek_frame() -
+	 * none of which mr_mpeg1.c's call pattern (mr_mpeg1_next() /
+	 * mr_mpeg1_audio(), never plm_decode()/plm_get_time()/plm_seek()) ever
+	 * reaches. So the value is genuinely dead two hops downstream, not
+	 * unread at the point this comment used to claim - MintVID gets audio
+	 * PTS from the container's own PES timestamps instead (see mr_ps.c and
+	 * CLAUDE.md's "MPEG-PS timestamps" note).
+	 *
+	 * It's also an expensive dead value on m68k: with a samplerate_index
+	 * only known at runtime, GCC can't fold the divisor to a compile-time
+	 * constant, so `(int64_t)a * TIME_SCALE / rate` lowers to two separate
+	 * libgcc calls - jsr __muldi3 for the multiply (only on 68060; it's a
+	 * single hardware muls.l on 68020-68040) and jsr __divdi3 for the
+	 * divide on *every* m68k tier, since none of them has a
+	 * 64-bit-quotient divide instruction at all. That's two software
+	 * routines per decoded MP2 frame (~38/sec at 44.1kHz), so skip it here
+	 * rather than speed it up - samples_decoded stays in step with it
+	 * since nothing else reads either. Host builds never define this flag,
+	 * so make check/check-audio keep pl_mpeg's original behaviour byte for
+	 * byte (the cost there is one native DIVQ/MULQ, not worth diverging
+	 * from upstream over). */
 #else
 	self->samples_decoded += PLM_AUDIO_SAMPLES_PER_FRAME;
 	self->time = (int64_t)self->samples_decoded * PLM_TIME_SCALE /
@@ -4235,7 +4251,7 @@ int plm_audio_decode_header(plm_audio_t *self) {
 	return frame_size - (hasCRC ? 6 : 4);
 }
 
-#if defined(MR_M68K_ASM) && !defined(__mc68060__)
+#if defined(MR_M68K_ASM) && !defined(MR_CPU_68060)
 extern void plm_audio_idct36_m68k(int s[32][3], int ss, int32_t *d, int dp);
 #endif
 
@@ -4247,12 +4263,12 @@ extern void scale_clamp_m68k(const int64_t *, int16_t *, int);
  * walks has eight taps for every reachable v_pos (0, 64, ..., 960).
  * Keep the original tap order and signed 64-bit products, but write U only
  * once per lane instead of loading/storing it for every contribution. */
-#if defined(MR_M68K_ASM) && !defined(__mc68060__)
+#if defined(MR_M68K_ASM) && !defined(MR_CPU_68060)
 extern void plm_audio_synth_window_m68k(const int32_t *, const int32_t *, int,
                                         int64_t *);
 #endif
 
-#if defined(MR_M68K_ASM) && defined(__mc68060__)
+#if defined(MR_M68K_ASM) && defined(MR_CPU_68060)
 /* The 68060 has no hardware 64-bit-result MULS.L/MULU.L (nor a 64-bit
  * DIVS.L/DIVU.L - see scale_clamp_m68k.S's reciprocal-multiply divide for
  * the same story on the division side): the extended `muls.l <ea>,Dh:Dl`
@@ -4344,7 +4360,12 @@ static int64_t plm_audio_smul64_060(int32_t a, int32_t b) {
         : "a"(a), "a"(b)
         : "d0","d1","d2","d3","d4","d5","d6","d7","cc"
     );
-    return ((int64_t)hi << 32) | (uint32_t)lo;
+    /* Build the bit pattern unsigned first: left-shifting a negative signed
+     * value (hi < 0 whenever the product is negative) is undefined
+     * behaviour in C, even though the shift-then-OR here always produced
+     * the intended two's-complement bit pattern under the compilers this
+     * has been tested with. */
+    return (int64_t)(((uint64_t)(uint32_t)hi << 32) | (uint32_t)lo);
 }
 #endif
 
@@ -4357,7 +4378,7 @@ static void plm_audio_synth_window(const int32_t *d, const int32_t *v,
 		const int32_t *vp = v + v_start + i;
 		int64_t sum = 0;
 		for (int tap = 0; tap < 8; ++tap) {
-#if defined(MR_M68K_ASM) && defined(__mc68060__)
+#if defined(MR_M68K_ASM) && defined(MR_CPU_68060)
 			sum += plm_audio_smul64_060(dp[tap * 64], vp[tap * 128]);
 #else
 			sum += (int64_t)dp[tap * 64] * vp[tap * 128];
@@ -4366,7 +4387,7 @@ static void plm_audio_synth_window(const int32_t *d, const int32_t *v,
 		dp = d + d_start + 32 + i;
 		vp = v + 96 - v_start + i;
 		for (int tap = 0; tap < 8; ++tap) {
-#if defined(MR_M68K_ASM) && defined(__mc68060__)
+#if defined(MR_M68K_ASM) && defined(MR_CPU_68060)
 			sum += plm_audio_smul64_060(dp[tap * 64], vp[tap * 128]);
 #else
 			sum += (int64_t)dp[tap * 64] * vp[tap * 128];
@@ -4497,13 +4518,13 @@ void plm_audio_decode_frame(plm_audio_t *self) {
 				self->v_pos = (self->v_pos - 64) & 1023;
 
 				for (int ch = 0; ch < synth_channels; ch++) {
-					#if defined(MR_M68K_ASM) && !defined(__mc68060__)
+					#if defined(MR_M68K_ASM) && !defined(MR_CPU_68060)
                     plm_audio_idct36_m68k(self->sample[ch], p, self->V[ch], self->v_pos);
 #else
                     plm_audio_idct36(self->sample[ch], p, self->V[ch], self->v_pos);
 #endif
 
-#if defined(MR_M68K_ASM) && !defined(__mc68060__)
+#if defined(MR_M68K_ASM) && !defined(MR_CPU_68060)
 					plm_audio_synth_window_m68k(self->D, self->V[ch], self->v_pos, self->U);
 #else
 					plm_audio_synth_window(self->D, self->V[ch], self->v_pos, self->U);
@@ -4612,7 +4633,7 @@ void plm_audio_read_samples(plm_audio_t *self, int ch, int sb, int part) {
 
 /* Q15 coefficient multiply with symmetric, half-away-from-zero rounding. */
 static int32_t plm_audio_mul_q15(int32_t value, int32_t coefficient) {
-#if defined(MR_M68K_ASM) && defined(__mc68060__)
+#if defined(MR_M68K_ASM) && defined(MR_CPU_68060)
 	int64_t product = plm_audio_smul64_060(value, coefficient);
 #else
 	int64_t product = (int64_t)value * coefficient;

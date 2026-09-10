@@ -322,6 +322,7 @@ endif
 # anything except this exact pair of files.
 CFLAGS  = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wextra \
           -DAMIGA_M68K -DMR_HAVE_H264 -DMR_M68K_ASM=1 \
+          -DMR_PL_MPEG_SKIP_AUDIO_TIME=1 \
           $(YUV_ASM_CPPFLAGS) \
           $(STAGE_PROFILE_FLAGS) $(KALMS_CPPFLAGS) \
           $(HTTP_SSL_FLAGS) $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \

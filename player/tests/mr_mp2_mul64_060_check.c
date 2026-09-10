@@ -1,12 +1,14 @@
 /* Bit-exact check for the 68060 trap-free 32x32->64 signed multiply that
- * backs plm_audio_mul_q15 and plm_audio_synth_window when __mc68060__ is
- * defined (see pl_mpeg.h). This only builds on m68k - the primitive is
- * m68k inline asm - so it is m68k-cross/qemu-only, like the other hand-asm
- * MP2 checks, and is compiled with -mcpu=68060 so the guard actually fires. */
+ * backs plm_audio_mul_q15 and plm_audio_synth_window when MR_CPU_68060 is
+ * defined (see pl_mpeg.h and core/mr_cpu.h). This only builds on m68k - the
+ * primitive is m68k inline asm - so it is m68k-cross/qemu-only, like the
+ * other hand-asm MP2 checks, and is compiled with -mcpu=68060 so the guard
+ * actually fires. */
 #include <stdint.h>
 #include <stdio.h>
+#include "../core/mr_cpu.h"
 
-#if !defined(MR_M68K_ASM) || !defined(__mc68060__)
+#if !defined(MR_M68K_ASM) || !defined(MR_CPU_68060)
 #error "build with -DMR_M68K_ASM=1 -mcpu=68060"
 #endif
 

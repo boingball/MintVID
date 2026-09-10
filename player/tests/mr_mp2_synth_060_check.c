@@ -1,13 +1,14 @@
 /* Whole-window regression for the 68060 fast path: plm_audio_synth_window
  * (portable C) internally routes its multiply-accumulate through the
- * trap-free plm_audio_smul64_060 primitive when __mc68060__ is defined
- * (see pl_mpeg.h). Deliberately does not undef MR_M68K_ASM - see
- * mr_mp2_idct_060_check.c for why. */
+ * trap-free plm_audio_smul64_060 primitive when MR_CPU_68060 is defined
+ * (see pl_mpeg.h and core/mr_cpu.h). Deliberately does not undef
+ * MR_M68K_ASM - see mr_mp2_idct_060_check.c for why. */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "../core/mr_cpu.h"
 
-#if !defined(MR_M68K_ASM) || !defined(__mc68060__)
+#if !defined(MR_M68K_ASM) || !defined(MR_CPU_68060)
 #error "build with -DMR_M68K_ASM=1 -mcpu=68060"
 #endif
 

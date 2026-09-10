@@ -200,6 +200,29 @@ mr_mp2_check: tests/mr_mp2_check.c core/mr_mpeg1.c core/mr_mpeg1.h \
               core/pl_mpeg.h core/mr_types.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_mp2_check.c core/mr_mpeg1.c
 
+# Proves MR_PL_MPEG_SKIP_AUDIO_TIME (pl_mpeg.h's plm_audio_decode() dead
+# per-frame time bookkeeping skip) changes nothing mr_mpeg1.c actually hands
+# back: same source built with and without the flag, both decoding the same
+# fixture through the real mr_mpeg1_next()/mr_mpeg1_audio() alternation, and
+# diffed byte for byte.
+mr_mpeg1_audio_time_check_base: tests/mr_mpeg1_audio_time_check.c core/mr_mpeg1.c \
+              core/mr_mpeg1.h core/pl_mpeg.h core/mr_types.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_audio_time_check.c core/mr_mpeg1.c
+
+mr_mpeg1_audio_time_check_skip: tests/mr_mpeg1_audio_time_check.c core/mr_mpeg1.c \
+              core/mr_mpeg1.h core/pl_mpeg.h core/mr_types.h
+	$(CC) $(CFLAGS) -DMR_PL_MPEG_SKIP_AUDIO_TIME=1 \
+	    -o $@ tests/mr_mpeg1_audio_time_check.c core/mr_mpeg1.c
+
+mr_mpeg1_audio_time_check: mr_mpeg1_audio_time_check_base mr_mpeg1_audio_time_check_skip
+	test -f tests/assets/test_mpeg1_mp2.mpg || sh tests/gen_audio_assets.sh
+	./mr_mpeg1_audio_time_check_base tests/assets/test_mpeg1_mp2.mpg \
+	    > mr_mpeg1_audio_time_check_base.out
+	./mr_mpeg1_audio_time_check_skip tests/assets/test_mpeg1_mp2.mpg \
+	    > mr_mpeg1_audio_time_check_skip.out
+	diff -u mr_mpeg1_audio_time_check_base.out mr_mpeg1_audio_time_check_skip.out
+	@echo "mr_mpeg1 audio-time bookkeeping skip: identical output with/without MR_PL_MPEG_SKIP_AUDIO_TIME"
+
 check-libavc:
 	@test -f $(LIBAVC_ROOT)/decoder/ih264d.h || { \
 	  echo "ERROR: initialise the libavc submodule first:"; \
@@ -321,7 +344,7 @@ mr_youtube_search_check: tests/mr_youtube_search_check.c \
 	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_search_check.c \
 	    youtube/mr_youtube_search.c
 
-check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg2_yuv_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_cinepak_indexed_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_muldiv64_check mr_h264_m68k_check mr_h264_mc_degrade_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check
+check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg1_audio_time_check mr_mpeg2_yuv_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_cinepak_indexed_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_muldiv64_check mr_h264_m68k_check mr_h264_mc_degrade_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check
 	./mr_youtube_search_check
 	./mr_youtube_check
 	./mr_hls_override_check
@@ -536,6 +559,8 @@ clean:
 	rm -f mr_aspect_check
 	rm -f mr_media_clock_check
 	rm -f mr_muldiv64_check
+	rm -f mr_mpeg1_audio_time_check_base mr_mpeg1_audio_time_check_skip \
+	      mr_mpeg1_audio_time_check_base.out mr_mpeg1_audio_time_check_skip.out
 	rm -f mr_h264_m68k_check
 	rm -f mr_h264_mc_degrade_check
 	rm -f mr_iptv_check mr_youtube_check mr_youtube_search_check

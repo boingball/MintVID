@@ -1,19 +1,20 @@
 /* Whole-transform regression for the 68060 fast path: plm_audio_idct36
  * (portable C) internally routes its multiplies through the trap-free
- * plm_audio_smul64_060 primitive when __mc68060__ is defined (see
- * pl_mpeg.h). Unlike mr_mp2_idct_check.c this deliberately does NOT undef
- * MR_M68K_ASM - that redirection exists only to isolate the hand-tuned
- * 68040 dump (plm_audio_idct36_m68k) from the rest of the file's asm
- * dispatch, and would also disable the 68060 guard under test here. On
- * 68060 plm_audio_idct36_m68k stays excluded regardless (see its own
- * !defined(__mc68060__) guard), so nothing else gets pulled in and no
- * .S file needs linking. */
+ * plm_audio_smul64_060 primitive when MR_CPU_68060 is defined (see
+ * pl_mpeg.h and core/mr_cpu.h). Unlike mr_mp2_idct_check.c this
+ * deliberately does NOT undef MR_M68K_ASM - that redirection exists only to
+ * isolate the hand-tuned 68040 dump (plm_audio_idct36_m68k) from the rest
+ * of the file's asm dispatch, and would also disable the 68060 guard under
+ * test here. On 68060 plm_audio_idct36_m68k stays excluded regardless (see
+ * its own !defined(MR_CPU_68060) guard), so nothing else gets pulled in and
+ * no .S file needs linking. */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <limits.h>
+#include "../core/mr_cpu.h"
 
-#if !defined(MR_M68K_ASM) || !defined(__mc68060__)
+#if !defined(MR_M68K_ASM) || !defined(MR_CPU_68060)
 #error "build with -DMR_M68K_ASM=1 -mcpu=68060"
 #endif
 
