@@ -109,7 +109,9 @@ smul64_060_shared:
 	rts
 	.align	2
 	.globl	plm_audio_idct36_m68k_060
+	.globl	_plm_audio_idct36_m68k_060
 plm_audio_idct36_m68k_060:
+_plm_audio_idct36_m68k_060:
 	lea (-156,%sp),%sp
 	movem.l #16190,-(%sp)
 	move.l 212(%sp),%a3
