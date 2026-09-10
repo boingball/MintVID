@@ -12,6 +12,7 @@
  */
 #include "mr_audio.h"
 #include "mr_audio_rate.h"
+#include "../core/mr_muldiv64.h"
 
 #include <exec/types.h>
 #include <exec/memory.h>
@@ -121,7 +122,19 @@ static uint64_t audio_now_us(void)
     struct EClockVal value;
     ULONG frequency = TimerBase ? ReadEClock(&value) : 0;
     uint64_t ticks = ((uint64_t)value.ev_hi << 32) | value.ev_lo;
-    return frequency ? ticks * 1000000ULL / frequency :
+    /* ticks grows for the whole session and frequency is only known at
+     * runtime, so plain `ticks * 1000000ULL / frequency` is a 64-bit
+     * multiply-then-divide by a runtime value on every call - GCC always
+     * routes that through libgcc's __muldi3/__udivdi3 on m68k, on every CPU
+     * tier (see core/mr_muldiv64.h). This is called at least once per
+     * audio_elapsed_us()/audio_buffered_ms()/audio_diagnostics() call, i.e.
+     * on essentially every displayed video frame while audio is playing -
+     * frequency (ReadEClock's tick rate, a few hundred kHz on real Amiga
+     * hardware) comfortably fits mr_u64_div_u24's 2^24 bound. The clock()
+     * fallback only runs when timer.device is unavailable and divides by
+     * the compile-time constant CLOCKS_PER_SEC, which the compiler can
+     * already fold into a cheap reciprocal - left alone. */
+    return frequency ? mr_u64_div_u24(mr_u64_mul_u32(ticks, 1000000u), frequency) :
            (uint64_t)clock() * 1000000ULL / CLOCKS_PER_SEC;
 }
 
@@ -150,7 +163,11 @@ static int oldest_request(mr_audio *a)
 
 static uint64_t request_duration_us(mr_audio *a, unsigned samples)
 {
-    return (uint64_t)samples * 1000000ULL / a->output_rate;
+    /* a->output_rate is a Paula output rate, always well under 65536 (see
+     * MIN_PERIOD above) - mr_u64_div_u16 avoids the __muldi3/__divdi3 pair
+     * plain `(uint64_t)samples * 1000000ULL / a->output_rate` costs on
+     * m68k (see core/mr_muldiv64.h). */
+    return mr_u64_div_u16(mr_u64_mul_u32(samples, 1000000u), a->output_rate);
 }
 
 static unsigned request_estimated_played(mr_audio *a, int i, uint64_t now)
@@ -162,7 +179,11 @@ static unsigned request_estimated_played(mr_audio *a, int i, uint64_t now)
     if (now <= r->scheduled_start_us) return 0;
     elapsed = now - r->scheduled_start_us;
     duration = r->scheduled_end_us - r->scheduled_start_us;
-    return duration ? (unsigned)(elapsed * r->submitted_samples / duration) : 0;
+    /* elapsed/duration are bounded by one request's span (PAULA_REQUEST_MS,
+     * comfortably under mr_u64_div_u24's 2^24us~=16.7s bound) - same
+     * libgcc-avoidance as request_duration_us above. */
+    return duration ? (unsigned)mr_u64_div_u24(
+        mr_u64_mul_u32(elapsed, r->submitted_samples), (uint32_t)duration) : 0;
 }
 
 static void audio_worker_entry(void);
@@ -603,7 +624,14 @@ uint64_t audio_elapsed_us(mr_audio *a)
             oldest = next;
         }
     }
-    clock_us = samples * 1000000ULL / a->output_rate;
+    /* samples is a's completed_samples running total - grows for the whole
+     * playback session, so this is a genuine 64-bit dividend divided by a
+     * runtime value (a->output_rate) on every call. audio_elapsed_us() is
+     * the audio master clock: mrplay.c calls it at least once per displayed
+     * video frame while audio is playing (never at all for video-only
+     * playback), making this the hottest of the __muldi3/__divdi3 sites in
+     * this file (see core/mr_muldiv64.h and the other call sites above). */
+    clock_us = mr_u64_div_u16(mr_u64_mul_u32(samples, 1000000u), a->output_rate);
     if (clock_us < a->last_reported_clock_us)
         clock_us = a->last_reported_clock_us;
     step = clock_us - a->last_reported_clock_us;

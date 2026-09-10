@@ -165,6 +165,48 @@ speeding it up; host builds keep pl_mpeg's original behaviour byte for byte,
 since nothing there reads it either and the cost is one native
 divide/multiply, not worth diverging from upstream over.
 
+## Amiga Paula audio clock notes
+**`amiga/audio_paula.c`'s audio master clock paid the same libgcc tax as the
+MP2 decode math above - and it's hotter.** `audio_elapsed_us()` (called at
+least once per displayed video frame while audio is playing - see mrplay.c -
+and never at all for video-only playback) computed `completed_samples *
+1000000ULL / output_rate`, where `completed_samples` is a running total for
+the whole session (needs real 64-bit range) and `output_rate` is only known
+at runtime. `audio_now_us()`, `request_duration_us()` and
+`request_estimated_played()` had the identical shape underneath it. Checked
+with `m68k-linux-gnu-gcc -S`: **this is not a 68060-only problem** - GCC
+never emits a hardware wide-divide instruction for 64-bit C division syntax
+on *any* m68k tier, 68020 included, always calling libgcc's
+`__udivdi3`/`__umoddi3` (the multiply half drops to a single hardware
+`muls.l` on 68020-68040, same as the MP2 case, but is `__muldi3` on 68060).
+So this was two libgcc calls, several times a frame, for the entire time
+audio was on - a much hotter site than pl_mpeg's own decode math, and the
+likely explanation for "smooth video-only, jerky with audio" reports on real
+68060 hardware even after the MP2-side fixes above landed.
+
+`core/mr_muldiv64.h` fixes this properly instead of chasing it call site by
+call site: `mr_u64_mul_u32()` is the same trap-free `mulu.w`-based
+64x32->64 widen as `plm_audio_smul64_060` (unsigned here, so no sign
+handling needed at all), used only on 68060 since 68020-68040 already get a
+hardware `muls.l` from plain C. `mr_u64_div_u16()`/`mr_u64_div_u24()` are
+the actual fix for the divide side, on *every* CPU tier: base-65536/base-256
+schoolbook long division using nothing but the ordinary 32-bit/32-bit
+hardware `DIVU.L` (ISA since the 68000, unlike the extended
+64-bit-dividend form) - no magic reciprocal constants, no wide anything,
+just never handing GCC a 64-bit divisor-unknown-at-compile-time expression
+to lower into a libgcc call. The 16-bit-divisor variant covers every real
+Paula output rate (`MIN_PERIOD` keeps it far under 65536); the 24-bit one
+covers `ReadEClock()`'s tick frequency (a few hundred kHz on real hardware).
+Both are pure portable C with no Amiga dependency, verified bit-exact
+against the native `*`/`/` operators - including the fused
+counter-times-1e6-divided-by-rate shape actually used, run out to a
+simulated multi-hour session so the counter genuinely needs full 64-bit
+range - by `tests/mr_muldiv64_check.c`, on host and cross-built for both
+`-mcpu=68040` and `-mcpu=68060` under `make check-m68k`. `amiga/audio_paula.c`
+itself can only be reviewed, not compiled, on this dev host (see "Validate
+against ffmpeg" above) - the arithmetic is proven exact, but the actual
+speedup on real 68060 silicon still needs a hardware pass to confirm.
+
 **The RGB24 round-trip is the expensive part, not the decode.** The adapter's
 `emit_rgb()` was about a third of its own decode time, and the display's
 RGB→indexed dither cost about as much again — so an AGA session paid for RGB24

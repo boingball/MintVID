@@ -252,6 +252,20 @@ $M68K_CC -O2 -std=c99 -mcpu=68060 -static -DMR_M68K_ASM=1 \
     -o "$BUILD/mr_mp2_synth_060_check.m68k" \
     tests/mr_mp2_synth_060_check.c $MP2_ASM_060_SRC
 
+# amiga/audio_paula.c's session-invariant-divisor multiply/divide helpers
+# (core/mr_muldiv64.h). Portable - no .S files to link - but its 68060 path
+# only compiles in with both MR_M68K_ASM and -mcpu=68060, so build it at
+# both CPU tiers actually used in production (Makefile.amiga's CPUFLAGS is
+# -m$(CPU)) to exercise the plain-C hardware-muls.l path on 68040 and the
+# mulu.w-based trap-free path on 68060.
+echo "== building mr_muldiv64_check.m68k (68040) =="
+$M68K_CC -O2 -std=c99 -mcpu=68040 -static -DMR_M68K_ASM=1 \
+    -o "$BUILD/mr_muldiv64_check_040.m68k" tests/mr_muldiv64_check.c
+
+echo "== building mr_muldiv64_check.m68k (68060) =="
+$M68K_CC -O2 -std=c99 -mcpu=68060 -static -DMR_M68K_ASM=1 \
+    -o "$BUILD/mr_muldiv64_check_060.m68k" tests/mr_muldiv64_check.c
+
 echo "== building mr_yuv_dither_check.m68k =="
 # Links against the real hand-asm mr_yuv420_to_rgb24_m68k/mr_dither_rgb8_m68k
 # (via core/mr_yuv.c core/mr_dither.c's own MR_M68K_ASM dispatch, active in
@@ -303,6 +317,8 @@ run "$BUILD/mr_mp2_idct_check.m68k"
 run "$BUILD/mr_mp2_mul64_060_check.m68k"
 run "$BUILD/mr_mp2_idct_060_check.m68k"
 run "$BUILD/mr_mp2_synth_060_check.m68k"
+run "$BUILD/mr_muldiv64_check_040.m68k"
+run "$BUILD/mr_muldiv64_check_060.m68k"
 run "$BUILD/mr_yuv_dither_check.m68k"
 run "$BUILD/mr_yuv_ham_check.m68k"
 run "$BUILD/mr_mpeg1_blockset_check.m68k"

@@ -188,6 +188,11 @@ mr_mp2_idct_check: tests/mr_mp2_idct_check.c tests/mr_mp2_idct_reference.h core/
 mr_mp2_synth_check: tests/mr_mp2_synth_check.c core/pl_mpeg.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_mp2_synth_check.c
 
+# amiga/audio_paula.c's session-invariant-divisor multiply/divide helpers -
+# portable and host-testable even though their caller isn't.
+mr_muldiv64_check: tests/mr_muldiv64_check.c core/mr_muldiv64.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_muldiv64_check.c
+
 # Decoded MP2 from a .mpg against an ffmpeg reference. The MPEG-1 program
 # stream source has its own audio path (pl_mpeg, not the MintAMP adapter), so
 # it needs its own oracle; nothing else in the suite reaches it.
@@ -316,7 +321,7 @@ mr_youtube_search_check: tests/mr_youtube_search_check.c \
 	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_search_check.c \
 	    youtube/mr_youtube_search.c
 
-check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg2_yuv_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_cinepak_indexed_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_h264_m68k_check mr_h264_mc_degrade_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check
+check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg2_yuv_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_cinepak_indexed_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_muldiv64_check mr_h264_m68k_check mr_h264_mc_degrade_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check
 	./mr_youtube_search_check
 	./mr_youtube_check
 	./mr_hls_override_check
@@ -326,6 +331,7 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	./mr_audio_rate_check
 	./mr_aspect_check
 	./mr_media_clock_check
+	./mr_muldiv64_check
 	./mr_h264_m68k_check
 	./mr_h264_mc_degrade_check
 	./mr_decode ../testfiles/mov+cinepak+pcm_s8++grosspnt.mov 2>&1 \
@@ -529,6 +535,7 @@ clean:
 	rm -f mr_audio_rate_check
 	rm -f mr_aspect_check
 	rm -f mr_media_clock_check
+	rm -f mr_muldiv64_check
 	rm -f mr_h264_m68k_check
 	rm -f mr_h264_mc_degrade_check
 	rm -f mr_iptv_check mr_youtube_check mr_youtube_search_check
