@@ -8,6 +8,18 @@
  *   mr_decode <file.avi> --ppm <outdir>     - write decoded frames as PPM
  *   mr_decode <file.avi> --check <refdir>    - compare vs refdir/fNNN.ppm
  *   mr_decode <file.mov> --first-ppm <file>   - dump first decoded RGB frame
+ *   mr_decode <file> --time [mode ...]        - print the H.264 stage-time
+ *       breakdown (input/core/output + mc/deblock/recon/intra, see
+ *       core/mr_h264.h's mr_h264_timing) alongside whatever <mode> would
+ *       otherwise print. No-op for a non-H.264 stream. The mc/deblock/
+ *       recon/intra breakdown only has real numbers when built with
+ *       -DMR_H264_STAGE_PROFILE=1 (see vendor/libavc_port/
+ *       ih264d_stage_profile.c) - this is the host-buildable equivalent of
+ *       mrplay.c's own --time flag, for structural profiling without an
+ *       AmigaOS toolchain. clock()-based, so on qemu-m68k this measures
+ *       relative instruction-execution volume per stage, not real hardware
+ *       timing - see CLAUDE.md's qemu-vs-hardware note before drawing any
+ *       conclusion from it beyond "which stage is structurally biggest".
  */
 #include "../core/mr_demux.h"
 #include "../core/mr_http.h"
@@ -88,7 +100,7 @@ static long check_ppm(const char *path, const mr_frame *fr, int *maxerr)
 int main(int argc, char **argv)
 {
     int argi = 2, force_memory = 0, hls_buffer_segments = 0;
-    int h264_speed = -1, h264_yuv = 0;
+    int h264_speed = -1, h264_yuv = 0, do_time = 0;
     const char *user_agent = NULL, *referer = NULL;
     mr_http_options http_options;
     const char *mode;
@@ -128,6 +140,9 @@ int main(int argc, char **argv)
             argi++;
         } else if (!strcmp(argv[argi], "--h264-yuv")) {
             h264_yuv = 1;
+            argi++;
+        } else if (!strcmp(argv[argi], "--time")) {
+            do_time = 1;
             argi++;
         } else {
             break;
@@ -218,7 +233,13 @@ int main(int argc, char **argv)
         fprintf(stderr, "H.264 speed mode rejected\n");
         mr_decoder_close(&dec); mr_demux_close(dx); free(buf); return 1;
     }
+    if (do_time && codec == &mr_codec_h264)
+        mr_h264_set_timing_enabled(&dec, 1);
 #endif
+    unsigned long t_input_us = 0, t_core_us = 0, t_output_us = 0;
+    unsigned long t_mc_us = 0, t_deblock_us = 0, t_recon_us = 0, t_intra_us = 0;
+    unsigned long t_input_max = 0, t_core_max = 0, t_output_max = 0;
+    unsigned long t_mc_max = 0, t_deblock_max = 0, t_recon_max = 0, t_intra_max = 0;
 
     int frame = 0, bad = 0;
     long worst_mae = 0;   /* MAE * 1000 */
@@ -265,6 +286,23 @@ int main(int argc, char **argv)
             if (ds != MR_OK) {
                 fprintf(stderr, "decode error at frame %d\n", frame); break;
             }
+#ifdef MR_HAVE_H264
+            if (do_time) {
+                mr_h264_timing t;
+                mr_h264_frame_timing(&dec, &t);
+                t_input_us += t.input_us; t_core_us += t.core_us;
+                t_output_us += t.output_us; t_mc_us += t.mc_us;
+                t_deblock_us += t.deblock_us; t_recon_us += t.recon_us;
+                t_intra_us += t.intra_us;
+                if (t.input_us > t_input_max) t_input_max = t.input_us;
+                if (t.core_us > t_core_max) t_core_max = t.core_us;
+                if (t.output_us > t_output_max) t_output_max = t.output_us;
+                if (t.mc_us > t_mc_max) t_mc_max = t.mc_us;
+                if (t.deblock_us > t_deblock_max) t_deblock_max = t.deblock_us;
+                if (t.recon_us > t_recon_max) t_recon_max = t.recon_us;
+                if (t.intra_us > t_intra_max) t_intra_max = t.intra_us;
+            }
+#endif
         }
 decoded_output:
         ;
@@ -372,6 +410,30 @@ drain_decoded_output:
         }
     }
     printf("decoded %d frames\n", frame);
+#ifdef MR_HAVE_H264
+    if (do_time && frame) {
+        /* mc/deblock/recon/intra are timed as many small clock() calls (one
+         * per MB-level primitive) and core as one larger span per NAL - under
+         * qemu's emulated clock, quantization noise on the many small calls
+         * can make their sum exceed the enclosing span it should be part of.
+         * Clamp rather than let an unsigned subtraction wrap into a huge
+         * number; this is a measurement-resolution artifact of the profiling
+         * environment; see CLAUDE.md's qemu-timing note. */
+        unsigned long stage_sum = t_mc_us + t_deblock_us + t_recon_us + t_intra_us;
+        unsigned long other_us = t_core_us > stage_sum ? t_core_us - stage_sum : 0;
+        printf("h264 stages: input=%lu/%lu us core=%lu/%lu us "
+               "output=%lu/%lu us mc=%lu/%lu us deblock=%lu/%lu us "
+               "recon=%lu/%lu us intra=%lu/%lu us other=%lu/frame\n",
+               t_input_us / (unsigned long)frame, t_input_max,
+               t_core_us / (unsigned long)frame, t_core_max,
+               t_output_us / (unsigned long)frame, t_output_max,
+               t_mc_us / (unsigned long)frame, t_mc_max,
+               t_deblock_us / (unsigned long)frame, t_deblock_max,
+               t_recon_us / (unsigned long)frame, t_recon_max,
+               t_intra_us / (unsigned long)frame, t_intra_max,
+               other_us / (unsigned long)frame);
+    }
+#endif
     if (do_dirty) {
         printf("dirty rows: %lu / %lu total (%lu%%), coverage violations=%ld\n",
                dirty_rows, tot_rows,

@@ -122,6 +122,7 @@ LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
     vendor/libavc_port/ih264d_function_selector_port.c \
     vendor/libavc_port/ih264_mc_degrade.c \
     vendor/libavc_port/ih264d_stage_profile.c \
+    vendor/libavc_port/ih264d_update_qp_wrap.c \
     vendor/libavc_port/ih264_m68k_optim.c \
     vendor/libavc_port/ih264_m68k_interp.S \
     vendor/libavc_port/ih264_m68k_deblk.S \
@@ -153,12 +154,17 @@ echo "== building mr_decode.m68k (m68k-optimised leaf functions + hand asm activ
 # trick again, redirecting to ih264d_parse_cabac_coeff_port.c's
 # reimplementations (which call the hand-asm CABAC residual coefficient
 # primitive internally) - see that file for the two-symbol split.
+# --wrap=ih264d_update_qp: same trick again, redirecting to
+# ih264d_update_qp_wrap.c's reimplementation, which replaces the vendored
+# function's `% 52` (an extended-dividend DIVSL.L on 68060, confirmed by
+# disassembly - see that file) with a divide-free add/subtract reduction.
 $CC -o "$BUILD/mr_decode.m68k" tests/mr_decode.c $CORE $LIBAVC_SRC \
     -Wl,--wrap=ih264d_decode_bin \
     -Wl,--wrap=ih264d_mvpred_nonmbaff \
     -Wl,--wrap=ih264d_mvpred_nonmbaffB \
     -Wl,--wrap=ih264d_parse_residual4x4_cabac \
-    -Wl,--wrap=ih264d_read_coeff4x4_cabac
+    -Wl,--wrap=ih264d_read_coeff4x4_cabac \
+    -Wl,--wrap=ih264d_update_qp
 
 # AC-3 on a real big-endian target. The decoder's IMDCT runs through MintAMP's
 # vendored Rockbox FFT, whose MULT32 takes the high half of a 64-bit product
@@ -188,6 +194,24 @@ $CC -DMR_AC3_CHECK_NO_DEMUX $MINTAMP_FLAGS -o "$BUILD/mr_ac3_check.m68k" \
     tests/mr_ac3_check.c audio/mr_audio_decode.c audio/mr_pcm.c \
     core/mr_mpeg1.c core/mr_mpeg1_idct_m68k.S \
     core/mr_mpeg1_blockset_m68k.S $MP2_ASM_SRC core/mr_latm.c $MINTAMP_SRC -lm
+
+# Same AC-3 decode, but -mcpu=68060 and with -DAMIGA_M68K_WMA_ASM - i.e. the
+# same fft-ffmpeg.c/codeclib_misc.h MULT32() this file's default $CC build
+# above exercises through the int64_t fallback, now built exactly the way
+# Makefile.amiga's CPU=68060 target actually compiles it (see
+# LIBA52_FFT_CPPFLAGS there). Without the define, MULT32 on a real 68060
+# would fall to `jsr __muldi3` per FFT butterfly - see
+# check_m68060_asm.sh's fft-ffmpeg.o scan for the instruction-level half of
+# this proof. This half proves the reconstructed product is still numerically
+# correct: WmaM68kMultiply's four-hardware-partial-product high-word
+# recovery is an exact reimplementation of the same 32x32->64 result, so this
+# is expected to pass against the identical ffmpeg reference and tolerance
+# as the 68030 build above, not a relaxed one.
+echo "== building mr_ac3_check_060.m68k (CPU=68060 AMIGA_M68K_WMA_ASM fix) =="
+$CC_060 -DMR_AC3_CHECK_NO_DEMUX $MINTAMP_FLAGS -DAMIGA_M68K_WMA_ASM \
+    -o "$BUILD/mr_ac3_check_060.m68k" \
+    tests/mr_ac3_check.c audio/mr_audio_decode.c audio/mr_pcm.c \
+    core/mr_mpeg1.c $MP2_ASM_060_SRC core/mr_latm.c $MINTAMP_SRC -lm
 
 # MP2 out of a .mpg on a real big-endian target. The MPEG-1 source decodes
 # audio with pl_mpeg's own integer Layer II code and hands it back as
@@ -340,6 +364,18 @@ echo "== building mr_muldiv64_check.m68k (68060) =="
 $M68K_CC -O2 -std=c99 -mcpu=68060 -static -DMR_M68K_ASM=1 \
     -o "$BUILD/mr_muldiv64_check_060.m68k" tests/mr_muldiv64_check.c
 
+# vendor/libavc_port/ih264_m68k_divmod.h's mr_ih264_divmod_u32() - only its
+# -mcpu=68060 build actually exercises the inline-asm DIVU.L path (68040
+# keeps the plain C fallback, same as the host); both are built to prove
+# neither tier's codegen regresses.
+echo "== building mr_ih264_divmod_check.m68k (68040) =="
+$M68K_CC -O2 -std=c99 -mcpu=68040 -static -Ivendor/libavc/common \
+    -o "$BUILD/mr_ih264_divmod_check_040.m68k" tests/mr_ih264_divmod_check.c
+
+echo "== building mr_ih264_divmod_check.m68k (68060) =="
+$M68K_CC -O2 -std=c99 -mcpu=68060 -static -Ivendor/libavc/common \
+    -o "$BUILD/mr_ih264_divmod_check_060.m68k" tests/mr_ih264_divmod_check.c
+
 echo "== building mr_yuv_dither_check.m68k =="
 # Links against the real hand-asm mr_yuv420_to_rgb24_m68k/mr_dither_rgb8_m68k
 # (via core/mr_yuv.c core/mr_dither.c's own MR_M68K_ASM dispatch, active in
@@ -397,6 +433,8 @@ run "$BUILD/mr_mpeg1_decim_synth_check.m68k"
 run "$BUILD/mr_mpeg1_decim_synth_check_060.m68k"
 run "$BUILD/mr_muldiv64_check_040.m68k"
 run "$BUILD/mr_muldiv64_check_060.m68k"
+run "$BUILD/mr_ih264_divmod_check_040.m68k"
+run "$BUILD/mr_ih264_divmod_check_060.m68k"
 run "$BUILD/mr_yuv_dither_check.m68k"
 run "$BUILD/mr_yuv_ham_check.m68k"
 run "$BUILD/mr_mpeg1_blockset_check.m68k"
@@ -405,6 +443,10 @@ run "$BUILD/mr_media_clock_check.m68k"
 
 echo "[AC-3 vs ffmpeg, real m68k/big-endian]"
 run "$BUILD/mr_ac3_check.m68k" tests/assets/test_ac3.ac3 \
+    tests/assets/ref_ac3_mkv.raw 32000 1
+
+echo "[AC-3 vs ffmpeg, real m68k/big-endian, CPU=68060 AMIGA_M68K_WMA_ASM fix]"
+run "$BUILD/mr_ac3_check_060.m68k" tests/assets/test_ac3.ac3 \
     tests/assets/ref_ac3_mkv.raw 32000 1
 
 echo "[MP2 from an MPEG-1 program stream vs ffmpeg, real m68k/big-endian]"

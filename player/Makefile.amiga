@@ -249,6 +249,38 @@ LIBA52_SRC = $(LIBA52_ROOT)/bit_allocate.c $(LIBA52_ROOT)/bitstream.c \
              $(MINTAMP_ROOT)/decoders/wma/fft-ffmpeg.c \
              $(MINTAMP_ROOT)/decoders/wma/mdct_lookup.c
 
+# liba52's a52_imdct_512/256 (imdct.c) call ff_fft_calc_c(), MintAMP's own
+# vendored Rockbox FFT (decoders/wma/fft-ffmpeg.c) - so this is AC-3's IMDCT,
+# not an MP2/MPEG-1 path (see CLAUDE.md's MP2 notes for that unrelated one).
+# Every FFT butterfly runs through MULT32()/MULT31() (codeclib_misc.h), whose
+# default body is `magic.whole = (int64_t)x * y` - on 68060 GCC has no
+# register-pair MULS.L to reach for (68060 only implements the 32x32->32
+# form in silicon, same missing hardware the MP2/WMA notes above already
+# document) and falls back to a real jsr __muldi3 per multiply, in the
+# hottest loop of AC-3 decode. MintAMP already ships the fix for exactly
+# this shape - decoders/wma/asm_m68k.h's AMIGA_M68K_WMA_ASM path, the same
+# four-hardware-partial-product reconstruction as mr_muldiv64.h/
+# plm_audio_smul64_060 - but nothing in this Makefile ever defined
+# AMIGA_M68K_WMA_ASM for fft-ffmpeg.c, so liba52's build always got the
+# plain int64_t fallback regardless of CPU tier. Confirmed by disassembling
+# the actual -mcpu=68060 object: without this define it references
+# __muldi3; with it, clean (see tests/mr_ac3_fft_060_asm_check.sh).
+#
+# Applied 68060-only, not to every CPU tier: on 68020-68040 the plain
+# `(int64_t)x*y` already lowers to the same hardware register-pair MULS.L
+# asm_m68k.h itself would emit there, but forcing every MULT32/MULT31 call
+# through asm_m68k.h's explicit inline-asm wrapper (WmaM68kMultiply and its
+# MulHigh32/MulShift* callers) measurably grows fft-ffmpeg.o's .text by
+# ~27% at -mcpu=68030 -O3 (10834 -> 13826 bytes) with no 68060-class trap to
+# avoid on those CPUs - a straight regression on the "68030/040 behaviour
+# must remain unchanged unless proven improvement" requirement, so those
+# tiers keep the untouched plain-C path.
+ifeq ($(MINTAMP_CPU),60)
+LIBA52_FFT_CPPFLAGS := -DAMIGA_M68K_WMA_ASM
+else
+LIBA52_FFT_CPPFLAGS :=
+endif
+
 # vendor/MintAMP/Makefile.amiga's own release/fast030 build (which is what
 # `make -f Makefile.amiga release CPU=60 ASM60_GROUPS="..."` actually means
 # upstream, and how MintAMP's own binaries are validated) compiles its
@@ -269,6 +301,16 @@ MINTAMP_CFLAGS := $(CPUFLAGS) -std=gnu89 -O3 -fomit-frame-pointer -noixemul \
 MINTAMP_MP3_OBJ := $(patsubst %.c,build/%.o,$(patsubst %.S,build/%.o,$(MINTAMP_MP3)))
 MINTAMP_AAC_OBJ := $(patsubst %.c,build/%.o,$(MINTAMP_AAC))
 LIBA52_OBJ      := $(patsubst %.c,build/%.o,$(LIBA52_SRC))
+
+# Explicit rule (takes precedence over the %.o: %.c pattern rule below,
+# regardless of pattern specificity) so only fft-ffmpeg.c's build picks up
+# LIBA52_FFT_CPPFLAGS - see the AMIGA_M68K_WMA_ASM note above LIBA52_SRC.
+# mdct_lookup.c (LIBA52_SRC's other WMA file) has no MULT32/int64_t multiply
+# of its own and needs no such flag.
+build/$(MINTAMP_ROOT)/decoders/wma/fft-ffmpeg.o: \
+    $(MINTAMP_ROOT)/decoders/wma/fft-ffmpeg.c
+	@mkdir -p $(dir $@)
+	$(CC) $(MINTAMP_CFLAGS) $(LIBA52_FFT_CPPFLAGS) -c $< -o $@
 
 build/%.o: %.c
 	@mkdir -p $(dir $@)

@@ -14,6 +14,7 @@ LIBAVC_DECODER = $(wildcard $(LIBAVC_ROOT)/decoder/*.c)
 LIBAVC_PORTSRC = $(LIBAVC_PORT)/ih264d_function_selector_port.c \
                  $(LIBAVC_PORT)/ih264_mc_degrade.c \
                  $(LIBAVC_PORT)/ih264d_stage_profile.c \
+                 $(LIBAVC_PORT)/ih264d_update_qp_wrap.c \
                  $(LIBAVC_PORT)/ih264_m68k_optim.c \
                  $(LIBAVC_PORT)/ih264_m68k_interp.S \
                  $(LIBAVC_PORT)/ih264_m68k_deblk.S \
@@ -36,8 +37,9 @@ LIBAVC_FLAGS = -I$(LIBAVC_PORT) -I$(LIBAVC_ROOT)/common \
 LIBAVC_GCC_FLAGS = -fno-strict-aliasing -fwrapv
 # ih264d_cabac_wrap.c's __wrap_ih264d_decode_bin,
 # ih264d_mvpred_dispatch_port.c's __wrap_ih264d_mvpred_nonmbaff/
-# _nonmbaffB, and ih264d_parse_cabac_coeff_port.c's __wrap_ih264d_parse_
-# residual4x4_cabac/__wrap_ih264d_read_coeff4x4_cabac only exist under
+# _nonmbaffB, ih264d_parse_cabac_coeff_port.c's __wrap_ih264d_parse_
+# residual4x4_cabac/__wrap_ih264d_read_coeff4x4_cabac, and
+# ih264d_update_qp_wrap.c's __wrap_ih264d_update_qp only exist under
 # MR_M68K_ASM (see those files), so these flags must only be added to
 # m68k cross-build link commands, never the host build - GNU ld's --wrap
 # hard-errors with "undefined reference to __wrap_..." if the wrapper
@@ -49,4 +51,5 @@ LIBAVC_M68K_LDFLAGS = -Wl,--wrap=ih264d_decode_bin \
                       -Wl,--wrap=ih264d_mvpred_nonmbaff \
                       -Wl,--wrap=ih264d_mvpred_nonmbaffB \
                       -Wl,--wrap=ih264d_parse_residual4x4_cabac \
-                      -Wl,--wrap=ih264d_read_coeff4x4_cabac
+                      -Wl,--wrap=ih264d_read_coeff4x4_cabac \
+                      -Wl,--wrap=ih264d_update_qp
