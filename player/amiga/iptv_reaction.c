@@ -467,7 +467,9 @@ static int iptv_gui_port_added;
 static void iptv_gui_port_open(void) {
   if (iptv_gui_port_added)
     return;
-  NewList(&iptv_gui_port.mp_MsgList);
+  iptv_gui_port.mp_MsgList.lh_Head = (struct Node *)&iptv_gui_port.mp_MsgList.lh_Tail;
+  iptv_gui_port.mp_MsgList.lh_Tail = NULL;
+  iptv_gui_port.mp_MsgList.lh_TailPred = (struct Node *)&iptv_gui_port.mp_MsgList.lh_Head;
   iptv_gui_port.mp_Flags = PA_IGNORE;
   iptv_gui_port.mp_SigTask = FindTask(NULL);
   iptv_gui_port.mp_Node.ln_Name = (char *)MR_IPTV_GUI_PORT;
