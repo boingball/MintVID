@@ -270,51 +270,115 @@ mr_status mr_ps_open(mr_ps *p, const uint8_t *buf, size_t len)
     return MR_OK;
 }
 
-mr_status mr_ps_next_packet(mr_ps *p, mr_packet *pkt)
+/* Advance p->video_scan to the next video PES at or after its current
+ * position and open it (video_cursor/video_end/pending_has_pts/
+ * pending_pts_us), stopping as soon as one is found. A no-op when a video
+ * PES is already open (video_cursor < video_end) or the video stream has
+ * been scanned to EOF already. A PES belonging to the audio stream is
+ * skipped by its own parsed length (pes_payload() already understands its
+ * header shape, so this costs nothing extra and cannot mistake bytes
+ * inside its compressed payload for a start code); anything else not
+ * recognised as a PES at all (pack/system headers, PSM, padding, ...) is
+ * skipped byte-by-byte exactly as mr_ps_next_packet() always has, since
+ * this walk must not assume a fixed-length structure it does not know. */
+static void scan_for_video(mr_ps *p)
 {
-    size_t start = p->cursor;
-    pkt->has_pts = 0;
-    pkt->pts_us = 0;
-    if (p->video_cursor < p->video_end)
-        return next_video_chunk(p, pkt);
-    if (p->audio_cursor < p->audio_end)
-        return next_audio_chunk(p, pkt);
+    size_t start = p->video_scan;
+    if (p->video_cursor < p->video_end) return;
     while ((start = find_start(p->buf, p->len, start)) < p->len) {
         unsigned code = p->buf[start + 3];
         size_t payload, end;
         int has_pts;
         uint64_t pts_us;
-        start += 4;
-        if (code != p->video_stream &&
-            (!p->audio.valid || code != p->audio_stream)) continue;
-        start -= 4;
-        if (!pes_payload(p->buf, p->len, start, &payload, &end,
-                         &has_pts, &pts_us)) {
-            p->cursor = start + 4;
-            start = p->cursor;
+        if (code == p->audio_stream &&
+            pes_payload(p->buf, p->len, start, &payload, &end,
+                        &has_pts, &pts_us)) {
+            start = end;
             continue;
         }
-        p->cursor = end;
-        if (code == p->video_stream) {
-            p->video_cursor = payload;
-            p->video_end = end;
-            p->pending_has_pts = has_pts;
-            p->pending_pts_us = pts_us;
-            return next_video_chunk(p, pkt);
+        if (code != p->video_stream ||
+            !pes_payload(p->buf, p->len, start, &payload, &end,
+                        &has_pts, &pts_us)) {
+            start += 4;
+            continue;
         }
+        p->video_scan = end;
+        p->video_cursor = payload;
+        p->video_end = end;
+        p->pending_has_pts = has_pts;
+        p->pending_pts_us = pts_us;
+        return;
+    }
+    p->video_scan = p->len;
+}
+
+/* Mirrors scan_for_video(), independently, for the audio stream. Never
+ * opens anything when mr_ps_open() did not validate an MP2 audio stream -
+ * same gate the original single-cursor scan applied. */
+static void scan_for_audio(mr_ps *p)
+{
+    size_t start = p->audio_scan;
+    if (p->audio_cursor < p->audio_end) return;
+    if (!p->audio.valid) { p->audio_scan = p->len; return; }
+    while ((start = find_start(p->buf, p->len, start)) < p->len) {
+        unsigned code = p->buf[start + 3];
+        size_t payload, end;
+        int has_pts;
+        uint64_t pts_us;
+        if (code == p->video_stream &&
+            pes_payload(p->buf, p->len, start, &payload, &end,
+                        &has_pts, &pts_us)) {
+            start = end;
+            continue;
+        }
+        if (code != p->audio_stream ||
+            !pes_payload(p->buf, p->len, start, &payload, &end,
+                        &has_pts, &pts_us)) {
+            start += 4;
+            continue;
+        }
+        p->audio_scan = end;
         p->audio_cursor = payload;
         p->audio_end = end;
         p->pending_audio_has_pts = has_pts;
         p->pending_audio_pts_us = pts_us;
-        return next_audio_chunk(p, pkt);
+        return;
     }
-    p->cursor = p->len;
-    return MR_EAGAIN;
+    p->audio_scan = p->len;
+}
+
+/* Fair delivery between the two streams: a multi-picture (or just long-run)
+ * video PES must not drain completely before an audio PES that has already
+ * appeared later in the file gets a turn, or the real-time player's audio
+ * FIFO starves while video decode races ahead uninterrupted - see the
+ * struct's own comment on why this needs two independent scan cursors.
+ * Whichever type is discoverable gets opened (scan_for_video()/
+ * scan_for_audio() are each a no-op if already open or exhausted); when
+ * both have data pending, alternate types so neither can starve the other;
+ * when only one does, serve it regardless of which type went last. This
+ * never invents a timestamp and never moves a PES's PTS off the first
+ * chunk drawn from it - pending_has_pts/pending_audio_has_pts are set once,
+ * by the scan that opens each PES, exactly as before. */
+mr_status mr_ps_next_packet(mr_ps *p, mr_packet *pkt)
+{
+    int have_video, have_audio, serve_video;
+    pkt->has_pts = 0;
+    pkt->pts_us = 0;
+    scan_for_video(p);
+    scan_for_audio(p);
+    have_video = p->video_cursor < p->video_end;
+    have_audio = p->audio_cursor < p->audio_end;
+    if (!have_video && !have_audio) return MR_EAGAIN;
+    serve_video = have_video && have_audio ? !p->last_chunk_was_video
+                                            : have_video;
+    p->last_chunk_was_video = serve_video;
+    return serve_video ? next_video_chunk(p, pkt) : next_audio_chunk(p, pkt);
 }
 
 void mr_ps_rewind(mr_ps *p)
 {
-    p->cursor = 0;
+    p->video_scan = 0;
+    p->audio_scan = 0;
     p->video_cursor = 0;
     p->video_end = 0;
     p->audio_cursor = 0;
@@ -323,5 +387,6 @@ void mr_ps_rewind(mr_ps *p)
     p->pending_pts_us = 0;
     p->pending_audio_has_pts = 0;
     p->pending_audio_pts_us = 0;
+    p->last_chunk_was_video = 0;
 }
 void mr_ps_close(mr_ps *p) { (void)p; }
