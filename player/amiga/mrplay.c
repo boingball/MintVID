@@ -553,6 +553,14 @@ typedef struct playback_stats {
      * enough to trigger audio-rescue. */
     unsigned video_packets, audio_packets;
     unsigned long max_video_run;
+    /* Scheduler-cadence diagnostic: the longest real wall-clock gap between
+     * two consecutive calls to mr_demux_next_packet() - see
+     * last_packet_call_us's own declaration. A large value here even when
+     * max_video_run stays small means the demuxer's own interleaving is
+     * fine and something else (can_decode's gating, or the presentation/
+     * deadline loop simply not reaching a decode at all for a stretch) is
+     * what starved the audio FIFO between packets. */
+    unsigned long max_packet_gap_us;
 } playback_stats;
 
 /*
@@ -1058,7 +1066,7 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            "presented=%lu.%02lu fps decoded=%lu.%02lu fps sleep=%lu/%lu ms "
            "sleep-max-error=%lu us latency=%lu.%02lu ms "
            "refill-blocked=%lu ms ready-delayed-by-refill=%lu ms "
-           "vpkts=%u apkts=%u max-video-run=%lu\n",
+           "vpkts=%u apkts=%u max-video-run=%lu max-packet-gap=%lu ms\n",
            vd / 100, vd % 100, st->video_decode_max_us / 1000,
            (unsigned long)(st->network_us / 1000) + io.network_ms,
            io.hls_segment_ms, dm / 100, dm % 100, ad / 100, ad % 100,
@@ -1073,7 +1081,8 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            la / 100, la % 100,
            (unsigned long)(st->refill_block_us / 1000),
            (unsigned long)(st->refill_delayed_ready_us / 1000),
-           st->video_packets, st->audio_packets, st->max_video_run);
+           st->video_packets, st->audio_packets, st->max_video_run,
+           st->max_packet_gap_us / 1000);
     if (audio) service_audio_for_display(trace);
     printf("audio diagnostics: hw-starvations=%lu minimum-buffered=%lu ms "
            "minimum-active=%lu ms "
@@ -1534,6 +1543,12 @@ int main(int argc, char **argv)
      * window boundary - only the window's worst observed value
      * (stats.max_video_run) resets with the rest of playback_stats. */
     unsigned long video_run = 0;
+    /* Diagnostic only (see stats.max_packet_gap_us's declaration): wall-clock
+     * timestamp of the last time the scheduler actually reached
+     * mr_demux_next_packet(), regardless of packet type or status. Zero
+     * means "no call yet" - the very first call has nothing to compare
+     * against. */
+    uint64_t last_packet_call_us = 0;
     uint64_t decoded_index = 0, mono_base_us = 0;
     /* Bridges the seek origin across the gap a seek itself creates: a
      * successful seek empties the video queue (qcount = 0), so front is
@@ -2567,7 +2582,7 @@ int main(int argc, char **argv)
             /* Re-prime from the new position; the startup path below refills the
              * queue and audio cushion and restarts playback near the edge. */
             playback_started = 0;
-            decoded_index = 0; mono_base_us = 0; video_run = 0;
+            decoded_index = 0; mono_base_us = 0; video_run = 0; last_packet_call_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
             container_pts_adjust_us = 0;
             media_clock_rebase(&mc, audio_elapsed_us(audio), 0);
@@ -2940,7 +2955,7 @@ int main(int argc, char **argv)
                 !mr_msvideo1_set_indexed_output(&dec, indexed_depth))
                 break;
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
-            input_eof = 0; decoded_index = 0; mono_base_us = 0; video_run = 0;
+            input_eof = 0; decoded_index = 0; mono_base_us = 0; video_run = 0; last_packet_call_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
             container_pts_adjust_us = 0;
             playback_started = 0;
@@ -3035,7 +3050,7 @@ int main(int argc, char **argv)
                 !mr_msvideo1_set_indexed_output(&dec, indexed_depth))
                 break;
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
-            input_eof = 0; decoded_index = 0; mono_base_us = 0; video_run = 0;
+            input_eof = 0; decoded_index = 0; mono_base_us = 0; video_run = 0; last_packet_call_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
             container_pts_adjust_us = 0;
             playback_started = 0;
@@ -3092,6 +3107,24 @@ int main(int argc, char **argv)
                 uint64_t a = 0;
                 trace_phase(&trace, "demux-read");
                 if (want_time) a = monotonic_us();
+                /* Diagnostic only: how long the scheduler went since it last
+                 * pulled ANY packet (audio or video) - unlike max_video_run
+                 * (which packet TYPE arrives), this catches the loop simply
+                 * not reaching this call for a stretch (asleep, or stuck
+                 * re-checking a presentation deadline that keeps failing
+                 * can_decode's gate above) regardless of which type would
+                 * have come next. Persists across the whole session like
+                 * video_run - only the window's worst value resets with the
+                 * rest of playback_stats. */
+                if (want_time) {
+                    if (last_packet_call_us && a > last_packet_call_us) {
+                        unsigned long gap =
+                            (unsigned long)(a - last_packet_call_us);
+                        if (gap > stats.max_packet_gap_us)
+                            stats.max_packet_gap_us = gap;
+                    }
+                    last_packet_call_us = a;
+                }
                 /* Hand the queue to the service callback for the duration of the
                  * fetch: this is the one place the single loop blocks long enough
                  * (a segment boundary can stall ~1.7 s) to freeze video. While
