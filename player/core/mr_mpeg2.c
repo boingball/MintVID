@@ -39,6 +39,8 @@ typedef struct {
     int                flush_done;
     int                have_last_output_pts;
     uint64_t           last_output_pts;
+    mr_mpeg2_service_fn service;
+    void               *service_opaque;
 } mpeg2_state;
 
 static mr_status mpeg2_drain_decoder(mr_decoder *dec);
@@ -62,7 +64,7 @@ static mr_status emit_rgb(mr_decoder *dec, uint8_t *rgb)
                        planes[0], y_stride,
                        planes[1], uv_stride,
                        planes[2], uv_stride,
-                       width, height, NULL, NULL);
+                       width, height, s->service, s->service_opaque);
 
     dec->frame.dirty_y0 = 0;
     dec->frame.dirty_y1 = dec->height;
@@ -214,6 +216,13 @@ static mr_status pump(mr_decoder *dec, uint8_t *data, uint32_t len)
             s->info->display_fbuf) {
             result = queue_display_frame(dec);
             if (result != MR_OK) return result;
+            /* queue_display_frame() just ran a full RGB/YUV conversion, and
+             * a single packet can hand this loop several complete pictures
+             * in a row (see mr_mpeg2_set_service()'s declaration) - service
+             * after each one, not just inside the conversion itself, so a
+             * run of small pictures with cheap individual conversions still
+             * yields regularly. */
+            if (s->service) s->service(s->service_opaque);
         }
     }
     return guard >= 100000u ? MR_EFORMAT : result;
@@ -271,6 +280,20 @@ static mr_status mpeg2_open_decoder(mr_decoder *dec)
     dec->frame.dirty_y1 = 0;
     dec->drain = mpeg2_drain_decoder;
     return MR_OK;
+}
+
+/* See mr_mpeg2_service_fn's declaration in mr_mpeg2.h. Mirrors
+ * mr_h264_set_service(); a no-op on a decoder that is not this codec, so
+ * callers need not test first, same as every other mr_mpeg2_set_*(). */
+void mr_mpeg2_set_service(mr_decoder *dec, mr_mpeg2_service_fn fn,
+                          void *opaque)
+{
+    mpeg2_state *s;
+    if (!dec || dec->codec != &mr_codec_mpeg2) return;
+    s = (mpeg2_state *)dec->priv;
+    if (!s) return;
+    s->service = fn;
+    s->service_opaque = opaque;
 }
 
 /*

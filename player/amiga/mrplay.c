@@ -2124,6 +2124,7 @@ int main(int argc, char **argv)
     display_set_service(disp, audio ? service_audio_for_display : NULL, &trace);
     mr_demux_set_service(dx, audio ? service_audio_for_display : NULL, &trace);
     mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL, &trace);
+    mr_mpeg2_set_service(&dec, audio ? service_audio_for_display : NULL, &trace);
     /* Off by default: mr_ts_next_packet() (several clock() reads per
      * 188/192-byte TS packet) and mr_source_read_at()/the HLS playlist and
      * segment fetch timers (two clock() reads per source read) only ever
@@ -2607,6 +2608,14 @@ int main(int argc, char **argv)
                     if (mr_decoder_reset(&dec) != MR_OK ||
                         !apply_h264_speed(&dec, h264_speed, 0)) break;
                     mr_h264_set_timing_enabled(&dec, want_time);
+                    /* mr_decoder_reset() closes and reopens the codec, so a
+                     * fresh h264_state/mpeg2_state comes back with no audio
+                     * service hook - reapply, same as every other per-
+                     * decoder setting reapplied here. */
+                    mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL,
+                                        &trace);
+                    mr_mpeg2_set_service(&dec, audio ? service_audio_for_display : NULL,
+                                        &trace);
                     if (use_yuv_indexed_queue || use_yuv_rgb_queue)
                         mr_h264_set_yuv_output(&dec, 1);
                     /* Only the indexed route - see the same pairing at the
@@ -2888,6 +2897,12 @@ int main(int argc, char **argv)
              * h264_state comes back with timing_enabled at its default
              * (off) - reapply, same as apply_h264_speed just above. */
             mr_h264_set_timing_enabled(&dec, want_time);
+            /* ...and with no audio service hook either - reapply, same as
+             * every other per-decoder setting reapplied here. */
+            mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL,
+                                &trace);
+            mr_mpeg2_set_service(&dec, audio ? service_audio_for_display : NULL,
+                                &trace);
             if (use_yuv_indexed_queue || use_yuv_rgb_queue)
                 mr_h264_set_yuv_output(&dec, 1);
             /* Only the indexed route - see the same pairing at the
@@ -2977,6 +2992,12 @@ int main(int argc, char **argv)
              * h264_state comes back with timing_enabled at its default
              * (off) - reapply, same as apply_h264_speed just above. */
             mr_h264_set_timing_enabled(&dec, want_time);
+            /* ...and with no audio service hook either - reapply, same as
+             * every other per-decoder setting reapplied here. */
+            mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL,
+                                &trace);
+            mr_mpeg2_set_service(&dec, audio ? service_audio_for_display : NULL,
+                                &trace);
             if (use_yuv_indexed_queue || use_yuv_rgb_queue)
                 mr_h264_set_yuv_output(&dec, 1);
             /* Only the indexed route - see the same pairing at the
