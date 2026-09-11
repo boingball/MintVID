@@ -131,6 +131,36 @@ int main(void)
     CHECK(strstr(mr_youtube_search_last_error(), "Enter") != NULL,
           "empty-query error is useful");
 
+    {
+        mr_youtube_search_result pasted;
+        static const char *const good[] = {
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "http://youtube.com/watch?v=dQw4w9WgXcQ",
+            "  https://m.youtube.com/watch?v=dQw4w9WgXcQ&t=30s",
+            "https://youtu.be/dQw4w9WgXcQ",
+            "https://youtu.be/dQw4w9WgXcQ?si=abc123",
+            "www.youtube.com/live/dQw4w9WgXcQ",
+            "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+            "https://www.youtube.com/embed/dQw4w9WgXcQ",
+            "https://www.youtube.com/watch?list=PL1&v=dQw4w9WgXcQ&index=2",
+        };
+        static const char *const bad[] = {
+            "dQw4w9WgXcQ",                                /* bare id, no URL */
+            "https://www.youtube.com/results?search_query=x",
+            "https://www.youtube.com/watch?v=short",       /* id too short   */
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQX", /* id too long   */
+            "https://example.com/watch?v=dQw4w9WgXcQ",
+            "",
+        };
+        size_t i;
+        for (i = 0; i < sizeof(good) / sizeof(good[0]); i++) {
+            CHECK(mr_youtube_url_parse(&pasted, good[i]), good[i]);
+            CHECK(!strcmp(pasted.video_id, "dQw4w9WgXcQ"), good[i]);
+        }
+        for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
+            CHECK(!mr_youtube_url_parse(&pasted, bad[i]), bad[i]);
+    }
+
     if (failures)
         return 1;
     puts("YouTube search checks passed");

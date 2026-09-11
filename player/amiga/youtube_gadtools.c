@@ -22,6 +22,7 @@ MINTVID_DECLARE_VERSION(ytgui_gt_version_tag, "ytgui-GT");
 #include <proto/gadtools.h>
 #include <proto/intuition.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define YT_SEARCH_PAGE_MAX (6UL * 1024UL * 1024UL)
@@ -309,6 +310,33 @@ static void load_url(ytgt *app, const char *url, mr_youtube_search_mode mode,
 #endif
 }
 
+/* A pasted YouTube video URL in the search field plays directly instead of
+ * being searched for - no network fetch, just recognizing the URL and
+ * queuing it as a single result via the same rebuild_labels() path a real
+ * search uses, so it picks up the existing auto-select-first-result and
+ * enable-Play behaviour with no changes to either. */
+static int load_pasted_url(ytgt *app, const char *query_text)
+{
+    mr_youtube_search_result pasted;
+    mr_youtube_search_result *items;
+
+    if (!query_text || !mr_youtube_url_parse(&pasted, query_text))
+        return 0;
+    items = (mr_youtube_search_result *)malloc(sizeof(*items));
+    if (!items) {
+        set_text(app, app->status, "Not enough memory for this URL.");
+        return 1;
+    }
+    *items = pasted;
+    free_labels(app);
+    mr_youtube_search_results_free(&app->found);
+    app->found.items = items;
+    app->found.count = 1;
+    rebuild_labels(app);
+    set_text(app, app->status, "Video URL recognized - press Play.");
+    return 1;
+}
+
 static void search(ytgt *app)
 {
     static const char *summary[] = {"all results shown", "videos shown",
@@ -318,6 +346,8 @@ static void search(ytgt *app)
     char url[1024];
     GT_GetGadgetAttrs(app->query, app->window, NULL,
                      GTST_String, (ULONG)&query, TAG_DONE);
+    if (load_pasted_url(app, (const char *)query))
+        return;
     if (mode > MR_YOUTUBE_SEARCH_SHORTS) mode = MR_YOUTUBE_SEARCH_ALL;
     if (!mr_youtube_search_build_url_mode(url, sizeof(url),
                                           query ? (const char *)query : "",
