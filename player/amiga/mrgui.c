@@ -98,7 +98,7 @@ enum {
  * hard-coded row number. This map is populated alongside the labels. */
 static mr_display_mode mode_values[7];
 static unsigned mode_count;
-static mr_c2p_mode c2p_values[3];
+static mr_c2p_mode c2p_values[4];
 static unsigned c2p_count;
 static int add_chooser_node(struct List *list, const char *text);
 
@@ -487,6 +487,7 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
     ULONG selected_c2p;
     mr_c2p_mode selected_c2p_mode;
     int kalms_available;
+    int direct_available;
 
     selected = 0;
     GetAttr(CHOOSER_Selected, mode, &selected);
@@ -512,12 +513,27 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
                        || mode_values[selected] == MR_DISPLAY_HAM6
 #endif
                       );
+    /* Direct only ever targets the plain 1:1 8-plane AGA case (no HAM, no
+     * resize) - see display_aga.c's aga_supports_yuv_indexed() - so unlike
+     * Kalms it is never available for HAM6/HAM8. The chooser only lists it
+     * at all on a 040/060 build (see the add_c2p_node() call below), so
+     * this can only be true there anyway; the explicit check keeps this
+     * read independent of that. */
+    direct_available = 0;
+#ifdef MR_KALMS_040
+    direct_available = selected < mode_count &&
+                       mode_values[selected] == MR_DISPLAY_AGA &&
+                       chipset_has_aga();
+#endif
 
     /* An unsupported chipset mode has to show Standard while it is active,
      * but that automatic fallback must not become the default for the next
      * output. Restore Kalms whenever a mode change reaches an implemented
      * kernel. Leave CD32/Akiko alone because it is an explicit hardware
-     * selection, and do not fight a manual Standard choice on a C2P event. */
+     * selection, and do not fight a manual Standard choice on a C2P event.
+     * Direct is never auto-selected this way - it stays a deliberate,
+     * manual opt-in (like RiVA), not a new default over the established
+     * Kalms path. */
     if (output_changed && kalms_available &&
         selected_c2p_mode == MR_C2P_STANDARD) {
         SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
@@ -526,6 +542,11 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
     }
     if (selected_c2p_mode == MR_C2P_KALMS &&
         !disable_chipset_options && !kalms_available) {
+        SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
+                       CHOOSER_Selected, c2p_row(MR_C2P_STANDARD), TAG_DONE);
+    }
+    if (selected_c2p_mode == MR_C2P_DIRECT &&
+        !disable_chipset_options && !direct_available) {
         SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
                        CHOOSER_Selected, c2p_row(MR_C2P_STANDARD), TAG_DONE);
     }
@@ -831,7 +852,11 @@ int main(void)
     if (!add_c2p_node(&c2p_modes, "Standard", MR_C2P_STANDARD) ||
         (mr_akiko_available() &&
          !add_c2p_node(&c2p_modes, "CD32", MR_C2P_AKIKO)) ||
-        !add_c2p_node(&c2p_modes, "Kalms", MR_C2P_KALMS))
+        !add_c2p_node(&c2p_modes, "Kalms", MR_C2P_KALMS)
+#ifdef MR_KALMS_040
+        || !add_c2p_node(&c2p_modes, "Direct", MR_C2P_DIRECT)
+#endif
+       )
         goto cleanup;
     if (!add_chooser_node(&h264_modes, "Auto") ||
         !add_chooser_node(&h264_modes, "Quality") ||

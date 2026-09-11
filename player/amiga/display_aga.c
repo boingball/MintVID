@@ -8,6 +8,13 @@
  * 32-pixel, direct-to-plane variant for hardware measurement. Kalms includes
  * fused 2x2 output and a 040/060 HAM6 path where the geometry permits it; an
  * incompatible bitmap or geometry falls back safely to WritePixelArray8.
+ * --direct-c2p (mr_c2p_mode MR_C2P_DIRECT, g_aga_c2p == 4, 040/060 only)
+ * removes the chunky/C2P split entirely for the common plain 1:1 8-plane
+ * AGA case: one hand-written kernel dithers straight to the final
+ * plane-major image, 32 pixels at a time - see
+ * core/mr_yuv_dither_planar_direct_m68k.S and aga_supports_yuv_indexed()'s
+ * own direct-planar branch. Falls back to WritePixelArray8 like an
+ * incompatible Kalms request whenever the geometry doesn't qualify.
  */
 #include "amiga_display.h"
 #include "display_backend.h"
@@ -16,6 +23,7 @@
 #include "../core/mr_ham.h"
 #include "../core/mr_scale.h"
 #include "../core/mr_c2p.h"
+#include "../core/mr_yuv_planar_queue.h"
 #ifdef MR_KALMS_040
 #include "../vendor/kalms-c2p/normal/c2p1x1_8_c5_040.h"
 #include "../vendor/kalms-c2p/bitmap/c2p1x1_6_c5_bm_040.h"
@@ -639,6 +647,51 @@ static int aga_supports_yuv_indexed(void *handle, int src_w, int src_h,
     if (!s) return 0;
     if (!s->ham && s->depth != 4 && s->depth != 5 && s->depth != 8) return 0;
     if (src_w <= 0 || src_h <= 0) return 0;
+
+    /* Direct-planar C2P (mr_c2p_mode MR_C2P_DIRECT, g_aga_c2p == 4): dither
+     * straight to the final eight-plane image, one 32-pixel block at a
+     * time - no chunky intermediate, no separate C2P pass. See
+     * core/mr_yuv_dither_planar_direct_m68k.S for the kernel and
+     * tests/mr_yuv_planar_queue_check.c / check_m68060_asm.sh for its
+     * bit-exactness and 68060-instruction-safety proof. Reset any stale
+     * state from a previous geometry before deciding whether this one
+     * qualifies - only the plain 1:1, non-HAM, non-resized, depth-8 AGA
+     * case does, the same shape Kalms' own 1x1 path targets. Restricted to
+     * MR_KALMS_040 builds (040/060) like the rest of this file's
+     * CPU-tier-specific tuning - unlike Kalms' own kernels this one measures
+     * bit-identical on a -m68030 cross-build too (qemu), but that is not the
+     * same as real 68030 silicon confirming it, so this keeps the same
+     * conservative tier restriction the experiment shipped with. Akiko
+     * hardware C2P takes priority if somehow also requested - the two are
+     * alternative "who does the C2P" answers and mutually exclusive by
+     * construction elsewhere, but this checks explicitly rather than
+     * assuming the caller never combines them (the original experimental
+     * version did not check this). */
+    mr_yuv_planar_queue_disable();
+#if defined(MR_KALMS_040)
+    if (g_aga_c2p == 4 && !s->use_akiko && s->scr && !s->ham &&
+        s->depth == 8 && s->scale == 1 && !s->resize &&
+        src_w == s->w && src_h == s->h && src_w > 0 && src_w <= 640) {
+        int pw = (src_w + 31) & ~31;
+        struct BitMap *bm = s->scr->RastPort.BitMap;
+        int compatible = bm && bm->Depth >= 8 && pw <= bm->BytesPerRow * 8;
+        int p;
+        for (p = 0; compatible && p < 8; p++)
+            compatible = bm->Planes[p] != NULL;
+
+        if (compatible && mr_yuv_planar_queue_configure(src_w, src_h, pw)) {
+            if (dst_w) *dst_w = pw;
+            if (dst_h) *dst_h = src_h;
+            if (vscale) *vscale = 1;
+            if (indexed_depth) *indexed_depth = 8;
+            if (ham) *ham = 0;
+            s_diag_c2p = "direct";
+            s_kalms_active = 0;
+            return 1;
+        }
+    }
+#endif
+
     if (indexed_depth) *indexed_depth = s->depth;
     if (ham) *ham = s->ham;
     /* Kalms' fused 2x2 converter consumes the source-sized indexed image and
@@ -678,6 +731,77 @@ static void aga_show_indexed(void *handle, const unsigned char *idx, int w,
     int pw, ddy0, ddh, y;
     (void)service; (void)service_opaque;
     if (!s || !s->scr) return;
+
+    /* Direct-planar C2P: aga_supports_yuv_indexed() only leaves the queue
+     * active when it accepted this geometry, so idx is already the final
+     * eight-plane image, plane-major - plane p starts at p*(pw/8)*h.
+     * Presentation is then just eight narrow sequential Fast->Chip row
+     * copies, no chunky conversion at all. The encoder centred the visible
+     * image inside the 32-pixel C2P padding, so centre that padded
+     * rectangle on the physical screen as a unit, matching how every other
+     * C2P path here centres s->dw within the physical screen width. */
+    if (mr_yuv_planar_queue_is_active()) {
+        struct BitMap *bm;
+        int qpw = mr_yuv_planar_queue_padded_width();
+        int qph = mr_yuv_planar_queue_height();
+        int src_bpr, screen_bpr, screen_w, x0, x0byte;
+        size_t plane_size;
+        int p;
+        clock_t a = 0;
+
+        if (w != qpw || h != qph || idx_stride != qpw || qpw <= 0 ||
+            (qpw & 31) != 0) {
+            printf("planar-direct: invalid queued planar frame geometry\n");
+            return;
+        }
+        bm = s->scr->RastPort.BitMap;
+        if (!bm || bm->Depth < 8) {
+            printf("planar-direct: AGA bitmap no longer has eight planes\n");
+            return;
+        }
+        for (p = 0; p < 8; p++) {
+            if (!bm->Planes[p]) {
+                printf("planar-direct: AGA plane %d disappeared\n", p);
+                return;
+            }
+        }
+        if (dy0 < 0) dy0 = 0;
+        if (dy1 > h) dy1 = h;
+        if (dy1 <= dy0) return;
+
+        src_bpr = qpw >> 3;
+        screen_bpr = bm->BytesPerRow;
+        screen_w = screen_bpr << 3;
+        x0 = (screen_w - qpw) >> 1;
+        x0 &= ~7;
+        if (x0 < 0 || x0 + qpw > screen_w) {
+            printf("planar-direct: padded row does not fit AGA bitmap\n");
+            return;
+        }
+        x0byte = x0 >> 3;
+        plane_size = (size_t)src_bpr * (size_t)h;
+
+        s_frame_enc = 0;
+        s_frame_blit = 0;
+        if (g_display_want_time) a = clock();
+        for (p = 0; p < 8; p++) {
+            const uint8_t *sp = idx + (size_t)p * plane_size +
+                                (size_t)dy0 * src_bpr;
+            uint8_t *dp = (uint8_t *)bm->Planes[p] +
+                          (size_t)(s->y0 + dy0) * screen_bpr + x0byte;
+            for (y = dy0; y < dy1; y++) {
+                memcpy(dp, sp, (size_t)src_bpr);
+                sp += src_bpr;
+                dp += screen_bpr;
+            }
+        }
+        if (g_display_want_time) {
+            s_frame_blit = clock() - a;
+            s_blit += s_frame_blit;
+        }
+        return;
+    }
+
     pw = s->pw;
     if (dy0 < 0) dy0 = 0;
     if (dy1 > h)  dy1 = h;
@@ -755,6 +879,8 @@ static void aga_close(void *handle)
     int attempt;
 
     if (!s) return;
+
+    mr_yuv_planar_queue_disable();
 
     /*
      * Custom planar screens are shared Intuition/graphics objects.  On real

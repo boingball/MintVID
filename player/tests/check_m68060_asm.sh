@@ -14,7 +14,7 @@
 # the remainder/quotient registers differ; an ordinary two-operand
 # muls.l/mulu.l is real 68060 hardware and is never flagged either).
 #
-# Six things are checked:
+# Seven things are checked:
 #   1. The two standalone MP2 kernels (core/plm_audio_idct36_m68k_060.S,
 #      core/plm_audio_synth_window_m68k_060.S) - the whole object, since
 #      each file contains only the one hand-tuned function (plus, for
@@ -77,6 +77,18 @@
 #      (see the note above LIBA52_SRC there). Without that define this
 #      object references __muldi3 from every FFT butterfly's MULT32() -
 #      confirmed while diagnosing the hole this gate now guards against.
+#   7. AGA direct-planar C2P (mr_c2p_mode MR_C2P_DIRECT):
+#      core/mr_yuv_dither_planar_m68k.S (the runtime dispatcher - a plain
+#      flag test and two jumps, no arithmetic of its own),
+#      core/mr_yuv_dither_planar_direct_m68k.S (the actual dither+C2P
+#      kernel - hand-written, not compiler-generated, but still checked the
+#      same way: source review is not proof of the emitted encoding), and
+#      core/mr_yuv_planar_queue.c (pure geometry/state bookkeeping, no
+#      per-pixel arithmetic, included for completeness). Each is a whole
+#      object, like the standalone MP2 kernels - each file contains exactly
+#      one exported function. This experiment (Makefile.fused,
+#      display_aga_fused.c) predated this whole audit methodology and had
+#      never been through it before landing as a real runtime option.
 set -e
 cd "$(dirname "$0")/.."
 
@@ -191,5 +203,19 @@ python3 tests/scan_m68060_forbidden.py $AAC_OBJS
 
 echo "== scanning AC-3 FFT (whole object) =="
 python3 tests/scan_m68060_forbidden.py "$BUILD/fft-ffmpeg_060.o"
+
+echo "== building AGA direct-planar C2P (mr_c2p_mode MR_C2P_DIRECT) at the real 68060 production flags =="
+$M68K_CC -mcpu=68060 -O2 -std=c99 -DMR_M68K_ASM=1 \
+    -c -o "$BUILD/mr_yuv_dither_planar_m68k_060.o" core/mr_yuv_dither_planar_m68k.S
+$M68K_CC -mcpu=68060 -O2 -std=c99 -DMR_M68K_ASM=1 \
+    -c -o "$BUILD/mr_yuv_dither_planar_direct_m68k_060.o" \
+    core/mr_yuv_dither_planar_direct_m68k.S
+$M68K_CC -mcpu=68060 -O2 -std=c99 -DMR_M68K_ASM=1 \
+    -c -o "$BUILD/mr_yuv_planar_queue_060.o" core/mr_yuv_planar_queue.c
+
+echo "== scanning AGA direct-planar C2P (whole objects) =="
+python3 tests/scan_m68060_forbidden.py "$BUILD/mr_yuv_dither_planar_m68k_060.o" \
+    "$BUILD/mr_yuv_dither_planar_direct_m68k_060.o" \
+    "$BUILD/mr_yuv_planar_queue_060.o"
 
 echo "68060 disassembly check: OK"

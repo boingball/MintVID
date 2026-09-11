@@ -28,7 +28,11 @@ typedef enum {
     MR_C2P_AKIKO,
     MR_C2P_KALMS,
     MR_C2P_RIVA,
-    MR_C2P_WPA
+    MR_C2P_WPA,
+    /* Single-kernel dither+C2P for the plain 1:1 8-plane AGA case, 040/060
+     * only - see amiga/display_aga.c's aga_supports_yuv_indexed() and
+     * core/mr_yuv_dither_planar_direct_m68k.S. */
+    MR_C2P_DIRECT
 } mr_c2p_mode;
 
 typedef enum {

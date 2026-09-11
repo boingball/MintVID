@@ -386,6 +386,35 @@ $CC -o "$BUILD/mr_yuv_dither_check.m68k" tests/mr_yuv_dither_check.c \
     core/mr_yuv_dither.c core/mr_yuv_dither_m68k.S core/mr_yuv.c \
     core/mr_yuv_m68k.S core/mr_scale.c core/mr_dither.c core/mr_dither_m68k.S
 
+# The AGA direct-planar C2P kernel (mr_c2p_mode MR_C2P_DIRECT) - this is the
+# only place its bit-exactness against the established
+# dither-then-transpose-C2P composition is ever actually proven: the test
+# itself is a no-op on the host build (see mr_yuv_planar_queue_check.c's own
+# header comment - the centering it checks only exists inside the m68k asm
+# dispatch, never reached without MR_M68K_ASM). core/mr_yuv_dither_planar_m68k.S
+# wraps the established mr_yuv_dither_m68k.S under a renamed symbol and
+# republishes mr_yuv420_dither8_m68k as a tiny runtime dispatcher, so the
+# established core/mr_yuv_dither_m68k.S must NOT also be linked directly here
+# (it would double-define that symbol) - mirrors Makefile.fused's own
+# FUSED_CORE exclusion of it, for the same reason. Built and run at both
+# 68030 (the shared baseline tier every other m68k build here exercises) and
+# 68060, since the direct kernel's mulu.l/muls.l instructions need the same
+# 68060-safety proof as everything else in this file - see
+# check_m68060_asm.sh for the disassembly side of that proof.
+echo "== building mr_yuv_planar_queue_check.m68k (68030) =="
+$CC -o "$BUILD/mr_yuv_planar_queue_check_030.m68k" tests/mr_yuv_planar_queue_check.c \
+    core/mr_yuv_dither.c core/mr_yuv_dither_planar_m68k.S \
+    core/mr_yuv_dither_planar_direct_m68k.S core/mr_yuv_planar_queue.c \
+    core/mr_c2p.c core/mr_c2p_m68k.S core/mr_yuv.c core/mr_yuv_m68k.S \
+    core/mr_scale.c core/mr_dither.c core/mr_dither_m68k.S
+
+echo "== building mr_yuv_planar_queue_check.m68k (68060) =="
+$CC_060 -o "$BUILD/mr_yuv_planar_queue_check_060.m68k" tests/mr_yuv_planar_queue_check.c \
+    core/mr_yuv_dither.c core/mr_yuv_dither_planar_m68k.S \
+    core/mr_yuv_dither_planar_direct_m68k.S core/mr_yuv_planar_queue.c \
+    core/mr_c2p.c core/mr_c2p_m68k.S core/mr_yuv.c core/mr_yuv_m68k.S \
+    core/mr_scale.c core/mr_dither.c core/mr_dither_m68k.S
+
 echo "== building mr_yuv_ham_check.m68k =="
 # Same idea for HAM: the reference composition links the real hand-asm
 # mr_yuv420_to_rgb24_m68k, so this cross-checks the fused encoder against the
@@ -439,6 +468,8 @@ run "$BUILD/mr_muldiv64_check_060.m68k"
 run "$BUILD/mr_ih264_divmod_check_040.m68k"
 run "$BUILD/mr_ih264_divmod_check_060.m68k"
 run "$BUILD/mr_yuv_dither_check.m68k"
+run "$BUILD/mr_yuv_planar_queue_check_030.m68k"
+run "$BUILD/mr_yuv_planar_queue_check_060.m68k"
 run "$BUILD/mr_yuv_ham_check.m68k"
 run "$BUILD/mr_mpeg1_blockset_check.m68k"
 run "$BUILD/mr_mpeg1_idct_check.m68k"
