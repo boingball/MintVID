@@ -360,18 +360,21 @@ KALMS_1X1_NAME = c2p1x1_8_c5_030
 KALMS_1X1_CPU  = 68030
 KALMS_CPPFLAGS =
 KALMS_HAM6_OBJ =
+KALMS_BM8_OBJ =
 else
 KALMS_1X1_NAME = c2p1x1_8_c5_040
 KALMS_1X1_CPU  = 68040
 KALMS_CPPFLAGS = -DMR_KALMS_040=1
 KALMS_HAM6_OBJ = build/c2p1x1_6_c5_bm_040.o
+KALMS_BM8_OBJ = build/c2p1x1_8_c5_bm_040.o
 endif
 KALMS_1X1_SRC = vendor/kalms-c2p/normal/$(KALMS_1X1_NAME).s
 KALMS_1X1_OBJ = build/$(KALMS_1X1_NAME).o
 KALMS_2X2_SRC = vendor/kalms-c2p/bitmap/c2p2x2_8_c5_bm.s
 KALMS_2X2_OBJ = build/c2p2x2_8_c5_bm.o
 KALMS_HAM6_SRC = vendor/kalms-c2p/bitmap/c2p1x1_6_c5_bm_040.s
-KALMS_OBJ = $(KALMS_1X1_OBJ) $(KALMS_2X2_OBJ) $(KALMS_HAM6_OBJ)
+KALMS_BM8_SRC = vendor/kalms-c2p/bitmap/c2p1x1_8_c5_bm_040.s
+KALMS_OBJ = $(KALMS_1X1_OBJ) $(KALMS_2X2_OBJ) $(KALMS_HAM6_OBJ) $(KALMS_BM8_OBJ)
 SYNTH_OBJ = build/plm_audio_synth_window_m68k.o
 IDCT_OBJ = build/plm_audio_idct36_m68k.o
 SCALE_OBJ = build/plm_audio_scale_clamp_m68k.o
@@ -475,6 +478,12 @@ $(KALMS_2X2_OBJ): $(KALMS_2X2_SRC) Makefile.amiga | check-kalms
 
 ifneq ($(KALMS_HAM6_OBJ),)
 $(KALMS_HAM6_OBJ): $(KALMS_HAM6_SRC) Makefile.amiga | check-kalms
+	@mkdir -p $(@D)
+	$(KALMS_VASM) -Fhunk -m68040 -no-opt -I$(KALMS_ASM_INCLUDE) -o $@ $<
+endif
+
+ifneq ($(KALMS_BM8_OBJ),)
+$(KALMS_BM8_OBJ): $(KALMS_BM8_SRC) Makefile.amiga | check-kalms
 	@mkdir -p $(@D)
 	$(KALMS_VASM) -Fhunk -m68040 -no-opt -I$(KALMS_ASM_INCLUDE) -o $@ $<
 endif

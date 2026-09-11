@@ -64,6 +64,7 @@ Mikael Kalms' C2P collection
     player/vendor/kalms-c2p/normal/c2p1x1_8_c5_030.s
     player/vendor/kalms-c2p/normal/c2p1x1_8_c5_040.s
     player/vendor/kalms-c2p/bitmap/c2p2x2_8_c5_bm.s
+    player/vendor/kalms-c2p/bitmap/c2p1x1_8_c5_bm_040.s
     player/vendor/kalms-c2p/bitmap/c2p1x1_6_c5_bm_040.s
   The bundled kalms-c2p readme states that all files outside its "others"
   directory are Public Domain and may be used, modified and redistributed for
