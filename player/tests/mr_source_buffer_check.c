@@ -42,19 +42,36 @@ int main(int argc, char **argv)
     assert(fwrite(expected, 1, sizeof expected, file) == sizeof expected);
     assert(fclose(file) == 0);
 
+    /* The test file is far smaller than the Fast buffer budget, so it must
+     * be read into memory whole - not merely wrapped in a wider stdio
+     * window sized to the (much larger) budget. Capacity therefore tracks
+     * the file itself, and every further read must come from memory with
+     * no dependence on the file still being open. */
     assert(mr_http_options_init(&options, NULL, NULL));
     options.source_buffer_bytes = FAST_BUFFER_BYTES;
     source = mr_source_open_ex(TEST_PATH, &options);
     assert(source);
-    assert(mr_source_buffer_capacity(source) == FAST_BUFFER_BYTES);
+    assert(mr_source_is_memory_cached(source));
+    assert(mr_source_buffer_capacity(source) == sizeof expected);
     assert(mr_source_read_at(source, 0, got, sizeof got));
     assert(!memcmp(got, expected, sizeof got));
     assert(mr_source_read_at(source, 8, got, 6));
     assert(!memcmp(got, expected + 8, 6));
+    /* Out-of-range reads against the cached copy must fail cleanly. */
+    assert(!mr_source_read_at(source, sizeof expected, got, 1));
+    remove(TEST_PATH); /* the on-disk file is no longer needed at all */
+    assert(mr_source_read_at(source, 0, got, sizeof got));
+    assert(!memcmp(got, expected, sizeof got));
     mr_source_close(source);
+
+    file = fopen(TEST_PATH, "wb");
+    assert(file);
+    assert(fwrite(expected, 1, sizeof expected, file) == sizeof expected);
+    assert(fclose(file) == 0);
 
     source = mr_source_open(TEST_PATH);
     assert(source);
+    assert(!mr_source_is_memory_cached(source));
     assert(mr_source_buffer_capacity(source) == 0);
     mr_source_close(source);
     remove(TEST_PATH);

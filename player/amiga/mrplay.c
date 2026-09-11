@@ -1780,10 +1780,14 @@ int main(int argc, char **argv)
         printf("streaming %s from %s\n", mr_demux_container_name(dx),
                !strncmp(media_path, "http://", 7) ||
                !strncmp(media_path, "https://", 8) ? "network" : "disk");
-        if (http_options.source_buffer_bytes &&
-            actual_buffer < fast_buffer_bytes)
-            printf("warning: Fast buffer fell back to %lu MB\n",
-                   (unsigned long)(actual_buffer / (1024UL * 1024UL)));
+        if (http_options.source_buffer_bytes) {
+            if (mr_demux_source_is_cached(dx))
+                printf("Fast buffer: whole file cached in Fast RAM (%lu KB)\n",
+                       (unsigned long)((actual_buffer + 1023) / 1024));
+            else if (actual_buffer < fast_buffer_bytes)
+                printf("warning: Fast buffer fell back to %lu MB\n",
+                       (unsigned long)(actual_buffer / (1024UL * 1024UL)));
+        }
     } else {
         if (mr_demux_is_file_backed_container(media_path)) {
             char reason[MR_PLAYER_STATUS_TEXT_MAX];

@@ -34,6 +34,12 @@ int        mr_source_is_streaming(const mr_source *s);
 const char *mr_source_final_name(const mr_source *s);
 void       mr_source_close(mr_source *s);
 size_t     mr_source_buffer_capacity(const mr_source *s);
+/* True once a local file has been fully read into a Fast RAM block up
+ * front - every mr_source_read_at() call is then served from memory with
+ * no further disk I/O. False for the windowed stdio-buffer fallback (used
+ * when the file does not fit the Fast buffer budget) and for non-local
+ * sources. */
+int        mr_source_is_memory_cached(const mr_source *s);
 
 /* Process-local cumulative blocking-I/O counters.  They are intentionally
  * queried by the player only at rolling-report boundaries, never per frame. */
@@ -66,5 +72,6 @@ mr_source *mr_source_create(void *ctx, size_t len,
                             const char *final_name);
 void       mr_source_set_error(const char *message);
 void       mr_source_set_buffer_capacity(mr_source *s, size_t bytes);
+void       mr_source_set_memory_cached(mr_source *s, int cached);
 
 #endif /* MR_SOURCE_H */

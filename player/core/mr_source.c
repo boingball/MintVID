@@ -28,14 +28,17 @@ struct mr_source {
     char    final_name[MR_SOURCE_NAME_MAX];
     int     network;
     size_t  buffer_capacity;
+    int     memory_cached;
 };
 
 typedef struct {
-    FILE   *file;
+    FILE   *file;          /* NULL once content is fully cached in Fast RAM */
     size_t  pos;
     int     pos_valid;
     unsigned char *buffer;
     size_t  buffer_size;
+    int     cached;
+    size_t  cached_len;
 } file_source;
 
 static char g_source_error[MR_SOURCE_ERROR_MAX];
@@ -126,7 +129,13 @@ mr_source *mr_source_create(void *ctx, size_t len,
 static int file_read_at(void *opaque, size_t off, void *dst, size_t len)
 {
     file_source *f = (file_source *)opaque;
-    if (!f || !f->file || (!dst && len)) return 0;
+    if (!f || (!dst && len)) return 0;
+    if (f->cached) {
+        if (off > f->cached_len || len > f->cached_len - off) return 0;
+        if (len) memcpy(dst, f->buffer + off, len);
+        return 1;
+    }
+    if (!f->file) return 0;
     if (!f->pos_valid || f->pos != off) {
         if (off > 0x7fffffffUL || fseek(f->file, (long)off, SEEK_SET) != 0) {
             f->pos_valid = 0;
@@ -153,31 +162,85 @@ static void file_close(void *opaque)
 
 static mr_source *open_local_file(const char *path, size_t requested_buffer)
 {
-    file_source *ctx = NULL;
+    file_source *ctx;
     mr_source *source;
     size_t actual_buffer;
     long end;
-    FILE *file = fopen(path, "rb");
+    FILE *file;
+
+    /* Determine the file size through a throwaway stream, before the real
+     * stream performs any operation of its own - setvbuf() below must run
+     * before the first operation on *its* stream, so size discovery cannot
+     * share it (a seek would already count as an operation). */
+    {
+        FILE *probe = fopen(path, "rb");
+        if (!probe) {
+            mr_source_set_error("cannot open local file");
+            return NULL;
+        }
+        if (fseek(probe, 0, SEEK_END) != 0 || (end = ftell(probe)) <= 0) {
+            fclose(probe);
+            mr_source_set_error("cannot determine local file size");
+            return NULL;
+        }
+        fclose(probe);
+    }
+
+    file = fopen(path, "rb");
     if (!file) {
         mr_source_set_error("cannot open local file");
         return NULL;
     }
-    /* setvbuf() must run before the first operation on the stream. An explicit
-     * GUI/CLI cache lives in Fast RAM and remains owned by file_source until
-     * after fclose(); Off keeps the established small libc-owned buffer. */
+    ctx = (file_source *)calloc(1, sizeof *ctx);
+    if (!ctx) {
+        fclose(file);
+        mr_source_set_error("not enough memory for local file");
+        return NULL;
+    }
+
+    /* Whole file fits inside the Fast buffer budget: read it once, up
+     * front, into a block sized to the file itself, then close the stream
+     * entirely. Every later mr_source_read_at() is then served straight
+     * from memory - no further disk I/O, which is what a "Fast buffer"
+     * actually promises. Merely widening libc's stdio window (below)
+     * cannot promise that once a demuxer's reads stop being sequential
+     * (index parsing, interleaved chunks that outrun the window) - that
+     * gap is what let a small file "spam" the disk with read requests
+     * instead of being buffered once. */
+    if (requested_buffer && (size_t)end <= requested_buffer) {
+        unsigned char *buffer = (unsigned char *)mr_alloc_fast((size_t)end);
+        if (buffer) {
+            if (fread(buffer, 1, (size_t)end, file) == (size_t)end) {
+                fclose(file);
+                ctx->buffer = buffer;
+                ctx->buffer_size = (size_t)end;
+                ctx->cached = 1;
+                ctx->cached_len = (size_t)end;
+                source = mr_source_create(ctx, (size_t)end, file_read_at,
+                                          file_close, path);
+                mr_source_set_buffer_capacity(source, (size_t)end);
+                mr_source_set_memory_cached(source, 1);
+                return source;
+            }
+            mr_free(buffer);
+            fclose(file);
+            free(ctx);
+            mr_source_set_error("cannot read local file");
+            return NULL;
+        }
+        /* Not enough contiguous Fast RAM for even the exact file size -
+         * fall through to the windowed stdio buffer below. */
+    }
+
+    /* setvbuf() must run before the first operation on the stream; `file`
+     * is freshly opened and untouched at this point in every remaining
+     * path, so each branch below is still that first operation. */
     if (requested_buffer) {
         size_t attempt = requested_buffer;
         while (attempt >= 4u * 1024u * 1024u) {
             unsigned char *buffer = (unsigned char *)mr_alloc_fast(attempt);
             if (buffer) {
                 if (setvbuf(file, (char *)buffer, _IOFBF, attempt) == 0) {
-                    ctx = (file_source *)calloc(1, sizeof *ctx);
-                    if (!ctx) {
-                        fclose(file);
-                        mr_free(buffer);
-                        mr_source_set_error("not enough memory for local file");
-                        return NULL;
-                    }
                     ctx->buffer = buffer;
                     ctx->buffer_size = attempt;
                     break;
@@ -187,25 +250,9 @@ static mr_source *open_local_file(const char *path, size_t requested_buffer)
             attempt /= 2;
         }
     }
-    if (!ctx)
+    if (!ctx->buffer)
         (void)setvbuf(file, NULL, _IOFBF, MR_LOCAL_FILE_BUFFER_SIZE);
-    if (fseek(file, 0, SEEK_END) != 0 || (end = ftell(file)) <= 0 ||
-        fseek(file, 0, SEEK_SET) != 0) {
-        if (ctx) {
-            ctx->file = file;
-            file_close(ctx);
-        } else {
-            fclose(file);
-        }
-        mr_source_set_error("cannot determine local file size");
-        return NULL;
-    }
-    if (!ctx) ctx = (file_source *)calloc(1, sizeof *ctx);
-    if (!ctx) {
-        fclose(file);
-        mr_source_set_error("not enough memory for local file");
-        return NULL;
-    }
+
     ctx->file = file;
     ctx->pos = 0;
     ctx->pos_valid = 1;
@@ -298,4 +345,14 @@ size_t mr_source_buffer_capacity(const mr_source *s)
 void mr_source_set_buffer_capacity(mr_source *s, size_t bytes)
 {
     if (s) s->buffer_capacity = bytes;
+}
+
+int mr_source_is_memory_cached(const mr_source *s)
+{
+    return s && s->memory_cached;
+}
+
+void mr_source_set_memory_cached(mr_source *s, int cached)
+{
+    if (s) s->memory_cached = cached != 0;
 }
