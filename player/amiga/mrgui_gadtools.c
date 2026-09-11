@@ -18,7 +18,7 @@ MINTVID_DECLARE_VERSION(mintvid_gt_version_tag, "MintVID-GT");
 #include <libraries/asl.h>
 #include <libraries/gadtools.h>
 #include <proto/asl.h>
-#include <proto/cybergraphics.h>
+#include <proto/cybergraphx.h>
 #include <proto/dos.h>
 #include <proto/exec.h>
 #include <proto/gadtools.h>
@@ -28,14 +28,11 @@ MINTVID_DECLARE_VERSION(mintvid_gt_version_tag, "MintVID-GT");
 #include <string.h>
 
 #define MRPLAY_STACK_SIZE 320000UL
-/* 720, not 640: the widest display-mode cycle label ("Display: RTG
- * (WritePixel)", 26 chars) needs ~240px at topaz-8 plus the cycle gadget's
- * arrow, not the 160px row 2 used to give it - see G_MODE below. Every
- * gadget from G_MODE rightward on that row, plus the file path field/Browse
- * button and the status bar (both already sized to track the window's full
- * width), shift/widen by the same +80px so the layout stays proportional. */
-#define WIN_W 720
-#define WIN_H 154
+/* Keep the OS3 GadTools controller inside a standard 640-pixel A1200
+ * Workbench.  The long display cycle still gets enough room for the RTG
+ * label, while related controls are grouped across two option rows. */
+#define WIN_W 632
+#define WIN_H 180
 
 #if defined(__GNUC__)
 static const char mrgui_gt_stack_cookie[] __attribute__((used))="$STACK:131072";
@@ -493,41 +490,51 @@ static int build_window(gt_app *app)
 #endif
 
     g = app->gadgets;
-    app->file = g = add_gadget(app, g, STRING_KIND, G_FILE, 56, 20, 573, 15,
+    app->file = g = add_gadget(app, g, STRING_KIND, G_FILE, 8, 20, 535, 15,
         "", GTST_MaxChars, sizeof(app->path));
-    g = add_gadget(app, g, BUTTON_KIND, G_BROWSE, 635, 20, 72, 15,
+    g = add_gadget(app, g, BUTTON_KIND, G_BROWSE, 549, 20, 74, 15,
                    "Browse...", TAG_IGNORE, 0);
-    app->mode = g = add_gadget(app, g, CYCLE_KIND, G_MODE, 8, 44, 240, 16,
+
+    /* Primary video options: keep C2P right beside Display, followed by H.264. */
+    app->mode = g = add_gadget(app, g, CYCLE_KIND, G_MODE, 8, 44, 218, 16,
         "", GTCY_Labels, (ULONG)app->mode_labels);
-    app->c2p = g = add_gadget(app, g, CYCLE_KIND, G_C2P, 254, 44, 145, 16,
+    app->c2p = g = add_gadget(app, g, CYCLE_KIND, G_C2P, 232, 44, 128, 16,
         "", GTCY_Labels, (ULONG)app->c2p_labels);
-    app->h264 = g = add_gadget(app, g, CYCLE_KIND, G_H264, 405, 44, 170, 16,
+    app->h264 = g = add_gadget(app, g, CYCLE_KIND, G_H264, 366, 44, 144, 16,
         "", GTCY_Labels, (ULONG)h264_labels);
-    app->lace = g = add_gadget(app, g, CHECKBOX_KIND, G_LACE, 581, 45, 80, 14,
+    app->lace = g = add_gadget(app, g, CHECKBOX_KIND, G_LACE, 516, 45, 68, 14,
         "Laced", GTCB_Checked, FALSE);
-    app->twox = g = add_gadget(app, g, CHECKBOX_KIND, G_2X, 667, 45, 45, 14,
+    app->twox = g = add_gadget(app, g, CHECKBOX_KIND, G_2X, 590, 45, 36, 14,
         "2x", GTCB_Checked, FALSE);
+
+    /* Secondary audio/source options. */
     app->audio_rate = g = add_gadget(app, g, CYCLE_KIND, G_AUDIO_RATE, 8, 68,
-        145, 16, "", GTCY_Labels, (ULONG)audio_rate_labels);
-    app->no_audio = g = add_gadget(app, g, CHECKBOX_KIND, G_NO_AUDIO, 161, 69,
-        100, 14, "No audio", GTCB_Checked, FALSE);
-    app->mono_audio = g = add_gadget(app, g, CHECKBOX_KIND, G_MONO_AUDIO, 269,
-        69, 110, 14, "Mono audio", GTCB_Checked, FALSE);
+        135, 16, "", GTCY_Labels, (ULONG)audio_rate_labels);
     app->fast_buffer = g = add_gadget(app, g, CYCLE_KIND, G_FAST_BUFFER,
-        385, 68, 190, 16, "", GTCY_Labels, (ULONG)fast_buffer_labels);
-    g = add_gadget(app, g, BUTTON_KIND, G_PLAY, 8, 92, 75, 18, "Play",
+        149, 68, 190, 16, "", GTCY_Labels, (ULONG)fast_buffer_labels);
+    app->no_audio = g = add_gadget(app, g, CHECKBOX_KIND, G_NO_AUDIO, 345, 69,
+        94, 14, "No audio", GTCB_Checked, FALSE);
+    app->mono_audio = g = add_gadget(app, g, CHECKBOX_KIND, G_MONO_AUDIO, 445,
+        69, 110, 14, "Mono audio", GTCB_Checked, FALSE);
+
+    /* Compact transport strip.  ASCII keeps the glyphs available on stock
+     * Topaz while making the controls much narrower than word labels. */
+    g = add_gadget(app, g, BUTTON_KIND, G_PLAY, 8, 92, 42, 18, ">",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_PAUSE, 87, 92, 75, 18, "Pause",
+    g = add_gadget(app, g, BUTTON_KIND, G_PAUSE, 56, 92, 42, 18, "||",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_STOP, 166, 92, 75, 18, "Stop",
+    g = add_gadget(app, g, BUTTON_KIND, G_STOP, 104, 92, 42, 18, "[]",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_FAST, 245, 92, 100, 18, "Fast",
+    g = add_gadget(app, g, BUTTON_KIND, G_FAST, 152, 92, 48, 18, ">>",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_IPTV, 349, 92, 132, 18, "IPTV...",
+
+    /* Browsers get their own row so transport and service actions are visually
+     * distinct and the controller never grows horizontally again. */
+    g = add_gadget(app, g, BUTTON_KIND, G_IPTV, 8, 116, 100, 18, "IPTV...",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_YOUTUBE, 485, 92, 142, 18,
+    g = add_gadget(app, g, BUTTON_KIND, G_YOUTUBE, 114, 116, 110, 18,
                    "YouTube...", TAG_IGNORE, 0);
-    app->info = g = add_gadget(app, g, TEXT_KIND, G_INFO, 8, 116, 699, 16,
+    app->info = g = add_gadget(app, g, TEXT_KIND, G_INFO, 8, 140, 615, 16,
         "", GTTX_Text, (ULONG)"No file selected");
     if (!g)
         return 0;
