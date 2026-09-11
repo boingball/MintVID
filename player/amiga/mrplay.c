@@ -20,6 +20,7 @@
 #include "hls_fetch.h"
 #include "../core/mr_codec.h"
 #include "../core/mr_cinepak.h"
+#include "../core/mr_msvideo1.h"
 #include "../core/mr_rawvideo.h"
 #include "../core/mr_h264.h"
 #include "../core/mr_mpeg2.h"
@@ -1883,6 +1884,12 @@ int main(int argc, char **argv)
     int use_cinepak_indexed_queue =
         codec == &mr_codec_cinepak && use_indexed_queue &&
         mr_cinepak_set_indexed_output(&dec, indexed_depth);
+    /* MS Video 1 blocks are also native 4x4 colour-selector tiles. Decode
+     * those directly into the same persistent indexed framebuffer instead of
+     * producing RGB24 merely for queue_copy_indexed() to dither it again. */
+    int use_msvideo1_indexed_queue =
+        codec == &mr_codec_msvideo1 && use_indexed_queue &&
+        mr_msvideo1_set_indexed_output(&dec, indexed_depth);
     /* Every remaining H.264 display path consumes RGB24.  Keep libavc's
      * output planar and convert it directly into each queue slot instead of
      * first allocating/filling the decoder's private RGB framebuffer and
@@ -1921,6 +1928,10 @@ int main(int argc, char **argv)
         else if (use_cinepak_indexed_queue)
             printf("video path: Cinepak -> INDEX%d %dx%d "
                    "(direct codebook tiles)\n",
+                   indexed_depth, vi->width, vi->height);
+        else if (use_msvideo1_indexed_queue)
+            printf("video path: MS Video 1 -> INDEX%d %dx%d "
+                   "(direct 4x4 blocks)\n",
                    indexed_depth, vi->width, vi->height);
         else if (use_indexed_queue)
             printf("video path: RGB24 %dx%d -> INDEX%d (queue_copy_indexed)\n",
@@ -2531,6 +2542,9 @@ int main(int argc, char **argv)
                     if (use_cinepak_indexed_queue &&
                         !mr_cinepak_set_indexed_output(&dec, indexed_depth))
                         break;
+                    if (use_msvideo1_indexed_queue &&
+                        !mr_msvideo1_set_indexed_output(&dec, indexed_depth))
+                        break;
                     if (audio_dec) mr_audio_decoder_reset(audio_dec);
                     qcount = 0; qhead = 0;
                     playback_started = 0;
@@ -2809,6 +2823,9 @@ int main(int argc, char **argv)
             if (use_cinepak_indexed_queue &&
                 !mr_cinepak_set_indexed_output(&dec, indexed_depth))
                 break;
+            if (use_msvideo1_indexed_queue &&
+                !mr_msvideo1_set_indexed_output(&dec, indexed_depth))
+                break;
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
             input_eof = 0; decoded_index = 0; mono_base_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
@@ -2894,6 +2911,9 @@ int main(int argc, char **argv)
                 mr_mpeg2_set_yuv_output(&dec, 1);
             if (use_cinepak_indexed_queue &&
                 !mr_cinepak_set_indexed_output(&dec, indexed_depth))
+                break;
+            if (use_msvideo1_indexed_queue &&
+                !mr_msvideo1_set_indexed_output(&dec, indexed_depth))
                 break;
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
             input_eof = 0; decoded_index = 0; mono_base_us = 0;
@@ -3305,7 +3325,8 @@ int main(int argc, char **argv)
                                     if (us > stats.yuv_indexed_max_us)
                                         stats.yuv_indexed_max_us = us;
                                 }
-                            } else if (use_cinepak_indexed_queue)
+                            } else if (use_cinepak_indexed_queue ||
+                                       use_msvideo1_indexed_queue)
                                 copy_ok = queue_copy(tail, &dec.frame, pts,
                                                      decoded_at);
                             else if (use_indexed_queue)

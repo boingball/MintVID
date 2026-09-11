@@ -297,6 +297,11 @@ $CC -o "$BUILD/mr_cinepak_indexed_check.m68k" \
     tests/mr_cinepak_indexed_check.c core/mr_avi.c core/mr_rawvideo.c \
     core/mr_cinepak.c core/mr_dither.c core/mr_dither_m68k.S
 
+echo "== building mr_msvideo1_indexed_check.m68k =="
+$CC -o "$BUILD/mr_msvideo1_indexed_check.m68k" \
+    tests/mr_msvideo1_indexed_check.c core/mr_avi.c core/mr_rawvideo.c \
+    core/mr_msvideo1.c core/mr_dither.c core/mr_dither_m68k.S
+
 echo "== building mr_mp2_idct_check.m68k =="
 $M68K_CC -O2 -std=c99 -m68030 -static -DMR_M68K_ASM=1 -o "$BUILD/mr_mp2_idct_check.m68k" \
     tests/mr_mp2_idct_check.c core/plm_audio_idct36_m68k.S
@@ -453,6 +458,8 @@ run "$BUILD/mr_ham_check.m68k"
 run "$BUILD/mr_dither_check.m68k"
 run "$BUILD/mr_cinepak_indexed_check.m68k" tests/assets/test_cinepak.avi
 run "$BUILD/mr_cinepak_indexed_check.m68k" tests/assets/test_cinepak_strips.avi
+run "$BUILD/mr_msvideo1_indexed_check.m68k" tests/assets/test_msvideo1.avi
+run "$BUILD/mr_msvideo1_indexed_check.m68k" tests/assets/test_msvideo1_pal8.avi
 run "$BUILD/mr_mp2_synth_check.m68k"
 run "$BUILD/mr_mp2_scale_check.m68k"
 run "$BUILD/mr_mp2_idct_check.m68k"

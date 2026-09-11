@@ -23,6 +23,7 @@
  * persists across frames, so skip runs and inter frames patch it in place.
  */
 #include "mr_msvideo1.h"
+#include "mr_dither.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -30,8 +31,11 @@ typedef struct {
     int      w, h;          /* frame size in pixels                        */
     int      bw, bh;        /* frame size in whole 4x4 blocks              */
     int      stride, bits;
-    uint8_t *fb;            /* persistent RGB24 framebuffer                */
+    int      indexed_depth; /* 0 => RGB24; otherwise 4, 5 or 8             */
+    int      decoded_any;
+    uint8_t *fb;            /* persistent RGB24 or INDEX8 framebuffer      */
     uint8_t  pal[768];
+    uint8_t  indexed_pal[16][256]; /* 8-bit palette at each Bayer phase   */
 } ms1_ctx;
 
 static void rgb555(unsigned v, uint8_t *d)
@@ -40,12 +44,6 @@ static void rgb555(unsigned v, uint8_t *d)
     d[0] = (uint8_t)((r << 3) | (r >> 2));
     d[1] = (uint8_t)((g << 3) | (g >> 2));
     d[2] = (uint8_t)((b << 3) | (b >> 2));
-}
-
-static void color(const ms1_ctx *c, unsigned v, uint8_t *d)
-{
-    if (c->bits == 8) memcpy(d, c->pal + (v & 255) * 3, 3);
-    else              rgb555(v, d);
 }
 
 /* Paint one 4x4 block at block coordinates (bx,by). `flags` carries one
@@ -57,18 +55,45 @@ static void color(const ms1_ctx *c, unsigned v, uint8_t *d)
 static void put_block(ms1_ctx *c, int bx, int by, unsigned flags,
                       const unsigned *cols, int nc)
 {
+    uint8_t rgb[8][3];
     int px, py;
+    int i;
+
+    if (!c->indexed_depth) {
+        for (i = 0; i < nc; i++) {
+            if (c->bits == 8)
+                memcpy(rgb[i], c->pal + (cols[i] & 255) * 3, 3);
+            else
+                rgb555(cols[i], rgb[i]);
+        }
+    } else if (c->bits == 16) {
+        for (i = 0; i < nc; i++) rgb555(cols[i], rgb[i]);
+    }
+
     for (py = 0; py < 4; py++) {
         int y = by * 4 + 3 - py;
         for (px = 0; px < 4; px++, flags >>= 1) {
             int x = bx * 4 + px;
-            int i;
             if (nc == 1)      i = 0;
             else if (nc == 2) i = (int)(flags & 1) ^ 1;
             else              i = ((py & 2) << 1) + (px & 2) +
                                   ((int)(flags & 1) ^ 1);
-            if (x < c->w && y < c->h)
-                color(c, cols[i], c->fb + (size_t)y * c->stride + x * 3);
+            /* bx/by enumerate only complete 4x4 blocks, so this hot loop
+             * needs no per-pixel clipping. */
+            if (c->indexed_depth) {
+                uint8_t value;
+                if (c->bits == 8)
+                    value = c->indexed_pal[((y & 3) << 2) | (x & 3)]
+                                          [cols[i] & 255];
+                else
+                    value = mr_dither_rgb_indexed_pixel(
+                                rgb[i][0], rgb[i][1], rgb[i][2], x, y,
+                                c->indexed_depth);
+                c->fb[(size_t)y * c->stride + x] = value;
+            } else {
+                uint8_t *dst = c->fb + (size_t)y * c->stride + x * 3;
+                dst[0] = rgb[i][0]; dst[1] = rgb[i][1]; dst[2] = rgb[i][2];
+            }
         }
     }
 }
@@ -100,6 +125,44 @@ static mr_status ms1_open(mr_decoder *d)
     return MR_OK;
 }
 
+int mr_msvideo1_set_indexed_output(mr_decoder *d, int depth)
+{
+    ms1_ctx *c;
+    uint8_t *fb;
+    size_t bytes;
+    int phase, i;
+
+    if (!d || d->codec != &mr_codec_msvideo1 || !d->priv ||
+        (depth != 4 && depth != 5 && depth != 8))
+        return 0;
+    c = (ms1_ctx *)d->priv;
+    if (c->decoded_any) return 0;
+
+    bytes = (size_t)c->w * c->h;
+    fb = (uint8_t *)calloc(bytes, 1);
+    if (!fb) return 0;
+
+    if (c->bits == 8) {
+        for (phase = 0; phase < 16; phase++)
+            for (i = 0; i < 256; i++) {
+                const uint8_t *rgb = c->pal + i * 3;
+                c->indexed_pal[phase][i] = mr_dither_rgb_indexed_pixel(
+                    rgb[0], rgb[1], rgb[2], phase & 3, phase >> 2, depth);
+            }
+    }
+
+    free(c->fb);
+    c->fb = fb;
+    c->stride = c->w;
+    c->indexed_depth = depth;
+    d->frame.data = c->fb;
+    d->frame.stride = c->stride;
+    d->frame.fmt = MR_PIX_INDEX8;
+    d->frame.u_data = d->frame.v_data = NULL;
+    d->frame.u_stride = d->frame.v_stride = 0;
+    return 1;
+}
+
 static mr_status ms1_decode(mr_decoder *d, const uint8_t *p, uint32_t len)
 {
     ms1_ctx *c = (ms1_ctx *)d->priv;
@@ -109,6 +172,7 @@ static mr_status ms1_decode(mr_decoder *d, const uint8_t *p, uint32_t len)
     int changed0 = c->h, changed1 = 0;
 
     if (!p) return MR_EFORMAT;
+    c->decoded_any = 1;
 
     for (by = c->bh - 1; by >= 0; by--) {
         for (bx = 0; bx < c->bw; bx++) {
