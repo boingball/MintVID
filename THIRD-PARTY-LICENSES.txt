@@ -71,7 +71,8 @@ Mikael Kalms' C2P collection
   commercial or non-commercial purposes. MintVID uses a routine from the
   "normal" directory. See player/vendor/kalms-c2p/readme.txt for the original
   notice. MintVID uses routines from both the "normal" and "bitmap"
-  directories.
+  directories. Its 040 8-plane normal routine carries a documented local
+  end-pointer register adaptation.
 
 This file supplements, rather than replaces, the upstream licence texts. The
 release packaging target copies the available GPL, Apache and MintAMP/Helix

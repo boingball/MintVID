@@ -16,6 +16,11 @@
 ; Timings:
 ;   Estimated to run at copyspeed on 040-40 and 060
 ;
+; MintVID adaptation:
+;   Keep the chunky end pointer in the otherwise-unused saved a2 register.
+;   This removes a stack write, a memory compare per 32 pixels and the final
+;   stack adjustment while preserving the original conversion schedule.
+;
 ; Features:
 ;   Handles bitplanes of virtually any size (4GB)
 ;
@@ -86,7 +91,7 @@ c2p1x1_8_c5_040
 	move.l	c2p1x1_8_c5_040_pixels(pc),d0
 	beq	.none
 	add.l	a0,d0
-	move.l	d0,-(sp)
+	move.l	d0,a2
 
 	tst.b	16(a0)
 	move.l	(a0)+,d0
@@ -373,7 +378,7 @@ c2p1x1_8_c5_040
 	move.l	d4,a3
 	move.l	d5,a4
 
-	cmp.l	(sp),a0
+	cmp.l	a2,a0
 	bne	.x
 
 	move.l	d6,(a1)
@@ -383,8 +388,6 @@ c2p1x1_8_c5_040
 	move.l	a3,(a1)
 	sub.l	c2p1x1_8_c5_040_delta3(pc),a1
 	move.l	a4,(a1)
-
-	addq.l	#4,sp
 
 .none	movem.l	(sp)+,d2-d7/a2-a6
 	rts
