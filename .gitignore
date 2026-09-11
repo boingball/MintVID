@@ -43,6 +43,11 @@ player/mr_mpeg1_audio_time_check_skip
 player/mr_mpeg1_audio_time_check_skip.out
 player/mr_mpeg1_decim_check
 player/mr_mpeg1_decim_synth_check
+player/mr_ih264_divmod_check
+player/mr_micro_rescue_check
+player/mr_msvideo1_indexed_check
+player/mr_source_buffer_check
+player/mr_yuv_planar_queue_check
 *.o
 
 # Decoder PPM dumps and regenerated ffmpeg reference frames.
