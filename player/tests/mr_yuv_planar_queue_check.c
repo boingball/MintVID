@@ -4,7 +4,24 @@
  * The expected result is deliberately composed from MintVID's two established
  * public operations: YUV420P -> INDEX8, then 32-pixel C2P.  The experimental
  * dispatcher must produce the exact same eight plane bytes directly.
- */
+ *
+ * This is meaningful only under MR_M68K_ASM: the padded-row centering this
+ * test checks for is computed entirely inside the m68k asm direct kernel
+ * (mr_yuv_dither_planar_direct_m68k.S's S_LEFT), reached only via the
+ * mr_yuv_dither_planar_m68k.S wrapper's runtime check of
+ * mr_yuv_planar_queue_active. The portable C path in mr_yuv_dither.c never
+ * reads that flag at all - mr_yuv420_dither_indexed() always writes
+ * uncentered, starting at x=0 of whatever stride it's given, regardless of
+ * mr_yuv_planar_queue_configure()/_disable(). So on a host (non-m68k) build
+ * the "actual" call here is not almost-right, it is a fundamentally
+ * different, incomparable computation - not the centered plane-major result
+ * this test's "expected" side constructs by hand. This test, and the
+ * production feature it covers, had never actually been built into any
+ * check target before (Makefile.fused's separate hardware-test build never
+ * ran unit tests), so this gap had never surfaced. Skip the comparison
+ * cleanly on host, matching the established pattern for m68k-only checks
+ * (see e.g. tests/mr_h264_m68k_check.c) - real verification happens only
+ * under tests/run_m68k_check.sh's cross-build. */
 #include "../core/mr_yuv_dither.h"
 #include "../core/mr_yuv_planar_queue.h"
 #include "../core/mr_c2p.h"
@@ -64,6 +81,18 @@ static int run_case(int width, int height)
     for (p = 0; p < 8; p++) planes[p] = expected + (size_t)p * plane_size;
     mr_c2p8_riva32(padded, pw, height, pw, 8, planes, bpr, 0, 0);
 
+#if !defined(MR_M68K_ASM)
+    /* See this file's header comment: the centering this test checks for
+     * only exists inside the m68k asm direct kernel, reached only via the
+     * assembly dispatcher's runtime check of mr_yuv_planar_queue_active.
+     * The portable path below has no such behavior to compare against on a
+     * host build, so there is nothing meaningful to test here. */
+    (void)actual;
+    ok = 1;
+    printf("planar queue %dx%d -> pw=%d: skipped (host build, "
+           "MR_M68K_ASM-only check)\n", width, height, pw);
+    goto out;
+#endif
     /* Experimental route: same public dither call, but the m68k dispatcher
      * writes final plane-major bytes directly into `actual`. */
     if (!mr_yuv_planar_queue_configure(width, height, pw)) goto out;
