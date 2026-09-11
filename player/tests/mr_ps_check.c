@@ -192,7 +192,16 @@ int main(void)
      * reorder tagging both key off mr_packet::has_pts, and an MPEG-PS clip
      * whose timestamps never arrive falls back to a synthetic frame counter
      * without ever failing - so pin the values, and pin which chunk carries
-     * them. */
+     * them.
+     *
+     * This stream's video PES (3 pictures) is immediately followed by one
+     * audio PES, and mr_ps_next_packet() now delivers them fairly instead of
+     * draining the whole video PES first (see mr_ps_next_packet()'s own
+     * comment): once both a video and an audio PES are open, it alternates
+     * between them rather than letting one run ahead of the other, only
+     * falling back to "whichever one has data" once a stream runs dry. So
+     * the audio chunk (this stream's only one) is delivered second, between
+     * the first and second video pictures, not last. */
     if (mr_ps_open(&ps, pts_stream, sizeof pts_stream) != MR_OK) {
         fprintf(stderr, "could not open timestamped MPEG-PS\n");
         return 1;
@@ -206,6 +215,24 @@ int main(void)
                 packet.has_pts, (unsigned long)packet.pts_us);
         return 1;
     }
+    /* MPEG-1 PES puts the PTS after the stuffing bytes instead, with no
+     * flags/length pair in front of it. Both streams have data pending at
+     * this point (3 video pictures still to come, this one audio chunk), so
+     * fair delivery serves it now rather than after the video PES drains. */
+    if (mr_ps_next_packet(&ps, &packet) != MR_OK || packet.is_video ||
+        !packet.has_pts || packet.pts_us != 1500000u) {
+        fprintf(stderr, "MPEG-1 PES audio PTS not decoded or delivered out "
+                        "of fair order (is_video=%d has_pts=%d pts_us=%lu, "
+                        "expected video=0 has_pts=1 pts_us=1500000)\n",
+                packet.is_video, packet.has_pts, (unsigned long)packet.pts_us);
+        return 1;
+    }
+    if (packet.len != 4 || packet.data[0] != 0xff) {
+        fprintf(stderr, "MPEG-1 PES PTS was not skipped before the payload\n");
+        return 1;
+    }
+    /* The audio stream is now exhausted, so the remaining two pictures come
+     * back one after another with no more interleaving to do. */
     if (mr_ps_next_packet(&ps, &packet) != MR_OK || !packet.is_video ||
         packet.has_pts) {
         fprintf(stderr, "second picture of a PES must not reuse its PTS\n");
@@ -216,19 +243,120 @@ int main(void)
         fprintf(stderr, "third picture of a PES must not reuse its PTS\n");
         return 1;
     }
-    /* MPEG-1 PES puts the PTS after the stuffing bytes instead, with no
-     * flags/length pair in front of it. */
-    if (mr_ps_next_packet(&ps, &packet) != MR_OK || packet.is_video ||
-        !packet.has_pts || packet.pts_us != 1500000u) {
-        fprintf(stderr, "MPEG-1 PES audio PTS not decoded (has_pts=%d "
-                        "pts_us=%lu, expected 1 1500000)\n",
-                packet.has_pts, (unsigned long)packet.pts_us);
-        return 1;
-    }
-    if (packet.len != 4 || packet.data[0] != 0xff) {
-        fprintf(stderr, "MPEG-1 PES PTS was not skipped before the payload\n");
+    if (mr_ps_next_packet(&ps, &packet) != MR_EAGAIN) {
+        fprintf(stderr, "expected end of timestamped program stream\n");
         return 1;
     }
     mr_ps_close(&ps);
+
+    /* Regression for the fair-delivery fix itself: a long run of pictures
+     * packed into one video PES (more than any real audio chunk cadence
+     * would tolerate) must not fully drain before a pending audio PES gets
+     * served. A real MPEG-PS capture hit a run of 19 consecutive video
+     * packets with no audio in between, starving the player's software
+     * audio FIFO and triggering repeated audio-rescue episodes that then
+     * dropped video to catch back up - see mr_ps_next_packet()'s comment.
+     * The fixture is built at runtime (PES lengths computed from the actual
+     * bytes written) rather than hand-counted, since a 20-picture PES is too
+     * easy to miscount by hand. */
+    {
+#define LONG_RUN_PICTURES 20
+        uint8_t buf[8 + 6 + 3 + 8 + 6 * LONG_RUN_PICTURES + 6 + 1 + 5 + 4];
+        size_t pos = 0, video_pes_start, video_payload_start, video_len;
+        size_t audio_pes_start, audio_payload_start, audio_len;
+        size_t i;
+        int seen_audio_at = -1;
+        mr_status st;
+
+        /* Pack header - only its start code matters to this demuxer. */
+        buf[pos++] = 0x00; buf[pos++] = 0x00; buf[pos++] = 0x01; buf[pos++] = 0xba;
+        buf[pos++] = 0x44; buf[pos++] = 0x00; buf[pos++] = 0x04; buf[pos++] = 0x00;
+
+        /* Video PES: start code + 16-bit length (patched in below once the
+         * payload size is known), no PTS, then a sequence header (the same
+         * small picture as multi_picture_stream/pts_stream above) followed
+         * by LONG_RUN_PICTURES picture start codes. */
+        video_pes_start = pos;
+        pos += 6;
+        video_payload_start = pos;
+        buf[pos++] = 0x80; buf[pos++] = 0x00; buf[pos++] = 0x00;
+        buf[pos++] = 0x00; buf[pos++] = 0x00; buf[pos++] = 0x01; buf[pos++] = 0xb3;
+        buf[pos++] = 0x04; buf[pos++] = 0x20; buf[pos++] = 0x32; buf[pos++] = 0x13;
+        for (i = 0; i < LONG_RUN_PICTURES; i++) {
+            buf[pos++] = 0x00; buf[pos++] = 0x00; buf[pos++] = 0x01; buf[pos++] = 0x00;
+            buf[pos++] = (uint8_t)(0x10 + i); buf[pos++] = (uint8_t)(0x20 + i);
+        }
+        video_len = pos - video_payload_start;
+        buf[video_pes_start + 0] = 0x00; buf[video_pes_start + 1] = 0x00;
+        buf[video_pes_start + 2] = 0x01; buf[video_pes_start + 3] = 0xe0;
+        buf[video_pes_start + 4] = (uint8_t)(video_len >> 8);
+        buf[video_pes_start + 5] = (uint8_t)(video_len & 0xff);
+
+        /* Audio PES right after the whole video run: MPEG-1-style stuffing
+         * plus a lone PTS (2.000000 s = 180000 ticks), then a minimal MP2
+         * sync payload - same shape as pts_stream's audio PES above. */
+        audio_pes_start = pos;
+        pos += 6;
+        audio_payload_start = pos;
+        buf[pos++] = 0xff;
+        buf[pos++] = 0x21; buf[pos++] = 0x00; buf[pos++] = 0x0b;
+        buf[pos++] = 0x7e; buf[pos++] = 0x41;
+        buf[pos++] = 0xff; buf[pos++] = 0xfd; buf[pos++] = 0x80; buf[pos++] = 0x00;
+        audio_len = pos - audio_payload_start;
+        buf[audio_pes_start + 0] = 0x00; buf[audio_pes_start + 1] = 0x00;
+        buf[audio_pes_start + 2] = 0x01; buf[audio_pes_start + 3] = 0xc0;
+        buf[audio_pes_start + 4] = (uint8_t)(audio_len >> 8);
+        buf[audio_pes_start + 5] = (uint8_t)(audio_len & 0xff);
+
+        if (pos != sizeof buf) {
+            fprintf(stderr, "long-run fixture size mismatch (built %lu, "
+                            "buffer %lu)\n",
+                    (unsigned long)pos, (unsigned long)sizeof buf);
+            return 1;
+        }
+        if (mr_ps_open(&ps, buf, sizeof buf) != MR_OK) {
+            fprintf(stderr, "could not open long-run MPEG-PS\n");
+            return 1;
+        }
+        for (i = 0; ; i++) {
+            st = mr_ps_next_packet(&ps, &packet);
+            if (st == MR_EAGAIN) break;
+            if (st != MR_OK) {
+                fprintf(stderr, "long-run stream: unexpected demux status "
+                                "%d at packet %lu\n", (int)st,
+                        (unsigned long)i);
+                return 1;
+            }
+            if (!packet.is_video && seen_audio_at < 0) {
+                seen_audio_at = (int)i;
+                if (!packet.has_pts || packet.pts_us != 2000000u) {
+                    fprintf(stderr, "long-run stream: audio PTS wrong "
+                                    "(has_pts=%d pts_us=%lu, expected 1 "
+                                    "2000000)\n",
+                            packet.has_pts, (unsigned long)packet.pts_us);
+                    return 1;
+                }
+            }
+        }
+        if (seen_audio_at < 0) {
+            fprintf(stderr, "long-run stream: audio packet never appeared\n");
+            return 1;
+        }
+        /* The property the fix promises: audio must not wait for the whole
+         * video run to drain. Deliberately not pinned to the exact index
+         * fair alternation happens to produce today (packet 1) - only that
+         * it is not starved until the run's end, so a future tweak to the
+         * alternation schedule that still interleaves reasonably cannot
+         * false-fail this. */
+        if (seen_audio_at >= LONG_RUN_PICTURES) {
+            fprintf(stderr, "long-run stream: audio packet %d arrived only "
+                            "after the whole %d-picture video run drained - "
+                            "starvation fix regressed\n",
+                    seen_audio_at, LONG_RUN_PICTURES);
+            return 1;
+        }
+        mr_ps_close(&ps);
+#undef LONG_RUN_PICTURES
+    }
     return 0;
 }
