@@ -1536,6 +1536,13 @@ int main(int argc, char **argv)
     unsigned long rescue_hw_before = 0;
     uint64_t rescue_started_us = 0;
     unsigned long rescue_entry_video_run = 0;
+    /* Diagnostic only (see stats.max_packet_gap_us's declaration): the real
+     * wall-clock gap since the scheduler last reached mr_demux_next_packet()
+     * at all, snapshotted the moment THIS rescue episode began - unlike
+     * stats.max_packet_gap_us (a whole reporting window's worst value,
+     * which a short clip may never print a second time for), this gives a
+     * reading for every single rescue episode regardless of clip length. */
+    uint64_t rescue_entry_packet_gap_us = 0;
     /* Diagnostic only (see stats.max_video_run's declaration): how many
      * consecutive video packets mr_demux_next_packet() has handed back
      * since the last audio packet. Persists across the whole session, not
@@ -2416,6 +2423,8 @@ int main(int argc, char **argv)
             rescue_min_buffer = audio_ms;
             rescue_hw_before = rd.hardware_starvations;
             rescue_entry_video_run = video_run;
+            rescue_entry_packet_gap_us = last_packet_call_us && now > last_packet_call_us
+                ? now - last_packet_call_us : 0;
             rescue_episode_packets = rescue_episode_audio = 0;
             rescue_episode_video = rescue_episode_queued = 0;
             rescue_episode_skipped = rescue_episode_replaced = 0;
@@ -2497,7 +2506,8 @@ int main(int argc, char **argv)
                            "newest-pts=%lu post-late=%ld us duration=%lu us "
                            "buffer=%lu->%lu ms min=%lu ms consumed=%lu ms "
                            "entry-threshold=%lu ms margin=%ld ms "
-                           "hw-starvations=%lu video-run-at-entry=%lu\n", reason,
+                           "hw-starvations=%lu video-run-at-entry=%lu "
+                           "packet-gap-at-entry=%lu ms\n", reason,
                            rescue_episode_critical ? "critical" : "warning",
                            rescue_episode_packets, rescue_episode_audio,
                            rescue_episode_video, rescue_episode_queued,
@@ -2509,7 +2519,8 @@ int main(int argc, char **argv)
                            (unsigned long)(rescue_elapsed / 1000),
                            rescue_entry_threshold, margin_ms,
                            rd.hardware_starvations - rescue_hw_before,
-                           rescue_entry_video_run);
+                           rescue_entry_video_run,
+                           (unsigned long)(rescue_entry_packet_gap_us / 1000));
                 }
             }
         }
