@@ -53,8 +53,14 @@ MINTVID_DECLARE_VERSION(iptvgui_version_tag, "iptvgui");
 #define IPTV_CHANNELS_URL "https://iptv-org.github.io/api/channels.json"
 #define IPTV_STREAMS_URL "https://iptv-org.github.io/api/streams.json"
 /* When the Debug toggle is on, the launched player's diagnostics (with --time)
- * are captured here so a failing stream can be inspected without a Shell. */
-#define MRPLAY_LOG_FILE "RAM:MintVID.log"
+ * are captured here so a failing stream can be inspected without a Shell.
+ * Persistent storage, not RAM: - see the matching comment in
+ * youtube_reaction.c for why (a hard lockup needs a reset to clear, which
+ * also wipes RAM: and the log with it; UHD0: survives that). This is
+ * exactly the scenario that motivated the change: an IPTV stream that hard-
+ * locks mrplay during startup is the case where the log is needed most and
+ * RAM: was least likely to still have it afterward. */
+#define MRPLAY_LOG_FILE "UHD0:MintVID.log"
 
 /* Cleared at GUI launch: the first logged stream truncates the file, later ones
  * append, so a whole session's streams accumulate in one log (see start_stream). */

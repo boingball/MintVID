@@ -276,6 +276,25 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
     a->ready_sig = AllocSignal(-1);
     a->stopped_sig = AllocSignal(-1);
     if (a->ready_sig < 0 || a->stopped_sig < 0) { audio_close(a); return NULL; }
+    /* Back to 5 (its original value) - reverting a same-priority experiment
+     * (0, matching the main task) that was tried as a fix for an MSMPEG4v2/
+     * PCM audio-rescue cycling issue on WinUAE. That change was disproven on
+     * its own terms first: a --time re-test at priority 0 showed the exact
+     * same service-callback/hw-starvation/rescue-death-spiral pattern as
+     * priority 5, so the "this worker was pre-empting the main task"
+     * hypothesis it was based on was wrong (or at best not the dominant
+     * cause) - see the investigation notes in CLAUDE.md/PR history for the
+     * full chain of --time traces. Worse, the very next real-hardware test
+     * of that priority-0 build - the first test in this whole investigation
+     * run *without* --time - locked up the Amiga hard enough to need a
+     * reset. No crash log exists for that run (no --time), so causation
+     * isn't proven, but a live task-priority change is exactly the kind of
+     * edit that can't be validated on this dev host (no AmigaOS toolchain -
+     * see CLAUDE.md's "Validate against ffmpeg" section) and a change that
+     * (a) demonstrably fixed nothing and (b) immediately preceded a full
+     * system lockup is not worth the risk of keeping. Reverted to the
+     * original, long-tested value pending a real explanation for the
+     * lockup. */
     worker = CreateNewProcTags(NP_Entry, (ULONG)audio_worker_entry,
                                NP_Name, (ULONG)"MintVID Paula output",
                                NP_Priority, 5,

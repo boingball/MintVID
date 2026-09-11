@@ -28,6 +28,10 @@ MINTVID_DECLARE_VERSION(iptvgui_gt_version_tag, "iptvgui-GT");
 #define CHANNELS_URL "https://iptv-org.github.io/api/channels.json"
 #define STREAMS_URL  "https://iptv-org.github.io/api/streams.json"
 #define MRPLAY_STACK_SIZE 320000UL
+/* Persistent storage, not RAM: - see the matching comment in
+ * youtube_reaction.c for why (a hard lockup needs a reset to clear, which
+ * also wipes RAM: and the log with it; UHD0: survives that). */
+#define MRPLAY_LOG_FILE "UHD0:MintVID.log"
 #define WIN_W 640
 #define WIN_H 356
 
@@ -299,9 +303,9 @@ static int start_stream(iptvgt *app, const mr_iptv_stream *stream)
     if(!seglist)
         return 0;
     if(app->debug_on){
-      if(!app->log_session_open){log=Open((CONST_STRPTR)"RAM:MintVID.log",MODE_NEWFILE);
+      if(!app->log_session_open){log=Open((CONST_STRPTR)MRPLAY_LOG_FILE,MODE_NEWFILE);
         if(log)app->log_session_open=1;}
-      else{log=Open((CONST_STRPTR)"RAM:MintVID.log",MODE_READWRITE);if(log){
+      else{log=Open((CONST_STRPTR)MRPLAY_LOG_FILE,MODE_READWRITE);if(log){
         static const char sep[]="\n\n===== new stream =====\n";Seek(log,0,OFFSET_END);
         Write(log,(APTR)sep,(LONG)(sizeof(sep)-1));}}
       nil=Open((CONST_STRPTR)"NIL:",MODE_NEWFILE);

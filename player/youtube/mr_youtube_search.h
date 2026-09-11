@@ -53,6 +53,15 @@ int mr_youtube_search_watch_url(char *output, size_t output_size,
 int mr_youtube_channel_videos_url(char *output, size_t output_size,
                                   const mr_youtube_search_result *result);
 
+/* Recognize a pasted YouTube video URL (watch/live/shorts/embed, youtu.be,
+ * with or without a leading scheme/www./m. or extra query parameters) and
+ * fill in a synthetic single result for it - no network access, just URL
+ * parsing, so a link copied from a browser can be queued for playback the
+ * same way a real search result is, without actually searching for it.
+ * Returns 0 (leaving *out untouched) if `text` isn't a recognizable
+ * YouTube video URL. */
+int mr_youtube_url_parse(mr_youtube_search_result *out, const char *text);
+
 const char *mr_youtube_search_last_error(void);
 
 #endif

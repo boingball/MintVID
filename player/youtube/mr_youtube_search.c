@@ -408,6 +408,69 @@ int mr_youtube_channel_videos_url(char *out, size_t cap,
     return length > 0 && (size_t)length < cap;
 }
 
+static int is_video_id_char(unsigned char c)
+{
+    return isalnum(c) || c == '_' || c == '-';
+}
+
+/* Copy exactly 11 video-id characters from p into id (size 12) and require
+ * the next byte to end the id (not a 12th id character, which would mean a
+ * garbled/truncated paste rather than a real 11-character YouTube id). */
+static int extract_id_at(const char *p, char id[12])
+{
+    size_t i;
+    for (i = 0; i < 11 && p[i] && is_video_id_char((unsigned char)p[i]); i++)
+        id[i] = p[i];
+    id[i] = 0;
+    if (i != 11) return 0;
+    return !is_video_id_char((unsigned char)p[11]);
+}
+
+int mr_youtube_url_parse(mr_youtube_search_result *out, const char *text)
+{
+    const char *host, *path, *p;
+    char id[12];
+
+    if (!out || !text) return 0;
+    while (isspace((unsigned char)*text)) text++;
+    if (!strncmp(text, "http://", 7)) host = text + 7;
+    else if (!strncmp(text, "https://", 8)) host = text + 8;
+    else host = text;                    /* tolerate a bare pasted domain */
+    if (!strncmp(host, "www.", 4)) host += 4;
+    else if (!strncmp(host, "m.", 2)) host += 2;
+
+    if (!strncmp(host, "youtu.be/", 9)) {
+        if (!extract_id_at(host + 9, id)) return 0;
+    } else if (!strncmp(host, "youtube.com/", 12)) {
+        path = host + 12;
+        if (!strncmp(path, "watch", 5) && (path[5] == '?' || path[5] == 0)) {
+            p = strchr(path, '?');
+            if (!p) return 0;
+            p++;
+            for (;;) {
+                if (!strncmp(p, "v=", 2)) {
+                    if (!extract_id_at(p + 2, id)) return 0;
+                    break;
+                }
+                if (!(p = strchr(p, '&'))) return 0;
+                p++;
+            }
+        } else if (!strncmp(path, "live/", 5)) {
+            if (!extract_id_at(path + 5, id)) return 0;
+        } else if (!strncmp(path, "shorts/", 7)) {
+            if (!extract_id_at(path + 7, id)) return 0;
+        } else if (!strncmp(path, "embed/", 6)) {
+            if (!extract_id_at(path + 6, id)) return 0;
+        } else return 0;
+    } else return 0;
+
+    memset(out, 0, sizeof(*out));
+    memcpy(out->video_id, id, sizeof id);
+    snprintf(out->title, sizeof(out->title), "Video from pasted URL");
+    snprintf(out->row, sizeof(out->row), "[URL] %s", out->video_id);
+    return 1;
+}
+
 int mr_youtube_search_watch_url(char *out, size_t cap,
                                 const mr_youtube_search_result *result)
 {

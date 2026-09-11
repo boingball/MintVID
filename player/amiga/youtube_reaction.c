@@ -49,7 +49,15 @@ MINTVID_DECLARE_VERSION(ytgui_version_tag, "ytgui");
 #define YT_CLASS_VERSION 44
 #define YT_SEARCH_PAGE_MAX (6UL * 1024UL * 1024UL)
 #define MRPLAY_STACK_SIZE 320000UL
-#define MRPLAY_LOG_FILE "RAM:MintVID.log"
+/* Persistent storage, not RAM: - a hard lockup (the kind --time logging is
+ * often turned on specifically to catch) needs a hardware reset to clear,
+ * which also wipes RAM: and takes the very log meant to explain the lockup
+ * with it. UHD0: survives a reset; mrplay's own stdout is already fully
+ * unbuffered (mrplay.c: setvbuf(stdout, NULL, _IONBF, 0)), and mrplay.c
+ * periodically Flush()es this filehandle too, so as much of the log as
+ * possible is durably on disk right up to the moment of a hang, not just
+ * whatever happened to be in a buffer when things stopped. */
+#define MRPLAY_LOG_FILE "UHD0:MintVID.log"
 
 struct IntuitionBase *IntuitionBase;
 struct Library *UtilityBase, *WindowBase, *LayoutBase, *ButtonBase;
@@ -466,6 +474,43 @@ static void load_results_url(const char *url, mr_youtube_search_mode mode,
 #endif
 }
 
+/* A pasted YouTube video URL in the search field plays directly instead of
+ * being searched for - no network fetch, just recognizing the URL and
+ * queuing it as a single result so the existing Play/double-click flow
+ * (which reads the selected mr_youtube_search_result from the list) needs
+ * no changes at all. */
+static int load_pasted_url(const char *query_text, Object *list,
+                           Object *play_button, Object *status,
+                           struct Window *window, struct List *nodes,
+                           mr_youtube_search_results *results)
+{
+    mr_youtube_search_result pasted;
+    mr_youtube_search_result *items;
+
+    if (!query_text || !mr_youtube_url_parse(&pasted, query_text))
+        return 0;
+    items = (mr_youtube_search_result *)malloc(sizeof(*items));
+    if (!items) {
+        set_status(status, window, "Not enough memory for this URL.");
+        return 1;
+    }
+    *items = pasted;
+    SetGadgetAttrs((struct Gadget *)list, window, NULL,
+                   LISTBROWSER_Labels, ~0UL, TAG_DONE);
+    free_nodes(nodes);
+    mr_youtube_search_results_free(results);
+    results->items = items;
+    results->count = 1;
+    build_nodes(nodes, results);
+    SetGadgetAttrs((struct Gadget *)list, window, NULL,
+                   LISTBROWSER_Labels, (ULONG)nodes,
+                   LISTBROWSER_SelectedNode, (ULONG)nodes->lh_Head, TAG_DONE);
+    SetGadgetAttrs((struct Gadget *)play_button, window, NULL,
+                   GA_Disabled, FALSE, TAG_DONE);
+    set_status(status, window, "Video URL recognized - press Play.");
+    return 1;
+}
+
 static void run_search(Object *query, Object *type_chooser, Object *list,
                        Object *play_button, Object *status,
                        struct Window *window, struct List *nodes,
@@ -480,6 +525,9 @@ static void run_search(Object *query, Object *type_chooser, Object *list,
     mr_youtube_search_mode mode;
     char search_url[1024];
     GetAttr(STRINGA_TextVal, query, (ULONG *)&query_text);
+    if (load_pasted_url((char *)query_text, list, play_button, status,
+                        window, nodes, results))
+        return;
     GetAttr(CHOOSER_Selected, type_chooser, &selected);
     if (selected > MR_YOUTUBE_SEARCH_SHORTS)
         selected = MR_YOUTUBE_SEARCH_ALL;
@@ -775,7 +823,7 @@ int main(int argc, char **argv)
                                TAG_DONE);
                 set_status(status, window,
                            debug_log
-                           ? "Timing log ON: next Play writes RAM:MintVID.log"
+                           ? "Timing log ON: next Play writes " MRPLAY_LOG_FILE
                            : "Timing log off.");
             } else if (gadget == G_PAUSE) {
                 set_status(status, window,
