@@ -3157,10 +3157,34 @@ int main(int argc, char **argv)
                      * keep running to clear it. The top-of-loop safety
                      * timeout (see mono_media_clock_us's declaration above)
                      * is the unconditional backstop for the case no further
-                     * PTS-bearing packet arrives to trigger recovery here. */
+                     * PTS-bearing packet arrives to trigger recovery here.
+                     *
+                     * pkt.pts_us is the packet's raw container timestamp -
+                     * for MPEG-PS/TS that is an absolute 90 kHz stream clock
+                     * that has no reason to start near zero (unlike AVI,
+                     * which carries no per-packet PTS at all and so never
+                     * reaches this block, or MP4/MOV, whose media time
+                     * conventionally does start near zero). mono_media_clock_us
+                     * is anchored to the queue's own pts numbering, which
+                     * container_pts_adjust_us already rebases onto a
+                     * decoded-index-based clock starting near zero (see its
+                     * use in the decode/queue section below). Comparing the
+                     * two directly here mixed those numbering spaces: for a
+                     * stream whose PTS starts well away from zero, the
+                     * unrebased difference could be spuriously large,
+                     * falsely tripping skip_stale_output and micro-rescue
+                     * and discarding perfectly good, already-decoded frames
+                     * downstream (mpeg2 has no mr_h264_set_skip_output()
+                     * equivalent to make the decode itself cheaper when
+                     * skip_stale_output is set - the frame is decoded in
+                     * full either way and simply dropped). Apply the same
+                     * offset here so both sides of the comparison are in the
+                     * same clock. */
                     if (playback_started && pkt.has_pts) {
+                        int64_t adjusted_pkt_pts_us =
+                            (int64_t)pkt.pts_us + container_pts_adjust_us;
                         int64_t pkt_late_us = (int64_t)mono_media_clock_us -
-                                              (int64_t)pkt.pts_us;
+                                              adjusted_pkt_pts_us;
                         mr_micro_rescue_result mrr = mr_micro_rescue_on_packet(
                             &micro_rescue, pkt_late_us, monotonic_us(),
                             (int64_t)MICRO_RESCUE_ENTRY_US,
@@ -3185,7 +3209,8 @@ int main(int argc, char **argv)
                     }
                     skip_stale_output = qcount >= video_cap ||
                         (playback_started && pkt.has_pts &&
-                         (int64_t)mono_media_clock_us - (int64_t)pkt.pts_us >
+                         (int64_t)mono_media_clock_us -
+                             ((int64_t)pkt.pts_us + container_pts_adjust_us) >
                              (int64_t)period_us) ||
                         micro_rescue.active;
                     mr_h264_set_skip_output(&dec, skip_stale_output);
