@@ -1,4 +1,5 @@
 #include "../core/mr_msvideo1.h"
+#include "../core/mr_dither.h"
 #include "../core/mr_rle.h"
 #include <stdio.h>
 #include <string.h>
@@ -113,6 +114,34 @@ static void msvideo(void)
  CHECK(eq(d.frame.data,d.frame.stride,2,0,255,0,0));        /* cols[7]=1 R  */
  CHECK(eq(d.frame.data,d.frame.stride,3,0,0,0,0));          /* cols[6]=0 K  */
  d.codec->close(&d);
+
+ /* The direct INDEX8 path must be byte-identical to decoding RGB24 and then
+  * applying the established Bayer converter. Exercise both source formats
+  * and every native indexed depth used by AGA. */
+ {const int depths[]={4,5,8};unsigned di;
+  for(di=0;di<sizeof(depths)/sizeof(depths[0]);di++){
+   mr_decoder rgb,indexed;const uint8_t *packet;uint32_t packet_len;
+   const uint8_t *config;uint32_t config_len;
+   if(di&1){packet=eight8;packet_len=sizeof(eight8);
+            config=cfg8;config_len=sizeof(cfg8);}
+   else {packet=eight16;packet_len=sizeof(eight16);
+         config=cfg16;config_len=sizeof(cfg16);}
+   CHECK(start(&rgb,&mr_codec_msvideo1,4,4,config,config_len)==MR_OK);
+   CHECK(start(&indexed,&mr_codec_msvideo1,4,4,config,config_len)==MR_OK);
+   CHECK(mr_msvideo1_set_indexed_output(&indexed,depths[di]));
+   CHECK(indexed.frame.fmt==MR_PIX_INDEX8&&indexed.frame.stride==4);
+   CHECK(rgb.codec->decode(&rgb,packet,packet_len)==MR_OK);
+   CHECK(indexed.codec->decode(&indexed,packet,packet_len)==MR_OK);
+   for(y=0;y<4;y++)for(x=0;x<4;x++){
+    const uint8_t *p=rgb.frame.data+y*rgb.frame.stride+x*3;
+    uint8_t expected=mr_dither_rgb_indexed_pixel(
+        p[0],p[1],p[2],x,y,depths[di]);
+    CHECK(indexed.frame.data[y*indexed.frame.stride+x]==expected);
+   }
+   CHECK(!mr_msvideo1_set_indexed_output(&indexed,depths[di]));
+   rgb.codec->close(&rgb);indexed.codec->close(&indexed);
+  }
+ }
 
  /* Frames smaller than one block carry no codable data at all. */
  CHECK(start(&d,&mr_codec_msvideo1,4,3,cfg16,sizeof(cfg16))==MR_EUNSUPPORTED);

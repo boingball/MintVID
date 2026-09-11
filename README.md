@@ -325,7 +325,10 @@ movie and select **AGA**, **HAM6**, **HAM8**, or **CGX**. **Laced** and **2x**
 apply to the chipset modes, including HAM6 and HAM8. A laced screen is opened
 when the source height after the requested 2x scale exceeds the non-laced
 256-line canvas. Exact 2x eight-plane output, including HAM8, uses the fused
-Kalms 2x2 converter; other sizes are fitted while preserving aspect ratio.
+Kalms 2x2 converter; widths that are not a multiple of 16 are safely padded to
+keep that fast path. On 68040/68060 builds, substantially narrower 1x output
+uses Kalms' bitmap converter so the black side borders are not needlessly
+transposed. Other sizes are fitted while preserving aspect ratio.
 CGX playback opens a size-gadget window and scales the video as that window is
 resized. The **C2P** chooser selects the standard graphics.library path, CD32 Akiko
 hardware, or the Kalms converter for chipset playback. Kalms is the default;

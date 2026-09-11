@@ -26,6 +26,7 @@
 #include "../core/mr_yuv_planar_queue.h"
 #ifdef MR_KALMS_040
 #include "../vendor/kalms-c2p/normal/c2p1x1_8_c5_040.h"
+#include "../vendor/kalms-c2p/bitmap/c2p1x1_8_c5_bm_040.h"
 #include "../vendor/kalms-c2p/bitmap/c2p1x1_6_c5_bm_040.h"
 #else
 #include "../vendor/kalms-c2p/normal/c2p1x1_8_c5_030.h"
@@ -54,6 +55,7 @@
 enum {
     KALMS_NONE = 0,
     KALMS_1X1_8,
+    KALMS_1X1_8_BM,
     KALMS_2X2_8,
     KALMS_1X1_6
 };
@@ -117,8 +119,44 @@ typedef struct {
     int             ham, scale, resize, use_c2p, use_riva_c2p, use_akiko;
     int             kalms_kind;
     long            kalms_plane_spacing;
+    int             kalms_src_width; /* aligned C2P input width             */
+    int             kalms_pad_left;  /* black source pixels before picture  */
+    int             kalms_x0;        /* destination x of padded rectangle   */
     int             quit;
 } aga_state;
+
+/* Lay a source rectangle out inside the alignment padding required by a
+ * bitmap Kalms kernel without moving the visible picture. The left padding
+ * is increased only when right-only padding would run beyond the screen.
+ * left_align is 8 source pixels for 1x1 and 4 for 2x2, keeping the resulting
+ * destination x on the kernels' required eight-pixel boundary. */
+static int kalms_padded_layout(int screen_w, int visible_x, int source_w,
+                               int scale, int width_align, int left_align,
+                               int *padded_w, int *pad_left, int *kernel_x)
+{
+    int pw, left = 0, overflow;
+    if (screen_w <= 0 || visible_x < 0 || source_w <= 0 || scale <= 0)
+        return 0;
+    pw = (source_w + width_align - 1) & ~(width_align - 1);
+    overflow = visible_x + pw * scale - screen_w;
+    if (overflow > 0) {
+        left = (overflow + scale - 1) / scale;
+        left = (left + left_align - 1) & ~(left_align - 1);
+    }
+    if (left > pw - source_w || left * scale > visible_x)
+        return 0;
+    *padded_w = pw;
+    *pad_left = left;
+    *kernel_x = visible_x - left * scale;
+    return ((*kernel_x & 7) == 0 && *kernel_x + pw * scale <= screen_w);
+}
+
+static int aga_chunky_visible_offset(const aga_state *s)
+{
+    if (s->kalms_kind == KALMS_1X1_8) return s->x0;
+    if (s->kalms_kind == KALMS_1X1_8_BM) return s->kalms_pad_left;
+    return 0;
+}
 
 /* Kalms recommends a 16-byte chunky-buffer alignment on the 040/060 and
  * bitmap kernels. Keep the original allocation pointer so ordinary free()
@@ -281,9 +319,16 @@ static void *aga_open(int w, int h, const char *title)
     s->use_akiko = akiko;
     s->kalms_kind = KALMS_NONE;
 
-    if (kalms_c2p_mode && depth == 8 && scale == 2 && !resize &&
-        (w & 15) == 0)
+    if (kalms_c2p_mode && depth == 8 && scale == 2 && !resize)
         s->kalms_kind = KALMS_2X2_8;
+#ifdef MR_KALMS_040
+    else if (kalms_c2p_mode && depth == 8 &&
+             ((dw + 31) & ~31) <= sw - 64)
+        /* The normal kernel is fastest at screen width, but has no source
+         * modulo or destination x. For a substantially narrower picture the
+         * bitmap kernel wins by not transposing the black side borders. */
+        s->kalms_kind = KALMS_1X1_8_BM;
+#endif
     else if (kalms_c2p_mode && depth == 8)
         s->kalms_kind = KALMS_1X1_8;
 #ifdef MR_KALMS_040
@@ -298,15 +343,35 @@ static void *aga_open(int w, int h, const char *title)
      * exposed this as five-pixel diagonal wraps). */
     if (s->kalms_kind == KALMS_1X1_8)
                    { s->pw = sw; s->x0 = ((sw - dw) / 2) & ~31; }
+    else if (s->kalms_kind == KALMS_1X1_8_BM)
+                   { s->x0 = ((sw - dw) / 2) & ~7;
+                     if (!kalms_padded_layout(sw, s->x0, dw, 1, 32, 8,
+                                              &s->pw, &s->kalms_pad_left,
+                                              &s->kalms_x0))
+                         s->kalms_kind = KALMS_NONE; }
     else if (s->kalms_kind == KALMS_1X1_6)
                    { s->pw = (dw + 31) & ~31; s->x0 = ((sw - dw) / 2) & ~31; }
     else if (s->kalms_kind == KALMS_2X2_8)
-                   { s->pw = dw; s->x0 = ((sw - dw) / 2) & ~7; }
+                   { s->x0 = ((sw - dw) / 2) & ~7;
+                     if (!kalms_padded_layout(sw, s->x0, w, 2, 16, 4,
+                                              &s->kalms_src_width,
+                                              &s->kalms_pad_left,
+                                              &s->kalms_x0))
+                         s->kalms_kind = KALMS_NONE;
+                     s->pw = dw; }
     else if (akiko || riva_c2p_mode)
                    { s->pw = (dw + 31) & ~31; s->x0 = ((sw - dw) / 2) & ~31; }
     else if (c2p)  { s->pw = (dw + 7)  & ~7;  s->x0 = ((sw - dw) / 2) & ~7;  }
     else           { s->pw = (dw + 15) & ~15; s->x0 = (sw - dw) / 2;         }
+    if (kalms_c2p_mode && s->kalms_kind == KALMS_NONE) {
+        /* A requested Kalms layout can still fail on an unusual screen
+         * geometry. Restore the ordinary WPA layout before allocating. */
+        s->pw = (dw + 15) & ~15;
+        s->x0 = (sw - dw) / 2;
+    }
     if (s->x0 < 0) s->x0 = 0;
+    if (s->kalms_kind == KALMS_1X1_8_BM)
+        s->kalms_src_width = s->pw;
     s->y0 = (sh - dh) / 2;
     s->x0byte = s->x0 >> 3;
 
@@ -350,8 +415,14 @@ static void *aga_open(int w, int h, const char *title)
         }
         if (compatible && s->kalms_kind == KALMS_1X1_6)
             compatible = (s->pw & 31) == 0 && (s->x0 & 7) == 0;
+        if (compatible && s->kalms_kind == KALMS_1X1_8_BM)
+            compatible = (s->pw & 31) == 0 && (s->kalms_x0 & 7) == 0 &&
+                         s->kalms_x0 + s->pw <= bm->BytesPerRow * 8;
         if (compatible && s->kalms_kind == KALMS_2X2_8)
-            compatible = (w & 15) == 0 && (s->x0 & 7) == 0;
+            compatible = (s->kalms_src_width & 15) == 0 &&
+                         (s->kalms_x0 & 7) == 0 &&
+                         s->kalms_x0 + s->kalms_src_width * 2 <=
+                         bm->BytesPerRow * 8;
 
         if (compatible) {
             s->kalms_plane_spacing = spacing;
@@ -386,7 +457,9 @@ static void *aga_open(int w, int h, const char *title)
         if (!s->chunky) goto fail;
     }
     if (scale == 2) {
-        s->enc = alloc_aligned16((size_t)w * h, &s->enc_alloc);
+        size_t enc_stride = s->kalms_kind == KALMS_2X2_8
+                          ? (size_t)s->kalms_src_width : (size_t)w;
+        s->enc = alloc_aligned16(enc_stride * h, &s->enc_alloc);
         if (!s->enc) goto fail;
     }
     if (resize) {
@@ -403,7 +476,10 @@ static void *aga_open(int w, int h, const char *title)
     }
     s_diag_depth = s->depth; s_diag_ham = s->ham; s_diag_scale = s->scale;
     s_diag_resize = s->resize;
-    s_diag_c2p = s->kalms_kind == KALMS_2X2_8 ? "kalms-2x2" :
+    s_diag_c2p = s->kalms_kind == KALMS_2X2_8 ?
+                    (s->kalms_src_width == s->w ? "kalms-2x2" :
+                                                  "kalms-2x2-padded") :
+                s->kalms_kind == KALMS_1X1_8_BM ? "kalms-bitmap-040" :
                 s->kalms_kind == KALMS_1X1_6 ? "kalms-ham6" :
                 s->kalms_kind == KALMS_1X1_8 ?
 #ifdef MR_KALMS_040
@@ -463,6 +539,12 @@ static void aga_blit(aga_state *s, const uint8_t *src, int src_stride,
         c2p1x1_8_c5_030((void *)crow, bm->Planes[0]);
 #endif
 #ifdef MR_KALMS_040
+    } else if (s->kalms_kind == KALMS_1X1_8_BM) {
+        struct BitMap *bm = s->scr->RastPort.BitMap;
+        c2p1x1_8_c5_bm_040(pw, ddh, s->kalms_x0, s->y0 + ddy0,
+                           (void *)crow, bm);
+#endif
+#ifdef MR_KALMS_040
     } else if (s->kalms_kind == KALMS_1X1_6) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
         c2p1x1_6_c5_bm_040(pw, ddh, s->x0, s->y0 + ddy0,
@@ -498,8 +580,9 @@ static void aga_blit_kalms2x2(aga_state *s, const uint8_t *src,
     clock_t a = 0;
     struct BitMap *bm = s->scr->RastPort.BitMap;
     if (g_display_want_time) a = clock();
-    c2p2x2_8_c5_bm(s->w, src_rows, s->x0, s->y0 + src_y * 2,
-                   (void *)src, bm);
+    c2p2x2_8_c5_bm(s->kalms_src_width, src_rows, s->kalms_x0,
+                    s->y0 + src_y * 2,
+                    (void *)src, bm);
     if (g_display_want_time) {
         s_frame_blit = clock() - a;
         s_blit += s_frame_blit;
@@ -529,8 +612,7 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
          * cleanly through arbitrary scaling, and the fitted image is small. */
         mr_scale_resize_rgb24(rgb, w, h, stride, s->scaled,
                               dw, s->dh, dw * 3);
-        uint8_t *encoded = s->chunky +
-                           (s->kalms_kind == KALMS_1X1_8 ? s->x0 : 0);
+        uint8_t *encoded = s->chunky + aga_chunky_visible_offset(s);
         if (s->ham) mr_ham_encode(s->scaled, dw, s->dh, dw * 3, encoded, pw, s->ham);
         else mr_dither_rgb_indexed(s->scaled, dw, s->dh, dw * 3,
                                    encoded, pw, 0, s->depth);
@@ -549,8 +631,15 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
         src = rgb + (size_t)dy0 * stride;
         rows = dy1 - dy0;
         if (sc == 2) {
-            if (s->ham) mr_ham_encode(src, w, rows, stride, s->enc, w, s->ham);
-            else mr_dither_rgb_indexed(src, w, rows, stride, s->enc, w,
+            int enc_stride = s->kalms_kind == KALMS_2X2_8
+                           ? s->kalms_src_width : w;
+            uint8_t *enc_dst = s->enc +
+                               (s->kalms_kind == KALMS_2X2_8
+                                ? s->kalms_pad_left : 0);
+            if (s->ham) mr_ham_encode(src, w, rows, stride, enc_dst,
+                                      enc_stride, s->ham);
+            else mr_dither_rgb_indexed(src, w, rows, stride, enc_dst,
+                                       enc_stride,
                                        dy0, s->depth);
             if (s->kalms_kind != KALMS_2X2_8)
                 mr_scale2x_u8(s->enc, w, rows, w,
@@ -559,7 +648,7 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
             ddy0 = dy0 * 2; ddh = rows * 2;
         } else {
             uint8_t *dst = s->chunky + (size_t)dy0 * pw +
-                           (s->kalms_kind == KALMS_1X1_8 ? s->x0 : 0);
+                            aga_chunky_visible_offset(s);
             if (s->ham) mr_ham_encode(src, w, rows, stride, dst, pw, s->ham);
             else mr_dither_rgb_indexed(src, w, rows, stride, dst, pw,
                                        dy0, s->depth);
@@ -811,9 +900,19 @@ static void aga_show_indexed(void *handle, const unsigned char *idx, int w,
     /* The fused converter wants the undoubled indexed source. Unlike the 1x1
      * paths there is deliberately no screen-sized chunky buffer to copy into. */
     if (s->kalms_kind == KALMS_2X2_8) {
+        const uint8_t *src = idx + (size_t)dy0 * idx_stride;
+        int row;
         if (w != s->w || h != s->h || idx_stride != w) return;
+        if (s->kalms_src_width != w || s->kalms_pad_left != 0) {
+            for (row = 0; row < ddh; row++) {
+                memcpy(s->enc + (size_t)row * s->kalms_src_width +
+                           s->kalms_pad_left,
+                       src + (size_t)row * idx_stride, (size_t)w);
+            }
+            src = s->enc;
+        }
         s_frame_enc = 0;
-        aga_blit_kalms2x2(s, idx + (size_t)dy0 * idx_stride, ddh, ddy0);
+        aga_blit_kalms2x2(s, src, ddh, ddy0);
         return;
     }
 
@@ -841,7 +940,7 @@ static void aga_show_indexed(void *handle, const unsigned char *idx, int w,
     for (y = dy0; y < dy1; y++) {
         const uint8_t *sr = idx + (size_t)y * idx_stride;
         uint8_t *dr = s->chunky + (size_t)y * pw +
-                     (s->kalms_kind == KALMS_1X1_8 ? s->x0 : 0);
+                      aga_chunky_visible_offset(s);
         memcpy(dr, sr, (size_t)w);
     }
     if (g_display_want_time) { s_frame_enc = clock() - a; s_enc += s_frame_enc; } }

@@ -236,6 +236,27 @@ static void put_vector(cvid_ctx *c, const cvid_cb *cb, int x, int y, int scale,
     }
 }
 
+/* The common native-AGA V4 case is a complete 4x4 macroblock. Writing all
+ * four codebook quadrants together removes four helper calls, four clipping
+ * tests and four framebuffer address calculations from every V4 block. */
+static void put_v4_indexed(cvid_ctx *c, const cvid_strip_cb *cb,
+                           int x, int y, const uint8_t index[4])
+{
+    const uint8_t *q0 = cb->v4[index[0]].pixels.indexed;
+    const uint8_t *q1 = cb->v4[index[1]].pixels.indexed + 4;
+    const uint8_t *q2 = cb->v4[index[2]].pixels.indexed + 8;
+    const uint8_t *q3 = cb->v4[index[3]].pixels.indexed + 12;
+    uint8_t *d = c->fb + (size_t)y * c->stride + x;
+
+    d[0] = q0[0]; d[1] = q0[1]; d[2] = q1[0]; d[3] = q1[1];
+    d += c->stride;
+    d[0] = q0[2]; d[1] = q0[3]; d[2] = q1[2]; d[3] = q1[3];
+    d += c->stride;
+    d[0] = q2[0]; d[1] = q2[1]; d[2] = q3[0]; d[3] = q3[1];
+    d += c->stride;
+    d[0] = q2[2]; d[1] = q2[3]; d[2] = q3[2]; d[3] = q3[3];
+}
+
 /* Decode the vector map of one strip within rows [y0,y1). The one-byte chunk
  * id selects the layout: bit0 (0x31) => inter, i.e. a per-MB "coded" flag with
  * 0 meaning skip/keep the previous frame; bit1 (0x32) => V1-only, i.e. no
@@ -269,11 +290,18 @@ static void decode_vectors(cvid_ctx *c, cvid_strip_cb *cb, int chunk_id,
             is_v4 = v1only ? 0 : br_bit(&br);
 
             if (is_v4) {
-                int q;                        /* four 2x2 sub-blocks         */
-                for (q = 0; q < 4; q++) {
-                    if (br.p >= end) return;
-                    put_vector(c, &cb->v4[*br.p++],
-                               x + (q & 1) * 2, y + (q >> 1) * 2, 1, q);
+                if (c->indexed_depth && x >= 0 && y >= 0 &&
+                    x + 4 <= c->width && y + 4 <= c->height &&
+                    end - br.p >= 4) {
+                    put_v4_indexed(c, cb, x, y, br.p);
+                    br.p += 4;
+                } else {
+                    int q;                    /* four 2x2 sub-blocks         */
+                    for (q = 0; q < 4; q++) {
+                        if (br.p >= end) return;
+                        put_vector(c, &cb->v4[*br.p++],
+                                   x + (q & 1) * 2, y + (q >> 1) * 2, 1, q);
+                    }
                 }
             } else {
                 if (br.p >= end) return;

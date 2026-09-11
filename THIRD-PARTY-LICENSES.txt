@@ -64,13 +64,15 @@ Mikael Kalms' C2P collection
     player/vendor/kalms-c2p/normal/c2p1x1_8_c5_030.s
     player/vendor/kalms-c2p/normal/c2p1x1_8_c5_040.s
     player/vendor/kalms-c2p/bitmap/c2p2x2_8_c5_bm.s
+    player/vendor/kalms-c2p/bitmap/c2p1x1_8_c5_bm_040.s
     player/vendor/kalms-c2p/bitmap/c2p1x1_6_c5_bm_040.s
   The bundled kalms-c2p readme states that all files outside its "others"
   directory are Public Domain and may be used, modified and redistributed for
   commercial or non-commercial purposes. MintVID uses a routine from the
   "normal" directory. See player/vendor/kalms-c2p/readme.txt for the original
   notice. MintVID uses routines from both the "normal" and "bitmap"
-  directories.
+  directories. Its 040 8-plane normal routine carries a documented local
+  end-pointer register adaptation.
 
 This file supplements, rather than replaces, the upstream licence texts. The
 release packaging target copies the available GPL, Apache and MintAMP/Helix
