@@ -276,9 +276,36 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
     a->ready_sig = AllocSignal(-1);
     a->stopped_sig = AllocSignal(-1);
     if (a->ready_sig < 0 || a->stopped_sig < 0) { audio_close(a); return NULL; }
+    /* Same priority as the main task (mrplay.c never raises its own, and
+     * hls_fetch.c's worker already uses 0 for the same reason) - NOT the 5
+     * this used to be. exec's scheduler gives a higher-priority ready task
+     * the CPU unconditionally over a lower one, with no time-slicing back
+     * until it blocks again; at priority 5 over the main task's default 0,
+     * every Signal() to this worker (every PCM push, every audio.device
+     * completion) pre-empted decode/demux/display outright until audio_pump()
+     * next reached its own Wait(). audio_pump() is cheap in isolation, but a
+     * WinUAE --time trace on an MSMPEG4v2/PCM clip showed the *measured*
+     * cost of that pre-emption landing inside display_cgx.c's own service()
+     * timing (nothing in the service-callback path itself does real work -
+     * see service_audio_for_display()'s no-op audio_service() and
+     * present_service_frame()'s released guard) at 50-100+ ms per displayed
+     * frame and climbing over the session, with audio-rescue episodes
+     * consistently exiting "limit" having processed 0-1 packets and
+     * hw-starvations climbing the whole run. A --no-audio run of the same
+     * clip - no worker task, no priority-5 pre-emption - showed service=
+     * pinned near 0us and zero rescue cycling for the entire run, isolating
+     * the cause to this task's elevated priority rather than to disk I/O
+     * (already ruled out separately: the same cycling reproduced identically
+     * with the whole file preloaded into Fast RAM) or to the display/blit
+     * path itself (cgx-blit stayed a few hundred us in every trace).
+     * PAULA_REQUEST_MS (200ms) x NBUF (2) buffers gives this worker a wide
+     * margin to be scheduled promptly at ordinary priority without Paula
+     * underrunning - it does not need to forcibly preempt the very task
+     * that decodes and feeds it. Unverified on real hardware; needs a
+     * WinUAE/Amiga --time pass on this same clip to confirm. */
     worker = CreateNewProcTags(NP_Entry, (ULONG)audio_worker_entry,
                                NP_Name, (ULONG)"MintVID Paula output",
-                               NP_Priority, 5,
+                               NP_Priority, 0,
                                NP_StackSize, 16384UL,
                                TAG_END);
     if (!worker) {
