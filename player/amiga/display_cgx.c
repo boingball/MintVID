@@ -833,8 +833,16 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
             clock_t svc_mark = clock();
             if (service) service(service_opaque);
             s->timing.service_us += elapsed_us(svc_mark);
-            report_slow("service-callback", s->timing.service_us,
-                        service, service_opaque);
+            /* NULL/NULL, not service/service_opaque: this report's own
+             * subject *is* the service callback, so bracketing it with more
+             * service() calls (report_slow's normal "keep audio fed during
+             * a slow print" behaviour) would re-invoke the very thing being
+             * measured - two extra full service_audio_for_display() calls
+             * every frame once service_us is already over the 10ms
+             * threshold, which it reliably is once things are behind. That
+             * self-amplification, not real servicing cost, was inflating
+             * these numbers. */
+            report_slow("service-callback", s->timing.service_us, NULL, NULL);
         } else if (service) service(service_opaque);
         if (timing) s->timing.total_us = elapsed_us(total);
         return;
@@ -889,8 +897,9 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
         }
     }
     if (timing)
-        report_slow("service-callback", s->timing.service_us,
-                    service, service_opaque);
+        /* NULL/NULL - see the matching comment on the native-path call
+         * above: re-servicing to report on servicing cost self-amplifies. */
+        report_slow("service-callback", s->timing.service_us, NULL, NULL);
     if (timing) {
         s->timing.pixels = (unsigned long)w * (unsigned long)(dy1 - dy0);
         s->timing.bytes = (unsigned long)stride * (unsigned long)(dy1 - dy0);
