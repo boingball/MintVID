@@ -18,7 +18,7 @@ MINTVID_DECLARE_VERSION(mintvid_gt_version_tag, "MintVID-GT");
 #include <libraries/asl.h>
 #include <libraries/gadtools.h>
 #include <proto/asl.h>
-#include <proto/cybergraphx.h>
+#include <proto/cybergraphics.h>
 #include <proto/dos.h>
 #include <proto/exec.h>
 #include <proto/gadtools.h>
