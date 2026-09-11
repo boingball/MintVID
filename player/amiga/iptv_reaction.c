@@ -452,6 +452,37 @@ static int player_is_running(void) {
   return running;
 }
 
+/* MR_IPTV_GUI_PORT lets MintVID Control (the launcher) know once this
+ * window is actually open and interactive, not merely that the process
+ * exists - LoadSeg()/CreateNewProcTags() returns long before that, and the
+ * channel-cache refresh below the window open can itself take a real
+ * moment. A plain static struct (not AllocMem'd) is fine: AmigaOS tasks
+ * share one flat address space, and this port only needs to be found, not
+ * messaged (PA_IGNORE, no replies). Never AddPort() twice - RA_HandleInput's
+ * loop can in principle be re-entered, but the window (and this call) only
+ * ever runs once per process lifetime here. */
+static struct MsgPort iptv_gui_port;
+static int iptv_gui_port_added;
+
+static void iptv_gui_port_open(void) {
+  if (iptv_gui_port_added)
+    return;
+  NewList(&iptv_gui_port.mp_MsgList);
+  iptv_gui_port.mp_Flags = PA_IGNORE;
+  iptv_gui_port.mp_SigTask = FindTask(NULL);
+  iptv_gui_port.mp_Node.ln_Name = (char *)MR_IPTV_GUI_PORT;
+  iptv_gui_port.mp_Node.ln_Pri = 0;
+  AddPort(&iptv_gui_port);
+  iptv_gui_port_added = 1;
+}
+
+static void iptv_gui_port_close(void) {
+  if (!iptv_gui_port_added)
+    return;
+  RemPort(&iptv_gui_port);
+  iptv_gui_port_added = 0;
+}
+
 /* Stop the running player, if any, and wait for it to release its control port
  * so its CGX window and Paula audio are gone before we launch the next stream.
  * Ctrl-F is the player's clean-stop signal; an overloaded player that has not
@@ -918,6 +949,7 @@ int main(int argc, char **argv) {
   if (!window)
     goto cleanup;
   mr_gui_menu_open(&app_menu, window);
+  iptv_gui_port_open();
   GetAttr(WINDOW_SigMask, winobj, &sigmask);
   /* Repeating poll so mrplay's codec / "not supported" status reaches the
    * status line. Purely advisory: if the timer.device is unavailable the GUI
@@ -1150,6 +1182,7 @@ int main(int argc, char **argv) {
 done:
   rc = RETURN_OK;
 cleanup:
+  iptv_gui_port_close();
   poll_timer_close();
   mr_gui_menu_close(&app_menu, window);
   if (winobj) {

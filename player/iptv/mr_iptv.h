@@ -17,6 +17,16 @@
  * player runs at a time, so a fixed name is sufficient. */
 #define MR_IPTV_PLAYER_PORT "MintVID.player"
 
+/* Public exec MsgPort name the IPTV browser GUI (iptvgui/iptvgui-GT)
+ * publishes once its window is open and interactive. MintVID Control
+ * launches iptvgui as a separate process via LoadSeg()/CreateNewProcTags();
+ * that returns as soon as the process exists, long before the child has
+ * loaded/refreshed its channel cache and actually opened a window - the
+ * launching GUI polls FindPort() for this name (same pattern as
+ * MR_IPTV_PLAYER_PORT above) to know when to stop showing a busy indicator.
+ * Not used for messaging, only existence - PA_IGNORE, no replies expected. */
+#define MR_IPTV_GUI_PORT "MintVID.iptvgui"
+
 typedef struct {
   char url[MR_IPTV_URL_MAX];
   char http_referrer[MR_IPTV_REFERRER_MAX];

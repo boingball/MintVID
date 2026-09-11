@@ -273,6 +273,71 @@ static void play_selected(ytgt *app)
     else set_text(app, app->status, video->live ? "Resolving YouTube Live..." : "Resolving YouTube video...");
 }
 
+/* Last-results cache - see the matching comment in youtube_reaction.c.
+ * Same fixed-layout, no-pointers struct array, one fwrite()/fread() of the
+ * whole thing; any failure (no cache yet, can't create the directory, a
+ * stale/truncated file) is silently just "no cached results to show". */
+#define YT_CACHE_DIR  "PROGDIR:Cache/YouTube"
+#define YT_CACHE_FILE "PROGDIR:Cache/YouTube/last_search.dat"
+
+static void save_search_cache(const mr_youtube_search_results *results)
+{
+    BPTR lock;
+    FILE *f;
+    if (!results->count) return;
+    lock = CreateDir((CONST_STRPTR)"PROGDIR:Cache");
+    if (lock) UnLock(lock);
+    lock = CreateDir((CONST_STRPTR)YT_CACHE_DIR);
+    if (lock) UnLock(lock);
+    f = fopen(YT_CACHE_FILE, "wb");
+    if (!f) return;
+    fwrite(results->items, sizeof(mr_youtube_search_result), results->count, f);
+    fclose(f);
+}
+
+/* Populates app->found/app->labels exactly like load_pasted_url() does for
+ * its one synthetic result - same ownership handoff of a fresh malloc'd
+ * items array. Returns 1 if anything was loaded (status already updated
+ * either way), 0 on a clean miss. */
+static int load_search_cache(ytgt *app)
+{
+    FILE *f;
+    long size;
+    size_t count, shown;
+    mr_youtube_search_result *items;
+    char line[80];
+
+    f = fopen(YT_CACHE_FILE, "rb");
+    if (!f) return 0;
+    if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) <= 0 ||
+        fseek(f, 0, SEEK_SET) != 0 ||
+        (size % (long)sizeof(mr_youtube_search_result)) != 0) {
+        fclose(f);
+        return 0;
+    }
+    count = (size_t)size / sizeof(mr_youtube_search_result);
+    if (count > MR_YOUTUBE_SEARCH_MAX_RESULTS)
+        count = MR_YOUTUBE_SEARCH_MAX_RESULTS;
+    items = (mr_youtube_search_result *)malloc(
+        count * sizeof(mr_youtube_search_result));
+    if (!items) { fclose(f); return 0; }
+    if (fread(items, sizeof(mr_youtube_search_result), count, f) != count) {
+        free(items);
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
+    free_labels(app);
+    mr_youtube_search_results_free(&app->found);
+    app->found.items = items;
+    app->found.count = count;
+    shown = rebuild_labels(app);
+    snprintf(line, sizeof line, "Showing %lu result%s from last time.",
+            (unsigned long)shown, shown == 1 ? "" : "s");
+    set_text(app, app->status, line);
+    return 1;
+}
+
 static void load_url(ytgt *app, const char *url, mr_youtube_search_mode mode,
                      const char *busy, const char *done)
 {
@@ -307,6 +372,7 @@ static void load_url(ytgt *app, const char *url, mr_youtube_search_mode mode,
     shown = rebuild_labels(app);
     snprintf(line, sizeof(line), "%lu %s", (unsigned long)shown, done);
     set_text(app, app->status, shown ? line : mr_youtube_search_last_error());
+    if (shown) save_search_cache(&app->found);
 #endif
 }
 
@@ -538,6 +604,7 @@ int main(int argc, char **argv)
     mr_play_options_summary(&app.options,summary,sizeof(summary));
     set_text(&app,app.summary,summary);
     mr_gui_menu_open(&app.menu,app.window);
+    load_search_cache(&app);
     if (timer_open(&app)) { timermask=1UL<<app.timer_port->mp_SigBit; timer_start(&app); }
     winmask=1UL<<app.window->UserPort->mp_SigBit;
     while (!done) {

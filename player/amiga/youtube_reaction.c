@@ -406,6 +406,84 @@ static int start_video(const mr_youtube_search_result *video,
     return 1;
 }
 
+/* Last-results cache: survives closing and reopening this GUI (each launch
+ * is a fresh process - nothing about the results list otherwise persists),
+ * so results are still there without having to search again. Deliberately
+ * minimal: a fixed-layout struct with no pointers, one fwrite()/fread() of
+ * the whole array - same directory convention as the IPTV browsers'
+ * PROGDIR:Cache/IPTV/, and just as advisory: any failure here (can't
+ * create the directory, no file yet, a stale/truncated file) silently
+ * means no cached results to show, never an error the user sees. */
+#define YT_CACHE_DIR  "PROGDIR:Cache/YouTube"
+#define YT_CACHE_FILE "PROGDIR:Cache/YouTube/last_search.dat"
+
+static void save_search_cache(const mr_youtube_search_results *results)
+{
+    BPTR lock;
+    FILE *f;
+    if (!results->count) return;
+    lock = CreateDir((CONST_STRPTR)"PROGDIR:Cache");
+    if (lock) UnLock(lock);
+    lock = CreateDir((CONST_STRPTR)YT_CACHE_DIR);
+    if (lock) UnLock(lock);
+    f = fopen(YT_CACHE_FILE, "wb");
+    if (!f) return;
+    fwrite(results->items, sizeof(mr_youtube_search_result), results->count, f);
+    fclose(f);
+}
+
+/* Populates the list exactly like load_pasted_url() does for its one
+ * synthetic result - same LISTBROWSER_Labels dance, same ownership handoff
+ * of a fresh malloc'd items array into *results. Returns 1 if anything was
+ * loaded (list/status already updated either way), 0 on a clean miss. */
+static int load_search_cache(Object *list, Object *play_button,
+                             Object *status, struct Window *window,
+                             struct List *nodes,
+                             mr_youtube_search_results *results)
+{
+    FILE *f;
+    long size;
+    size_t count, shown;
+    mr_youtube_search_result *items;
+    char text[80];
+
+    f = fopen(YT_CACHE_FILE, "rb");
+    if (!f) return 0;
+    if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) <= 0 ||
+        fseek(f, 0, SEEK_SET) != 0 ||
+        (size % (long)sizeof(mr_youtube_search_result)) != 0) {
+        fclose(f);
+        return 0;
+    }
+    count = (size_t)size / sizeof(mr_youtube_search_result);
+    if (count > MR_YOUTUBE_SEARCH_MAX_RESULTS)
+        count = MR_YOUTUBE_SEARCH_MAX_RESULTS;
+    items = (mr_youtube_search_result *)malloc(
+        count * sizeof(mr_youtube_search_result));
+    if (!items) { fclose(f); return 0; }
+    if (fread(items, sizeof(mr_youtube_search_result), count, f) != count) {
+        free(items);
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
+    SetGadgetAttrs((struct Gadget *)list, window, NULL,
+                   LISTBROWSER_Labels, ~0UL, TAG_DONE);
+    free_nodes(nodes);
+    mr_youtube_search_results_free(results);
+    results->items = items;
+    results->count = count;
+    shown = build_nodes(nodes, results);
+    SetGadgetAttrs((struct Gadget *)list, window, NULL,
+                   LISTBROWSER_Labels, (ULONG)nodes, TAG_DONE);
+    SetGadgetAttrs((struct Gadget *)play_button, window, NULL,
+                   GA_Disabled, shown ? FALSE : TRUE, TAG_DONE);
+    snprintf(text, sizeof text, "Showing %lu result%s from last time.",
+            (unsigned long)shown, shown == 1 ? "" : "s");
+    set_status(status, window, text);
+    return 1;
+}
+
 static void load_results_url(const char *url, mr_youtube_search_mode mode,
                              const char *busy_text, const char *summary_text,
                              Object *list, Object *play_button, Object *status,
@@ -462,6 +540,7 @@ static void load_results_url(const char *url, mr_youtube_search_mode mode,
         snprintf(status_text, sizeof(status_text),
                  "%lu %s", (unsigned long)shown, summary_text);
         set_status(status, window, status_text);
+        save_search_cache(results);
     }
 #endif
 }
@@ -763,6 +842,8 @@ int main(int argc, char **argv)
     if (!window)
         goto cleanup;
     mr_gui_menu_open(&app_menu, window);
+    load_search_cache(results_list, play_button, status, window,
+                      &result_nodes, &results);
     GetAttr(WINDOW_SigMask, winobj, &sigmask);
     if (poll_timer_open()) {
         timermask = 1UL << timer_port->mp_SigBit;
