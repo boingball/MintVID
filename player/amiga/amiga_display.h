@@ -55,6 +55,13 @@ void display_set_riva_c2p(int on);
  * possible, plus six-plane bitmap output on 040/060). */
 void display_set_kalms_c2p(int on);
 
+/* Select the single-kernel direct-planar C2P: one hand-written 040/060
+ * kernel dithers straight to the final eight-plane image, 32 pixels at a
+ * time, with no separate chunky/C2P pass. Falls back to WritePixelArray8
+ * whenever the geometry doesn't qualify (plain 1:1 8-plane AGA only) -
+ * see amiga/display_aga.c's aga_supports_yuv_indexed(). */
+void display_set_direct_c2p(int on);
+
 /* Allow interlaced AGA screens (up to ~640x512). The AGA fitter compensates
  * for the doubled vertical resolution, preserving the video's physical aspect
  * ratio. Off by default because interlace flickers on native displays. */

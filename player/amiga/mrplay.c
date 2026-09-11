@@ -1511,7 +1511,7 @@ int main(int argc, char **argv)
                "file.mjpeg|file.m4v> "
                "[--aga] [--ham] [--ham6] [--p96] "
                "[--2x] [--lace] [--ecs-fast] [--ecs32] [--loop] "
-               "[--wpa|--c2p|--riva-c2p|--kalms-c2p] "
+               "[--wpa|--c2p|--riva-c2p|--kalms-c2p|--direct-c2p] "
                "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
                "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+|turbogt] "
                "[--audio-rate=normal|low] [--no-audio] [--audio-mono] "
@@ -1543,6 +1543,7 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--c2p"))  display_set_c2p(1);
             else if (!strcmp(argv[i], "--riva-c2p")) display_set_riva_c2p(1);
             else if (!strcmp(argv[i], "--kalms-c2p")) display_set_kalms_c2p(1);
+            else if (!strcmp(argv[i], "--direct-c2p")) display_set_direct_c2p(1);
             else if (!strcmp(argv[i], "--loop")) loop = 1;
             else if (!strcmp(argv[i], "--lace")) display_set_lace(1);
             else if (!strcmp(argv[i], "--ecs-fast")) display_set_ecs_fast(1);

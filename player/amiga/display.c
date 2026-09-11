@@ -40,6 +40,7 @@ void display_set_scale(int n)  { g_aga_scale = (n == 2) ? 2 : 1; }
 void display_set_c2p(int on)   { g_aga_c2p = on ? 1 : 0; }
 void display_set_riva_c2p(int on) { g_aga_c2p = on ? 2 : 0; }
 void display_set_kalms_c2p(int on) { g_aga_c2p = on ? 3 : 0; }
+void display_set_direct_c2p(int on) { g_aga_c2p = on ? 4 : 0; }
 void display_set_lace(int on)  { g_aga_lace = on ? 1 : 0; }
 void display_set_akiko(int on) { g_aga_akiko = on ? 1 : 0; }
 void display_set_ecs_fast(int on) {

@@ -706,6 +706,53 @@ An AVI carrying the numeric `BI_RLE8` in `biCompression` puts the codec tag in
 registry — see the case-insensitive matching note above. `make check` decodes a
 66x50 clip (`test_msrle.avi`); the width deliberately is not a multiple of four.
 
+## AGA direct-planar C2P notes
+`mr_c2p_mode MR_C2P_DIRECT` (`--direct-c2p`, GUI "Direct") is a single hand
+kernel (`core/mr_yuv_dither_planar_direct_m68k.S`) that dithers straight to
+the final eight-plane image, one 32-pixel block at a time, for the plain
+1:1 8-plane AGA case - no chunky intermediate, no separate C2P pass, 040/060
+only (same tier restriction as Kalms, gated on `MR_KALMS_040`). It started
+as a standalone hardware-test build (`Makefile.fused`,
+`amiga/display_aga_fused.c`) that predated this project's disassembly-audit
+and cross-build-verification methodology and had never actually been run
+through either - `tests/mr_yuv_planar_queue_check.c` existed but was wired
+into no build at all, and immediately failed on a host build once it was:
+the centering behaviour it checks for only exists inside the m68k assembly
+dispatcher (`core/mr_yuv_dither_planar_m68k.S`'s runtime check of
+`mr_yuv_planar_queue_active`), which the portable C dither path never
+consults, so "actual" and "expected" were never comparable outside a real
+`MR_M68K_ASM` build. Fixed by gating the real comparison on `MR_M68K_ASM`
+(skips cleanly on host, matches `tests/mr_h264_m68k_check.c`'s own
+pattern) - bit-exact on real m68k at both 68030 and 68060 under qemu once
+actually run. Also found and removed a genuinely dead function,
+`mr_yuv_planar_queue_m68k()` (`core/mr_yuv_planar_queue.c`) - an earlier
+tile-based dither+separate-C2P approach the dispatcher was retargeted away
+from in favour of the current self-contained single kernel, left in place
+and unreachable ever since.
+`core/mr_c2p_riva_native_m68k.S` - documented above as adapted, MIT-licensed
+content still worth keeping - is that superseded approach's C2P kernel and
+is now unused by any live code path; it was never touched by this change,
+but is worth a look before deciding whether to wire it up elsewhere or
+retire it.
+Once fixed and audited (a seventh `check_m68060_asm.sh` disassembly-scan
+target, alongside the existing MP2/H.264/AAC/AC-3 ones - clean, the
+kernel's `mulu.l`/`muls.l` instructions are the ordinary two-operand
+hardware form), the experiment became a real runtime option instead of a
+separate build: `Makefile.fused`/`display_aga_fused.c` are retired, their
+logic folded into `display_aga.c`'s real `aga_supports_yuv_indexed()`/
+`aga_show_indexed()`/`aga_close()`, and the direct-planar source files
+moved into `Makefile.amiga`'s normal `CORE` list (compiled into every
+build, runtime-inactive unless `MR_C2P_DIRECT` is actually selected) -
+matching Kalms/RiVA's own existing "one binary, several C2P choices"
+shape rather than a second, parallel binary. `.github/workflows/
+fused-68060.yml` is retired too: its bit-exactness check is superseded by
+the fixed `run_m68k_check.sh` integration (now covering both 68030 and
+68060, where before it silently tested nothing), and its real-AmigaOS-
+toolchain build is subsumed by `build.yml`'s existing `build` job, which
+already compiles `Makefile.amiga`'s `all` target end to end - the direct-
+planar files being unconditionally part of `CORE` now means that job
+proves their real-toolchain link for free.
+
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4

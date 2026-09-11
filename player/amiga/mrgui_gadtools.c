@@ -66,8 +66,8 @@ typedef struct gt_app {
     mr_display_mode modes[7];
     STRPTR mode_labels[8];
     unsigned mode_count;
-    mr_c2p_mode c2p_modes[3];
-    STRPTR c2p_labels[4];
+    mr_c2p_mode c2p_modes[4];
+    STRPTR c2p_labels[5];
     unsigned c2p_count;
     char path[512];
     struct MsgPort *timer_port;
@@ -241,6 +241,7 @@ static void update_mode_controls(gt_app *app, int output_changed)
                                   ? app->c2p_modes[selected_c2p]
                                   : MR_C2P_STANDARD;
     int kalms_available;
+    int direct_available;
 
     /* HAM8 uses the normal eight-plane Kalms converter. CPU-specific 040/060
      * GUI builds also keep Kalms selected for the linked HAM6 bitmap kernel.
@@ -253,10 +254,21 @@ static void update_mode_controls(gt_app *app, int output_changed)
                        || app->modes[selected] == MR_DISPLAY_HAM6
 #endif
                       );
+    /* Direct only ever targets the plain 1:1 8-plane AGA case (no HAM, no
+     * resize) - see display_aga.c's aga_supports_yuv_indexed() - so unlike
+     * Kalms it is never available for HAM6/HAM8. Only listed at all on a
+     * 040/060 build (see add_c2p_mode() below). */
+    direct_available = 0;
+#ifdef MR_KALMS_040
+    direct_available = selected < app->mode_count &&
+                       app->modes[selected] == MR_DISPLAY_AGA && aga();
+#endif
 
     /* Restore the fast default after an unsupported output forced Standard.
      * A manual Standard choice remains valid until the output is changed, and
-     * an explicit CD32/Akiko selection is never overwritten. */
+     * an explicit CD32/Akiko selection is never overwritten. Direct is never
+     * auto-selected this way - it stays a deliberate, manual opt-in, not a
+     * new default over the established Kalms path. */
     if (output_changed && kalms_available &&
         selected_c2p_mode == MR_C2P_STANDARD) {
         GT_SetGadgetAttrs(app->c2p, app->window, NULL,
@@ -265,6 +277,11 @@ static void update_mode_controls(gt_app *app, int output_changed)
     }
     if (selected_c2p_mode == MR_C2P_KALMS &&
         !disabled && !kalms_available) {
+        GT_SetGadgetAttrs(app->c2p, app->window, NULL,
+                         GTCY_Active, c2p_row(app, MR_C2P_STANDARD), TAG_DONE);
+    }
+    if (selected_c2p_mode == MR_C2P_DIRECT &&
+        !disabled && !direct_available) {
         GT_SetGadgetAttrs(app->c2p, app->window, NULL,
                          GTCY_Active, c2p_row(app, MR_C2P_STANDARD), TAG_DONE);
     }
@@ -462,6 +479,9 @@ static int build_window(gt_app *app)
     if (mr_akiko_available())
         add_c2p_mode(app, (STRPTR)"C2P: CD32", MR_C2P_AKIKO);
     add_c2p_mode(app, (STRPTR)"C2P: Kalms", MR_C2P_KALMS);
+#ifdef MR_KALMS_040
+    add_c2p_mode(app, (STRPTR)"C2P: Direct", MR_C2P_DIRECT);
+#endif
 
     g = app->gadgets;
     app->file = g = add_gadget(app, g, STRING_KIND, G_FILE, 56, 20, 573, 15,
