@@ -541,6 +541,18 @@ typedef struct playback_stats {
     unsigned long micro_rescue_max_us;
     unsigned micro_rescue_entries, micro_rescue_frames_skipped;
     unsigned micro_rescue_exit_recovered, micro_rescue_exit_timeout;
+    /* Packet-interleave diagnostic: how the demuxer is actually alternating
+     * audio/video packets, not just how long each one costs to decode.
+     * video_packets/audio_packets are this window's raw counts;
+     * max_video_run is the longest run of consecutive video packets
+     * mr_demux_next_packet() handed back with no audio packet in between
+     * (see video_run's own declaration) - a large value here for a
+     * container whose audio needs real per-packet decode work (MP2) points
+     * straight at the demuxer's own interleaving, rather than at decode or
+     * display cost, as the reason the software audio FIFO went short
+     * enough to trigger audio-rescue. */
+    unsigned video_packets, audio_packets;
+    unsigned long max_video_run;
 } playback_stats;
 
 /*
@@ -1045,7 +1057,8 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            "audio-buffered=%lu ms vqueue=%d late=%u dropped=%u "
            "presented=%lu.%02lu fps decoded=%lu.%02lu fps sleep=%lu/%lu ms "
            "sleep-max-error=%lu us latency=%lu.%02lu ms "
-           "refill-blocked=%lu ms ready-delayed-by-refill=%lu ms\n",
+           "refill-blocked=%lu ms ready-delayed-by-refill=%lu ms "
+           "vpkts=%u apkts=%u max-video-run=%lu\n",
            vd / 100, vd % 100, st->video_decode_max_us / 1000,
            (unsigned long)(st->network_us / 1000) + io.network_ms,
            io.hls_segment_ms, dm / 100, dm % 100, ad / 100, ad % 100,
@@ -1059,7 +1072,8 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            (unsigned long)(st->sleep_actual_us / 1000), st->sleep_max_error_us,
            la / 100, la % 100,
            (unsigned long)(st->refill_block_us / 1000),
-           (unsigned long)(st->refill_delayed_ready_us / 1000));
+           (unsigned long)(st->refill_delayed_ready_us / 1000),
+           st->video_packets, st->audio_packets, st->max_video_run);
     if (audio) service_audio_for_display(trace);
     printf("audio diagnostics: hw-starvations=%lu minimum-buffered=%lu ms "
            "minimum-active=%lu ms "
@@ -1512,6 +1526,14 @@ int main(int argc, char **argv)
     unsigned long rescue_min_buffer = 0;
     unsigned long rescue_hw_before = 0;
     uint64_t rescue_started_us = 0;
+    unsigned long rescue_entry_video_run = 0;
+    /* Diagnostic only (see stats.max_video_run's declaration): how many
+     * consecutive video packets mr_demux_next_packet() has handed back
+     * since the last audio packet. Persists across the whole session, not
+     * reset per --time reporting window, since the run itself can span a
+     * window boundary - only the window's worst observed value
+     * (stats.max_video_run) resets with the rest of playback_stats. */
+    unsigned long video_run = 0;
     uint64_t decoded_index = 0, mono_base_us = 0;
     /* Bridges the seek origin across the gap a seek itself creates: a
      * successful seek empties the video queue (qcount = 0), so front is
@@ -2378,6 +2400,7 @@ int main(int argc, char **argv)
             rescue_entry_threshold = AUDIO_RESCUE_ENTRY_MS;
             rescue_min_buffer = audio_ms;
             rescue_hw_before = rd.hardware_starvations;
+            rescue_entry_video_run = video_run;
             rescue_episode_packets = rescue_episode_audio = 0;
             rescue_episode_video = rescue_episode_queued = 0;
             rescue_episode_skipped = rescue_episode_replaced = 0;
@@ -2459,7 +2482,7 @@ int main(int argc, char **argv)
                            "newest-pts=%lu post-late=%ld us duration=%lu us "
                            "buffer=%lu->%lu ms min=%lu ms consumed=%lu ms "
                            "entry-threshold=%lu ms margin=%ld ms "
-                           "hw-starvations=%lu\n", reason,
+                           "hw-starvations=%lu video-run-at-entry=%lu\n", reason,
                            rescue_episode_critical ? "critical" : "warning",
                            rescue_episode_packets, rescue_episode_audio,
                            rescue_episode_video, rescue_episode_queued,
@@ -2470,7 +2493,8 @@ int main(int argc, char **argv)
                            rescue_buffer_before, audio_ms, rescue_min_buffer,
                            (unsigned long)(rescue_elapsed / 1000),
                            rescue_entry_threshold, margin_ms,
-                           rd.hardware_starvations - rescue_hw_before);
+                           rd.hardware_starvations - rescue_hw_before,
+                           rescue_entry_video_run);
                 }
             }
         }
@@ -2543,7 +2567,7 @@ int main(int argc, char **argv)
             /* Re-prime from the new position; the startup path below refills the
              * queue and audio cushion and restarts playback near the edge. */
             playback_started = 0;
-            decoded_index = 0; mono_base_us = 0;
+            decoded_index = 0; mono_base_us = 0; video_run = 0;
             have_container_pts = 0; last_container_pts_us = 0;
             container_pts_adjust_us = 0;
             media_clock_rebase(&mc, audio_elapsed_us(audio), 0);
@@ -2916,7 +2940,7 @@ int main(int argc, char **argv)
                 !mr_msvideo1_set_indexed_output(&dec, indexed_depth))
                 break;
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
-            input_eof = 0; decoded_index = 0; mono_base_us = 0;
+            input_eof = 0; decoded_index = 0; mono_base_us = 0; video_run = 0;
             have_container_pts = 0; last_container_pts_us = 0;
             container_pts_adjust_us = 0;
             playback_started = 0;
@@ -3011,7 +3035,7 @@ int main(int argc, char **argv)
                 !mr_msvideo1_set_indexed_output(&dec, indexed_depth))
                 break;
             if (audio_dec) mr_audio_decoder_reset(audio_dec);
-            input_eof = 0; decoded_index = 0; mono_base_us = 0;
+            input_eof = 0; decoded_index = 0; mono_base_us = 0; video_run = 0;
             have_container_pts = 0; last_container_pts_us = 0;
             container_pts_adjust_us = 0;
             playback_started = 0;
@@ -3096,6 +3120,7 @@ int main(int argc, char **argv)
                 }
                 if (next != MR_OK) input_eof = 1;
                 else if (!pkt.is_video) {
+                    if (want_time) { video_run = 0; stats.audio_packets++; }
                     if (audio && audio_dec) {
                         trace_phase(&trace, "audio-decode");
                         /* stats.audio_decode_us only ever feeds the --time
@@ -3123,6 +3148,11 @@ int main(int argc, char **argv)
                     uint64_t decode_end;
                     int skip_stale_output;
                     int first_decoded_output = 1;
+                    if (want_time) {
+                        stats.video_packets++;
+                        if (++video_run > stats.max_video_run)
+                            stats.max_video_run = video_run;
+                    }
                     trace_phase(&trace, "h264-decode");
                     /* A frame decoded into a full queue is dropped (newest-out),
                      * so decode it reference-only: keep the reference chain
