@@ -63,9 +63,9 @@
 /* Read-ahead / rewind window. Presentation-order delivery makes streaming
  * alternate reads between a file's video-chunk and audio-chunk regions, and the
  * proactive drain below keeps this window filled forward so playback runs from
- * RAM instead of blocking on the network. Bigger = more cushion against network
- * jitter; override with -DHTTP_CACHE_SIZE for memory-tight or streaming-heavy
- * builds (e.g. 8 MB on a big-memory machine). */
+ * RAM instead of blocking on the network. This remains the compatibility
+ * default; mr_http_options.source_buffer_bytes can request a larger runtime
+ * Fast RAM window on a big-memory machine. */
 #ifndef HTTP_CACHE_SIZE
 #define HTTP_CACHE_SIZE  (4096UL * 1024)
 #endif
@@ -181,6 +181,7 @@ typedef struct {
     size_t prefetch_pos;
     size_t prefetch_len;
     unsigned char *cache;
+    size_t cache_cap;
     size_t cache_start;
     size_t cache_len;
     size_t max_read;            /* highest byte the demuxer has asked for      */
@@ -1581,10 +1582,10 @@ static void cache_store(http_source *h, size_t off,
 {
     size_t end, cache_end, overlap, keep;
     if (!h->cache || !len) return;
-    if (len >= HTTP_CACHE_SIZE) {
-        memcpy(h->cache, data + len - HTTP_CACHE_SIZE, HTTP_CACHE_SIZE);
-        h->cache_start = off + len - HTTP_CACHE_SIZE;
-        h->cache_len = HTTP_CACHE_SIZE;
+    if (len >= h->cache_cap) {
+        memcpy(h->cache, data + len - h->cache_cap, h->cache_cap);
+        h->cache_start = off + len - h->cache_cap;
+        h->cache_len = h->cache_cap;
         return;
     }
     end = off + len;
@@ -1603,8 +1604,8 @@ static void cache_store(http_source *h, size_t off,
         if (overlap > len) overlap = len;
         if (len > overlap) {
             size_t add = len - overlap;
-            if (h->cache_len + add > HTTP_CACHE_SIZE) {
-                size_t drop = h->cache_len + add - HTTP_CACHE_SIZE;
+            if (h->cache_len + add > h->cache_cap) {
+                size_t drop = h->cache_len + add - h->cache_cap;
                 memmove(h->cache, h->cache + drop, h->cache_len - drop);
                 h->cache_start += drop;
                 h->cache_len -= drop;
@@ -1686,8 +1687,8 @@ static void http_readahead(http_source *h, int min_only)
     forward = cache_end > h->max_read ? cache_end - h->max_read : 0;
 
     /* Bootstrap: guarantee a minimum forward window with blocking reads. */
-    while (forward < min_window && h->cache_len < HTTP_CACHE_SIZE) {
-        size_t room = HTTP_CACHE_SIZE - h->cache_len;
+    while (forward < min_window && h->cache_len < h->cache_cap) {
+        size_t room = h->cache_cap - h->cache_len;
         size_t want = min_window - forward;
         int n;
 
@@ -1701,8 +1702,8 @@ static void http_readahead(http_source *h, int min_only)
     }
     if (min_only) return;
     /* Proactive: absorb whatever is already waiting on the socket, no block. */
-    while (h->cache_len < HTTP_CACHE_SIZE && http_readable(h)) {
-        size_t room = HTTP_CACHE_SIZE - h->cache_len;
+    while (h->cache_len < h->cache_cap && http_readable(h)) {
+        size_t room = h->cache_cap - h->cache_len;
         int n = copy_response_bytes(h, h->cache + h->cache_len,
                                     room < 65536 ? room : 65536);
         if (n <= 0) break;
@@ -1788,7 +1789,7 @@ mr_source *mr_http_source_open_ex(const char *url,
 {
     http_source *h;
     mr_source *source;
-    size_t n;
+    size_t n, actual_cache;
     if (!url || !*url || strlen(url) >= HTTP_URL_MAX) {
         mr_source_set_error("HTTP URL is empty or too long");
         return NULL;
@@ -1813,8 +1814,23 @@ mr_source *mr_http_source_open_ex(const char *url,
         h->options.hls_max_width = options->hls_max_width;
         h->options.hls_max_height = options->hls_max_height;
         h->options.hls_max_fps = options->hls_max_fps;
+        h->options.source_buffer_bytes = options->source_buffer_bytes;
     }
-    h->cache = (unsigned char *)mr_alloc(HTTP_CACHE_SIZE);
+    if (h->options.source_buffer_bytes) {
+        size_t attempt = h->options.source_buffer_bytes;
+        while (attempt >= HTTP_CACHE_SIZE) {
+            h->cache = (unsigned char *)mr_alloc_fast(attempt);
+            if (h->cache) {
+                h->cache_cap = attempt;
+                break;
+            }
+            attempt /= 2;
+        }
+    }
+    if (!h->cache) {
+        h->cache = (unsigned char *)mr_alloc(HTTP_CACHE_SIZE);
+        h->cache_cap = HTTP_CACHE_SIZE;
+    }
     if (!h->cache) {
         mr_source_set_error("not enough memory for HTTP rewind cache");
         mr_free(h);
@@ -1826,9 +1842,11 @@ mr_source *mr_http_source_open_ex(const char *url,
         http_close(h);
         return NULL;
     }
+    actual_cache = h->cache_cap;
     source = mr_source_create(h,
                               h->streaming ? MR_SOURCE_LEN_UNKNOWN : h->total_len,
                               http_read_at, http_close, h->url);
+    mr_source_set_buffer_capacity(source, actual_cache);
     mr_source_mark_network(source);
     return source;
 }

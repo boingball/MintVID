@@ -77,11 +77,13 @@ int main(int argc, char **argv)
            "generic HTTP options initialised");
     base_options.hls_max_width = 640;
     base_options.hls_max_height = 360;
+    base_options.source_buffer_bytes = 8u * 1024u * 1024u;
     expect(mr_youtube_http_options_init(&youtube_options, &base_options) &&
            strstr(youtube_options.user_agent, "Mozilla/5.0") &&
            !strcmp(youtube_options.referer, "https://www.youtube.com/") &&
            youtube_options.hls_max_width == 640 &&
            youtube_options.hls_max_height == 360 &&
+           youtube_options.source_buffer_bytes == 8u * 1024u * 1024u &&
            youtube_options.hls_live_start_segments == 2 &&
            youtube_options.hls_buffer_segments,
            "YouTube browser defaults, live edge and HLS limits applied");

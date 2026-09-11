@@ -138,6 +138,7 @@ int mr_youtube_http_options_init(mr_http_options *out,
         out->hls_max_width = base->hls_max_width;
         out->hls_max_height = base->hls_max_height;
         out->hls_max_fps = base->hls_max_fps;
+        out->source_buffer_bytes = base->source_buffer_bytes;
     }
     return 1;
 }
@@ -229,6 +230,7 @@ int mr_youtube_media_http_options_init(mr_http_options *out,
         out->hls_max_fps = resolved.hls_max_fps;
         out->hls_live_start_segments = resolved.hls_live_start_segments;
         out->hls_buffer_segments = resolved.hls_buffer_segments;
+        out->source_buffer_bytes = resolved.source_buffer_bytes;
         return 1;
     }
     *out = resolved;

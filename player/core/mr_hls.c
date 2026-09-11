@@ -619,6 +619,7 @@ mr_source *mr_hls_source_open_ex(const char *url,
         h->options.hls_max_width = options->hls_max_width;
         h->options.hls_max_height = options->hls_max_height;
         h->options.hls_max_fps = options->hls_max_fps;
+        h->options.source_buffer_bytes = options->source_buffer_bytes;
     }
     st = merge_playlist(text, base, h, &added);
     mr_free(text);

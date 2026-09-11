@@ -88,6 +88,7 @@ enum {
     G_LACE,
     G_2X,
     G_AUDIO_RATE,
+    G_FAST_BUFFER,
     G_NO_AUDIO,
     G_MONO_AUDIO,
     G_IPTV,
@@ -305,13 +306,15 @@ static void set_info(Object *info, struct Window *window, const char *text);
 
 static void read_play_options(Object *mode, Object *c2p, Object *h264,
                               Object *lace, Object *twox,
-                              Object *audio_rate, Object *no_audio,
+                              Object *audio_rate, Object *fast_buffer,
+                              Object *no_audio,
                               Object *mono_audio,
                               mr_play_options *options)
 {
     ULONG selected = 0, selected_c2p = 0, selected_h264 = 0;
     ULONG checked_lace = 0, checked_2x = 0;
-    ULONG selected_audio_rate = 0, checked_no_audio = 0, checked_mono = 0;
+    ULONG selected_audio_rate = 0, selected_fast_buffer = 0;
+    ULONG checked_no_audio = 0, checked_mono = 0;
     mr_play_options_default(options);
     GetAttr(CHOOSER_Selected, mode, &selected);
     GetAttr(CHOOSER_Selected, c2p, &selected_c2p);
@@ -319,6 +322,7 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
     GetAttr(CHECKBOX_Checked, lace, &checked_lace);
     GetAttr(CHECKBOX_Checked, twox, &checked_2x);
     GetAttr(CHOOSER_Selected, audio_rate, &selected_audio_rate);
+    GetAttr(CHOOSER_Selected, fast_buffer, &selected_fast_buffer);
     GetAttr(CHECKBOX_Checked, no_audio, &checked_no_audio);
     GetAttr(CHECKBOX_Checked, mono_audio, &checked_mono);
     options->display = selected < mode_count
@@ -332,6 +336,9 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
                               : MR_H264_PERF_AUTO;
     options->audio_rate = selected_audio_rate == 1
                         ? MR_AUDIO_RATE_LOW : MR_AUDIO_RATE_NORMAL;
+    options->fast_buffer = selected_fast_buffer <= MR_FAST_BUFFER_16MB
+                         ? (mr_fast_buffer_mode)selected_fast_buffer
+                         : MR_FAST_BUFFER_AUTO;
     options->no_audio = checked_no_audio != 0;
     options->mono_audio = checked_mono != 0;
 }
@@ -339,19 +346,21 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
 static void publish_play_options(mr_master_options_port *master_options,
                                  Object *mode, Object *c2p, Object *h264,
                                  Object *lace, Object *twox,
-                                 Object *audio_rate, Object *no_audio,
+                                 Object *audio_rate, Object *fast_buffer,
+                                 Object *no_audio,
                                  Object *mono_audio)
 {
     mr_play_options options;
 
-    read_play_options(mode, c2p, h264, lace, twox, audio_rate, no_audio,
-                      mono_audio, &options);
+    read_play_options(mode, c2p, h264, lace, twox, audio_rate, fast_buffer,
+                      no_audio, mono_audio, &options);
     mr_master_options_publish(master_options, &options);
 }
 
 static void open_iptv_browser(Object *mode, Object *c2p, Object *h264,
                               Object *lace, Object *twox,
-                              Object *audio_rate, Object *no_audio,
+                              Object *audio_rate, Object *fast_buffer,
+                              Object *no_audio,
                               Object *mono_audio, Object *info,
                               struct Window *window)
 {
@@ -360,18 +369,13 @@ static void open_iptv_browser(Object *mode, Object *c2p, Object *h264,
     char arguments[512];
     mr_play_options options;
 
-    read_play_options(mode, c2p, h264, lace, twox, audio_rate, no_audio,
-                      mono_audio, &options);
+    read_play_options(mode, c2p, h264, lace, twox, audio_rate, fast_buffer,
+                      no_audio, mono_audio, &options);
     if (!mr_build_iptv_arguments(arguments, sizeof(arguments), &options)) {
         set_info(info, window, "Could not build IPTV playback options.");
         return;
     }
 
-    /* Keep the directory browser in its own process so downloads and list
-     * filtering can never stall the controller's transport event loop.  Load
-     * the executable directly rather than asking the shell to find it: files
-     * copied to an Amiga volume do not always retain the Execute protection
-     * bit, which made a valid iptvgui appear as an "Unknown command". */
     seglist = LoadSeg((CONST_STRPTR)"PROGDIR:iptvgui");
     if (!seglist)
         seglist = LoadSeg((CONST_STRPTR)"iptvgui");
@@ -398,7 +402,8 @@ static void open_iptv_browser(Object *mode, Object *c2p, Object *h264,
 
 static void open_youtube_browser(Object *mode, Object *c2p, Object *h264,
                                  Object *lace, Object *twox,
-                                 Object *audio_rate, Object *no_audio,
+                                 Object *audio_rate, Object *fast_buffer,
+                                 Object *no_audio,
                                  Object *mono_audio, Object *info,
                                  struct Window *window)
 {
@@ -407,8 +412,8 @@ static void open_youtube_browser(Object *mode, Object *c2p, Object *h264,
     char arguments[512];
     mr_play_options options;
 
-    read_play_options(mode, c2p, h264, lace, twox, audio_rate, no_audio,
-                      mono_audio, &options);
+    read_play_options(mode, c2p, h264, lace, twox, audio_rate, fast_buffer,
+                      no_audio, mono_audio, &options);
     if (!mr_build_iptv_arguments(arguments, sizeof(arguments), &options)) {
         set_info(info, window, "Could not build YouTube playback options.");
         return;
@@ -496,11 +501,6 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
                                mode_values[selected] == MR_DISPLAY_P96)
                             ? TRUE : FALSE;
 
-    /* Keep Kalms selected for every mode with an implemented kernel. HAM8 is
-     * still an eight-plane command buffer and uses the normal 1x1 converter;
-     * 040/060 builds additionally link the direct six-plane HAM6 converter.
-     * Lower-depth indexed modes snap back to Standard; disabled RTG mode keeps
-     * the selection so returning to AGA restores the faster default. */
     selected_c2p = 0;
     GetAttr(CHOOSER_Selected, c2p, &selected_c2p);
     selected_c2p_mode = selected_c2p < c2p_count
@@ -513,12 +513,6 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
                        || mode_values[selected] == MR_DISPLAY_HAM6
 #endif
                       );
-    /* Direct only ever targets the plain 1:1 8-plane AGA case (no HAM, no
-     * resize) - see display_aga.c's aga_supports_yuv_indexed() - so unlike
-     * Kalms it is never available for HAM6/HAM8. The chooser only lists it
-     * at all on a 040/060 build (see the add_c2p_node() call below), so
-     * this can only be true there anyway; the explicit check keeps this
-     * read independent of that. */
     direct_available = 0;
 #ifdef MR_KALMS_040
     direct_available = selected < mode_count &&
@@ -526,14 +520,6 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
                        chipset_has_aga();
 #endif
 
-    /* An unsupported chipset mode has to show Standard while it is active,
-     * but that automatic fallback must not become the default for the next
-     * output. Restore Kalms whenever a mode change reaches an implemented
-     * kernel. Leave CD32/Akiko alone because it is an explicit hardware
-     * selection, and do not fight a manual Standard choice on a C2P event.
-     * Direct is never auto-selected this way - it stays a deliberate,
-     * manual opt-in (like RiVA), not a new default over the established
-     * Kalms path. */
     if (output_changed && kalms_available &&
         selected_c2p_mode == MR_C2P_STANDARD) {
         SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
@@ -554,10 +540,6 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
     SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
                    GA_Disabled, disable_chipset_options,
                    TAG_DONE);
-    /* Laced/2x only mean anything on the AGA/ECS/HAM chipset paths - RTG
-     * (CGX/P96) ignores them outright, so ghost them out and clear any tick
-     * left over from a chipset mode rather than leaving them clickable and
-     * apparently still selected once RTG is chosen. */
     if (disable_chipset_options) {
         SetGadgetAttrs((struct Gadget *)lace, window, NULL,
                        GA_Disabled, TRUE,
@@ -577,13 +559,7 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
     }
 }
 
-/* Repeating poll so the separate mrplay process's codec/position/error status
- * reaches the Info: line, the same mechanism the IPTV and YouTube browser
- * windows already use (see mr_player_status.h). Purely advisory: if the
- * timer.device is unavailable the GUI still works, it just stops mirroring
- * the player's live status and Info: keeps showing the chosen file. */
-#define STATUS_POLL_MICROS 250000UL /* 4 Hz - mrplay itself only republishes
-                                      * position about once a second */
+#define STATUS_POLL_MICROS 250000UL
 
 static struct MsgPort *status_timer_port;
 static struct timerequest *status_timer_io;
@@ -636,15 +612,10 @@ static void status_timer_close(void)
     }
 }
 
-/* Mirrors mrplay's status (including the "| H:MM:SS"/"| M:SS" playhead it
- * folds on once a second - see mrplay.c's player_update_position()) onto
- * Info: while a player is running. Leaves Info: alone - showing whatever
- * file/type text update_file_info() last set - once no player is running,
- * so choosing a file after playback still reads back correctly. */
 static void poll_player_status(Object *info, struct Window *window)
 {
     mr_player_status ps;
-    char line[300]; /* codec (48) + text (208) + " (): " can exceed 256 */
+    char line[300];
 
     if (!mr_player_status_read(&ps)) { player_status_seq = 0; return; }
     if (ps.seq == player_status_seq) return;
@@ -660,14 +631,15 @@ static void poll_player_status(Object *info, struct Window *window)
     else if (ps.state == MR_PLAYER_STATE_ENDED)
         snprintf(line, sizeof(line), "Playback ended");
     else
-        return; /* STARTING/OPENING: leave whatever Info: already shows */
+        return;
     set_info(info, window, line);
 }
 
 static void start_player(Object *file, Object *mode, Object *c2p,
                          Object *h264,
                          Object *lace, Object *twox,
-                         Object *audio_rate, Object *no_audio,
+                         Object *audio_rate, Object *fast_buffer,
+                         Object *no_audio,
                          Object *mono_audio, Object *info,
                          struct Window *window)
 {
@@ -700,16 +672,14 @@ static void start_player(Object *file, Object *mode, Object *c2p,
     strncpy(path, (const char *)full_file, sizeof(path) - 1);
     path[sizeof(path) - 1] = 0;
 
-    read_play_options(mode, c2p, h264, lace, twox, audio_rate, no_audio,
-                      mono_audio, &options);
+    read_play_options(mode, c2p, h264, lace, twox, audio_rate, fast_buffer,
+                      no_audio, mono_audio, &options);
     if (!mr_build_player_arguments(args, sizeof(args), &options, path,
                                    NULL, NULL)) {
         set_info(info, window, "Could not build player arguments.");
         return;
     }
 
-    /* NP_CommandName only labels a CLI; it does not load an executable.
-     * Load mrplay explicitly and pass its seglist to CreateNewProcTags(). */
     seglist = LoadSeg((CONST_STRPTR)"PROGDIR:mrplay");
     if (!seglist)
         seglist = LoadSeg((CONST_STRPTR)"mrplay");
@@ -745,17 +715,23 @@ int main(void)
     Object *lace;
     Object *twox;
     Object *audio_rate;
+    Object *fast_buffer;
     Object *no_audio;
     Object *mono_audio;
     Object *info;
     Object *layout;
     Object *controls;
+    Object *controls_top;
+    Object *controls_bottom;
     Object *buttons;
+    Object *transport;
+    Object *services;
     Object *file_label;
     Object *display_label;
     Object *c2p_label;
     Object *h264_label;
     Object *audio_rate_label;
+    Object *fast_buffer_label;
     Object *play_button;
     Object *pause_button;
     Object *stop_button;
@@ -769,6 +745,7 @@ int main(void)
     struct List c2p_modes;
     struct List h264_modes;
     struct List audio_rate_modes;
+    struct List fast_buffer_modes;
     ULONG sigmask;
     ULONG result;
     ULONG signals;
@@ -787,17 +764,23 @@ int main(void)
     lace = NULL;
     twox = NULL;
     audio_rate = NULL;
+    fast_buffer = NULL;
     no_audio = NULL;
     mono_audio = NULL;
     info = NULL;
     layout = NULL;
     controls = NULL;
+    controls_top = NULL;
+    controls_bottom = NULL;
     buttons = NULL;
+    transport = NULL;
+    services = NULL;
     file_label = NULL;
     display_label = NULL;
     c2p_label = NULL;
     h264_label = NULL;
     audio_rate_label = NULL;
+    fast_buffer_label = NULL;
     play_button = NULL;
     pause_button = NULL;
     stop_button = NULL;
@@ -824,6 +807,9 @@ int main(void)
     audio_rate_modes.lh_Head = (struct Node *)&audio_rate_modes.lh_Tail;
     audio_rate_modes.lh_Tail = NULL;
     audio_rate_modes.lh_TailPred = (struct Node *)&audio_rate_modes.lh_Head;
+    fast_buffer_modes.lh_Head = (struct Node *)&fast_buffer_modes.lh_Tail;
+    fast_buffer_modes.lh_Tail = NULL;
+    fast_buffer_modes.lh_TailPred = (struct Node *)&fast_buffer_modes.lh_Head;
 
     if (!open_reaction_classes()) {
         fprintf(stderr, "MintVID: ReAction V%ld classes are not available.\n",
@@ -869,6 +855,12 @@ int main(void)
     if (!add_chooser_node(&audio_rate_modes, "Normal") ||
         !add_chooser_node(&audio_rate_modes, "Low"))
         goto cleanup;
+    if (!add_chooser_node(&fast_buffer_modes, "Auto") ||
+        !add_chooser_node(&fast_buffer_modes, "Off") ||
+        !add_chooser_node(&fast_buffer_modes, "4 MB") ||
+        !add_chooser_node(&fast_buffer_modes, "8 MB") ||
+        !add_chooser_node(&fast_buffer_modes, "16 MB"))
+        goto cleanup;
 
     file = (Object *)NewObject(GETFILE_GetClass(), NULL,
                                GA_ID, G_FILE,
@@ -913,6 +905,12 @@ int main(void)
                                      CHOOSER_Labels, (ULONG)&audio_rate_modes,
                                      CHOOSER_Selected, MR_AUDIO_RATE_NORMAL,
                                      TAG_DONE);
+    fast_buffer = (Object *)NewObject(CHOOSER_GetClass(), NULL,
+                                      GA_ID, G_FAST_BUFFER,
+                                      GA_RelVerify, TRUE,
+                                      CHOOSER_Labels, (ULONG)&fast_buffer_modes,
+                                      CHOOSER_Selected, MR_FAST_BUFFER_AUTO,
+                                      TAG_DONE);
     no_audio = (Object *)NewObject(CHECKBOX_GetClass(), NULL,
                                    GA_ID, G_NO_AUDIO,
                                    GA_Text, (ULONG)"No audio",
@@ -943,51 +941,83 @@ int main(void)
     audio_rate_label = (Object *)NewObject(LABEL_GetClass(), NULL,
                                            LABEL_Text, (ULONG)"Audio rate",
                                            TAG_DONE);
+    fast_buffer_label = (Object *)NewObject(LABEL_GetClass(), NULL,
+                                            LABEL_Text, (ULONG)"Fast buffer",
+                                            TAG_DONE);
 
     if (!file || !mode || !c2p || !h264 || !lace || !twox ||
-        !audio_rate || !no_audio || !mono_audio || !info ||
+        !audio_rate || !fast_buffer || !no_audio || !mono_audio || !info ||
         !file_label || !display_label || !c2p_label || !h264_label ||
-        !audio_rate_label)
+        !audio_rate_label || !fast_buffer_label)
+        goto cleanup;
+
+    /* Keep the option area comfortably inside a 640-pixel A1200 Workbench.
+     * The tightly-related display/C2P/H.264 controls stay together on the
+     * first row; audio and buffering live on the second row. */
+    controls_top = (Object *)NewObject(LAYOUT_GetClass(), NULL,
+                                       LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ,
+                                       LAYOUT_SpaceInner, TRUE,
+                                       LAYOUT_AddChild, (ULONG)mode,
+                                       CHILD_Label, (ULONG)display_label,
+                                       LAYOUT_AddChild, (ULONG)c2p,
+                                       CHILD_Label, (ULONG)c2p_label,
+                                       LAYOUT_AddChild, (ULONG)h264,
+                                       CHILD_Label, (ULONG)h264_label,
+                                       LAYOUT_AddChild, (ULONG)lace,
+                                       CHILD_WeightedWidth, 0,
+                                       LAYOUT_AddChild, (ULONG)twox,
+                                       CHILD_WeightedWidth, 0,
+                                       TAG_DONE);
+    if (!controls_top)
+        goto cleanup;
+
+    controls_bottom = (Object *)NewObject(LAYOUT_GetClass(), NULL,
+                                          LAYOUT_Orientation,
+                                          LAYOUT_ORIENT_HORIZ,
+                                          LAYOUT_SpaceInner, TRUE,
+                                          LAYOUT_AddChild, (ULONG)audio_rate,
+                                          CHILD_Label, (ULONG)audio_rate_label,
+                                          LAYOUT_AddChild, (ULONG)fast_buffer,
+                                          CHILD_Label, (ULONG)fast_buffer_label,
+                                          LAYOUT_AddChild, (ULONG)no_audio,
+                                          CHILD_WeightedWidth, 0,
+                                          LAYOUT_AddChild, (ULONG)mono_audio,
+                                          CHILD_WeightedWidth, 0,
+                                          TAG_DONE);
+    if (!controls_bottom)
         goto cleanup;
 
     controls = (Object *)NewObject(LAYOUT_GetClass(), NULL,
-                                    LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ,
-                                    LAYOUT_AddChild, (ULONG)mode,
-                                    CHILD_Label, (ULONG)display_label,
-                                    LAYOUT_AddChild, (ULONG)c2p,
-                                    CHILD_Label, (ULONG)c2p_label,
-                                    LAYOUT_AddChild, (ULONG)h264,
-                                    CHILD_Label, (ULONG)h264_label,
-                                    LAYOUT_AddChild, (ULONG)lace,
-                                    LAYOUT_AddChild, (ULONG)twox,
-                                    LAYOUT_AddChild, (ULONG)audio_rate,
-                                    CHILD_Label, (ULONG)audio_rate_label,
-                                    LAYOUT_AddChild, (ULONG)no_audio,
-                                    LAYOUT_AddChild, (ULONG)mono_audio,
+                                    LAYOUT_Orientation, LAYOUT_ORIENT_VERT,
+                                    LAYOUT_SpaceInner, TRUE,
+                                    LAYOUT_AddChild, (ULONG)controls_top,
+                                    CHILD_WeightedHeight, 0,
+                                    LAYOUT_AddChild, (ULONG)controls_bottom,
+                                    CHILD_WeightedHeight, 0,
                                     TAG_DONE);
     if (!controls)
         goto cleanup;
 
     play_button = (Object *)NewObject(BUTTON_GetClass(), NULL,
                                       GA_ID, G_PLAY,
-                                      GA_Text, (ULONG)"Play",
+                                      GA_Text, (ULONG)">",
                                       GA_RelVerify, TRUE,
                                       TAG_DONE);
     pause_button = (Object *)NewObject(BUTTON_GetClass(), NULL,
                                        GA_ID, G_PAUSE,
-                                       GA_Text, (ULONG)"Pause",
+                                       GA_Text, (ULONG)"||",
                                        GA_RelVerify, TRUE,
                                        TAG_DONE);
     stop_button = (Object *)NewObject(BUTTON_GetClass(), NULL,
                                       GA_ID, G_STOP,
-                                      GA_Text, (ULONG)"Stop",
+                                      GA_Text, (ULONG)"[]",
                                       GA_RelVerify, TRUE,
                                       TAG_DONE);
     ff_button = (Object *)NewObject(BUTTON_GetClass(), NULL,
                                     GA_ID, G_FF,
-                                    GA_Text, (ULONG)"Fast forward",
+                                    GA_Text, (ULONG)">>",
                                     GA_RelVerify, TRUE,
-                                       TAG_DONE);
+                                    TAG_DONE);
     iptv_button = (Object *)NewObject(BUTTON_GetClass(), NULL,
                                       GA_ID, G_IPTV,
                                       GA_Text, (ULONG)"IPTV...",
@@ -1002,15 +1032,39 @@ int main(void)
         !iptv_button || !youtube_button)
         goto cleanup;
 
+    transport = (Object *)NewObject(LAYOUT_GetClass(), NULL,
+                                     LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ,
+                                     LAYOUT_SpaceInner, TRUE,
+                                     LAYOUT_AddChild, (ULONG)play_button,
+                                     CHILD_WeightedWidth, 0,
+                                     LAYOUT_AddChild, (ULONG)pause_button,
+                                     CHILD_WeightedWidth, 0,
+                                     LAYOUT_AddChild, (ULONG)stop_button,
+                                     CHILD_WeightedWidth, 0,
+                                     LAYOUT_AddChild, (ULONG)ff_button,
+                                     CHILD_WeightedWidth, 0,
+                                     TAG_DONE);
+    if (!transport)
+        goto cleanup;
+
+    services = (Object *)NewObject(LAYOUT_GetClass(), NULL,
+                                    LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ,
+                                    LAYOUT_SpaceInner, TRUE,
+                                    LAYOUT_AddChild, (ULONG)iptv_button,
+                                    CHILD_WeightedWidth, 0,
+                                    LAYOUT_AddChild, (ULONG)youtube_button,
+                                    CHILD_WeightedWidth, 0,
+                                    TAG_DONE);
+    if (!services)
+        goto cleanup;
+
     buttons = (Object *)NewObject(LAYOUT_GetClass(), NULL,
-                                   LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ,
-                                   LAYOUT_EvenSize, TRUE,
-                                   LAYOUT_AddChild, (ULONG)play_button,
-                                   LAYOUT_AddChild, (ULONG)pause_button,
-                                   LAYOUT_AddChild, (ULONG)stop_button,
-                                   LAYOUT_AddChild, (ULONG)ff_button,
-                                   LAYOUT_AddChild, (ULONG)iptv_button,
-                                   LAYOUT_AddChild, (ULONG)youtube_button,
+                                   LAYOUT_Orientation, LAYOUT_ORIENT_VERT,
+                                   LAYOUT_SpaceInner, TRUE,
+                                   LAYOUT_AddChild, (ULONG)transport,
+                                   CHILD_WeightedHeight, 0,
+                                   LAYOUT_AddChild, (ULONG)services,
+                                   CHILD_WeightedHeight, 0,
                                    TAG_DONE);
     if (!buttons)
         goto cleanup;
@@ -1059,7 +1113,7 @@ int main(void)
     update_mode_controls(mode, c2p, lace, twox, window, TRUE);
     master_options = mr_master_options_open();
     publish_play_options(master_options, mode, c2p, h264, lace, twox,
-                         audio_rate, no_audio, mono_audio);
+                         audio_rate, fast_buffer, no_audio, mono_audio);
     GetAttr(WINDOW_SigMask, window_object, &sigmask);
     if (status_timer_open()) {
         timermask = 1UL << status_timer_port->mp_SigBit;
@@ -1071,7 +1125,7 @@ int main(void)
         if (signals & SIGBREAKF_CTRL_C)
             break;
         if (timermask && (signals & timermask)) {
-            while (GetMsg(status_timer_port)) /* remove the replied request */
+            while (GetMsg(status_timer_port))
                 ;
             status_timer_running = 0;
             poll_player_status(info, window);
@@ -1103,32 +1157,33 @@ int main(void)
                 case G_MODE:
                     update_mode_controls(mode, c2p, lace, twox, window, TRUE);
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, no_audio,
-                                         mono_audio);
+                                         lace, twox, audio_rate, fast_buffer,
+                                         no_audio, mono_audio);
                     break;
 
                 case G_C2P:
                     update_mode_controls(mode, c2p, lace, twox, window, FALSE);
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, no_audio,
-                                         mono_audio);
+                                         lace, twox, audio_rate, fast_buffer,
+                                         no_audio, mono_audio);
                     break;
 
                 case G_H264:
                 case G_LACE:
                 case G_2X:
                 case G_AUDIO_RATE:
+                case G_FAST_BUFFER:
                 case G_NO_AUDIO:
                 case G_MONO_AUDIO:
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, no_audio,
-                                         mono_audio);
+                                         lace, twox, audio_rate, fast_buffer,
+                                         no_audio, mono_audio);
                     break;
 
                 case G_PLAY:
                     start_player(file, mode, c2p, h264, lace, twox,
-                                audio_rate, no_audio, mono_audio, info,
-                                window);
+                                 audio_rate, fast_buffer, no_audio, mono_audio,
+                                 info, window);
                     break;
 
                 case G_PAUSE:
@@ -1145,20 +1200,20 @@ int main(void)
 
                 case G_IPTV:
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, no_audio,
-                                         mono_audio);
+                                         lace, twox, audio_rate, fast_buffer,
+                                         no_audio, mono_audio);
                     open_iptv_browser(mode, c2p, h264, lace, twox,
-                                      audio_rate, no_audio, mono_audio, info,
-                                      window);
+                                      audio_rate, fast_buffer, no_audio,
+                                      mono_audio, info, window);
                     break;
 
                 case G_YOUTUBE:
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, no_audio,
-                                         mono_audio);
+                                         lace, twox, audio_rate, fast_buffer,
+                                         no_audio, mono_audio);
                     open_youtube_browser(mode, c2p, h264, lace, twox,
-                                         audio_rate, no_audio, mono_audio,
-                                         info, window);
+                                         audio_rate, fast_buffer, no_audio,
+                                         mono_audio, info, window);
                     break;
 
                 default:
@@ -1180,8 +1235,6 @@ cleanup:
     status_timer_close();
     mr_master_options_close(&master_options);
     mr_gui_menu_close(&app_menu, window);
-    /* Dispose only the highest successfully-created owner.  The window owns
-     * the root layout; layouts own their child layouts and gadgets. */
     if (window_object) {
         if (window)
             RA_CloseWindow(window_object);
@@ -1192,47 +1245,47 @@ cleanup:
         if (controls) {
             DisposeObject(controls);
         } else {
-            if (mode)
-                DisposeObject(mode);
-            if (c2p)
-                DisposeObject(c2p);
-            if (h264)
-                DisposeObject(h264);
-            if (lace)
-                DisposeObject(lace);
-            if (twox)
-                DisposeObject(twox);
-            if (audio_rate)
-                DisposeObject(audio_rate);
-            if (no_audio)
-                DisposeObject(no_audio);
-            if (mono_audio)
-                DisposeObject(mono_audio);
-            if (display_label)
-                DisposeObject(display_label);
-            if (c2p_label)
-                DisposeObject(c2p_label);
-            if (h264_label)
-                DisposeObject(h264_label);
-            if (audio_rate_label)
-                DisposeObject(audio_rate_label);
+            if (controls_top) {
+                DisposeObject(controls_top);
+            } else {
+                if (mode) DisposeObject(mode);
+                if (c2p) DisposeObject(c2p);
+                if (h264) DisposeObject(h264);
+                if (lace) DisposeObject(lace);
+                if (twox) DisposeObject(twox);
+                if (display_label) DisposeObject(display_label);
+                if (c2p_label) DisposeObject(c2p_label);
+                if (h264_label) DisposeObject(h264_label);
+            }
+            if (controls_bottom) {
+                DisposeObject(controls_bottom);
+            } else {
+                if (audio_rate) DisposeObject(audio_rate);
+                if (fast_buffer) DisposeObject(fast_buffer);
+                if (no_audio) DisposeObject(no_audio);
+                if (mono_audio) DisposeObject(mono_audio);
+                if (audio_rate_label) DisposeObject(audio_rate_label);
+                if (fast_buffer_label) DisposeObject(fast_buffer_label);
+            }
         }
 
         if (buttons) {
             DisposeObject(buttons);
         } else {
-            if (play_button)
-                DisposeObject(play_button);
-            if (pause_button)
-                DisposeObject(pause_button);
-            if (stop_button)
-                DisposeObject(stop_button);
-            if (ff_button)
-                DisposeObject(ff_button);
-            if (iptv_button)
-                DisposeObject(iptv_button);
-            if (youtube_button)
-                DisposeObject(youtube_button);
+            if (transport) {
+                DisposeObject(transport);
+            } else {
+                if (play_button) DisposeObject(play_button);
+                if (pause_button) DisposeObject(pause_button);
+                if (stop_button) DisposeObject(stop_button);
+                if (ff_button) DisposeObject(ff_button);
+            }
+            if (services) {
+                DisposeObject(services);
+            } else {
+                if (iptv_button) DisposeObject(iptv_button);
+                if (youtube_button) DisposeObject(youtube_button);
+            }
         }
 
         if (file)
@@ -1247,6 +1300,7 @@ cleanup:
     free_chooser_nodes(&c2p_modes);
     free_chooser_nodes(&h264_modes);
     free_chooser_nodes(&audio_rate_modes);
+    free_chooser_nodes(&fast_buffer_modes);
     close_reaction_classes();
     return status;
 }

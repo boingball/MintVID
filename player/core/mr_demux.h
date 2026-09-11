@@ -131,6 +131,10 @@ int          mr_demux_can_seek(const mr_demux *d);
  * MR_EUNSUPPORTED when mr_demux_can_seek() would say 0. */
 mr_status    mr_demux_seek(mr_demux *d, uint64_t target_us, uint64_t *out_us);
 void         mr_demux_close(mr_demux *d);
+size_t       mr_demux_source_buffer_capacity(const mr_demux *d);
+/* True once the source has fully preloaded the file into a Fast RAM block -
+ * see mr_source_is_memory_cached(). */
+int          mr_demux_source_is_cached(const mr_demux *d);
 
 const mr_video_info *mr_demux_video(const mr_demux *d);
 const mr_audio_info *mr_demux_audio(const mr_demux *d);

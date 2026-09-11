@@ -201,7 +201,7 @@ Inspect or dump any AVI/MOV/MP4/MKV/TS/M2TS:
 
 `mrplay` streams AVI, MOV/MP4, Matroska/MKV and MPEG-TS/M2TS packets from disk or a direct
 `http://`/`https://` file URL. Its RAM use is therefore set by container
-metadata, the largest compressed packet, a 256 KiB network rewind cache, and
+metadata, the largest compressed packet, a 4 MB network rewind cache, and
 the active decoder/display buffers rather than by the media file size. HTTP
 redirects and byte-range seeking are supported:
 
@@ -212,7 +212,20 @@ mrplay --user-agent "Mozilla/5.0" --referer "https://example.net/" \
   "https://example.net/live/master.m3u8"
 mrplay --hls-max-width=640 --hls-max-height=360 \
   "https://www.youtube.com/watch?v=LIVE_STREAM_ID"
+mrplay --fast-buffer=8 "DH0:Videos/movie.avi"
 ```
+
+`--fast-buffer=auto|off|4|8|16` adds a Fast RAM read-ahead window for local
+files and direct/progressive HTTP media. Local playback gives that memory to
+stdio so sequential demuxing crosses AmigaDOS far less often; HTTP playback
+uses it as a rewind/read-ahead cache and absorbs data already waiting on the
+socket while the CPU is decoding. `off` retains the small normal file buffer
+and HTTP's existing 4 MB compatibility cache. `auto` selects 16, 8, or 4 MB
+from the largest available Fast RAM block while leaving 24 MB free for the
+decoder, display, TLS, audio, and frame queue. A fixed size is an explicit
+override but still leaves an 8 MB floor and steps down safely if necessary.
+HLS does not allocate a second copy: its background worker already downloads
+the next complete segment into RAM.
 
 Plain HTTP is present in the normal Amiga build. HTTPS uses
 `amisslmaster.library`/AmiSSL v5 and must be enabled when compiling:
@@ -357,6 +370,16 @@ skip roughly half of their per-channel synthesis. Helix AAC has no mono mode,
 so an AAC track only saves the downmix. Worth a try when a heavy H.264 stream
 is starving the audio FIFO.
 
+**Fast RAM buffering**
+
+The **Fast buffer** chooser is available in both ReAction and GadTools editions
+and defaults to Auto. It applies to ordinary **Play**, IPTV, and YouTube
+launches. Direct/progressive online media receives the same 4/8/16 MB rolling
+cache as local playback; HLS continues to use its complete-segment background
+buffer instead. The selected size is allocated with `MEMF_FAST`, never Chip
+RAM, and `mrplay` prints the chosen or reduced size at startup for hardware
+comparisons.
+
 **H.264 performance modes**
 
 TurboGT remains the default. The choices trade picture quality and/or decoded
@@ -466,9 +489,9 @@ window's **Next Stream** button advances through the retained alternatives
 without silently looping. Double-clicking a channel plays it directly, without
 a separate Play press.
 
-IPTV playback inherits a snapshot of the ReAction controller's display, C2P,
-lace, and 2x selections when **IPTV...** is pressed. The IPTV window shows that
-snapshot beside its status; close and reopen it after changing controller
+IPTV playback inherits a snapshot of the controller's display, C2P, lace, 2x,
+audio, H.264, and Fast buffer selections when **IPTV...** is pressed. The IPTV
+window shows that snapshot beside its status; close and reopen it after changing controller
 settings. A Shell-launched `iptvgui` uses safe AGA/Standard, lace-off, 2x-off,
 low-bandwidth HLS defaults. The shared bounded argument builder is also used by
 the main controller's ordinary **Play** action, so both paths map identical

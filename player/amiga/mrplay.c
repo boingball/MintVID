@@ -26,6 +26,7 @@
 #include "../core/mr_mpeg2.h"
 #include "../core/mr_dither.h"
 #include "../core/mr_media_clock.h"
+#include "../core/mr_play_options.h"
 #include "../core/mr_micro_rescue.h"
 #include "../core/mr_muldiv64.h"
 #include "../core/mr_yuv.h"
@@ -95,6 +96,8 @@ void __chkabort(void) { }
  * the safety floor and starved playback into an endless reconnect (see the
  * runtime sizing in main). */
 #define VIDEO_QUEUE_MEM_FLOOR (8UL * 1024 * 1024)
+#define FAST_BUFFER_AUTO_RESERVE (24UL * 1024 * 1024)
+#define FAST_BUFFER_FIXED_RESERVE (8UL * 1024 * 1024)
 #define STATS_INTERVAL_US 3000000ULL
 /* clock-trace fires on every clock-source flip/large-delta/multi-drop frame,
  * which during a genuine overload can mean every single frame. On real Amiga
@@ -1217,6 +1220,29 @@ static unsigned char *slurp(const char *path, long *out_len)
     return b;
 }
 
+static size_t requested_fast_buffer(mr_fast_buffer_mode mode,
+                                    unsigned long *free_fast_out)
+{
+    unsigned long free_fast = AvailMem(MEMF_FAST);
+    unsigned long largest = AvailMem(MEMF_FAST | MEMF_LARGEST);
+    unsigned long reserve = mode == MR_FAST_BUFFER_AUTO
+                          ? FAST_BUFFER_AUTO_RESERVE
+                          : FAST_BUFFER_FIXED_RESERVE;
+    size_t wanted = mode == MR_FAST_BUFFER_16MB ? 16UL * 1024 * 1024 :
+                    mode == MR_FAST_BUFFER_8MB ? 8UL * 1024 * 1024 :
+                    mode == MR_FAST_BUFFER_4MB ? 4UL * 1024 * 1024 : 0;
+    size_t budget;
+
+    if (free_fast_out) *free_fast_out = free_fast;
+    if (mode == MR_FAST_BUFFER_OFF) return 0;
+    budget = free_fast > reserve ? (size_t)(free_fast - reserve) : 0;
+    if (budget > (size_t)largest) budget = (size_t)largest;
+    if (mode == MR_FAST_BUFFER_AUTO) wanted = 16UL * 1024 * 1024;
+    while (wanted > budget && wanted >= 4UL * 1024 * 1024)
+        wanted /= 2;
+    return wanted >= 4UL * 1024 * 1024 ? wanted : 0;
+}
+
 /* Ticks are 1/50 s (dos Delay). frame period = 50*scale/rate, min 1. */
 static long frame_ticks(unsigned long rate, unsigned long scale)
 {
@@ -1443,6 +1469,10 @@ int main(int argc, char **argv)
     int audio_low_rate = 0; /* --audio-rate=low: halve the output rate again */
     int no_audio = 0;       /* --no-audio: skip the decoder/Paula entirely   */
     int audio_mono = 0;     /* --audio-mono: decode one channel, not two     */
+    mr_fast_buffer_mode fast_buffer = MR_FAST_BUFFER_OFF;
+    int fast_buffer_option_seen = 0;
+    size_t fast_buffer_bytes = 0;
+    unsigned long free_fast_before = 0;
     const char *media_path = NULL;
     const char *user_agent = NULL;
     const char *referer = NULL;
@@ -1514,6 +1544,7 @@ int main(int argc, char **argv)
                "[--2x] [--lace] [--ecs-fast] [--ecs32] [--loop] "
                "[--wpa|--c2p|--riva-c2p|--kalms-c2p|--direct-c2p] "
                "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
+               "[--fast-buffer=auto|off|4|8|16] "
                "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+|turbogt] "
                "[--audio-rate=normal|low] [--no-audio] [--audio-mono] "
                "[--time]\n");
@@ -1594,6 +1625,19 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--no-audio")) no_audio = 1;
             else if (!strcmp(argv[i], "--audio-mono")) audio_mono = 1;
             else if (!strcmp(argv[i], "--audio-stereo")) audio_mono = 0;
+            else if (!strncmp(argv[i], "--fast-buffer=", 14)) {
+                const char *mode = argv[i] + 14;
+                fast_buffer_option_seen = 1;
+                if (!strcmp(mode, "auto")) fast_buffer = MR_FAST_BUFFER_AUTO;
+                else if (!strcmp(mode, "off")) fast_buffer = MR_FAST_BUFFER_OFF;
+                else if (!strcmp(mode, "4")) fast_buffer = MR_FAST_BUFFER_4MB;
+                else if (!strcmp(mode, "8")) fast_buffer = MR_FAST_BUFFER_8MB;
+                else if (!strcmp(mode, "16")) fast_buffer = MR_FAST_BUFFER_16MB;
+                else {
+                    printf("invalid Fast buffer size: %s\n", mode);
+                    return mrplay_exit(5);
+                }
+            }
             else if (argv[i][0] != '-' && !media_path) media_path = argv[i];
         }
     }
@@ -1610,8 +1654,10 @@ int main(int argc, char **argv)
     http_options.hls_max_width = hls_max_width;
     http_options.hls_max_height = hls_max_height;
     http_options.hls_max_fps = hls_max_fps;
+    fast_buffer_bytes = requested_fast_buffer(fast_buffer, &free_fast_before);
+    http_options.source_buffer_bytes = fast_buffer_bytes;
     have_http_options = user_agent || referer || hls_low || hls_max_width ||
-                        hls_max_height || hls_max_fps;
+                        hls_max_height || hls_max_fps || fast_buffer_bytes;
     /* Start the background fetch worker before any network call this session
      * might make (including YouTube URL resolution just below) so it is
      * always the first task to open bsdsocket/AmiSSL state, never a second
@@ -1703,6 +1749,25 @@ int main(int argc, char **argv)
      * was already false). */
     if (!mr_source_is_hls(media_path))
         hls_fetch_stop();
+    else if (mr_http_fetch_override_active() ||
+             http_options.hls_buffer_segments)
+        http_options.source_buffer_bytes = 0; /* complete segments are buffered */
+
+    if (fast_buffer_option_seen) {
+        if (mr_source_is_hls(media_path) &&
+            (mr_http_fetch_override_active() ||
+             http_options.hls_buffer_segments))
+            printf("Fast buffer: HLS uses background whole-segment buffering\n");
+        else if (fast_buffer_bytes)
+            printf("Fast buffer: %lu MB in Fast RAM (%lu MB free before open)\n",
+                   (unsigned long)(fast_buffer_bytes / (1024UL * 1024UL)),
+                   free_fast_before / (1024UL * 1024UL));
+        else if (fast_buffer == MR_FAST_BUFFER_OFF)
+            printf("Fast buffer: off\n");
+        else
+            printf("Fast buffer: disabled to preserve playback memory (%lu MB free)\n",
+                   free_fast_before / (1024UL * 1024UL));
+    }
 
     printf("mrplay: opening %s\n", media_path);
     player_status(MR_PLAYER_STATE_OPENING, "", "Connecting to stream...");
@@ -1711,9 +1776,18 @@ int main(int argc, char **argv)
     dx = mr_demux_open_file_ex(media_path,
                                have_http_options ? &http_options : NULL);
     if (dx) {
+        size_t actual_buffer = mr_demux_source_buffer_capacity(dx);
         printf("streaming %s from %s\n", mr_demux_container_name(dx),
                !strncmp(media_path, "http://", 7) ||
                !strncmp(media_path, "https://", 8) ? "network" : "disk");
+        if (http_options.source_buffer_bytes) {
+            if (mr_demux_source_is_cached(dx))
+                printf("Fast buffer: whole file cached in Fast RAM (%lu KB)\n",
+                       (unsigned long)((actual_buffer + 1023) / 1024));
+            else if (actual_buffer < fast_buffer_bytes)
+                printf("warning: Fast buffer fell back to %lu MB\n",
+                       (unsigned long)(actual_buffer / (1024UL * 1024UL)));
+        }
     } else {
         if (mr_demux_is_file_backed_container(media_path)) {
             char reason[MR_PLAYER_STATUS_TEXT_MAX];

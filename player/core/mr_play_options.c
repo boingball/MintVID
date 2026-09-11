@@ -62,6 +62,7 @@ void mr_play_options_default(mr_play_options *o)
      * resolves to the same policy as Turbo - see mr_h264_set_speed_mode(). */
     o->h264_performance = MR_H264_PERF_TURBO_GT;
     o->audio_rate = MR_AUDIO_RATE_NORMAL;
+    o->fast_buffer = MR_FAST_BUFFER_AUTO;
 }
 
 static int append_text(char *out, size_t cap, const char *text)
@@ -126,6 +127,7 @@ static int append_playback_flags(char *out, size_t cap,
                                  const mr_play_options *o, int explicit)
 {
     char number[32];
+    const char *fast_buffer;
     if (explicit) {
         if (!append_option(out, cap, "--display") ||
             !append_option(out, cap, display_name(o->display))) return 0;
@@ -172,6 +174,12 @@ static int append_playback_flags(char *out, size_t cap,
         if (!append_option(out, cap, number)) return 0;
     }
     if (o->live_resync && !append_option(out, cap, "--live-resync")) return 0;
+    fast_buffer = o->fast_buffer == MR_FAST_BUFFER_OFF ? "off" :
+                  o->fast_buffer == MR_FAST_BUFFER_4MB ? "4" :
+                  o->fast_buffer == MR_FAST_BUFFER_8MB ? "8" :
+                  o->fast_buffer == MR_FAST_BUFFER_16MB ? "16" : "auto";
+    snprintf(number, sizeof(number), "--fast-buffer=%s", fast_buffer);
+    if (!append_option(out, cap, number)) return 0;
     if (o->h264_performance != MR_H264_PERF_AUTO) {
         const char *mode = o->h264_performance == MR_H264_PERF_QUALITY
                          ? "--h264-speed=quality" :
@@ -299,6 +307,15 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
         else if (!strcmp(arg, "--no-audio")) o->no_audio = 1;
         else if (!strcmp(arg, "--audio-mono")) o->mono_audio = 1;
         else if (!strcmp(arg, "--audio-stereo")) o->mono_audio = 0;
+        else if (!strncmp(arg, "--fast-buffer=", 14)) {
+            value = arg + 14;
+            if (!strcmp(value, "auto")) o->fast_buffer = MR_FAST_BUFFER_AUTO;
+            else if (!strcmp(value, "off")) o->fast_buffer = MR_FAST_BUFFER_OFF;
+            else if (!strcmp(value, "4")) o->fast_buffer = MR_FAST_BUFFER_4MB;
+            else if (!strcmp(value, "8")) o->fast_buffer = MR_FAST_BUFFER_8MB;
+            else if (!strcmp(value, "16")) o->fast_buffer = MR_FAST_BUFFER_16MB;
+            else goto bad;
+        }
         else if (!strncmp(arg, "--hls-max-width=", 16)) {
             if (!parse_uint(arg + 16, &o->hls_max_width)) goto bad;
         } else if (!strncmp(arg, "--hls-max-height=", 17)) {
@@ -333,6 +350,17 @@ static const char *audio_policy_text(const mr_play_options *o)
     return o->mono_audio ? "Mono" : "Normal";
 }
 
+static const char *fast_buffer_text(const mr_play_options *o)
+{
+    switch (o->fast_buffer) {
+    case MR_FAST_BUFFER_OFF: return "off";
+    case MR_FAST_BUFFER_4MB: return "4 MB";
+    case MR_FAST_BUFFER_8MB: return "8 MB";
+    case MR_FAST_BUFFER_16MB: return "16 MB";
+    default: return "Auto";
+    }
+}
+
 void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
 {
     char hls[24];
@@ -347,17 +375,19 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
            o->h264_performance == MR_H264_PERF_TURBO_GT ? "TurboGT" : "Auto";
     audio = audio_policy_text(o);
     if (o->display == MR_DISPLAY_CGX || o->display == MR_DISPLAY_P96)
-        snprintf(out, cap, "Playback: RTG (%s) / %s / H264 %s / Audio %s%s",
+        snprintf(out, cap, "Playback: RTG (%s) / %s / H264 %s / Audio %s / Fast buffer %s%s",
                  o->display == MR_DISPLAY_P96 ? "P96" : "WritePixel",
-                 hls, h264, audio, o->live_resync ? " / Live-resync" : "");
+                 hls, h264, audio, fast_buffer_text(o),
+                 o->live_resync ? " / Live-resync" : "");
     else
         snprintf(out, cap,
-                 "Playback: %s / %s / Lace %s / 2x %s / %s / H264 %s / Audio %s%s",
+                 "Playback: %s / %s / Lace %s / 2x %s / %s / H264 %s / Audio %s / Fast buffer %s%s",
                  o->display == MR_DISPLAY_HAM6 ? "HAM6" :
                  o->display == MR_DISPLAY_HAM8 ? "HAM8" :
                  o->display == MR_DISPLAY_AGA_ECS32 ? "ECS (32)" :
                  o->display == MR_DISPLAY_AGA_ECS16 ? "ECS (16)" : "Native planar",
                  c2p_name(o->c2p), o->laced ? "on" : "off",
                  o->scale_2x ? "on" : "off", hls, h264, audio,
+                 fast_buffer_text(o),
                  o->live_resync ? " / Live-resync" : "");
 }

@@ -376,13 +376,19 @@ mr_hls_override_check: tests/mr_hls_override_check.c core/mr_hls.c \
 	$(CC) $(CFLAGS) -o $@ tests/mr_hls_override_check.c core/mr_hls.c \
 	    core/mr_http.c core/mr_source.c core/mr_youtube.c
 
+mr_source_buffer_check: tests/mr_source_buffer_check.c core/mr_source.c \
+                        core/mr_http.c core/mr_hls.c core/mr_youtube.c
+	$(CC) $(CFLAGS) -o $@ tests/mr_source_buffer_check.c core/mr_source.c \
+	    core/mr_http.c core/mr_hls.c core/mr_youtube.c
+
 mr_youtube_search_check: tests/mr_youtube_search_check.c \
                          youtube/mr_youtube_search.c \
                          youtube/mr_youtube_search.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_search_check.c \
 	    youtube/mr_youtube_search.c
 
-check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_yuv_planar_queue_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg1_audio_time_check mr_mpeg2_yuv_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_cinepak_indexed_check mr_msvideo1_indexed_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_micro_rescue_check mr_muldiv64_check mr_ih264_divmod_check mr_h264_m68k_check mr_h264_mc_degrade_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check
+check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_yuv_planar_queue_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg1_audio_time_check mr_mpeg2_yuv_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_cinepak_indexed_check mr_msvideo1_indexed_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_micro_rescue_check mr_muldiv64_check mr_ih264_divmod_check mr_h264_m68k_check mr_h264_mc_degrade_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check mr_source_buffer_check
+	./mr_source_buffer_check
 	./mr_youtube_search_check
 	./mr_youtube_check
 	./mr_hls_override_check
@@ -565,7 +571,7 @@ check-audio: mr_audio_check mr_ac3_check mr_mp2_check mr_mp2_synth_check mr_mp2_
 	./mr_mpeg1_decim_check tests/assets/test_mp2_stereo.ts
 	./mr_mpeg1_decim_synth_check
 
-check-http: mr_decode mr_youtube_check
+check-http: mr_decode mr_youtube_check mr_source_buffer_check
 	@test -d tests/assets/ref_mpeg2_ts \
 	    && test -d tests/assets/ref_h264_high \
 	    && test -d tests/assets/ref_mp42 \
@@ -610,7 +616,7 @@ clean:
 	      mr_mpeg1_audio_time_check_base.out mr_mpeg1_audio_time_check_skip.out
 	rm -f mr_h264_m68k_check
 	rm -f mr_h264_mc_degrade_check
-	rm -f mr_iptv_check mr_youtube_check mr_youtube_search_check
+	rm -f mr_iptv_check mr_youtube_check mr_youtube_search_check mr_source_buffer_check
 	rm -rf $(HOSTOBJ)
 
 .PHONY: all check check-audio check-http check-https check-libavc check-m68k clean

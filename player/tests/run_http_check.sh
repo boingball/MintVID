@@ -81,6 +81,7 @@ base="$scheme://127.0.0.1:$port"
 # and chunked transfer encoding. HTTPS uses the separately linked SSL harness;
 # this parser/downloader target is intentionally the plain host build.
 if test "$mode" = http; then
+    ./mr_source_buffer_check "$base/media/test_mpeg2.ts"
     ./mr_youtube_check "$base/media/hls/youtube.html"
     ./mr_youtube_check "$base/chunked/media/hls/youtube.html"
     long_token=$(awk 'BEGIN { for (i=0; i<1500; i++) printf "x" }')

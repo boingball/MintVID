@@ -59,6 +59,14 @@ typedef enum {
     MR_AUDIO_RATE_LOW
 } mr_audio_rate_mode;
 
+typedef enum {
+    MR_FAST_BUFFER_AUTO = 0,
+    MR_FAST_BUFFER_OFF,
+    MR_FAST_BUFFER_4MB,
+    MR_FAST_BUFFER_8MB,
+    MR_FAST_BUFFER_16MB
+} mr_fast_buffer_mode;
+
 typedef struct mr_play_options {
     mr_display_mode display;
     mr_c2p_mode c2p;
@@ -71,6 +79,7 @@ typedef struct mr_play_options {
     int live_resync;   /* pass --live-resync: catch up / reconnect live streams */
     mr_h264_performance h264_performance;
     mr_audio_rate_mode audio_rate;
+    mr_fast_buffer_mode fast_buffer;
     int no_audio;      /* pass --no-audio: skip the audio decoder/Paula entirely */
     /* pass --audio-mono: decode one channel instead of two. Paula output has
      * always been mono; this moves the fold from "decode both, average them"

@@ -11,13 +11,16 @@
 
 #include <stddef.h>
 
-#if defined(__amigaos__) || defined(__AMIGA__)
+#if (defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)) || \
+    defined(__amigaos__) || defined(__AMIGA__)
 
 #include <exec/memory.h>
 #include <proto/exec.h>
 
 static inline void *mr_alloc(size_t n)  { return AllocVec(n, MEMF_ANY); }
 static inline void *mr_allocz(size_t n) { return AllocVec(n, MEMF_ANY | MEMF_CLEAR); }
+/* Large, explicitly optional media caches should not consume Chip RAM. */
+static inline void *mr_alloc_fast(size_t n) { return AllocVec(n, MEMF_FAST); }
 static inline void  mr_free(void *p)    { if (p) FreeVec(p); }
 
 #else
@@ -26,6 +29,7 @@ static inline void  mr_free(void *p)    { if (p) FreeVec(p); }
 
 static inline void *mr_alloc(size_t n)  { return malloc(n); }
 static inline void *mr_allocz(size_t n) { return calloc(1, n); }
+static inline void *mr_alloc_fast(size_t n) { return malloc(n); }
 static inline void  mr_free(void *p)    { free(p); }
 
 #endif
