@@ -276,20 +276,47 @@ static void play_selected(ytgt *app)
 /* Last-results cache - see the matching comment in youtube_reaction.c.
  * Same fixed-layout, no-pointers struct array, one fwrite()/fread() of the
  * whole thing; any failure (no cache yet, can't create the directory, a
- * stale/truncated file) is silently just "no cached results to show". */
-#define YT_CACHE_DIR  "PROGDIR:Cache/YouTube"
-#define YT_CACHE_FILE "PROGDIR:Cache/YouTube/last_search.dat"
+ * stale/truncated file) is silently just "no cached results to show".
+ *
+ * Directory resolution mirrors iptv_gadtools.c's choose_cache()/try_cache()
+ * exactly: PROGDIR: is not reliably writable for a process launched via
+ * mrgui_gadtools.c's CreateNewProcTags spawn, and CreateDir() succeeding
+ * proves nothing - only an actual write test does. Without this fallback a
+ * search silently never gets cached, reproducing as "search, close,
+ * reopen, no list shown". Resolved once per process and cached. */
+static char yt_cache_dir[128];
+
+static int yt_try_cache_dir(const char *directory)
+{
+    char probe[192];
+    FILE *file;
+    strncpy(yt_cache_dir,directory,sizeof(yt_cache_dir)-1);
+    yt_cache_dir[sizeof(yt_cache_dir)-1]=0;
+    snprintf(probe,sizeof(probe),"%s.write-test",yt_cache_dir);
+    file=fopen(probe,"wb");
+    if (!file) return 0;
+    fclose(file); remove(probe); return 1;
+}
+
+static int yt_choose_cache_dir(void)
+{
+    BPTR lock;
+    if (yt_cache_dir[0]) return 1;
+    lock=CreateDir((CONST_STRPTR)"PROGDIR:Cache"); if(lock)UnLock(lock);
+    lock=CreateDir((CONST_STRPTR)"PROGDIR:Cache/YouTube"); if(lock)UnLock(lock);
+    if (yt_try_cache_dir("PROGDIR:Cache/YouTube/")) return 1;
+    lock=CreateDir((CONST_STRPTR)"T:MintVID-YouTube"); if(lock)UnLock(lock);
+    return yt_try_cache_dir("T:MintVID-YouTube/");
+}
 
 static void save_search_cache(const mr_youtube_search_results *results)
 {
-    BPTR lock;
+    char path[192];
     FILE *f;
     if (!results->count) return;
-    lock = CreateDir((CONST_STRPTR)"PROGDIR:Cache");
-    if (lock) UnLock(lock);
-    lock = CreateDir((CONST_STRPTR)YT_CACHE_DIR);
-    if (lock) UnLock(lock);
-    f = fopen(YT_CACHE_FILE, "wb");
+    if (!yt_choose_cache_dir()) return;
+    snprintf(path,sizeof(path),"%slast_search.dat",yt_cache_dir);
+    f = fopen(path, "wb");
     if (!f) return;
     fwrite(results->items, sizeof(mr_youtube_search_result), results->count, f);
     fclose(f);
@@ -306,8 +333,11 @@ static int load_search_cache(ytgt *app)
     size_t count, shown;
     mr_youtube_search_result *items;
     char line[80];
+    char path[192];
 
-    f = fopen(YT_CACHE_FILE, "rb");
+    if (!yt_choose_cache_dir()) return 0;
+    snprintf(path,sizeof(path),"%slast_search.dat",yt_cache_dir);
+    f = fopen(path, "rb");
     if (!f) return 0;
     if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) <= 0 ||
         fseek(f, 0, SEEK_SET) != 0 ||
