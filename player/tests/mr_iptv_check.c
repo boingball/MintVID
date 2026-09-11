@@ -293,6 +293,7 @@ int main(void) {
     mr_play_options_default(&options);
     assert(options.c2p == MR_C2P_KALMS);
     assert(options.h264_performance == MR_H264_PERF_TURBO_GT);
+    assert(options.fast_buffer == MR_FAST_BUFFER_AUTO);
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
     assert(strstr(args, "--aga --kalms-c2p --hls-low --hls-max-width=640"));
@@ -334,12 +335,13 @@ int main(void) {
                    "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
-    assert(!strcmp(args, "--h264-speed=turbogt "
+    assert(!strcmp(args, "--fast-buffer=auto --h264-speed=turbogt "
                          "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     options.h264_performance = MR_H264_PERF_AUTO;
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
-    assert(!strcmp(args, "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
+    assert(!strcmp(args, "--fast-buffer=auto "
+                         "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     mr_play_options_default(&options);
     strcpy(launch.user_agent, "Mozilla/5.0 Test Agent");
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
@@ -362,27 +364,32 @@ int main(void) {
     assert(strstr(args, "--display aga --c2p kalms --no-laced "
                         "--no-scale-2x --hls-low"));
     assert(strstr(args, "--h264-speed=turbogt"));
+    assert(strstr(args, "--fast-buffer=auto"));
     {
       char *inherited[] = {"iptvgui", "--display", "aga", "--c2p",
                            "kalms", "--laced", "--scale-2x", "--hls-low",
-                           "--hls-max-width=640", "--h264-speed=fast"};
-      char summary[160], first[4096], second[4096], error[128];
+                           "--hls-max-width=640", "--h264-speed=fast",
+                           "--fast-buffer=16"};
+      char summary[256], first[4096], second[4096], error[128];
       mr_play_options parsed;
       mr_play_options_default(&parsed);
-      assert(mr_play_options_parse(&parsed, 10, inherited, error,
+      assert(mr_play_options_parse(&parsed, 11, inherited, error,
                                    sizeof(error)));
       assert(parsed.display == MR_DISPLAY_AGA &&
              parsed.c2p == MR_C2P_KALMS && parsed.laced && parsed.scale_2x &&
-             parsed.h264_performance == MR_H264_PERF_FAST);
+             parsed.h264_performance == MR_H264_PERF_FAST &&
+             parsed.fast_buffer == MR_FAST_BUFFER_16MB);
       assert(mr_build_player_arguments(first, sizeof(first), &parsed,
                                        launch.url, NULL, NULL));
       assert(mr_build_player_arguments(second, sizeof(second), &parsed,
                                        launch.url, NULL, NULL));
       assert(!strcmp(first, second));
       assert(strstr(first, "--h264-speed=fast"));
+      assert(strstr(first, "--fast-buffer=16"));
       mr_play_options_summary(&parsed, summary, sizeof(summary));
       assert(strstr(summary, "Native planar / kalms / Lace on / 2x on"));
       assert(strstr(summary, "H264 Fast"));
+      assert(strstr(summary, "Fast buffer 16 MB"));
 
       parsed.h264_performance = MR_H264_PERF_TURBO;
       assert(mr_build_player_arguments(first, sizeof(first), &parsed,

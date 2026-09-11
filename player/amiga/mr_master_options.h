@@ -111,6 +111,7 @@ static inline int mr_master_options_apply(mr_play_options *options)
     options->scale_2x = master.scale_2x;
     options->h264_performance = master.h264_performance;
     options->audio_rate = master.audio_rate;
+    options->fast_buffer = master.fast_buffer;
     options->no_audio = master.no_audio;
     options->mono_audio = master.mono_audio;
     return 1;

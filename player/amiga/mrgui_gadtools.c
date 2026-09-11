@@ -49,7 +49,7 @@ extern struct Library *GadToolsBase;
 
 enum {
     G_FILE = 1, G_BROWSE, G_MODE, G_C2P, G_H264, G_LACE, G_2X,
-    G_AUDIO_RATE, G_NO_AUDIO, G_MONO_AUDIO,
+    G_AUDIO_RATE, G_FAST_BUFFER, G_NO_AUDIO, G_MONO_AUDIO,
     G_PLAY, G_PAUSE, G_STOP, G_FAST, G_IPTV, G_YOUTUBE, G_INFO
 };
 
@@ -59,7 +59,7 @@ typedef struct gt_app {
     APTR visual;
     struct Gadget *gadgets;
     struct Gadget *file, *mode, *c2p, *h264, *lace, *twox, *info;
-    struct Gadget *audio_rate, *no_audio, *mono_audio;
+    struct Gadget *audio_rate, *fast_buffer, *no_audio, *mono_audio;
     struct FileRequester *requester;
     mr_master_options_port *master;
     mr_gui_menu menu;
@@ -82,6 +82,11 @@ static STRPTR h264_labels[] = {(STRPTR)"H.264: Auto", (STRPTR)"H.264: Quality",
                               (STRPTR)"H.264: TurboGT", NULL};
 static STRPTR audio_rate_labels[] = {(STRPTR)"Audio: Normal",
                                     (STRPTR)"Audio: Low", NULL};
+static STRPTR fast_buffer_labels[] = {(STRPTR)"Fast buffer: Auto",
+                                     (STRPTR)"Fast buffer: Off",
+                                     (STRPTR)"Fast buffer: 4 MB",
+                                     (STRPTR)"Fast buffer: 8 MB",
+                                     (STRPTR)"Fast buffer: 16 MB", NULL};
 static const struct TextAttr topaz = {(STRPTR)"topaz.font", 8, 0, 0};
 
 static int aga(void)
@@ -207,6 +212,7 @@ static void read_options(gt_app *app, mr_play_options *options)
     ULONG c2p = gad_value(app, app->c2p, GTCY_Active);
     ULONG h264 = gad_value(app, app->h264, GTCY_Active);
     ULONG audio_rate = gad_value(app, app->audio_rate, GTCY_Active);
+    ULONG fast_buffer = gad_value(app, app->fast_buffer, GTCY_Active);
     mr_play_options_default(options);
     options->display = mode < app->mode_count ? app->modes[mode]
                                                : MR_DISPLAY_AGA;
@@ -219,6 +225,9 @@ static void read_options(gt_app *app, mr_play_options *options)
     options->scale_2x = gad_value(app, app->twox, GTCB_Checked) != 0;
     options->audio_rate = audio_rate == 1
                         ? MR_AUDIO_RATE_LOW : MR_AUDIO_RATE_NORMAL;
+    options->fast_buffer = fast_buffer <= MR_FAST_BUFFER_16MB
+                         ? (mr_fast_buffer_mode)fast_buffer
+                         : MR_FAST_BUFFER_AUTO;
     options->no_audio = gad_value(app, app->no_audio, GTCB_Checked) != 0;
     options->mono_audio = gad_value(app, app->mono_audio, GTCB_Checked) != 0;
 }
@@ -504,6 +513,8 @@ static int build_window(gt_app *app)
         100, 14, "No audio", GTCB_Checked, FALSE);
     app->mono_audio = g = add_gadget(app, g, CHECKBOX_KIND, G_MONO_AUDIO, 269,
         69, 110, 14, "Mono audio", GTCB_Checked, FALSE);
+    app->fast_buffer = g = add_gadget(app, g, CYCLE_KIND, G_FAST_BUFFER,
+        385, 68, 190, 16, "", GTCY_Labels, (ULONG)fast_buffer_labels);
     g = add_gadget(app, g, BUTTON_KIND, G_PLAY, 8, 92, 75, 18, "Play",
                    TAG_IGNORE, 0);
     g = add_gadget(app, g, BUTTON_KIND, G_PAUSE, 87, 92, 75, 18, "Pause",
@@ -636,7 +647,8 @@ int main(void)
                     publish_options(&app);
                     break;
                 case G_H264: case G_LACE: case G_2X:
-                case G_AUDIO_RATE: case G_NO_AUDIO: case G_MONO_AUDIO:
+                case G_AUDIO_RATE: case G_FAST_BUFFER:
+                case G_NO_AUDIO: case G_MONO_AUDIO:
                     publish_options(&app); break;
                 default: break;
                 }

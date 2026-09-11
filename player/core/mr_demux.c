@@ -51,6 +51,11 @@ struct mr_demux {
     mr_source *owned_source;
 };
 
+size_t mr_demux_source_buffer_capacity(const mr_demux *d)
+{
+    return d ? mr_source_buffer_capacity(d->owned_source) : 0;
+}
+
 /* AVI  = 'RIFF' .... 'AVI '   ;  MOV = an early 'ftyp'/'moov'/'mdat' atom;
  * TS has 0x47 sync bytes every 188 bytes (or at +4 in 192-byte M2TS packets);
  * PS starts with an MPEG pack header (00 00 01 BA);

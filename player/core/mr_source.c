@@ -27,12 +27,15 @@ struct mr_source {
     void  (*close)(void *);
     char    final_name[MR_SOURCE_NAME_MAX];
     int     network;
+    size_t  buffer_capacity;
 };
 
 typedef struct {
     FILE   *file;
     size_t  pos;
     int     pos_valid;
+    unsigned char *buffer;
+    size_t  buffer_size;
 } file_source;
 
 static char g_source_error[MR_SOURCE_ERROR_MAX];
@@ -144,31 +147,60 @@ static void file_close(void *opaque)
     file_source *f = (file_source *)opaque;
     if (!f) return;
     if (f->file) fclose(f->file);
+    mr_free(f->buffer);
     free(f);
 }
 
-static mr_source *open_local_file(const char *path)
+static mr_source *open_local_file(const char *path, size_t requested_buffer)
 {
-    file_source *ctx;
+    file_source *ctx = NULL;
     mr_source *source;
+    size_t actual_buffer;
     long end;
     FILE *file = fopen(path, "rb");
     if (!file) {
         mr_source_set_error("cannot open local file");
         return NULL;
     }
-    /* Must be requested before the first operation on this stream. With a NULL
-     * buffer, libnix allocates and owns the requested storage and releases it
-     * from fclose(). If allocation/setup fails, the original FILE buffer stays
-     * valid, so falling back silently preserves the established behaviour. */
-    (void)setvbuf(file, NULL, _IOFBF, MR_LOCAL_FILE_BUFFER_SIZE);
+    /* setvbuf() must run before the first operation on the stream. An explicit
+     * GUI/CLI cache lives in Fast RAM and remains owned by file_source until
+     * after fclose(); Off keeps the established small libc-owned buffer. */
+    if (requested_buffer) {
+        size_t attempt = requested_buffer;
+        while (attempt >= 4u * 1024u * 1024u) {
+            unsigned char *buffer = (unsigned char *)mr_alloc_fast(attempt);
+            if (buffer) {
+                if (setvbuf(file, (char *)buffer, _IOFBF, attempt) == 0) {
+                    ctx = (file_source *)calloc(1, sizeof *ctx);
+                    if (!ctx) {
+                        fclose(file);
+                        mr_free(buffer);
+                        mr_source_set_error("not enough memory for local file");
+                        return NULL;
+                    }
+                    ctx->buffer = buffer;
+                    ctx->buffer_size = attempt;
+                    break;
+                }
+                mr_free(buffer);
+            }
+            attempt /= 2;
+        }
+    }
+    if (!ctx)
+        (void)setvbuf(file, NULL, _IOFBF, MR_LOCAL_FILE_BUFFER_SIZE);
     if (fseek(file, 0, SEEK_END) != 0 || (end = ftell(file)) <= 0 ||
         fseek(file, 0, SEEK_SET) != 0) {
-        fclose(file);
+        if (ctx) {
+            ctx->file = file;
+            file_close(ctx);
+        } else {
+            fclose(file);
+        }
         mr_source_set_error("cannot determine local file size");
         return NULL;
     }
-    ctx = (file_source *)calloc(1, sizeof *ctx);
+    if (!ctx) ctx = (file_source *)calloc(1, sizeof *ctx);
     if (!ctx) {
         fclose(file);
         mr_source_set_error("not enough memory for local file");
@@ -177,7 +209,9 @@ static mr_source *open_local_file(const char *path)
     ctx->file = file;
     ctx->pos = 0;
     ctx->pos_valid = 1;
+    actual_buffer = ctx->buffer_size;
     source = mr_source_create(ctx, (size_t)end, file_read_at, file_close, path);
+    mr_source_set_buffer_capacity(source, actual_buffer);
     return source;
 }
 
@@ -206,7 +240,7 @@ mr_source *mr_source_open_ex(const char *path,
     }
     if (mr_source_is_url(path))
         return mr_http_source_open_ex(path, options);
-    return open_local_file(path);
+    return open_local_file(path, options ? options->source_buffer_bytes : 0);
 }
 
 mr_source *mr_source_open(const char *path)
@@ -254,4 +288,14 @@ void mr_source_close(mr_source *s)
     if (!s) return;
     s->close(s->ctx);
     mr_free(s);
+}
+
+size_t mr_source_buffer_capacity(const mr_source *s)
+{
+    return s ? s->buffer_capacity : 0;
+}
+
+void mr_source_set_buffer_capacity(mr_source *s, size_t bytes)
+{
+    if (s) s->buffer_capacity = bytes;
 }

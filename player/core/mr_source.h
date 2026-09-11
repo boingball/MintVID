@@ -33,6 +33,7 @@ size_t     mr_source_length(const mr_source *s);
 int        mr_source_is_streaming(const mr_source *s);
 const char *mr_source_final_name(const mr_source *s);
 void       mr_source_close(mr_source *s);
+size_t     mr_source_buffer_capacity(const mr_source *s);
 
 /* Process-local cumulative blocking-I/O counters.  They are intentionally
  * queried by the player only at rolling-report boundaries, never per frame. */
@@ -64,5 +65,6 @@ mr_source *mr_source_create(void *ctx, size_t len,
                             void (*close)(void *),
                             const char *final_name);
 void       mr_source_set_error(const char *message);
+void       mr_source_set_buffer_capacity(mr_source *s, size_t bytes);
 
 #endif /* MR_SOURCE_H */
