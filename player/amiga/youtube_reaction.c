@@ -49,7 +49,15 @@ MINTVID_DECLARE_VERSION(ytgui_version_tag, "ytgui");
 #define YT_CLASS_VERSION 44
 #define YT_SEARCH_PAGE_MAX (6UL * 1024UL * 1024UL)
 #define MRPLAY_STACK_SIZE 320000UL
-#define MRPLAY_LOG_FILE "RAM:MintVID.log"
+/* Persistent storage, not RAM: - a hard lockup (the kind --time logging is
+ * often turned on specifically to catch) needs a hardware reset to clear,
+ * which also wipes RAM: and takes the very log meant to explain the lockup
+ * with it. UHD0: survives a reset; mrplay's own stdout is already fully
+ * unbuffered (mrplay.c: setvbuf(stdout, NULL, _IONBF, 0)), and mrplay.c
+ * periodically Flush()es this filehandle too, so as much of the log as
+ * possible is durably on disk right up to the moment of a hang, not just
+ * whatever happened to be in a buffer when things stopped. */
+#define MRPLAY_LOG_FILE "UHD0:MintVID.log"
 
 struct IntuitionBase *IntuitionBase;
 struct Library *UtilityBase, *WindowBase, *LayoutBase, *ButtonBase;
@@ -815,7 +823,7 @@ int main(int argc, char **argv)
                                TAG_DONE);
                 set_status(status, window,
                            debug_log
-                           ? "Timing log ON: next Play writes RAM:MintVID.log"
+                           ? "Timing log ON: next Play writes " MRPLAY_LOG_FILE
                            : "Timing log off.");
             } else if (gadget == G_PAUSE) {
                 set_status(status, window,
