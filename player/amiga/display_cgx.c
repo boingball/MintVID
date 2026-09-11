@@ -766,7 +766,16 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
         }
 
         if (timing) s->timing.prepare_us = elapsed_us(total);
-        if (service) service(service_opaque);
+        /* Time every service() call in this path too, accumulated into one
+         * field - see mr_display_timing::service_us's own comment (and the
+         * native path below, which hits the same gap in a simpler shape).
+         * Without this, none of these calls' cost showed up in scale_us or
+         * blit_us, yet all of it was still included in total_us. */
+        if (timing) {
+            clock_t svc_mark = clock();
+            if (service) service(service_opaque);
+            s->timing.service_us = elapsed_us(svc_mark);
+        } else if (service) service(service_opaque);
 
         /* Time the CPU-side resample and the WritePixelArray blit separately
          * (previously one clock() span covered both strip loop iterations,
@@ -799,7 +808,11 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
                                 (UWORD)s->dw, (UWORD)rows, RECTFMT_RGB);
             if (timing) s->timing.blit_us += elapsed_us(step);
 
-            if (service) service(service_opaque);
+            if (timing) {
+                clock_t svc_step = clock();
+                if (service) service(service_opaque);
+                s->timing.service_us += elapsed_us(svc_step);
+            } else if (service) service(service_opaque);
         }
         if (timing) {
             report_slow("software-scale", s->timing.scale_us,
@@ -816,14 +829,33 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
                 (unsigned long)((s->dh + MR_CGX_STRIP_ROWS - 1) /
                                 MR_CGX_STRIP_ROWS);
         }
-        if (service) service(service_opaque);
+        if (timing) {
+            clock_t svc_mark = clock();
+            if (service) service(service_opaque);
+            s->timing.service_us += elapsed_us(svc_mark);
+            report_slow("service-callback", s->timing.service_us,
+                        service, service_opaque);
+        } else if (service) service(service_opaque);
         if (timing) s->timing.total_us = elapsed_us(total);
         return;
     }
 
     if (timing) s->timing.prepare_us = elapsed_us(total);
-    if (service) service(service_opaque);
-    if (timing) mark = clock();
+    /* Time the service callback itself, separately from the blit calls below
+     * - see mr_display_timing::service_us's own comment. Without this, its
+     * cost (Paula refill, and a due-frame presentation when the main loop
+     * has released the queue) fell into neither prepare_us nor blit_us, yet
+     * was still included in total_us - so a slow service call (observed:
+     * Paula needing an unusually large catch-up refill right after an
+     * audio-rescue episode) made total_us balloon with no matching increase
+     * in any of the reported sub-phases, the exact symptom that motivated
+     * this field. */
+    if (timing) {
+        clock_t svc_mark = clock();
+        if (service) service(service_opaque);
+        s->timing.service_us = elapsed_us(svc_mark);
+    } else if (service) service(service_opaque);
+    if (timing) s->timing.blit_us = 0;
     /* Keep the dirty-row fast path, but split tall native pictures into small
      * writes. Several real P96/CGX drivers visibly retain old horizontal
      * bands when handed one multi-megabyte 1080p RGB24 WritePixelArray. The
@@ -835,6 +867,8 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
         for (y = dy0; y < dy1; y += MR_CGX_STRIP_ROWS) {
             int rows = dy1 - y < MR_CGX_STRIP_ROWS ? dy1 - y
                                                     : MR_CGX_STRIP_ROWS;
+            clock_t step;
+            if (timing) step = clock();
             if (s->fmt != CGX_FMT_NONE)
                 write_cgx_pixel_strip(s->win->RPort->BitMap,
                                       s->bl + s->dx, s->bt + s->dy + y,
@@ -846,11 +880,17 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
                                 (UWORD)(s->bl + s->dx),
                                 (UWORD)(s->bt + s->dy + y), (UWORD)w,
                                 (UWORD)rows, RECTFMT_RGB);
-            if (timing) s->timing.copies++;
-            if (service) service(service_opaque);
+            if (timing) { s->timing.blit_us += elapsed_us(step); s->timing.copies++; }
+            if (timing) {
+                clock_t svc_step = clock();
+                if (service) service(service_opaque);
+                s->timing.service_us += elapsed_us(svc_step);
+            } else if (service) service(service_opaque);
         }
     }
-    if (timing) s->timing.blit_us = elapsed_us(mark);
+    if (timing)
+        report_slow("service-callback", s->timing.service_us,
+                    service, service_opaque);
     if (timing) {
         s->timing.pixels = (unsigned long)w * (unsigned long)(dy1 - dy0);
         s->timing.bytes = (unsigned long)stride * (unsigned long)(dy1 - dy0);

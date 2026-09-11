@@ -20,6 +20,15 @@ typedef struct mr_display_timing {
     unsigned long prepare_us, scale_us, convert_us, copy_us, blit_us;
     unsigned long clip_us, total_us, pixels, bytes;
     unsigned long geometry_us, resize_us, allocation_us, setup_us;
+    /* Cost of the caller's service callback (Paula refill / due-frame
+     * presentation) invoked from inside the backend's show() call, between
+     * its own sub-phase measurements - see display_cgx.c's cgx_show() for
+     * why this needs its own field: without it, that cost fell into none of
+     * prepare_us/blit_us/etc, yet was still included in total_us, making
+     * total_us appear to have an unaccounted gap whenever the service
+     * callback itself ran slow (e.g. Paula catch-up refill after an
+     * audio-rescue episode). */
+    unsigned long service_us;
     unsigned int src_w, src_h, dst_w, dst_h, copies;
     const char *src_format, *dst_format;
 } mr_display_timing;

@@ -509,6 +509,13 @@ typedef struct playback_stats {
     unsigned decoded, presented, late, dropped, samples;
     uint64_t rtg_prepare_us, rtg_scale_us, rtg_convert_us, rtg_copy_us;
     uint64_t rtg_blit_us, rtg_clip_us, rtg_total_us;
+    /* mr_display_timing::service_us's own accumulator - see its declaration
+     * for why this exists: the cost of the service callback the backend
+     * runs internally (Paula refill / due-frame presentation) was
+     * previously invisible in every other rtg_* field despite being fully
+     * present in rtg_total_us, making a slow service call look like an
+     * unexplained gap in the breakdown instead of a named cost. */
+    uint64_t rtg_service_us;
     unsigned long rtg_prepare_max_us, rtg_blit_max_us;
     uint64_t h264_input_us, h264_core_us, h264_output_us;
     unsigned long h264_input_max_us, h264_core_max_us, h264_output_max_us;
@@ -1197,7 +1204,7 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
         printf("rtg src=%ux%u dst=%ux%u srcfmt=%s dstfmt=%s "
                "prepare=%lu us scale=%lu us convert=%lu us copy=%lu us "
                "prepare-max=%lu us cgx-blit=%lu us cgx-blit-max=%lu us "
-               "clip=%lu us display-total=%lu us "
+               "clip=%lu us service=%lu us display-total=%lu us "
                "audio-before=%lu ms audio-after=%lu ms "
                "pixels=%lu bytes=%lu copies=%u displayed=%u "
                "dropped-before-scale=%u dropped-after-scale=%u "
@@ -1214,6 +1221,7 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
                (unsigned long)(st->rtg_blit_us / n),
                st->rtg_blit_max_us,
                (unsigned long)(st->rtg_clip_us / n),
+               (unsigned long)(st->rtg_service_us / n),
                (unsigned long)(st->rtg_total_us / n),
                st->audio_before, st->audio_after,
                st->last_rtg.pixels, st->last_rtg.bytes,
@@ -2867,6 +2875,7 @@ int main(int argc, char **argv)
                         stats.rtg_blit_us += rt.blit_us;
                         stats.rtg_clip_us += rt.clip_us;
                         stats.rtg_total_us += rt.total_us;
+                        stats.rtg_service_us += rt.service_us;
                         if (rt.prepare_us > stats.rtg_prepare_max_us)
                             stats.rtg_prepare_max_us = rt.prepare_us;
                         if (rt.blit_us > stats.rtg_blit_max_us)
