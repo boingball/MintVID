@@ -802,7 +802,6 @@ int main(void)
     Object *h264;
     Object *lace;
     Object *scale;
-    Object *scale_label;
     Object *audio_rate;
     Object *fast_buffer;
     Object *no_audio;
