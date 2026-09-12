@@ -185,6 +185,14 @@ geometries keep the established route.
   Pause         toggles playback
   Stop          exits the player
   Fast forward  toggles unpaced decode
+  Volume -/+     adjusts Paula volume in 8/64 steps
+  Playlist       opens the playlist window
+
+The playlist window supports Add, Remove, Clear and Play, plus Load M3U and
+Save M3U. Entries are shown by filename and can be selected independently of
+the main file gadget; playback uses the same display, audio and video options
+as the controller.
+
 
 @{b}H.264 performance modes@{ub}
 

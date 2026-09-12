@@ -23,6 +23,12 @@
 
 ### Added
 
+- The 1.3.0 controller pass now has a compact transport strip in both GUI
+  editions, volume down/up controls, and a MintAMP-style playlist window.
+  Playlists hold up to 128 video paths and support multi-select Add, Remove,
+  Clear, Play, and M3U load/save. The playlist uses the same playback options
+  as the main controller and does not duplicate the decoder/player process.
+
 - Every GUI's title-bar **MintVID** menu gained a **Guide...** item, opening
   `MintVID.guide` by launching the standard `AmigaGuide` command as a
   subprocess (the same launch mechanism already used for mrplay/iptvgui/
