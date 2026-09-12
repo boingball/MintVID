@@ -296,8 +296,19 @@ static int chipset_has_ecs_denise(void)
  * provides the raw struct CopIns/CopList/UCopList primitives, which this
  * function now populates directly: one struct CopIns per WAIT or MOVE,
  * built into a caller-allocated array, wrapped in one CopList/UCopList
- * pair and handed to MrgCop() - the same primitives those macros would
- * have expanded to. A MOVE's DESTADDR is the target register's *offset*
+ * pair and attached via UCopIns - the same primitives those macros would
+ * have expanded to. MrgCop() itself is graphics.library-level (it takes a
+ * whole struct View*, merging every screen's ViewPort at once) and is not
+ * called directly here - MakeScreen()+RethinkDisplay() below are the
+ * Intuition-level pair documented for exactly this "I changed a screen's
+ * ViewPort" case, and call MrgCop() internally on this app's behalf. An
+ * earlier version of this function passed &s->scr->ViewPort to MrgCop()
+ * directly, which is a struct ViewPort*, not the struct View* MrgCop()
+ * actually takes - GCC caught it as an incompatible-pointer-type warning,
+ * not an error, so it slipped through the compile-only verification the
+ * previous two commits relied on.
+ *
+ * A MOVE's DESTADDR is the target register's *offset*
  * from the custom chip base (0xDFF000), not its address, which conveniently
  * means this needs no `extern struct Custom custom;` instance at all - only
  * struct Custom's layout, to compute each bplpt[p] word's offset via
@@ -372,7 +383,6 @@ static int build_copper_vdouble(aga_state *s, int h, int depth)
     ucl->CopList      = cl;
 
     s->scr->ViewPort.UCopIns = ucl;
-    MrgCop(&s->scr->ViewPort);
     MakeScreen(s->scr);
     RethinkDisplay();
     s->ucop = ucl;
@@ -1222,8 +1232,10 @@ static void aga_close(void *handle)
          * against a list still pointing at this screen's ViewPort is
          * exactly the kind of ordering this dev host cannot exercise (see
          * the file header comment). FreeVPortCopLists() is the documented
-         * pair to MrgCop()+a UCopIns assignment - it is expected to free the
-         * CopList/CopIns array build_copper_vdouble() allocated as well as
+         * pair to a UCopIns assignment (it does take struct ViewPort*,
+         * unlike MrgCop() - see build_copper_vdouble()'s comment for that
+         * mixup) - it is expected to free the CopList/CopIns array
+         * build_copper_vdouble() allocated as well as
          * the UCopList itself, so none of those three blocks are separately
          * FreeMem'd here (to avoid a double free) - unconfirmed on real
          * hardware like everything else in this feature, see the file
