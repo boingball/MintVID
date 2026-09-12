@@ -101,7 +101,7 @@ enum {
  * hard-coded row number. This map is populated alongside the labels. */
 static mr_display_mode mode_values[7];
 static unsigned mode_count;
-static mr_c2p_mode c2p_values[4];
+static mr_c2p_mode c2p_values[5];
 static unsigned c2p_count;
 static int add_chooser_node(struct List *list, const char *text);
 
@@ -903,7 +903,15 @@ int main(void)
     if (!add_c2p_node(&c2p_modes, "Standard", MR_C2P_STANDARD) ||
         (mr_akiko_available() &&
          !add_c2p_node(&c2p_modes, "CD32", MR_C2P_AKIKO)) ||
-        !add_c2p_node(&c2p_modes, "Kalms", MR_C2P_KALMS)
+        !add_c2p_node(&c2p_modes, "Kalms", MR_C2P_KALMS) ||
+        /* The only other --2x-and-scale_2x-independent backend besides
+         * Kalms - i.e. the one non-CD32 choice that actually qualifies for
+         * Copper 2x (display_aga.c's copper_vdouble excludes Kalms/WPA/
+         * Standard entirely, since only this portable mr_c2p8 kernel,
+         * --riva-c2p and Akiko take an arbitrary output stride). Was never
+         * exposed here before, silently leaving Copper 2x with no reachable
+         * qualifying c2p choice on a non-CD32 machine. */
+        !add_c2p_node(&c2p_modes, "Portable", MR_C2P_WPA)
 #ifdef MR_KALMS_040
         || !add_c2p_node(&c2p_modes, "Direct", MR_C2P_DIRECT)
 #endif

@@ -71,8 +71,8 @@ typedef struct gt_app {
     mr_display_mode modes[7];
     STRPTR mode_labels[8];
     unsigned mode_count;
-    mr_c2p_mode c2p_modes[4];
-    STRPTR c2p_labels[5];
+    mr_c2p_mode c2p_modes[5];
+    STRPTR c2p_labels[6];
     unsigned c2p_count;
     char path[512];
     struct MsgPort *timer_port;
@@ -550,6 +550,12 @@ static int build_window(gt_app *app)
     if (mr_akiko_available())
         add_c2p_mode(app, (STRPTR)"C2P: CD32", MR_C2P_AKIKO);
     add_c2p_mode(app, (STRPTR)"C2P: Kalms", MR_C2P_KALMS);
+    /* The only other --2x-and-scale_2x-independent backend besides Kalms -
+     * i.e. the one non-CD32 choice that actually qualifies for Copper 2x
+     * (display_aga.c's copper_vdouble excludes Kalms/WPA/Standard
+     * entirely). Was never exposed here before, silently leaving Copper 2x
+     * with no reachable qualifying c2p choice on a non-CD32 machine. */
+    add_c2p_mode(app, (STRPTR)"C2P: Portable", MR_C2P_WPA);
 #ifdef MR_KALMS_040
     add_c2p_mode(app, (STRPTR)"C2P: Direct", MR_C2P_DIRECT);
 #endif
