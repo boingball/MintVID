@@ -6,7 +6,7 @@
 @smartwrap
 
 @node MAIN "MintVID Guide"
-@{b}MintVID 1.2.0@{ub} - a codec-agnostic video player for accelerated 68k AmigaOS
+@{b}MintVID 1.3.0@{ub} - a codec-agnostic video player for accelerated 68k AmigaOS
 hardware, from 68030-class ECS/AGA systems up to PiStorm/RTG machines.
 
 This is the on-Amiga companion to the plain-text MintVID.readme. Pick a
