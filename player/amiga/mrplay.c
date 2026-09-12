@@ -1650,6 +1650,11 @@ int main(int argc, char **argv)
     int rescue_priority = 0;
     mr_micro_rescue_state micro_rescue;
     mr_micro_rescue_init(&micro_rescue);
+    /* Tracks whether mr_h264_set_dynamic_skip() currently has the decoder
+     * escalated to IVD_SKIP_PB (see its own declaration in mr_h264.h) -
+     * mirrors micro_rescue.active with a one-call lag, since the escalate/
+     * de-escalate call below only fires on the edge, not every packet. */
+    int h264_dynamic_skip_active = 0;
     unsigned rescue_cooldown = 0;
     unsigned rescue_episode_packets = 0, rescue_episode_audio = 0;
     unsigned rescue_episode_video = 0, rescue_episode_queued = 0;
@@ -3573,6 +3578,36 @@ int main(int argc, char **argv)
                         skip_reason_queue_full = queue_full;
                         skip_reason_pts_late = pts_late;
                         skip_reason_micro_rescue = mrescue;
+                        /* Escalate to a real libavc-side skip (see
+                         * mr_h264_set_dynamic_skip()'s own declaration in
+                         * mr_h264.h) only once micro_rescue's hysteresis
+                         * says the player is genuinely, persistently behind
+                         * - not on every individual late/full-queue frame
+                         * the two simpler checks above already catch, which
+                         * would thrash the decoder's frame-skip control on
+                         * ordinary jitter. mrescue is already never true in
+                         * throughput_mode (see micro_rescue's own entry
+                         * block just above), so no separate
+                         * !throughput_mode guard is needed here. Edge-
+                         * triggered - only issue the SETPARAMS control call
+                         * (a real libavc round trip) on an actual
+                         * escalate/de-escalate transition, not every
+                         * packet. */
+                        if (mrescue != h264_dynamic_skip_active) {
+                            mr_h264_set_dynamic_skip(&dec, mrescue);
+                            h264_dynamic_skip_active = mrescue;
+                            /* No prior visibility existed into whether this
+                             * call actually fired - a real-hardware/WinUAE
+                             * report of "didn't seem to do anything" had
+                             * nothing in the log to confirm or rule out
+                             * escalation itself versus some other cost
+                             * dominating. Matches micro-rescue's own
+                             * entering/exiting print style and --time
+                             * gating just above. */
+                            if (want_time)
+                                printf("h264-dynamic-skip: %s (IVD_SKIP_PB)\n",
+                                       mrescue ? "engaging" : "releasing");
+                        }
                     }
                     mr_h264_set_skip_output(&dec, skip_stale_output);
                     mr_h264_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);

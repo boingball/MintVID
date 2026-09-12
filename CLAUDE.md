@@ -1736,6 +1736,82 @@ simply still starting, not one that had failed. Fixed by quadrupling
 nothing else in either file needed to change alongside it. Not yet
 retested on real hardware.
 
+**"Skip Frames" mode's own `mr_h264_set_skip_output()` skip turned out to
+save almost nothing when the decoder itself is the bottleneck - reading
+`core/mr_h264.c` confirmed it only skips the RGB conversion step
+(`emit_rgb()`), not the actual decode.** `decode_annexb()` - CABAC parsing,
+motion compensation, deblocking, reconstruction, the expensive part - runs
+in full for every access unit regardless of `skip_output`; that flag only
+decides whether the already-fully-decoded picture gets converted to RGB24
+afterward or its buffer just released. This is necessary, not an oversight:
+almost every H.264 picture is a reference for later pictures, so skipping
+its reconstruction would corrupt everything decoded after it until the next
+keyframe. Confirmed by a real report: WinUAE stress-testing YouTube Live at
+720p (a resolution the emulated CPU cannot decode in real time even before
+throughput mode existed) showed the same "1 frame then stutter" shape under
+Skip Frames mode as the original PR174 regression, because CPU cost is
+nearly unchanged whether or not the frame gets shown - only the RGB
+conversion, a fraction of total decode cost, was ever being saved.
+
+**Fixed with a real skip mechanism, not a display-only one: dynamic
+escalation to libavc's `IVD_SKIP_PB` frame-skip mode.** This project's own
+`mr_h264_set_speed_mode()` already uses libavc's real frame-skip control API
+for Turbo (`IVD_SKIP_B`) and Turbo+ (`IVD_SKIP_PB`, "every displayed picture
+is a keyframe" - see the H.264 CABAC notes section above), so the mechanism
+was already proven; what was missing was reaching it dynamically from Skip
+Frames mode's own lateness signal instead of only as a static, whole-session
+performance-mode choice. Checked directly in
+`vendor/libavc/decoder/ih264d_parse_slice.c`'s `u4_skip_pic` state machine
+before relying on it: under `IVD_SKIP_PB`, a P/B slice reads only
+`first_mb_in_slice`/`slice_type` from its header and returns immediately -
+no CABAC coefficient decode, no motion compensation, no deblocking, no
+reconstruction at all - until the next IDR resets it. That is a genuinely
+near-zero-cost skip, unlike `skip_output`'s "decode everything, discard the
+picture" shortcut.
+
+`mr_h264_set_dynamic_skip(dec, skip_pb)` (`core/mr_h264.c`/`.h`) is a new,
+narrower sibling of `mr_h264_set_speed_mode()`: it only reissues the
+`IVD_CMD_CTL_SETPARAMS` frame-skip control call (`set_decode_mode()`,
+already used at decoder open), never touching the degrade/MC-quality
+settings `mr_h264_set_speed_mode()` also controls. `h264_state` gained a
+`base_skip_mode` field, set whenever `mr_h264_set_speed_mode()` runs, so
+de-escalating restores whatever the *current* H.264 performance mode
+actually asked for (`IVD_SKIP_NONE` for Quality/Balanced/Fast, `IVD_SKIP_B`
+for Turbo/TurboGT, `IVD_SKIP_PB` for Turbo+ - where de-escalating is
+correctly a no-op) rather than always resetting to `IVD_SKIP_NONE`
+regardless of the user's own performance choice.
+
+Wired into `mrplay.c`'s existing lateness machinery rather than a new state
+machine: `micro_rescue.active` already represents "persistently behind,
+with entry/exit hysteresis" (`MICRO_RESCUE_ENTRY_US`/`_EXIT_US` - see the
+Live HLS notes above), distinct from the two simpler one-frame checks
+(`queue_full`, `pts_late`) that also feed `skip_stale_output` - reusing it
+means dynamic skip only escalates once the player is genuinely,
+persistently unable to keep up, not on every individual late or
+full-queue frame those two already catch (which would otherwise thrash the
+frame-skip control call on ordinary jitter). `micro_rescue.active` is
+already never true in `throughput_mode` (its own entry block is
+`!throughput_mode`-gated), so dynamic skip only ever engages under "Skip
+Frames" mode, never under "All Frames" - matching the request this
+implements ("could we not set IVD_SKIP_PB with our frame skip method in gui
+instead"). A new `h264_dynamic_skip_active` local mirrors the escalated
+state so the `IVD_CMD_CTL_SETPARAMS` call only fires on an actual
+escalate/de-escalate transition, not every packet.
+
+Net effect on a stream the decoder genuinely cannot keep up with (the
+WinUAE 720p case above): instead of paying full per-frame decode cost while
+merely not displaying the result, the player freezes on the last displayed
+keyframe - real CPU freed back to the scheduler, keeping audio fed - and
+jumps to the next one once it arrives, rather than one frame followed by
+silence-adjacent stutter. How long that freeze lasts depends entirely on
+the stream's own keyframe interval (GOP length), which this change has no
+control over. `make check`/`make check-m68k` both pass unchanged (`mr_h264.c`
+is host- and m68k-buildable core; `mrplay.c`'s own wiring is Amiga-only and
+can only be reviewed here, not compiled or run, per this file's standing
+limitation) - the real-hardware/WinUAE claim ("does audio stay smooth
+through a keyframe-only freeze instead of stuttering") still needs its own
+retest to confirm.
+
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4
@@ -1749,6 +1825,71 @@ retested on real hardware.
   m68k-linux-gnu and run under qemu-m68k (real big-endian execution; see
   above)
 - `./mr_decode <avi>` / `--ppm <dir>` / `--check <refdir>`
+
+**A real-hardware/WinUAE report ("didn't seem to do anything") on a 720p
+YouTube Live stream needed a host-side measurement to actually settle,
+not more source reading.** The shared log showed `micro-rescue: entering`
+firing repeatedly (so the escalation trigger condition was real) with
+`late=` climbing without bound across the whole session (757ms -> 9686ms)
+and `phase=h264-decode phase-duration=` staying at 60-97ms throughout, with
+no visible drop after entering micro-rescue - looking, from the log alone,
+like the escalation wasn't reducing decode cost at all.
+
+Rather than guess further from source, two ad-hoc host probes (not checked
+in - one-off verification against this repo's real, patched libavc, linked
+the same way `mr_decode` is via `make mr_decode TESTSRC=...`) settled
+whether `mr_h264_set_dynamic_skip()` genuinely does anything on this
+codebase's actual decoder build. The first probe (escalate cold, before any
+packet) decoded zero frames start-to-finish - initially alarming, until
+checked against `test_h264_high.mp4`'s own shape: 24 frames, effectively
+one GOP, no second IDR to "wake up" on - exactly the single-GOP case this
+mechanism is expected to freeze through, not a bug. The second probe
+escalated mid-stream instead (decode packets 1-4 normally, escalate, decode
+the rest under `MR_H264_SPEED_TURBO_GT` both before and after, matching the
+real log's own performance mode) and timed each `mr_decoder_decode()` call
+directly: **0.175 ms/packet before escalation, 0.021 ms/packet after -
+roughly 8x cheaper**, confirming the mechanism itself is real and correctly
+wired on this repo's own libavc, not just plausible from reading
+`ih264d_parse_slice.c` in isolation.
+
+That leaves two explanations for the real-hardware report, and there was no
+way to add a printf and re-derive it, this time - the reasonable working
+guesses are: (1) the shared log predates this fix landing (built from a
+branch/commit without it) - plausible and simple, or (2) on a genuinely
+720p/30fps stream, whatever is costing 60-97ms per iteration is dominated
+by something dynamic skip cannot touch - TS demux reads, PES/Annex-B NAL
+reassembly, or simply enough P/I-slice macroblocks even after B-skip that
+the picture is still expensive - rather than by macroblock reconstruction
+dynamic skip actually removes. `late=` never recovering even once across
+the whole session is also consistent with 720p simply exceeding this
+target's real-time budget regardless of skip strategy, the same
+"`--throughput` exists because slow-but-moving beats silent, not because
+it makes the stream decodable in real time" position this file already
+takes.
+
+Added a `--time`-gated `h264-dynamic-skip: engaging/releasing (IVD_SKIP_PB)`
+printf (`mrplay.c`, right where `mr_h264_set_dynamic_skip()` is called) -
+there was previously no way to tell from a log whether escalation actually
+fired at all, which is exactly the gap that made this report ambiguous to
+diagnose. A fresh real-hardware trace with this line present will show
+directly whether escalation is engaging on that build, closing off
+explanation (1) - and if it is engaging and decode cost still doesn't drop,
+that's real evidence for (2) worth its own `STAGE_PROFILE=1` capture rather
+than further guessing.
+
+**Confirmed on a real retest: "Skip Frames" mode is now working correctly.**
+The user's own follow-up after rebuilding with the diagnostic print above:
+"excellent that skip frames is perfect now!" - the first real confirmation
+(as opposed to the host-side per-packet timing measurement above, which
+only proved the mechanism *could* work, not that it *did* on the actual
+target) that dynamic `IVD_SKIP_PB` escalation fixes the "didn't seem to do
+anything" report. Consistent with explanation (1) above being the real
+one: the original log was from a build predating this fix, not evidence of
+a deeper 720p-specific bottleneck. The `h264-dynamic-skip: engaging/
+releasing` printf did its job as a diagnostic even though the follow-up
+report didn't come with a fresh log attached - the fix itself is what
+mattered, and it is now real-hardware-confirmed the same way `--throughput`
+mode was confirmed earlier in this file.
 
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with

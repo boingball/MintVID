@@ -87,5 +87,29 @@ void mr_h264_set_input_annexb(mr_decoder *dec, int is_annexb);
  * Returns non-zero when the decoder accepted both the degrade and frame-skip
  * controls. */
 int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode);
+/* Dynamically escalate to libavc's IVD_SKIP_PB frame-skip mode (skip_pb
+ * non-zero) - a near-zero-cost picture skip that reads only the slice
+ * header and returns, doing no CABAC/motion-compensation/deblock/
+ * reconstruction at all, until the next IDR - or de-escalate back
+ * (skip_pb zero) to whatever base skip mode mr_h264_set_speed_mode()'s
+ * current performance setting selected (IVD_SKIP_NONE for Quality/
+ * Balanced/Fast, IVD_SKIP_B for Turbo/TurboGT, IVD_SKIP_PB for Turbo+ -
+ * so de-escalating out of a Turbo+ session is a no-op, not a quality
+ * regression). Unlike mr_h264_set_speed_mode(), this touches only the
+ * frame-skip control, not degrade/MC-quality settings - intended to be
+ * called repeatedly through a session (only on actual state transitions,
+ * not every packet - the caller owns that edge detection) as a "Skip
+ * Frames" playback mode's own lateness signal comes and goes, not once at
+ * open. See mrplay.c's throughput_mode/skip_stale_output and
+ * CLAUDE.md's "Live HLS playback stall notes" for why: when Skip Frames
+ * mode's existing mr_h264_set_skip_output() skip is engaged only because
+ * the decoder itself cannot keep up in real time (not just a full queue
+ * or a momentary late packet), skipping the RGB conversion alone barely
+ * helps - the expensive part (CABAC/MC/deblock/recon) still runs for
+ * every frame regardless. Escalating to real IVD_SKIP_PB frees that CPU
+ * back to the scheduler (keeping audio fed) at the cost of freezing the
+ * picture until the next keyframe, rather than the reverse. Returns
+ * non-zero on success. No-op (returns 0) for a non-H.264 decoder. */
+int mr_h264_set_dynamic_skip(mr_decoder *dec, int skip_pb);
 
 #endif /* MR_H264_H */

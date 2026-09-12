@@ -67,6 +67,13 @@ typedef struct {
     void     *quit_opaque;
     mr_h264_timing timing;
     int       skip_output;
+    /* The frame-skip mode mr_h264_set_speed_mode() last selected for the
+     * current H.264 performance setting (IVD_SKIP_NONE/B/PB - Quality/
+     * Balanced/Fast ask for NONE, Turbo/TurboGT for B, Turbo+ for PB).
+     * mr_h264_set_dynamic_skip() escalates away from this to IVD_SKIP_PB
+     * and back, so de-escalating restores whatever the chosen performance
+     * mode actually asked for rather than always falling back to NONE. */
+    IVD_FRAME_SKIP_MODE_T base_skip_mode;
     int       timing_enabled;
     int       yuv_output;
     int       input_annexb;
@@ -1173,7 +1180,30 @@ int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode)
      * submodule patch. Use SETPARAMS again so the decoder owns all picture
      * boundary bookkeeping rather than reaching into dec_struct_t here.
      */
+    s->base_skip_mode = skip_mode;
     return set_decode_mode(s, IVD_DECODE_FRAME, skip_mode) == IV_SUCCESS;
+}
+
+int mr_h264_set_dynamic_skip(mr_decoder *dec, int skip_pb)
+{
+    h264_state *s;
+    if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return 0;
+    s = (h264_state *)dec->priv;
+    /*
+     * IVD_SKIP_PB's own picture-boundary handling
+     * (ih264d_parse_slice.c's u4_skip_pic state machine, restored by the
+     * companion libavc submodule patch) already resets itself cleanly at
+     * the next IDR regardless of when e_frm_skip_mode changes - the same
+     * SETPARAMS control call mr_h264_set_speed_mode() already uses once at
+     * open, just issued again mid-stream. Escalating mid-GOP means the
+     * frames already in flight between "was decoding normally" and "the
+     * control call lands" keep their normal reference decode; only
+     * pictures parsed after this call see the new mode, so there is no
+     * partial-picture or torn-reference-chain case to handle here.
+     */
+    return set_decode_mode(s, IVD_DECODE_FRAME,
+                           skip_pb ? IVD_SKIP_PB : s->base_skip_mode) ==
+           IV_SUCCESS;
 }
 
 static mr_status h264_flush(mr_decoder *dec)
