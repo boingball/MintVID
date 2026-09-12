@@ -30,6 +30,7 @@ int g_aga_lace  = 0;
 int g_aga_akiko = 0;
 int g_aga_ecs_fast = 0;
 int g_aga_ecs32 = 0;
+int g_aga_copper_vdouble = 0;
 int g_display_want_time = 0;  /* enable RTG geometry diagnostics (--time)   */
 int g_display_fullscreen = 0;
 
@@ -50,6 +51,9 @@ void display_set_ecs_fast(int on) {
 void display_set_ecs32(int on) {
     g_aga_ecs32 = on ? 1 : 0;
     if (on) g_force_aga = 1;
+}
+void display_set_copper_vdouble(int on) {
+    g_aga_copper_vdouble = on ? 1 : 0;
 }
 void display_set_timing_mode(int on) { g_display_want_time = on ? 1 : 0; }
 void display_set_fullscreen(int on) { g_display_fullscreen = on ? 1 : 0; }

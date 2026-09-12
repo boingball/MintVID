@@ -1620,7 +1620,8 @@ int main(int argc, char **argv)
                "<file.avi|file.mov|file.ts|file.m2ts|"
                "file.mjpeg|file.m4v> "
                "[--aga] [--ham] [--ham6] [--p96] "
-               "[--2x] [--lace] [--ecs-fast] [--ecs32] [--loop] "
+               "[--2x] [--lace] [--ecs-fast] [--ecs32] [--copper-vdouble] "
+               "[--loop] "
                "[--wpa|--c2p|--riva-c2p|--kalms-c2p|--direct-c2p] "
                "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
                "[--fast-buffer=auto|off|4|8|16] "
@@ -1660,6 +1661,8 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--ecs-fast")) display_set_ecs_fast(1);
             else if (!strcmp(argv[i], "--ecs32")) display_set_ecs32(1);
             else if (!strcmp(argv[i], "--cd32")) display_set_akiko(1);
+            else if (!strcmp(argv[i], "--copper-vdouble"))
+                display_set_copper_vdouble(1);
             else if (!strcmp(argv[i], "--time")) {
                 want_time = 1;
                 display_set_timing_mode(1);
@@ -2069,14 +2072,14 @@ int main(int argc, char **argv)
         mr_mpeg2_set_yuv_output(&dec, 1);
     if (want_time) {
         int diag_depth, diag_ham, diag_scale, diag_resize;
-        const char *diag_c2p;
+        const char *diag_c2p, *diag_chipset;
         display_aga_describe(&diag_depth, &diag_ham, &diag_scale,
-                             &diag_resize, &diag_c2p);
+                             &diag_resize, &diag_c2p, &diag_chipset);
         if (diag_depth >= 0)
-            printf("AGA path: depth=%d ham=%d scale=%d resize=%d c2p=%s "
-                   "yuv=%s\n", diag_depth, diag_ham, diag_scale, diag_resize,
-                   diag_c2p, use_yuv_indexed_queue ? "supported"
-                                                   : "unsupported");
+            printf("AGA path: chipset=%s depth=%d ham=%d scale=%d resize=%d "
+                   "c2p=%s yuv=%s\n", diag_chipset, diag_depth, diag_ham,
+                   diag_scale, diag_resize, diag_c2p,
+                   use_yuv_indexed_queue ? "supported" : "unsupported");
         if (use_yuv_indexed_queue && yuv_ham)
             printf("video path: YUV420P %dx%d -> HAM%d %dx%d %s\n",
                    vi->width, vi->height, yuv_ham, yuv_dst_w, yuv_dst_h,

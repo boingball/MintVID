@@ -79,6 +79,8 @@ extern int g_aga_lace;   /* 1 = allow interlaced screens (taller fit)       */
 extern int g_aga_akiko;  /* 1 = use CD32 Akiko hardware C2P                  */
 extern int g_aga_ecs_fast; /* 1 = force the 4-plane/16-colour fast encoder   */
 extern int g_aga_ecs32;    /* 1 = force the 5-plane/32-colour ECS/OCS cube    */
+extern int g_aga_copper_vdouble; /* 1 = copper-assisted vertical 2x, see
+                                   * display_set_copper_vdouble()             */
 extern int g_display_fullscreen;
 
 /* Library bases opened once by display.c and shared by the backends. */

@@ -15,6 +15,31 @@
  * core/mr_yuv_dither_planar_direct_m68k.S and aga_supports_yuv_indexed()'s
  * own direct-planar branch. Falls back to WritePixelArray8 like an
  * incompatible Kalms request whenever the geometry doesn't qualify.
+ *
+ * --copper-vdouble (display_set_copper_vdouble(), g_aga_copper_vdouble) is a
+ * different kind of opt-in: for the scale==2 (--2x) case it skips vertically
+ * duplicating every encoded row in software and lets a copper list, built
+ * once when the screen opens, repeat each already-doubled-width row a
+ * second time on the real raster by rewinding BPLxPT back to the previous
+ * row's address for every other displayed scanline (Agnus auto-increments
+ * BPLxPT by one row after every displayed line regardless of copper
+ * activity, so overriding only the "repeat" line is enough - see
+ * build_copper_vdouble()'s own comment for the full derivation). This halves
+ * the rows aga_show() has to dither/encode and C2P for scale==2, at the
+ * cost of depending on exact raster timing this dev host has no way to
+ * check: there is no AmigaOS toolchain here at all (unlike every other
+ * Amiga-only file in this tree, this one can't even be syntax-checked, let
+ * alone cross-built for qemu), so build_copper_vdouble() and its call sites
+ * in aga_blit()/aga_show() are unverified below the level of "reads as
+ * correct C to a human" - a real Amiga or WinUAE session must confirm both
+ * that it compiles and that the picture it produces is actually right
+ * before this ships as anything but opt-in. It only ever activates for a
+ * plain c2p/riva-c2p/Akiko geometry (kalms_kind == KALMS_NONE, checked in
+ * aga_open()): Kalms' hand-tuned kernels compute their own row addressing
+ * from the bitmap's real BytesPerRow and have no way to take an arbitrary
+ * output stride, and WritePixelArray8's rectangle-of-Y-coordinates API has
+ * no stride concept at all to double, so both are excluded rather than
+ * force-fit.
  */
 #include "amiga_display.h"
 #include "display_backend.h"
@@ -34,13 +59,16 @@
 #include "../vendor/kalms-c2p/bitmap/c2p2x2_8_c5_bm.h"
 
 #include <exec/types.h>
+#include <exec/memory.h>
 #include <intuition/intuition.h>
 #include <intuition/screens.h>
 #include <graphics/gfx.h>
 #include <graphics/gfxbase.h>
 #include <graphics/rastport.h>
 #include <graphics/view.h>
+#include <graphics/copper.h>
 #include <graphics/displayinfo.h>
+#include <hardware/custom.h>
 
 #include <proto/exec.h>
 #include <proto/intuition.h>
@@ -84,14 +112,16 @@ void display_aga_frame_timing(unsigned long *enc_ms, unsigned long *blit_ms)
  * and what was granted is the whole point of the diagnostic. */
 static int s_diag_depth = -1, s_diag_ham = 0, s_diag_scale = 1, s_diag_resize = 0;
 static const char *s_diag_c2p = "standard";
+static const char *s_diag_chipset = "OCS";
 void display_aga_describe(int *depth, int *ham, int *scale, int *resize,
-                          const char **c2p)
+                          const char **c2p, const char **chipset)
 {
-    if (depth)  *depth  = s_diag_depth;
-    if (ham)    *ham    = s_diag_ham;
-    if (scale)  *scale  = s_diag_scale;
-    if (resize) *resize = s_diag_resize;
-    if (c2p)    *c2p    = s_diag_c2p;
+    if (depth)   *depth   = s_diag_depth;
+    if (ham)     *ham     = s_diag_ham;
+    if (scale)   *scale   = s_diag_scale;
+    if (resize)  *resize  = s_diag_resize;
+    if (c2p)     *c2p     = s_diag_c2p;
+    if (chipset) *chipset = s_diag_chipset;
 }
 
 int display_aga_kalms_timing(unsigned long *conversion_ms)
@@ -122,6 +152,8 @@ typedef struct {
     int             kalms_src_width; /* aligned C2P input width             */
     int             kalms_pad_left;  /* black source pixels before picture  */
     int             kalms_x0;        /* destination x of padded rectangle   */
+    int             copper_vdouble;  /* see the file header comment          */
+    struct UCopList *ucop;           /* NULL unless copper_vdouble is active */
     int             quit;
 } aga_state;
 
@@ -208,6 +240,105 @@ static void akiko_c2p(const uint8_t *chunky, int pw, int h, int chunky_stride,
 static int chipset_has_aga(void)
 {
     return GfxBase && (GfxBase->ChipRevBits0 & GFXF_AA_LISA) != 0;
+}
+
+/* ECS Denise (GFXF_HR_DENISE) vs plain OCS Denise. Every mode-selection and
+ * encoding rule above keys off chipset_has_aga() alone - OCS and ECS take
+ * the same 5-plane-cube/HAM6/LORES-only-above-4-planes path deliberately,
+ * since ECS's real additions over OCS (Super-Hi-Res, BPLCON3 border blank,
+ * genlock audio) are none of them used here - so this is purely a name for
+ * --time output and bug reports, not a second code path. */
+static int chipset_has_ecs_denise(void)
+{
+    return GfxBase && (GfxBase->ChipRevBits0 & GFXF_HR_DENISE) != 0;
+}
+
+/* struct Custom's bplpt[n] is one 32-bit APTR field per the NDK's
+ * hardware/custom.h, laid out at the exact hardware address of that plane's
+ * BPLnPTH register; since every custom-chip register access is big-endian,
+ * the high word (BPLnPTH) lives at &custom.bplpt[n] itself and the low word
+ * (BPLnPTL) two bytes further on. Writing PTH before PTL matters, not just
+ * style: Agnus only latches the new 32-bit pointer into its internal
+ * fetch counter on the PTL write, so a copper list (or any code) that wrote
+ * these in the other order would race the display against a half-updated
+ * pointer. */
+#define MR_BPLPTH(n) (*(((volatile UWORD *)&custom.bplpt[(n)]) + 0))
+#define MR_BPLPTL(n) (*(((volatile UWORD *)&custom.bplpt[(n)]) + 1))
+
+/*
+ * Build and attach the one-time copper list behind --copper-vdouble. Called
+ * once from aga_open(), after the real screen bitmap exists, for exactly
+ * the geometry the file header comment restricts this to (scale==2, no HAM,
+ * no lace, kalms_kind == KALMS_NONE - see build_copper_vdouble()'s only
+ * caller). The bitplane addresses this list pokes never move for the life
+ * of the screen, so - unlike the frame content itself - the list needs
+ * building only once, not once per frame.
+ *
+ * The mechanism: with no copper intervention at all, Agnus's bitplane
+ * fetch pointer auto-increments by exactly one row (BytesPerRow, since this
+ * backend's planes are plain non-interleaved allocations with modulo 0)
+ * after every *displayed* scanline, independent of copper - it is the
+ * pointer's own hardware behaviour, not something a copper list drives.
+ * aga_show()'s scale==2 path (in its copper_vdouble branch) writes real
+ * pixel data into only the *even* physical rows of the screen bitmap
+ * (source row i at bitmap row y0 + i*2) and leaves the odd rows between
+ * them untouched. Left alone, Agnus would still auto-increment through
+ * those odd rows and display whatever stale/black bytes happen to be
+ * there. This copper list corrects exactly that: at the start of each odd
+ * physical row (y0 + i*2 + 1), it rewinds BPLxPT back to the address of
+ * the even row just displayed (y0 + i*2), so Agnus re-fetches and repeats
+ * that row's real data instead. After finishing that repeat row, Agnus's
+ * own auto-increment adds one row to the *rewound* address, landing
+ * exactly on the next even row (y0 + (i+1)*2) with no further help needed
+ * - which is why only the odd rows need an instruction at all; a WAIT-plus-
+ * MOVE on every single row would also work but would be double the copper
+ * instructions for no benefit.
+ *
+ * Absolute raster line numbers are needed for CWAIT, not bitmap-relative
+ * ones: Screen->TopEdge is documented as this screen's vertical position
+ * within the total raster/View coordinate space, so TopEdge + y0 + i*2 + 1
+ * is used as that anchor. This is the one piece of this function genuinely
+ * unverifiable from here - see the file header comment.
+ */
+static int build_copper_vdouble(aga_state *s, int h, int depth)
+{
+    struct BitMap *bm;
+    struct UCopList *ucl;
+    long bpr;
+    int i, p, ninst;
+
+    if (!s || !s->scr || h <= 0 || depth <= 0 || depth > 8) return 0;
+    bm = s->scr->RastPort.BitMap;
+    if (!bm) return 0;
+    for (p = 0; p < depth; p++)
+        if (!bm->Planes[p]) return 0;
+    bpr = bm->BytesPerRow;
+
+    /* One CWAIT + two CMOVE (PTH, PTL) per plane, per source row, plus the
+     * closing CEND. */
+    ninst = h * (1 + depth * 2) + 1;
+    ucl = (struct UCopList *)AllocMem(sizeof(struct UCopList),
+                                      MEMF_PUBLIC | MEMF_CLEAR);
+    if (!ucl) return 0;
+    CINIT(ucl, ninst);
+    for (i = 0; i < h; i++) {
+        long rowoff = (long)(s->y0 + i * 2) * bpr + s->x0byte;
+        int  wline  = s->scr->TopEdge + s->y0 + i * 2 + 1;
+        CWAIT(ucl, wline, 0);
+        for (p = 0; p < depth; p++) {
+            ULONG addr = (ULONG)bm->Planes[p] + rowoff;
+            CMOVE(ucl, MR_BPLPTH(p), (UWORD)(addr >> 16));
+            CMOVE(ucl, MR_BPLPTL(p), (UWORD)(addr & 0xFFFFUL));
+        }
+    }
+    CEND(ucl);
+
+    s->scr->ViewPort.UCopIns = ucl;
+    MrgCop(&s->scr->ViewPort);
+    MakeScreen(s->scr);
+    RethinkDisplay();
+    s->ucop = ucl;
+    return 1;
 }
 
 static void load_palette(struct Screen *scr, int ham, int depth)
@@ -451,6 +582,31 @@ static void *aga_open(int w, int h, const char *title)
         }
     }
 
+    /* --copper-vdouble: see the file header comment and
+     * build_copper_vdouble()'s own comment for the mechanism and its
+     * verification status. Restricted to plain c2p/riva-c2p/Akiko geometry
+     * (kalms_kind resolved to KALMS_NONE above - either never requested, or
+     * downgraded by the compatibility check just above - *and* one of c2p/
+     * riva_c2p_mode/akiko explicitly selected, since otherwise KALMS_NONE
+     * just means "fell through to WritePixelArray8", whose Y-coordinate
+     * rectangle API has no destination stride to double), no HAM (a HAM row
+     * could in principle repeat the same way, but this first cut keeps the
+     * eligible geometry to the one already covered by aga_supports_indexed()'s
+     * "plain indexed, no HAM" shape) and no interlace (CWAIT's vertical
+     * position compares against a field-relative line count once
+     * interlaced, which this does not attempt to account for). */
+    s->copper_vdouble = g_aga_copper_vdouble && scale == 2 && !s->ham &&
+                        !lace && s->kalms_kind == KALMS_NONE &&
+                        (c2p || riva_c2p_mode || akiko) &&
+                        build_copper_vdouble(s, h, depth);
+    if (g_aga_copper_vdouble)
+        printf(s->copper_vdouble
+               ? "planar: copper-assisted vertical doubling active "
+                 "(UNVERIFIED on real hardware - see display_aga.c)\n"
+               : "planar: --copper-vdouble requested but this geometry "
+                 "doesn't qualify (needs --2x, no HAM/lace, and an "
+                 "explicit --c2p/--riva-c2p/--cd32); using normal 2x\n");
+
     /* padded + cleared so C2P's pad columns are black */
     if (s->kalms_kind != KALMS_2X2_8) {
         s->chunky = alloc_aligned16((size_t)s->pw * dh, &s->chunky_alloc);
@@ -476,6 +632,8 @@ static void *aga_open(int w, int h, const char *title)
     }
     s_diag_depth = s->depth; s_diag_ham = s->ham; s_diag_scale = s->scale;
     s_diag_resize = s->resize;
+    s_diag_chipset = chipset_has_aga() ? "AGA" :
+                     chipset_has_ecs_denise() ? "ECS" : "OCS";
     s_diag_c2p = s->kalms_kind == KALMS_2X2_8 ?
                     (s->kalms_src_width == s->w ? "kalms-2x2" :
                                                   "kalms-2x2-padded") :
@@ -494,6 +652,7 @@ static void *aga_open(int w, int h, const char *title)
 
 fail:
     s_kalms_active = 0;
+    if (s->ucop) { FreeVPortCopLists(&s->scr->ViewPort); RethinkDisplay(); }
     if (s->enc_alloc) free(s->enc_alloc);
     if (s->scaled) free(s->scaled);
     if (s->chunky_alloc) free(s->chunky_alloc);
@@ -519,12 +678,39 @@ static void aga_blit(aga_state *s, const uint8_t *src, int src_stride,
     clock_t a = 0;
     if (g_display_want_time) a = clock();
     {
+    /* ddy0 always indexes physical screen rows 1:1 (even when
+     * copper_vdouble is active - the chunky buffer still has one pw-sized
+     * slot per physical row, just with the odd ones left unwritten), so
+     * this offset always uses the plain, undoubled src_stride. */
     const uint8_t *crow = src + (size_t)ddy0 * src_stride;
+    /* copper_vdouble writes real data into only every other physical row -
+     * see the file header comment and build_copper_vdouble(). stride_in
+     * makes the kernels below step over the untouched in-between row when
+     * reading chunky source data, and bpr does the same for the screen
+     * bitmap they write - the copper list fills the skipped destination
+     * row in on the real raster, and no kernel itself changes. Never true
+     * alongside Kalms/WPA (aga_open()'s eligibility check excludes both),
+     * so their own pw/BytesPerRow uses below are deliberately left alone. */
+    int stride_in = s->copper_vdouble ? src_stride * 2 : src_stride;
+    int real_bpr = s->scr->RastPort.BitMap->BytesPerRow;
+    int bpr = s->copper_vdouble ? real_bpr * 2 : real_bpr;
+    /* The three kernels below compute their destination address as
+     * (y0_param + iteration) * bpr_param + x0byte_param. With bpr_param
+     * doubled to skip the copper-filled row, passing the real starting row
+     * (s->y0 + ddy0) as y0_param would need dividing that by two to land
+     * back on the right byte address - exact only when it happens to be
+     * even, which s->y0's own vertical-centering offset has no reason to
+     * be. Folding the real starting row's byte offset into x0byte instead
+     * and leaving y0_param at 0 sidesteps that parity requirement
+     * entirely - see the file header comment. */
+    int y0p     = s->copper_vdouble ? 0 : s->y0 + ddy0;
+    int x0bytep = s->copper_vdouble ? s->x0byte + (s->y0 + ddy0) * real_bpr
+                                    : s->x0byte;
     if (s->use_akiko) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
-        akiko_c2p(crow, pw, ddh, src_stride, s->depth,
-                  (uint8_t *const *)bm->Planes, bm->BytesPerRow,
-                  s->x0byte, s->y0 + ddy0);
+        akiko_c2p(crow, pw, ddh, stride_in, s->depth,
+                  (uint8_t *const *)bm->Planes, bpr,
+                  x0bytep, y0p);
     } else if (s->kalms_kind == KALMS_1X1_8) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
         /* Both normal kernels consume a tightly packed rectangle. Since the
@@ -552,14 +738,14 @@ static void aga_blit(aga_state *s, const uint8_t *src, int src_stride,
 #endif
     } else if (s->use_riva_c2p) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
-        mr_c2p8_riva32(crow, pw, ddh, src_stride, s->depth,
-                       (uint8_t *const *)bm->Planes, bm->BytesPerRow,
-                       s->x0byte, s->y0 + ddy0);
+        mr_c2p8_riva32(crow, pw, ddh, stride_in, s->depth,
+                       (uint8_t *const *)bm->Planes, bpr,
+                       x0bytep, y0p);
     } else if (s->use_c2p) {
         struct BitMap *bm = s->scr->RastPort.BitMap;
-        mr_c2p8(crow, pw, ddh, src_stride, s->depth,
-                (uint8_t *const *)bm->Planes, bm->BytesPerRow,
-                s->x0byte, s->y0 + ddy0);
+        mr_c2p8(crow, pw, ddh, stride_in, s->depth,
+                (uint8_t *const *)bm->Planes, bpr,
+                x0bytep, y0p);
     } else {
         WritePixelArray8(&s->scr->RastPort,
                          (UWORD)s->x0, (UWORD)(s->y0 + ddy0),
@@ -641,11 +827,21 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
             else mr_dither_rgb_indexed(src, w, rows, stride, enc_dst,
                                        enc_stride,
                                        dy0, s->depth);
-            if (s->kalms_kind != KALMS_2X2_8)
-                mr_scale2x_u8(s->enc, w, rows, w,
-                              s->chunky + (size_t)(dy0*2) * pw +
-                              (s->kalms_kind == KALMS_1X1_8 ? s->x0 : 0), pw);
-            ddy0 = dy0 * 2; ddh = rows * 2;
+            if (s->kalms_kind != KALMS_2X2_8) {
+                uint8_t *dst2x = s->chunky + (size_t)(dy0*2) * pw +
+                                (s->kalms_kind == KALMS_1X1_8 ? s->x0 : 0);
+                if (s->copper_vdouble)
+                    /* Widen only - the copper list repeats each written row
+                     * on the real raster, so the chunky buffer only ever
+                     * holds the *even* physical rows; leave pw*2 gaps for
+                     * the untouched odd rows in between (aga_blit() reads
+                     * this same stride back below). */
+                    mr_scale2x_u8_horiz(s->enc, w, rows, w, dst2x, pw * 2);
+                else
+                    mr_scale2x_u8(s->enc, w, rows, w, dst2x, pw);
+            }
+            ddy0 = dy0 * 2;
+            ddh = s->copper_vdouble ? rows : rows * 2;
         } else {
             uint8_t *dst = s->chunky + (size_t)dy0 * pw +
                             aga_chunky_visible_offset(s);
@@ -980,6 +1176,21 @@ static void aga_close(void *handle)
     if (!s) return;
 
     mr_yuv_planar_queue_disable();
+
+    if (s->ucop && s->scr) {
+        /* Detach and free the copper-vdouble list before the screen itself
+         * starts tearing down - it is still actively rewriting BPLxPT every
+         * frame, and letting CloseScreen()'s own copper-chain rebuild race
+         * against a list still pointing at this screen's ViewPort is
+         * exactly the kind of ordering this dev host cannot exercise (see
+         * the file header comment). FreeVPortCopLists() is the documented
+         * pair to MrgCop()+a UCopIns assignment - it frees whatever CINIT()
+         * allocated internally, so ucop itself is not separately FreeMem'd
+         * here to avoid a double free. */
+        FreeVPortCopLists(&s->scr->ViewPort);
+        RethinkDisplay();
+        s->ucop = NULL;
+    }
 
     /*
      * Custom planar screens are shared Intuition/graphics objects.  On real

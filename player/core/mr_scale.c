@@ -36,6 +36,20 @@ void mr_scale2x_u8(const uint8_t *src, int w, int h, int src_stride,
     }
 }
 
+void mr_scale2x_u8_horiz(const uint8_t *src, int w, int h, int src_stride,
+                         uint8_t *dst, int dst_stride)
+{
+    int x, y;
+    for (y = 0; y < h; y++) {
+        const uint8_t *sr = src + (size_t)y * src_stride;
+        uint8_t       *dr = dst + (size_t)y * dst_stride;
+        for (x = 0; x < w; x++) {
+            uint8_t v = sr[x];
+            dr[x * 2] = v; dr[x * 2 + 1] = v;
+        }
+    }
+}
+
 void mr_scale_down_rgb24(const uint8_t *src, int w, int h, int src_stride,
                          uint8_t *dst, int dst_stride, int factor)
 {

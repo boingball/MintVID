@@ -21,6 +21,13 @@ void mr_scale2x_rgb24(const uint8_t *src, int w, int h, int src_stride,
 void mr_scale2x_u8(const uint8_t *src, int w, int h, int src_stride,
                    uint8_t *dst, int dst_stride);
 
+/* Same doubling as mr_scale2x_u8(), width only: 2w x h out of w x h, no row
+ * duplicated. For the AGA backend's copper-assisted vertical doubling
+ * (display_set_copper_vdouble()), where a copper list repeats each row on
+ * the real raster instead of software duplicating it here. */
+void mr_scale2x_u8_horiz(const uint8_t *src, int w, int h, int src_stride,
+                         uint8_t *dst, int dst_stride);
+
 /* Integer downscale an RGB24 frame by `factor` (>=1) with a box average, so an
  * oversized clip fits a small (AGA) screen. Output is (w/factor)x(h/factor). */
 void mr_scale_down_rgb24(const uint8_t *src, int w, int h, int src_stride,

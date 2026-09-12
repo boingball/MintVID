@@ -94,6 +94,21 @@ void display_set_ecs_fast(int on);
  * display_set_ham(). */
 void display_set_ecs32(int on);
 
+/* Opt-in: skip vertically doubling every scale==2 (--2x) frame in software
+ * and instead let a copper list, built once when the AGA screen opens,
+ * repeat each already-doubled-width chunky/planar row a second time on the
+ * real raster. Halves the rows aga_show() has to dither/HAM-encode and C2P
+ * for scale==2 (the vertical half of the work mr_scale2x_u8() otherwise
+ * does), at the cost of one copper list poking BPLxPT directly - see the
+ * "Copper-assisted vertical doubling" comment in display_aga.c for the
+ * mechanism, its Kalms/direct-planar exclusion, and its verification
+ * status (none yet - no AmigaOS toolchain exists on this dev host to even
+ * compile hardware/custom.h-based code, let alone confirm it against real
+ * raster timing; this needs a real Amiga or WinUAE session before trusting
+ * the picture it produces). No effect unless scale==2 is also in effect
+ * (--2x) and the geometry doesn't fall onto a Kalms/direct-planar path. */
+void display_set_copper_vdouble(int on);
+
 /* Enable timing/diagnostic output for the RTG backend (mirrors --time).
  * Must be called before display_open() to capture init diagnostics. */
 void display_set_timing_mode(int on);
@@ -113,9 +128,15 @@ int display_aga_kalms_timing(unsigned long *conversion_ms);
  * depth (bits/pixel), ham (0/6/8), scale (1 or 2), resize (0/1) and the c2p
  * backend name ("wpa"/"c2p"/"riva"/"kalms-*"/"akiko") - for mrplay --time's
  * "AGA path:" diagnostic. depth is -1 if no AGA screen has been opened yet.
+ * chipset is the detected tier - "AGA", "ECS" or "OCS" - purely informational:
+ * every non-HAM8 encoding and mode-selection rule in display_aga.c already
+ * keys off chipset_has_aga() alone (see its own comments), so ECS and OCS
+ * take the identical code path today and this string exists only so --time
+ * output and bug reports can tell a real A500/PiStorm OCS run apart from an
+ * ECS one instead of both silently reading "not AGA".
  * Every out-parameter is optional (pass NULL to skip it). */
 void display_aga_describe(int *depth, int *ham, int *scale, int *resize,
-                          const char **c2p);
+                          const char **c2p, const char **chipset);
 
 /* Open a display able to show w*h frames: tries RTG (cybergraphics) first, then
  * falls back to AGA. Returns NULL only if neither works. */
