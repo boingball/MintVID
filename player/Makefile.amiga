@@ -600,6 +600,11 @@ define build_release_cpu
 	else \
 		echo "NOTE: MintVID.guide not found - copy the AmigaGuide manual into $(RELEASE_DIR)/MintVID$(2)/ by hand"; \
 	fi
+	@if [ -f ../MintVID.guide.info ]; then \
+		cp ../MintVID.guide.info "$(RELEASE_DIR)/MintVID$(2)/MintVID.guide.info"; \
+	else \
+		echo "NOTE: MintVID.guide.info not found - copy the guide icon into $(RELEASE_DIR)/MintVID$(2)/ by hand"; \
+	fi
 endef
 
 release:
