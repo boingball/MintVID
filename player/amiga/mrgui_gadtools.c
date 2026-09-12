@@ -1144,7 +1144,7 @@ int main(void)
                     ULONG level = 64;
                     if (app.volume)
                         GT_GetGadgetAttrs(app.volume, app.window, NULL,
-                                          GTSL_Level, &level, TAG_DONE);
+                                          GTSL_Level, (ULONG)&level, TAG_DONE);
                     mr_player_control_set_volume(level);
                     break;
                 }
