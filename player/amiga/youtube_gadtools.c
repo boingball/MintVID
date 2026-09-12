@@ -276,6 +276,101 @@ static void play_selected(ytgt *app)
     else set_text(app, app->status, video->live ? "Resolving YouTube Live..." : "Resolving YouTube video...");
 }
 
+/* Last-results cache - see the matching comment in youtube_reaction.c.
+ * Same fixed-layout, no-pointers struct array, one fwrite()/fread() of the
+ * whole thing; any failure (no cache yet, can't create the directory, a
+ * stale/truncated file) is silently just "no cached results to show".
+ *
+ * Directory resolution mirrors iptv_gadtools.c's choose_cache()/try_cache()
+ * exactly: PROGDIR: is not reliably writable for a process launched via
+ * mrgui_gadtools.c's CreateNewProcTags spawn, and CreateDir() succeeding
+ * proves nothing - only an actual write test does. Without this fallback a
+ * search silently never gets cached, reproducing as "search, close,
+ * reopen, no list shown". Resolved once per process and cached. */
+static char yt_cache_dir[128];
+
+static int yt_try_cache_dir(const char *directory)
+{
+    char probe[192];
+    FILE *file;
+    strncpy(yt_cache_dir,directory,sizeof(yt_cache_dir)-1);
+    yt_cache_dir[sizeof(yt_cache_dir)-1]=0;
+    snprintf(probe,sizeof(probe),"%s.write-test",yt_cache_dir);
+    file=fopen(probe,"wb");
+    if (!file) return 0;
+    fclose(file); remove(probe); return 1;
+}
+
+static int yt_choose_cache_dir(void)
+{
+    BPTR lock;
+    if (yt_cache_dir[0]) return 1;
+    lock=CreateDir((CONST_STRPTR)"PROGDIR:Cache"); if(lock)UnLock(lock);
+    lock=CreateDir((CONST_STRPTR)"PROGDIR:Cache/YouTube"); if(lock)UnLock(lock);
+    if (yt_try_cache_dir("PROGDIR:Cache/YouTube/")) return 1;
+    lock=CreateDir((CONST_STRPTR)"T:MintVID-YouTube"); if(lock)UnLock(lock);
+    return yt_try_cache_dir("T:MintVID-YouTube/");
+}
+
+static void save_search_cache(const mr_youtube_search_results *results)
+{
+    char path[192];
+    FILE *f;
+    if (!results->count) return;
+    if (!yt_choose_cache_dir()) return;
+    snprintf(path,sizeof(path),"%slast_search.dat",yt_cache_dir);
+    f = fopen(path, "wb");
+    if (!f) return;
+    fwrite(results->items, sizeof(mr_youtube_search_result), results->count, f);
+    fclose(f);
+}
+
+/* Populates app->found/app->labels exactly like load_pasted_url() does for
+ * its one synthetic result - same ownership handoff of a fresh malloc'd
+ * items array. Returns 1 if anything was loaded (status already updated
+ * either way), 0 on a clean miss. */
+static int load_search_cache(ytgt *app)
+{
+    FILE *f;
+    long size;
+    size_t count, shown;
+    mr_youtube_search_result *items;
+    char line[80];
+    char path[192];
+
+    if (!yt_choose_cache_dir()) return 0;
+    snprintf(path,sizeof(path),"%slast_search.dat",yt_cache_dir);
+    f = fopen(path, "rb");
+    if (!f) return 0;
+    if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) <= 0 ||
+        fseek(f, 0, SEEK_SET) != 0 ||
+        (size % (long)sizeof(mr_youtube_search_result)) != 0) {
+        fclose(f);
+        return 0;
+    }
+    count = (size_t)size / sizeof(mr_youtube_search_result);
+    if (count > MR_YOUTUBE_SEARCH_MAX_RESULTS)
+        count = MR_YOUTUBE_SEARCH_MAX_RESULTS;
+    items = (mr_youtube_search_result *)malloc(
+        count * sizeof(mr_youtube_search_result));
+    if (!items) { fclose(f); return 0; }
+    if (fread(items, sizeof(mr_youtube_search_result), count, f) != count) {
+        free(items);
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
+    free_labels(app);
+    mr_youtube_search_results_free(&app->found);
+    app->found.items = items;
+    app->found.count = count;
+    shown = rebuild_labels(app);
+    snprintf(line, sizeof line, "Showing %lu result%s from last time.",
+            (unsigned long)shown, shown == 1 ? "" : "s");
+    set_text(app, app->status, line);
+    return 1;
+}
+
 static void load_url(ytgt *app, const char *url, mr_youtube_search_mode mode,
                      const char *busy, const char *done)
 {
@@ -310,6 +405,7 @@ static void load_url(ytgt *app, const char *url, mr_youtube_search_mode mode,
     shown = rebuild_labels(app);
     snprintf(line, sizeof(line), "%lu %s", (unsigned long)shown, done);
     set_text(app, app->status, shown ? line : mr_youtube_search_last_error());
+    if (shown) save_search_cache(&app->found);
 #endif
 }
 
@@ -541,6 +637,7 @@ int main(int argc, char **argv)
     mr_play_options_summary(&app.options,summary,sizeof(summary));
     set_text(&app,app.summary,summary);
     mr_gui_menu_open(&app.menu,app.window);
+    load_search_cache(&app);
     if (timer_open(&app)) { timermask=1UL<<app.timer_port->mp_SigBit; timer_start(&app); }
     winmask=1UL<<app.window->UserPort->mp_SigBit;
     while (!done) {

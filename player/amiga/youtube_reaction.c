@@ -414,6 +414,123 @@ static int start_video(const mr_youtube_search_result *video,
     return 1;
 }
 
+/* Last-results cache: survives closing and reopening this GUI (each launch
+ * is a fresh process - nothing about the results list otherwise persists),
+ * so results are still there without having to search again. Deliberately
+ * minimal: a fixed-layout struct with no pointers, one fwrite()/fread() of
+ * the whole array - and just as advisory: any failure here (can't create
+ * the directory, no file yet, a stale/truncated file) silently means no
+ * cached results to show, never an error the user sees.
+ *
+ * Directory resolution mirrors the IPTV browsers' choose_cache_dir()/
+ * try_cache_dir() above exactly, for the same reason found there: PROGDIR:
+ * is not reliably writable for a process launched this way (mrgui's
+ * open_browser() spawns ytgui/ytgui-GT via CreateNewProcTags, same as the
+ * IPTV browsers) - CreateDir() succeeding proves nothing here, only an
+ * actual write test does. Without this fallback, a search that never got
+ * cached (silent write failure) reproduces exactly as "search, close,
+ * reopen, no list shown". Resolved once per process and cached. */
+static char yt_cache_dir[128];
+
+static int yt_try_cache_dir(const char *directory)
+{
+    char probe[192];
+    FILE *file;
+    strncpy(yt_cache_dir, directory, sizeof(yt_cache_dir) - 1);
+    yt_cache_dir[sizeof(yt_cache_dir) - 1] = 0;
+    snprintf(probe, sizeof(probe), "%s.write-test", yt_cache_dir);
+    file = fopen(probe, "wb");
+    if (!file)
+        return 0;
+    fclose(file);
+    remove(probe);
+    return 1;
+}
+
+static int yt_choose_cache_dir(void)
+{
+    BPTR lock;
+    if (yt_cache_dir[0])
+        return 1;
+    lock = CreateDir((CONST_STRPTR)"PROGDIR:Cache");
+    if (lock) UnLock(lock);
+    lock = CreateDir((CONST_STRPTR)"PROGDIR:Cache/YouTube");
+    if (lock) UnLock(lock);
+    if (yt_try_cache_dir("PROGDIR:Cache/YouTube/"))
+        return 1;
+    lock = CreateDir((CONST_STRPTR)"T:MintVID-YouTube");
+    if (lock) UnLock(lock);
+    return yt_try_cache_dir("T:MintVID-YouTube/");
+}
+
+static void save_search_cache(const mr_youtube_search_results *results)
+{
+    char path[192];
+    FILE *f;
+    if (!results->count) return;
+    if (!yt_choose_cache_dir()) return;
+    snprintf(path, sizeof(path), "%slast_search.dat", yt_cache_dir);
+    f = fopen(path, "wb");
+    if (!f) return;
+    fwrite(results->items, sizeof(mr_youtube_search_result), results->count, f);
+    fclose(f);
+}
+
+/* Populates the list exactly like load_pasted_url() does for its one
+ * synthetic result - same LISTBROWSER_Labels dance, same ownership handoff
+ * of a fresh malloc'd items array into *results. Returns 1 if anything was
+ * loaded (list/status already updated either way), 0 on a clean miss. */
+static int load_search_cache(Object *list, Object *play_button,
+                             Object *status, struct Window *window,
+                             struct List *nodes,
+                             mr_youtube_search_results *results)
+{
+    FILE *f;
+    long size;
+    size_t count, shown;
+    mr_youtube_search_result *items;
+    char text[80];
+    char path[192];
+
+    if (!yt_choose_cache_dir()) return 0;
+    snprintf(path, sizeof(path), "%slast_search.dat", yt_cache_dir);
+    f = fopen(path, "rb");
+    if (!f) return 0;
+    if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) <= 0 ||
+        fseek(f, 0, SEEK_SET) != 0 ||
+        (size % (long)sizeof(mr_youtube_search_result)) != 0) {
+        fclose(f);
+        return 0;
+    }
+    count = (size_t)size / sizeof(mr_youtube_search_result);
+    if (count > MR_YOUTUBE_SEARCH_MAX_RESULTS)
+        count = MR_YOUTUBE_SEARCH_MAX_RESULTS;
+    items = (mr_youtube_search_result *)malloc(
+        count * sizeof(mr_youtube_search_result));
+    if (!items) { fclose(f); return 0; }
+    if (fread(items, sizeof(mr_youtube_search_result), count, f) != count) {
+        free(items);
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
+    SetGadgetAttrs((struct Gadget *)list, window, NULL,
+                   LISTBROWSER_Labels, ~0UL, TAG_DONE);
+    free_nodes(nodes);
+    mr_youtube_search_results_free(results);
+    results->items = items;
+    results->count = count;
+    shown = build_nodes(nodes, results);
+    SetGadgetAttrs((struct Gadget *)list, window, NULL,
+                   LISTBROWSER_Labels, (ULONG)nodes, TAG_DONE);
+    SetGadgetAttrs((struct Gadget *)play_button, window, NULL,
+                   GA_Disabled, shown ? FALSE : TRUE, TAG_DONE);
+    snprintf(text, sizeof text, "Showing %lu result%s from last time.",
+            (unsigned long)shown, shown == 1 ? "" : "s");
+    set_status(status, window, text);
+    return 1;
+}
+
 static void load_results_url(const char *url, mr_youtube_search_mode mode,
                              const char *busy_text, const char *summary_text,
                              Object *list, Object *play_button, Object *status,
@@ -470,6 +587,7 @@ static void load_results_url(const char *url, mr_youtube_search_mode mode,
         snprintf(status_text, sizeof(status_text),
                  "%lu %s", (unsigned long)shown, summary_text);
         set_status(status, window, status_text);
+        save_search_cache(results);
     }
 #endif
 }
@@ -771,6 +889,8 @@ int main(int argc, char **argv)
     if (!window)
         goto cleanup;
     mr_gui_menu_open(&app_menu, window);
+    load_search_cache(results_list, play_button, status, window,
+                      &result_nodes, &results);
     GetAttr(WINDOW_SigMask, winobj, &sigmask);
     if (poll_timer_open()) {
         timermask = 1UL << timer_port->mp_SigBit;
