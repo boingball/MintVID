@@ -74,6 +74,7 @@
 #include <proto/intuition.h>
 #include <proto/graphics.h>
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -253,18 +254,6 @@ static int chipset_has_ecs_denise(void)
     return GfxBase && (GfxBase->ChipRevBits0 & GFXF_HR_DENISE) != 0;
 }
 
-/* struct Custom's bplpt[n] is one 32-bit APTR field per the NDK's
- * hardware/custom.h, laid out at the exact hardware address of that plane's
- * BPLnPTH register; since every custom-chip register access is big-endian,
- * the high word (BPLnPTH) lives at &custom.bplpt[n] itself and the low word
- * (BPLnPTL) two bytes further on. Writing PTH before PTL matters, not just
- * style: Agnus only latches the new 32-bit pointer into its internal
- * fetch counter on the PTL write, so a copper list (or any code) that wrote
- * these in the other order would race the display against a half-updated
- * pointer. */
-#define MR_BPLPTH(n) (*(((volatile UWORD *)&custom.bplpt[(n)]) + 0))
-#define MR_BPLPTL(n) (*(((volatile UWORD *)&custom.bplpt[(n)]) + 1))
-
 /*
  * Build and attach the one-time copper list behind --copper-vdouble. Called
  * once from aga_open(), after the real screen bitmap exists, for exactly
@@ -294,18 +283,37 @@ static int chipset_has_ecs_denise(void)
  * MOVE on every single row would also work but would be double the copper
  * instructions for no benefit.
  *
- * Absolute raster line numbers are needed for CWAIT, not bitmap-relative
+ * Absolute raster line numbers are needed for the WAIT, not bitmap-relative
  * ones: Screen->TopEdge is documented as this screen's vertical position
  * within the total raster/View coordinate space, so TopEdge + y0 + i*2 + 1
  * is used as that anchor. This is the one piece of this function genuinely
  * unverifiable from here - see the file header comment.
+ *
+ * There is no CINIT/CWAIT/CMOVE/CEND macro sugar in this NDK's
+ * <graphics/copper.h> (those turned out to be a Commodore RKM *example*
+ * convention this project wrongly assumed shipped as real macros - CI
+ * caught it as "implicit declaration of function"). The header only
+ * provides the raw struct CopIns/CopList/UCopList primitives, which this
+ * function now populates directly: one struct CopIns per WAIT or MOVE,
+ * built into a caller-allocated array, wrapped in one CopList/UCopList
+ * pair and handed to MrgCop() - the same primitives those macros would
+ * have expanded to. A MOVE's DESTADDR is the target register's *offset*
+ * from the custom chip base (0xDFF000), not its address, which conveniently
+ * means this needs no `extern struct Custom custom;` instance at all - only
+ * struct Custom's layout, to compute each bplpt[p] word's offset via
+ * offsetof(). PTH is written before PTL in program order below, since
+ * Agnus only latches the new 32-bit bitplane pointer into its fetch
+ * counter on the PTL write.
  */
 static int build_copper_vdouble(aga_state *s, int h, int depth)
 {
     struct BitMap *bm;
     struct UCopList *ucl;
+    struct CopList *cl;
+    struct CopIns *ci;
     long bpr;
-    int i, p, ninst;
+    WORD bplpt0_off;
+    int i, p, ninst, n;
 
     if (!s || !s->scr || h <= 0 || depth <= 0 || depth > 8) return 0;
     bm = s->scr->RastPort.BitMap;
@@ -313,25 +321,55 @@ static int build_copper_vdouble(aga_state *s, int h, int depth)
     for (p = 0; p < depth; p++)
         if (!bm->Planes[p]) return 0;
     bpr = bm->BytesPerRow;
+    /* bplpt[0] only, so this is a compile-time-constant member designator -
+     * no reliance on any compiler's variable-index offsetof() extension.
+     * Plane p's PTH is this plus p*sizeof(APTR); PTL is two bytes further. */
+    bplpt0_off = (WORD)offsetof(struct Custom, bplpt[0]);
 
-    /* One CWAIT + two CMOVE (PTH, PTL) per plane, per source row, plus the
-     * closing CEND. */
-    ninst = h * (1 + depth * 2) + 1;
+    /* One WAIT + two MOVE (PTH, PTL) per plane, per source row. */
+    ninst = h * (1 + depth * 2);
     ucl = (struct UCopList *)AllocMem(sizeof(struct UCopList),
                                       MEMF_PUBLIC | MEMF_CLEAR);
     if (!ucl) return 0;
-    CINIT(ucl, ninst);
+    cl = (struct CopList *)AllocMem(sizeof(struct CopList),
+                                    MEMF_PUBLIC | MEMF_CLEAR);
+    if (!cl) { FreeMem(ucl, sizeof(*ucl)); return 0; }
+    ci = (struct CopIns *)AllocMem((size_t)ninst * sizeof(struct CopIns),
+                                   MEMF_PUBLIC | MEMF_CLEAR);
+    if (!ci) {
+        FreeMem(cl, sizeof(*cl));
+        FreeMem(ucl, sizeof(*ucl));
+        return 0;
+    }
+    cl->CopIns = ci;
+    cl->MaxCount = (WORD)ninst;
+
+    n = 0;
     for (i = 0; i < h; i++) {
         long rowoff = (long)(s->y0 + i * 2) * bpr + s->x0byte;
-        int  wline  = s->scr->TopEdge + s->y0 + i * 2 + 1;
-        CWAIT(ucl, wline, 0);
+        WORD wline  = (WORD)(s->scr->TopEdge + s->y0 + i * 2 + 1);
+
+        ci[n].OpCode   = COPPER_WAIT;
+        ci[n].VWAITPOS = wline;
+        ci[n].HWAITPOS = 0;
+        n++;
         for (p = 0; p < depth; p++) {
             ULONG addr = (ULONG)bm->Planes[p] + rowoff;
-            CMOVE(ucl, MR_BPLPTH(p), (UWORD)(addr >> 16));
-            CMOVE(ucl, MR_BPLPTL(p), (UWORD)(addr & 0xFFFFUL));
+            WORD  pth  = (WORD)(bplpt0_off + p * (int)sizeof(APTR));
+
+            ci[n].OpCode   = COPPER_MOVE;
+            ci[n].DESTADDR = pth;
+            ci[n].DESTDATA = (UWORD)(addr >> 16);
+            n++;
+            ci[n].OpCode   = COPPER_MOVE;
+            ci[n].DESTADDR = (WORD)(pth + 2);
+            ci[n].DESTDATA = (UWORD)(addr & 0xFFFFUL);
+            n++;
         }
     }
-    CEND(ucl);
+
+    ucl->FirstCopList = cl;
+    ucl->CopList      = cl;
 
     s->scr->ViewPort.UCopIns = ucl;
     MrgCop(&s->scr->ViewPort);
@@ -1184,9 +1222,12 @@ static void aga_close(void *handle)
          * against a list still pointing at this screen's ViewPort is
          * exactly the kind of ordering this dev host cannot exercise (see
          * the file header comment). FreeVPortCopLists() is the documented
-         * pair to MrgCop()+a UCopIns assignment - it frees whatever CINIT()
-         * allocated internally, so ucop itself is not separately FreeMem'd
-         * here to avoid a double free. */
+         * pair to MrgCop()+a UCopIns assignment - it is expected to free the
+         * CopList/CopIns array build_copper_vdouble() allocated as well as
+         * the UCopList itself, so none of those three blocks are separately
+         * FreeMem'd here (to avoid a double free) - unconfirmed on real
+         * hardware like everything else in this feature, see the file
+         * header comment. */
         FreeVPortCopLists(&s->scr->ViewPort);
         RethinkDisplay();
         s->ucop = NULL;
