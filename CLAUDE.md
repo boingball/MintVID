@@ -1877,6 +1877,20 @@ explanation (1) - and if it is engaging and decode cost still doesn't drop,
 that's real evidence for (2) worth its own `STAGE_PROFILE=1` capture rather
 than further guessing.
 
+**Confirmed on a real retest: "Skip Frames" mode is now working correctly.**
+The user's own follow-up after rebuilding with the diagnostic print above:
+"excellent that skip frames is perfect now!" - the first real confirmation
+(as opposed to the host-side per-packet timing measurement above, which
+only proved the mechanism *could* work, not that it *did* on the actual
+target) that dynamic `IVD_SKIP_PB` escalation fixes the "didn't seem to do
+anything" report. Consistent with explanation (1) above being the real
+one: the original log was from a build predating this fix, not evidence of
+a deeper 720p-specific bottleneck. The `h264-dynamic-skip: engaging/
+releasing` printf did its job as a diagnostic even though the follow-up
+report didn't come with a fresh log attached - the fix itself is what
+mattered, and it is now real-hardware-confirmed the same way `--throughput`
+mode was confirmed earlier in this file.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
