@@ -28,6 +28,10 @@ MINTVID_DECLARE_VERSION(iptvgui_gt_version_tag, "iptvgui-GT");
 #define CHANNELS_URL "https://iptv-org.github.io/api/channels.json"
 #define STREAMS_URL  "https://iptv-org.github.io/api/streams.json"
 #define MRPLAY_STACK_SIZE 320000UL
+/* Persistent storage, not RAM: - see the matching comment in
+ * youtube_reaction.c for why (a hard lockup needs a reset to clear, which
+ * also wipes RAM: and the log with it; UHD0: survives that). */
+#define MRPLAY_LOG_FILE "UHD0:MintVID.log"
 #define WIN_W 640
 #define WIN_H 356
 
@@ -268,6 +272,37 @@ static int player_running(void)
     Permit(); return yes;
 }
 
+/* MR_IPTV_GUI_PORT - see the matching comment in iptv_reaction.c. Lets
+ * MintVID Control know once this window is actually open, not merely that
+ * the process exists (LoadSeg()/CreateNewProcTags() returns long before
+ * that, and choose_cache()'s channel-cache refresh can itself take a real
+ * moment). Plain static struct, not AllocMem'd - AmigaOS tasks share one
+ * flat address space, and this only needs to be found (PA_IGNORE, no
+ * replies), same as MR_IPTV_PLAYER_PORT above. */
+static struct MsgPort iptv_gui_port;
+static int iptv_gui_port_added;
+
+static void iptv_gui_port_open(void)
+{
+    if(iptv_gui_port_added)return;
+    iptv_gui_port.mp_MsgList.lh_Head=(struct Node *)&iptv_gui_port.mp_MsgList.lh_Tail;
+    iptv_gui_port.mp_MsgList.lh_Tail=NULL;
+    iptv_gui_port.mp_MsgList.lh_TailPred=(struct Node *)&iptv_gui_port.mp_MsgList.lh_Head;
+    iptv_gui_port.mp_Flags=PA_IGNORE;
+    iptv_gui_port.mp_SigTask=FindTask(NULL);
+    iptv_gui_port.mp_Node.ln_Name=(char *)MR_IPTV_GUI_PORT;
+    iptv_gui_port.mp_Node.ln_Pri=0;
+    AddPort(&iptv_gui_port);
+    iptv_gui_port_added=1;
+}
+
+static void iptv_gui_port_close(void)
+{
+    if(!iptv_gui_port_added)return;
+    RemPort(&iptv_gui_port);
+    iptv_gui_port_added=0;
+}
+
 static int stop_player(void)
 {
     struct MsgPort *port; int had,guard;
@@ -299,9 +334,9 @@ static int start_stream(iptvgt *app, const mr_iptv_stream *stream)
     if(!seglist)
         return 0;
     if(app->debug_on){
-      if(!app->log_session_open){log=Open((CONST_STRPTR)"RAM:MintVID.log",MODE_NEWFILE);
+      if(!app->log_session_open){log=Open((CONST_STRPTR)MRPLAY_LOG_FILE,MODE_NEWFILE);
         if(log)app->log_session_open=1;}
-      else{log=Open((CONST_STRPTR)"RAM:MintVID.log",MODE_READWRITE);if(log){
+      else{log=Open((CONST_STRPTR)MRPLAY_LOG_FILE,MODE_READWRITE);if(log){
         static const char sep[]="\n\n===== new stream =====\n";Seek(log,0,OFFSET_END);
         Write(log,(APTR)sep,(LONG)(sizeof(sep)-1));}}
       nil=Open((CONST_STRPTR)"NIL:",MODE_NEWFILE);
@@ -456,6 +491,7 @@ static int window_open(iptvgt *app)
 
 static void cleanup(iptvgt *app)
 {
+    iptv_gui_port_close();
     if(app->timer_io){
       if(app->timer_running&&!CheckIO((struct IORequest *)app->timer_io))
           AbortIO((struct IORequest *)app->timer_io);
@@ -486,6 +522,7 @@ int main(int argc,char **argv)
     if(!IntuitionBase||!GadToolsBase||!choose_cache(&app)||!window_open(&app))goto out;
     mr_play_options_summary(&app.options,summary,sizeof(summary));set_text(&app,app.summary,summary);
     mr_gui_menu_open(&app.menu,app.window);
+    iptv_gui_port_open();
     if(!load_directory(&app)){if(refresh(&app))load_directory(&app);}
     else if(!cache_fresh(&app)){if(refresh(&app))load_directory(&app);}
     if(timer_open(&app)){timermask=1UL<<app.timer_port->mp_SigBit;timer_start(&app);}

@@ -881,7 +881,27 @@ mr_status mr_ts_next_packet(mr_ts *t, mr_packet *pkt)
                 continue;
             }
             a->active = 1;
-            a->expected = expected;
+            /* PES_packet_length is a 16-bit field (max 65535) - the MPEG-2
+             * Systems spec's own documented convention for video is to set
+             * it to 0 ("unbounded", read until the next PES start code)
+             * specifically because compressed frames routinely exceed that.
+             * Some real-world encoders declare a real, non-zero length for
+             * video anyway, and when the true access unit is larger than
+             * that declared length (common above a few hundred kbps, and
+             * observed here from two independent IPTV sources), trusting it
+             * silently truncates every oversized frame right at the
+             * declared length and hands the truncated remainder to the next
+             * PID scan as if it were fresh PES data - decode_annexb() then
+             * sees a NAL cut off mid-payload and fails every single frame
+             * this happens to (h264-decode-error, packet after packet,
+             * indefinitely on a live stream that never stops sending more
+             * to fail the same way). Audio (AAC/ADTS) frames are always
+             * well under the 16-bit limit, so this only needs to ignore the
+             * declared length for video - always fall back to the same
+             * PUSI-terminated unbounded accumulation already used when the
+             * encoder itself declares length 0, which line 869's "pusi &&
+             * a->active && a->len" check above already handles correctly. */
+            a->expected = video ? 0 : expected;
             a->has_pts = has_pts;
             a->pts = pts;
         } else if (!a->active) {

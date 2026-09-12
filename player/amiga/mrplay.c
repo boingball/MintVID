@@ -1997,6 +1997,15 @@ int main(int argc, char **argv)
                  mr_decoder_close(&dec); mr_demux_close(dx);
                  free(buf); return mrplay_exit(10); }
     printf("display backend: %s\n", display_backend_name(disp));
+    /* Everything printed so far (codec probe, media info, display backend)
+     * is the last known-good state if what follows hangs before the first
+     * frame decodes - a real, observed failure mode on some IPTV streams.
+     * stdout is already unbuffered (setvbuf() above), but the destination
+     * filesystem can still cache Write()s in memory for a few seconds before
+     * committing them to the physical device; Flush() forces that commit now
+     * rather than leaving this durable only up to whenever the OS next
+     * flushes on its own. */
+    Flush(Output());
     player_status(MR_PLAYER_STATE_OPENING, codec->name,
                   "Display open; buffering first frame...");
     /* True whenever this (H.264-only) session can go straight from the
@@ -2936,6 +2945,14 @@ int main(int argc, char **argv)
                 if (audio) service_audio_for_display(&trace);
                 report_stats(&stats, audio, dx, &trace, qcount, now);
                 if (audio) service_audio_for_display(&trace);
+                /* Same reasoning as the startup Flush() above, but as an
+                 * ongoing safety net: this is the periodic (every
+                 * STATS_INTERVAL_US) --time report, so a hang later in
+                 * playback still leaves a log durable up to at most one
+                 * report interval before it, not however long the
+                 * destination filesystem's own write-back cache happened to
+                 * be holding onto. */
+                Flush(Output());
             }
             continue;
         }

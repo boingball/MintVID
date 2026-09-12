@@ -42,6 +42,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "../core/mr_play_options.h"
+#include "../iptv/mr_iptv.h"
 #include "mr_master_options.h"
 #include "mr_akiko.h"
 #include "mr_gui_menu.h"
@@ -560,6 +561,18 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
 }
 
 #define STATUS_POLL_MICROS 250000UL
+/* iptvgui's own process exists (LoadSeg()/CreateNewProcTags() has already
+ * returned) long before its window is actually open and interactive - it
+ * still has to load/refresh its channel cache first, which is the real
+ * source of the "takes a while to show the window" delay. Polled on the
+ * same STATUS_POLL_MICROS tick as poll_player_status() below, so ~15s here
+ * is that many ticks, not a separate timer. Bounded so a launch that never
+ * completes (missing binary, crash) doesn't leave the button disabled and
+ * the busy pointer up forever. */
+#define IPTV_LAUNCH_TIMEOUT_TICKS 60UL
+
+static int iptv_launch_pending;
+static ULONG iptv_launch_ticks;
 
 static struct MsgPort *status_timer_port;
 static struct timerequest *status_timer_io;
@@ -633,6 +646,46 @@ static void poll_player_status(Object *info, struct Window *window)
     else
         return;
     set_info(info, window, line);
+}
+
+/* Called on the same status_timer tick as poll_player_status() while an
+ * iptvgui launch is pending. Clears the busy indicator once iptvgui's own
+ * window is open (MR_IPTV_GUI_PORT appears) or, failing that, once the
+ * bounded timeout elapses. */
+static void poll_iptv_launch(Object *info, struct Window *window,
+                             Object *iptv_button)
+{
+    int ready;
+
+    if (!iptv_launch_pending)
+        return;
+    Forbid();
+    ready = FindPort((CONST_STRPTR)MR_IPTV_GUI_PORT) != NULL;
+    Permit();
+    if (!ready && ++iptv_launch_ticks < IPTV_LAUNCH_TIMEOUT_TICKS)
+        return;
+    iptv_launch_pending = 0;
+    SetWindowPointer(window, TAG_DONE);
+    SetGadgetAttrs((struct Gadget *)iptv_button, window, NULL,
+                   GA_Disabled, FALSE, TAG_DONE);
+    set_info(info, window,
+            ready ? NULL
+                  : "IPTV browser did not open (missing binary or crash?).");
+}
+
+/* Immediate feedback for the button click - iptvgui's own process exists
+ * as soon as open_iptv_browser() returns, but its window can take a real
+ * moment to appear (channel cache load/refresh) with nothing else visible
+ * changing in the meantime. */
+static void start_iptv_launch(Object *info, struct Window *window,
+                              Object *iptv_button)
+{
+    SetGadgetAttrs((struct Gadget *)iptv_button, window, NULL,
+                   GA_Disabled, TRUE, TAG_DONE);
+    SetWindowPointer(window, WA_BusyPointer, TRUE, TAG_DONE);
+    set_info(info, window, "Opening IPTV browser...");
+    iptv_launch_pending = 1;
+    iptv_launch_ticks = 0;
 }
 
 static void start_player(Object *file, Object *mode, Object *c2p,
@@ -1129,6 +1182,7 @@ int main(void)
                 ;
             status_timer_running = 0;
             poll_player_status(info, window);
+            poll_iptv_launch(info, window, iptv_button);
             status_timer_start();
         }
 
@@ -1202,6 +1256,7 @@ int main(void)
                     publish_play_options(master_options, mode, c2p, h264,
                                          lace, twox, audio_rate, fast_buffer,
                                          no_audio, mono_audio);
+                    start_iptv_launch(info, window, iptv_button);
                     open_iptv_browser(mode, c2p, h264, lace, twox,
                                       audio_rate, fast_buffer, no_audio,
                                       mono_audio, info, window);

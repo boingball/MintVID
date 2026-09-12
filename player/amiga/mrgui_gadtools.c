@@ -1,5 +1,6 @@
 /* MintVID-GT: OS 3.0 GadTools controller for the shared mrplay engine. */
 #include "../core/mr_play_options.h"
+#include "../iptv/mr_iptv.h"
 #include "mr_akiko.h"
 #include "mr_gui_menu.h"
 #include "mr_master_options.h"
@@ -57,6 +58,13 @@ typedef struct gt_app {
     struct Gadget *gadgets;
     struct Gadget *file, *mode, *c2p, *h264, *lace, *twox, *info;
     struct Gadget *audio_rate, *fast_buffer, *no_audio, *mono_audio;
+    struct Gadget *iptv;
+    /* iptvgui-GT's own process exists (LoadSeg()/CreateNewProcTags() has
+     * returned) long before its window is actually open - it still has to
+     * load/refresh its channel cache first. Polled on the same timer tick
+     * as poll_status() below; see start_iptv_launch()/poll_iptv_launch(). */
+    int iptv_launch_pending;
+    ULONG iptv_launch_ticks;
     struct FileRequester *requester;
     mr_master_options_port *master;
     mr_gui_menu menu;
@@ -157,6 +165,50 @@ static void poll_status(gt_app *app)
     else
         return; /* STARTING/OPENING: leave whatever Info: already shows */
     set_info(app, line);
+}
+
+/* ~15s at the 250ms/4Hz status_timer tick above. Bounded so a launch that
+ * never completes (missing binary, crash) doesn't leave the IPTV button
+ * disabled and the busy pointer up forever. */
+#define IPTV_LAUNCH_TIMEOUT_TICKS 60UL
+
+/* Called on the same status_timer tick as poll_status() while an
+ * iptvgui-GT launch is pending. Clears the busy indicator once its window
+ * is open (MR_IPTV_GUI_PORT appears) or, failing that, once the bounded
+ * timeout elapses. */
+static void poll_iptv_launch(gt_app *app)
+{
+    int ready;
+
+    if (!app->iptv_launch_pending)
+        return;
+    Forbid();
+    ready = FindPort((CONST_STRPTR)MR_IPTV_GUI_PORT) != NULL;
+    Permit();
+    if (!ready && ++app->iptv_launch_ticks < IPTV_LAUNCH_TIMEOUT_TICKS)
+        return;
+    app->iptv_launch_pending = 0;
+    SetWindowPointer(app->window, TAG_DONE);
+    if (app->iptv)
+        GT_SetGadgetAttrs(app->iptv, app->window, NULL,
+                         GA_Disabled, FALSE, TAG_DONE);
+    set_info(app, ready ? "" : "IPTV browser did not open "
+                              "(missing binary or crash?).");
+}
+
+/* Immediate feedback for the button click - iptvgui-GT's own process
+ * exists as soon as launch() returns, but its window can take a real
+ * moment to appear (channel cache load/refresh) with nothing else visible
+ * changing in the meantime. */
+static void start_iptv_launch(gt_app *app)
+{
+    if (app->iptv)
+        GT_SetGadgetAttrs(app->iptv, app->window, NULL,
+                         GA_Disabled, TRUE, TAG_DONE);
+    SetWindowPointer(app->window, WA_BusyPointer, TRUE, TAG_DONE);
+    set_info(app, "Opening IPTV browser...");
+    app->iptv_launch_pending = 1;
+    app->iptv_launch_ticks = 0;
 }
 
 static int status_timer_open(gt_app *app)
@@ -412,10 +464,20 @@ static void open_browser(gt_app *app, int youtube)
     const char *task = youtube ? "MintVID YouTube GT" : "MintVID IPTV GT";
     read_options(app, &options);
     publish_options(app);
+    if (!youtube)
+        start_iptv_launch(app);
     if (!mr_build_iptv_arguments(args, sizeof(args), &options) ||
-        !launch(program, task, args))
+        !launch(program, task, args)) {
         set_info(app, youtube ? "Could not start ytgui-GT."
                               : "Could not start iptvgui-GT.");
+        if (!youtube) {
+            app->iptv_launch_pending = 0;
+            SetWindowPointer(app->window, TAG_DONE);
+            if (app->iptv)
+                GT_SetGadgetAttrs(app->iptv, app->window, NULL,
+                                 GA_Disabled, FALSE, TAG_DONE);
+        }
+    }
 }
 
 static struct Gadget *add_gadget(gt_app *app, struct Gadget *previous,
@@ -530,8 +592,8 @@ static int build_window(gt_app *app)
 
     /* Browsers get their own row so transport and service actions are visually
      * distinct and the controller never grows horizontally again. */
-    g = add_gadget(app, g, BUTTON_KIND, G_IPTV, 8, 116, 100, 18, "IPTV...",
-                   TAG_IGNORE, 0);
+    app->iptv = g = add_gadget(app, g, BUTTON_KIND, G_IPTV, 8, 116, 100, 18,
+                              "IPTV...", TAG_IGNORE, 0);
     g = add_gadget(app, g, BUTTON_KIND, G_YOUTUBE, 114, 116, 110, 18,
                    "YouTube...", TAG_IGNORE, 0);
     app->info = g = add_gadget(app, g, TEXT_KIND, G_INFO, 8, 140, 615, 16,
@@ -617,6 +679,7 @@ int main(void)
                 ;
             app.timer_running = 0;
             poll_status(&app);
+            poll_iptv_launch(&app);
             status_timer_start(&app);
         }
         while ((msg = GT_GetIMsg(app.window->UserPort)) != NULL) {

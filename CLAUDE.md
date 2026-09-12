@@ -706,6 +706,65 @@ An AVI carrying the numeric `BI_RLE8` in `biCompression` puts the codec tag in
 registry — see the case-insensitive matching note above. `make check` decodes a
 66x50 clip (`test_msrle.avi`); the width deliberately is not a multiple of four.
 
+## MPEG-TS video PES notes
+**A video PES's own declared `PES_packet_length` cannot be trusted, and
+`mr_ts.c` used to trust it anyway - silently truncating every frame that
+exceeded it, forever, on a live stream that never stops sending more frames
+to fail the same way.** The MPEG-2 Systems spec's documented convention for
+video is `PES_packet_length = 0` ("unbounded, read until the next PES start
+code") specifically because compressed frames routinely exceed the 16-bit
+field's 65535-byte ceiling. `mr_ts_next_packet()` already handled that
+`0` case correctly (accumulate until the next PUSI/PID-matching start code),
+but when an encoder declared a real, non-zero length for video anyway - and
+the true access unit was bigger than that - the code clamped the current TS
+packet's contribution to fit exactly that declared length, emitted the PES
+the instant the accumulated byte count reached it, and then *silently
+dropped* every following continuation TS packet for that access unit
+(`a->active` gets reset by `emit_pes()`, so a non-PUSI continuation packet
+hits the `else if (!a->active) continue;` branch and never reaches
+`pes_append()` at all) right up to the next real PES start code. The
+decoder then sees a NAL cut off mid-payload and fails - `h264-decode-error:
+packet N len=...` in `mrplay.c`, repeating packet after packet, forever,
+since a live stream never stops sending more frames for this to keep
+happening to. From the player's own perspective this doesn't read as a
+crash or a literal infinite loop: nothing ever stops running, video simply
+never advances (a black/frozen display, unresponsive to input in practice
+because the scheduler is fully consumed servicing this), which needed a
+hardware reset to clear on real hardware - a `RAM:MintVID.log` survived one
+such reset (moved to persistent storage - see the mrplay.c/*_gadtools.c/
+*_reaction.c `MRPLAY_LOG_FILE` note) and showed hundreds of consecutive
+`h264-decode-error` lines with `len=65477` recurring constantly - suspiciously
+close to the 16-bit field's own 65535 ceiling minus this project's 9-byte
+zero-PTS PES header overhead, confirming the mechanism. Observed from two
+independent, unrelated IPTV re-stream providers, so this is a real-world-common
+encoder behavior, not a one-off broken stream.
+
+Fixed by always treating a *video* PES as unbounded in
+`mr_ts_next_packet()`, regardless of what `PES_packet_length` the encoder
+declared - relying purely on the next PUSI (or end-of-stream drain) to
+know a video access unit is complete, which is provably safe because it is
+already exactly how the pre-existing `packet_len == 0` case worked. Audio
+(ADTS AAC, MPEG Layer II) keeps trusting its own declared length: audio
+frames are always comfortably under the 16-bit limit, so there is nothing
+to fix there, and forcing unbounded reassembly for audio too would only
+add unnecessary one-frame latency. `tests/mr_ts_video_pes_check.c` pins
+this directly: a synthetic video PES whose PUSI packet declares a length
+far shorter than the real payload, followed by a non-PUSI continuation
+packet, must reassemble to the *full* combined length - stashing the fix
+out of `mr_ts.c` and rebuilding reproduces the exact truncated-length
+failure this test exists to catch, run as part of `make check`.
+
+This is also why `mr_ts_mp2_check.c`'s two-PES fixture (one video PES, one
+audio PES, nothing after) now returns audio first and video second: the
+video PES here has no second video PES after it to trigger emission via
+the next-PUSI path, so it is only ever recognized as complete by the final
+end-of-stream drain - after the audio PES (the very next, and only
+remaining, PES in the stream) has already emitted through the ordinary
+in-loop path. Before the fix, this fixture's declared video length
+happened to exactly match its real payload, so video emitted eagerly and
+arrived first - correct only by coincidence of the fixture's own numbers,
+not a property the fix needed to preserve.
+
 ## AGA direct-planar C2P notes
 `mr_c2p_mode MR_C2P_DIRECT` (`--direct-c2p`, GUI "Direct") is a single hand
 kernel (`core/mr_yuv_dither_planar_direct_m68k.S`) that dithers straight to
