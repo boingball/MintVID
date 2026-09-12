@@ -802,60 +802,84 @@ unattributed-remainder idea `ih264d_stage_profile.h` already uses, just a
 much smaller and more useful one now that three of its four components are
 broken out.
 
-**The CABAC bin wrapper's own overhead turned out to be a real, fixable
-cost, not just a candidate to measure.** `ih264d_cabac_wrap.c`'s
-`__wrap_ih264d_decode_bin()` - the GNU-ld `--wrap` trampoline redirecting
-every one of the ~40+ vendored call sites for the single most-executed
-CABAC primitive - was a plain C function whose entire body was `return
-mr_ih264d_decode_bin_m68k(u4_ctx_inc, ps_src_bin_ctxt, ps_bitstrm,
-ps_cab_env);`. That is a second full call/return layer - its own prologue/
-epilogue, its own reload of all four arguments from its caller's stack
-frame to pass down again - wrapped around a function whose own header
-comment already justifies hand-asm on the strength of "keeping every live
-value pinned in registers across the whole function body". Paid on every
-single decoded bin (tens of thousands of calls per frame), this was exactly
-the kind of per-call tax that primitive was hand-written to avoid one layer
-further out.
+**The CABAC bin wrapper's own overhead is a real, measurable cost - but the
+first attempt at removing it broke the one build that actually matters, and
+was reverted.** `ih264d_cabac_wrap.c`'s `__wrap_ih264d_decode_bin()` - the
+GNU-ld `--wrap` trampoline redirecting every one of the ~40+ vendored call
+sites for the single most-executed CABAC primitive - is a plain C function
+whose entire body is `return mr_ih264d_decode_bin_m68k(u4_ctx_inc,
+ps_src_bin_ctxt, ps_bitstrm, ps_cab_env);`. That is a second full
+call/return layer - its own prologue/epilogue, its own reload of all four
+arguments from its caller's stack frame to pass down again - wrapped around
+a function whose own header comment already justifies hand-asm on the
+strength of "keeping every live value pinned in registers across the whole
+function body". Paid on every single decoded bin (tens of thousands of
+calls per frame), this is exactly the kind of per-call tax that primitive
+was hand-written to avoid one layer further out.
 
-The fix: `--wrap` only needs a symbol named `__wrap_ih264d_decode_bin` to
-exist somewhere in the link with the right calling convention - it does not
-have to be a C function. `ih264_m68k_cabac.S` now exports that name as a
-second label at the exact same address as `mr_ih264d_decode_bin_m68k` (the
-name the differential fuzz test still calls directly), so `--wrap=
-ih264d_decode_bin` redirects every call straight into the asm primitive
-with zero C code in between. `ih264d_cabac_wrap.c`'s C trampoline still
-exists but now only compiles in under `MR_H264_CABAC_PROFILE` (where it
-also feeds `bin_us`/`bin_count` via two `clock()` calls) - the two files'
-guards are complementary (`!defined(MR_H264_CABAC_PROFILE)` in the `.S`,
-`defined(...)` in the `.c`), so exactly one of them provides the symbol in
-any given build: never zero (`--wrap` hard-errors on a missing wrapper) and
-never both (duplicate symbol). `ih264d_parse_cabac_coeff_port.c`'s and
-`ih264d_mvpred_dispatch_port.c`'s own wrap functions get the same rename-
-and-thin-trampoline split for their `MR_H264_CABAC_PROFILE` timing (their
-mechanically-diffed-against-vendored bodies are otherwise untouched
-either way) - those two are called far less often per frame than
-`ih264d_decode_bin()`, so accepting one extra call layer only in the
-diagnostic build is a reasonable trade there; `ih264d_decode_bin()`'s much
-higher call volume is what justified removing it unconditionally instead.
+The first fix tried: `--wrap` only needs a symbol named
+`__wrap_ih264d_decode_bin` to exist somewhere in the link with the right
+calling convention, so `ih264_m68k_cabac.S` exported that name directly as
+a second label at the exact same address as `mr_ih264d_decode_bin_m68k` -
+no C code at all. This built, linked and decoded every H.264 fixture
+correctly under `m68k-linux-gnu`/qemu (`make check-m68k`, unchanged
+worst-frame MAE) - **but failed the real AmigaOS link**: `m68k-amigaos-gcc`/
+Bebbo's `ld` reported `undefined reference to ih264d_decode_bin` building
+for real, something the qemu/ELF toolchain this project's CI relies on for
+everything else in this family of fixes was structurally unable to catch
+(exactly the class of gap "Validate against ffmpeg" above already warns
+about, just for a *linking* behaviour rather than instruction safety or
+bit-exactness this time - the same shape as the AmigaOS-underscore lesson
+in the 68060 MP2 kernel notes, though the mechanism isn't identical: adding
+a `_`-prefixed alias is *not* what's missing here, since `--wrap`'s own
+existing cross-object usages in this file's siblings
+(`ih264d_mvpred_dispatch_port.c`, `ih264d_parse_cabac_coeff_port.c`,
+`ih264d_update_qp_wrap.c`) already link on real Amiga hardware with a bare,
+undecorated `--wrap=` argument same as here). What's different about this
+one case is that its `__wrap_...` symbol was provided by hand-written
+assembly with no C function at all, instead of a compiled C trampoline -
+something about that specifically does not survive Bebbo's link. Root
+cause not pinned down: there is no AmigaOS toolchain on this dev host to
+iterate against (see "Validate against ffmpeg"), so this needed a real
+build to catch and would need a real build to keep investigating.
 
-Verified on real m68k/big-endian under qemu two ways:
-`tests/run_m68k_check.sh`'s default build (no `CABAC_PROFILE`) links and
-decodes every existing H.264 fixture exactly as before (same worst-frame
-MAE as pre-change) - proving the direct-asm-export path is what actually
-gets linked and executed, not silently falling back to the vendored C the
-way a `--wrap` mistake would. A second build with `-DMR_H264_CABAC_PROFILE=1`
-(`mr_decode_cabac_profile.m68k`, one dedicated H.264 clip, not the whole
-suite) proves the diagnostic trampoline path also compiles, links and
-decodes bit-for-bit identically. The existing differential CABAC/mvpred
-fuzz tests (`mr_h264_m68k_check`, `mr_h264_cabac_coeff_check`,
-`mr_h264_mvpred_dispatch_check`) and the 68060 disassembly scan of
-`vendor/libavc_port` (still clean of extended `MULS.L`/`MULU.L`/divide and
-`__muldi3`/`__divdi3`/`__udivdi3`) all pass unchanged, on host and m68k
-alike. Actual speedup on real 68060/68030 silicon - the reason for doing
-this - still needs a real-hardware pass to confirm, same as every other
-asm-overhead claim in this file; the counters this section adds are what
-that pass should read to find the next target once `bin_us`'s own overhead
-is accounted for.
+Reverted rather than shipped broken for the one target that matters:
+`ih264_m68k_cabac.S` no longer exports `__wrap_ih264d_decode_bin` at all,
+and `ih264d_cabac_wrap.c`'s C trampoline unconditionally provides the
+symbol again in every `MR_M68K_ASM` build, exactly as it always did. The
+`MR_H264_CABAC_PROFILE` `bin_us`/`bin_count` timing (two `clock()` calls)
+is now a runtime branch *inside* that one always-present function instead
+of a second file competing to provide the symbol - a build with the flag
+times the call, a build without does not, but both are the same trampoline
+shape, the one already proven to link on real Amiga hardware.
+`ih264d_parse_cabac_coeff_port.c`'s and `ih264d_mvpred_dispatch_port.c`'s
+own wrap functions still use the rename-and-thin-trampoline split for their
+`MR_H264_CABAC_PROFILE` timing (unaffected by this - those symbols were
+never touched, only `ih264d_decode_bin`'s was) - their
+mechanically-diffed-against-vendored bodies stay untouched either way, and
+they were never the ones this specific link failure hit.
+
+Net effect: the profiling counters (`bin_us`/`coeff_us`/`mvpred_us`) stand
+as designed and verified. The wrapper-overhead *removal* does not - it is
+back to paying the extra call/return layer on every decoded bin, same as
+before this investigation started. A real fix needs either a real AmigaOS
+toolchain session to iterate against directly, or a different mechanism
+that doesn't route a hand-asm-only symbol through `--wrap` in the first
+place (e.g. teaching `ih264d_cabac_wrap.c`'s trampoline itself to become a
+tail call the compiler can eliminate, rather than trying to bypass it
+entirely) - not attempted here.
+
+Verified on real m68k/big-endian under qemu (both mechanisms, before the
+revert and after): `tests/run_m68k_check.sh`'s default build links and
+decodes every existing H.264 fixture with unchanged worst-frame MAE either
+way, a `-DMR_H264_CABAC_PROFILE=1` build (`mr_decode_cabac_profile.m68k`,
+one dedicated H.264 clip) decodes bit-for-bit identically, and the existing
+differential CABAC/mvpred fuzz tests (`mr_h264_m68k_check`,
+`mr_h264_cabac_coeff_check`, `mr_h264_mvpred_dispatch_check`) and the
+68060 disassembly scan of `vendor/libavc_port` all pass unchanged on host
+and m68k alike. None of that caught the AmigaOS link failure - only an
+actual `m68k-amigaos-gcc` build did, which is exactly the gap this section
+exists to record.
 
 **Fast/Turbo's bilinear luma path had one genuinely hot branch doing per-
 pixel general multiplication where the weights never change within a call -
