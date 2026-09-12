@@ -14,6 +14,7 @@ LIBAVC_DECODER = $(wildcard $(LIBAVC_ROOT)/decoder/*.c)
 LIBAVC_PORTSRC = $(LIBAVC_PORT)/ih264d_function_selector_port.c \
                  $(LIBAVC_PORT)/ih264_mc_degrade.c \
                  $(LIBAVC_PORT)/ih264d_stage_profile.c \
+                 $(LIBAVC_PORT)/ih264d_cabac_profile.c \
                  $(LIBAVC_PORT)/ih264d_update_qp_wrap.c \
                  $(LIBAVC_PORT)/ih264_m68k_optim.c \
                  $(LIBAVC_PORT)/ih264_m68k_interp.S \

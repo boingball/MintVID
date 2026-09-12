@@ -84,12 +84,34 @@
 #include "ih264d_tables.h"
 #include "ih264_m68k_optim.h"
 
+#if defined(MR_H264_CABAC_PROFILE)
+#include "ih264d_cabac_profile.h"
+#include <time.h>
+#endif
+
 #if defined(MR_M68K_ASM)
 #define MV_PRED(result, pred, ref_idx, b) \
     mr_ih264d_get_motion_vector_predictor_m68k((UWORD8 *)(result), \
         (UWORD8 **)(pred), (ref_idx), (b), \
         (const UWORD8 *)gau1_ih264d_mv_pred_condition)
 
+/* Named __wrap_... directly in a normal build; renamed to a plain static
+ * helper under MR_H264_CABAC_PROFILE, where a thin timing trampoline below
+ * takes the public name instead - same split as
+ * ih264d_parse_cabac_coeff_port.c, and for the same reason: this function's
+ * own body stays untouched either way. */
+#if defined(MR_H264_CABAC_PROFILE)
+static UWORD8 mr_mvpred_nonmbaffB_impl(dec_struct_t *ps_dec,
+                                       dec_mb_info_t *ps_cur_mb_info,
+                                       mv_pred_t *ps_mv_nmb,
+                                       mv_pred_t *ps_mv_ntop,
+                                       mv_pred_t *ps_mv_final_pred,
+                                       UWORD32 u4_sub_mb_num,
+                                       UWORD8 uc_mb_part_width,
+                                       UWORD8 u1_lx_start,
+                                       UWORD8 u1_lxend,
+                                       UWORD8 u1_mb_mc_mode)
+#else
 UWORD8 __wrap_ih264d_mvpred_nonmbaffB(dec_struct_t *ps_dec,
                                       dec_mb_info_t *ps_cur_mb_info,
                                       mv_pred_t *ps_mv_nmb,
@@ -100,6 +122,7 @@ UWORD8 __wrap_ih264d_mvpred_nonmbaffB(dec_struct_t *ps_dec,
                                       UWORD8 u1_lx_start,
                                       UWORD8 u1_lxend,
                                       UWORD8 u1_mb_mc_mode)
+#endif
 {
     UWORD8 u1_a_in, u1_b_in, uc_temp1, uc_temp2, uc_temp3;
     mv_pred_t *ps_mv_pred[3];
@@ -229,6 +252,46 @@ UWORD8 __wrap_ih264d_mvpred_nonmbaffB(dec_struct_t *ps_dec,
     return (u1_direct_zero_pred_flag);
 }
 
+#if defined(MR_H264_CABAC_PROFILE)
+/* Both mvpred wrap functions in this file feed the same mvpred_us/
+ * mvpred_count bucket (see ih264d_cabac_profile.h) - B-slice vs P/B-slice
+ * non-MBAFF dispatch is the same conceptual "MV prediction" stage from a
+ * profiling point of view. */
+UWORD8 __wrap_ih264d_mvpred_nonmbaffB(dec_struct_t *ps_dec,
+                                      dec_mb_info_t *ps_cur_mb_info,
+                                      mv_pred_t *ps_mv_nmb,
+                                      mv_pred_t *ps_mv_ntop,
+                                      mv_pred_t *ps_mv_final_pred,
+                                      UWORD32 u4_sub_mb_num,
+                                      UWORD8 uc_mb_part_width,
+                                      UWORD8 u1_lx_start,
+                                      UWORD8 u1_lxend,
+                                      UWORD8 u1_mb_mc_mode)
+{
+    UWORD8 ret;
+    clock_t t0 = clock();
+    ret = mr_mvpred_nonmbaffB_impl(ps_dec, ps_cur_mb_info, ps_mv_nmb,
+                                   ps_mv_ntop, ps_mv_final_pred, u4_sub_mb_num,
+                                   uc_mb_part_width, u1_lx_start, u1_lxend,
+                                   u1_mb_mc_mode);
+    mr_h264_cabac_profile_add_mvpred(
+        (unsigned long)((clock() - t0) * 1000000UL / CLOCKS_PER_SEC));
+    return ret;
+}
+#endif
+
+#if defined(MR_H264_CABAC_PROFILE)
+static UWORD8 mr_mvpred_nonmbaff_impl(dec_struct_t *ps_dec,
+                                      dec_mb_info_t *ps_cur_mb_info,
+                                      mv_pred_t *ps_mv_nmb,
+                                      mv_pred_t *ps_mv_ntop,
+                                      mv_pred_t *ps_mv_final_pred,
+                                      UWORD32 u4_sub_mb_num,
+                                      UWORD8 uc_mb_part_width,
+                                      UWORD8 u1_lx_start,
+                                      UWORD8 u1_lxend,
+                                      UWORD8 u1_mb_mc_mode)
+#else
 UWORD8 __wrap_ih264d_mvpred_nonmbaff(dec_struct_t *ps_dec,
                                      dec_mb_info_t *ps_cur_mb_info,
                                      mv_pred_t *ps_mv_nmb,
@@ -239,6 +302,7 @@ UWORD8 __wrap_ih264d_mvpred_nonmbaff(dec_struct_t *ps_dec,
                                      UWORD8 u1_lx_start,
                                      UWORD8 u1_lxend,
                                      UWORD8 u1_mb_mc_mode)
+#endif
 {
     UWORD8 u1_a_in, u1_b_in, uc_temp1, uc_temp2, uc_temp3;
     mv_pred_t *ps_mv_pred[3];
@@ -358,4 +422,28 @@ UWORD8 __wrap_ih264d_mvpred_nonmbaff(dec_struct_t *ps_dec,
 
     return (u1_direct_zero_pred_flag);
 }
+
+#if defined(MR_H264_CABAC_PROFILE)
+UWORD8 __wrap_ih264d_mvpred_nonmbaff(dec_struct_t *ps_dec,
+                                     dec_mb_info_t *ps_cur_mb_info,
+                                     mv_pred_t *ps_mv_nmb,
+                                     mv_pred_t *ps_mv_ntop,
+                                     mv_pred_t *ps_mv_final_pred,
+                                     UWORD32 u4_sub_mb_num,
+                                     UWORD8 uc_mb_part_width,
+                                     UWORD8 u1_lx_start,
+                                     UWORD8 u1_lxend,
+                                     UWORD8 u1_mb_mc_mode)
+{
+    UWORD8 ret;
+    clock_t t0 = clock();
+    ret = mr_mvpred_nonmbaff_impl(ps_dec, ps_cur_mb_info, ps_mv_nmb,
+                                  ps_mv_ntop, ps_mv_final_pred, u4_sub_mb_num,
+                                  uc_mb_part_width, u1_lx_start, u1_lxend,
+                                  u1_mb_mc_mode);
+    mr_h264_cabac_profile_add_mvpred(
+        (unsigned long)((clock() - t0) * 1000000UL / CLOCKS_PER_SEC));
+    return ret;
+}
+#endif
 #endif /* MR_M68K_ASM */

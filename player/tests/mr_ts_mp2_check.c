@@ -69,13 +69,27 @@ int main(void)
         fprintf(stderr, "bad MPEG Layer II metadata\n");
         return 1;
     }
-    if (mr_ts_next_packet(&ts, &pkt) != MR_OK || !pkt.is_video) {
-        fprintf(stderr, "missing video PES\n");
-        return 1;
-    }
+    /* Audio arrives first now, video second - not because audio is somehow
+     * prioritized, but because mr_ts_next_packet() no longer trusts a
+     * video PES's own declared PES_packet_length to know it is complete
+     * (see the fix in mr_ts.c): video only ever finalizes on the next PES
+     * start code for that PID, or end-of-stream drain, matching the real
+     * MPEG-2 Systems spec convention for video regardless of what this
+     * particular encoder happened to declare. This fixture's one video PES
+     * has no second video PES after it, so it is only ever recognized as
+     * complete by the end-of-stream drain (after the audio PES, the very
+     * next and only remaining PES in the stream, has already emitted
+     * through the ordinary in-loop path). Before the fix this fixture's
+     * declared video length happened to exactly match its real payload, so
+     * it emitted eagerly and arrived first - correct by coincidence, not by
+     * something the fix should have to preserve. */
     if (mr_ts_next_packet(&ts, &pkt) != MR_OK || pkt.is_video ||
         pkt.len != 4 || pkt.data[0] != 0xff || pkt.data[1] != 0xfd) {
         fprintf(stderr, "missing MPEG Layer II PES\n");
+        return 1;
+    }
+    if (mr_ts_next_packet(&ts, &pkt) != MR_OK || !pkt.is_video) {
+        fprintf(stderr, "missing video PES\n");
         return 1;
     }
     mr_ts_close(&ts);

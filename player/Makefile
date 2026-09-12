@@ -159,6 +159,10 @@ mr_ts_mp2_check: tests/mr_ts_mp2_check.c core/mr_ts.c core/mr_ts.h \
                  core/mr_latm.c core/mr_latm.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_ts_mp2_check.c core/mr_ts.c core/mr_latm.c
 
+mr_ts_video_pes_check: tests/mr_ts_video_pes_check.c core/mr_ts.c core/mr_ts.h \
+                       core/mr_latm.c core/mr_latm.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_ts_video_pes_check.c core/mr_ts.c core/mr_latm.c
+
 mr_mkv_check: tests/mr_mkv_check.c core/mr_mkv.c core/mr_mkv.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_mkv_check.c core/mr_mkv.c
 
@@ -387,7 +391,7 @@ mr_youtube_search_check: tests/mr_youtube_search_check.c \
 	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_search_check.c \
 	    youtube/mr_youtube_search.c
 
-check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_yuv_planar_queue_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg1_audio_time_check mr_mpeg2_yuv_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_cinepak_indexed_check mr_msvideo1_indexed_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_micro_rescue_check mr_muldiv64_check mr_ih264_divmod_check mr_h264_m68k_check mr_h264_mc_degrade_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check mr_source_buffer_check
+check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_registry_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check mr_dither_check mr_yuv_dither_check mr_yuv_planar_queue_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg1_audio_time_check mr_mpeg2_yuv_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_ts_video_pes_check mr_mkv_check mr_mov_seek_check mr_legacy_video_check mr_cinepak_indexed_check mr_msvideo1_indexed_check mr_rawvideo_check mr_pcm_u8_check mr_audio_rate_check mr_aspect_check mr_media_clock_check mr_micro_rescue_check mr_muldiv64_check mr_ih264_divmod_check mr_h264_m68k_check mr_h264_mc_degrade_check mr_iptv_check mr_youtube_check mr_youtube_search_check mr_hls_override_check mr_source_buffer_check
 	./mr_source_buffer_check
 	./mr_youtube_search_check
 	./mr_youtube_check
@@ -422,6 +426,7 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	./mr_ps_pts_check tests/assets/test_mpeg1_mp2.mpg 540000 40000 518188
 	./mr_ps_pts_check tests/assets/test_mpeg1.mpg 540000 40000
 	./mr_ts_mp2_check
+	./mr_ts_video_pes_check
 	@test -d tests/assets/ref_cinepak && test -d tests/assets/ref_mov \
 	    && test -d tests/assets/ref_cinepak_strips \
 	    && test -d tests/assets/ref_msvideo1 \
@@ -601,7 +606,7 @@ check-m68k:
 clean:
 	rm -f mr_decode mr_decode_ssl mr_audio_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check \
 	      mr_ac3_check mr_mp2_synth_check mr_mp2_idct_check \
-	      mr_dither_check mr_yuv_dither_check mr_yuv_planar_queue_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg2_yuv_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_mkv_check \
+	      mr_dither_check mr_yuv_dither_check mr_yuv_planar_queue_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg2_yuv_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_ts_video_pes_check mr_mkv_check \
 	      mr_mov_seek_check
 	rm -f mr_legacy_video_check mr_cinepak_indexed_check mr_msvideo1_indexed_check
 	rm -f mr_rawvideo_check mr_codec_registry_check

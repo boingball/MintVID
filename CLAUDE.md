@@ -706,6 +706,65 @@ An AVI carrying the numeric `BI_RLE8` in `biCompression` puts the codec tag in
 registry — see the case-insensitive matching note above. `make check` decodes a
 66x50 clip (`test_msrle.avi`); the width deliberately is not a multiple of four.
 
+## MPEG-TS video PES notes
+**A video PES's own declared `PES_packet_length` cannot be trusted, and
+`mr_ts.c` used to trust it anyway - silently truncating every frame that
+exceeded it, forever, on a live stream that never stops sending more frames
+to fail the same way.** The MPEG-2 Systems spec's documented convention for
+video is `PES_packet_length = 0` ("unbounded, read until the next PES start
+code") specifically because compressed frames routinely exceed the 16-bit
+field's 65535-byte ceiling. `mr_ts_next_packet()` already handled that
+`0` case correctly (accumulate until the next PUSI/PID-matching start code),
+but when an encoder declared a real, non-zero length for video anyway - and
+the true access unit was bigger than that - the code clamped the current TS
+packet's contribution to fit exactly that declared length, emitted the PES
+the instant the accumulated byte count reached it, and then *silently
+dropped* every following continuation TS packet for that access unit
+(`a->active` gets reset by `emit_pes()`, so a non-PUSI continuation packet
+hits the `else if (!a->active) continue;` branch and never reaches
+`pes_append()` at all) right up to the next real PES start code. The
+decoder then sees a NAL cut off mid-payload and fails - `h264-decode-error:
+packet N len=...` in `mrplay.c`, repeating packet after packet, forever,
+since a live stream never stops sending more frames for this to keep
+happening to. From the player's own perspective this doesn't read as a
+crash or a literal infinite loop: nothing ever stops running, video simply
+never advances (a black/frozen display, unresponsive to input in practice
+because the scheduler is fully consumed servicing this), which needed a
+hardware reset to clear on real hardware - a `RAM:MintVID.log` survived one
+such reset (moved to persistent storage - see the mrplay.c/*_gadtools.c/
+*_reaction.c `MRPLAY_LOG_FILE` note) and showed hundreds of consecutive
+`h264-decode-error` lines with `len=65477` recurring constantly - suspiciously
+close to the 16-bit field's own 65535 ceiling minus this project's 9-byte
+zero-PTS PES header overhead, confirming the mechanism. Observed from two
+independent, unrelated IPTV re-stream providers, so this is a real-world-common
+encoder behavior, not a one-off broken stream.
+
+Fixed by always treating a *video* PES as unbounded in
+`mr_ts_next_packet()`, regardless of what `PES_packet_length` the encoder
+declared - relying purely on the next PUSI (or end-of-stream drain) to
+know a video access unit is complete, which is provably safe because it is
+already exactly how the pre-existing `packet_len == 0` case worked. Audio
+(ADTS AAC, MPEG Layer II) keeps trusting its own declared length: audio
+frames are always comfortably under the 16-bit limit, so there is nothing
+to fix there, and forcing unbounded reassembly for audio too would only
+add unnecessary one-frame latency. `tests/mr_ts_video_pes_check.c` pins
+this directly: a synthetic video PES whose PUSI packet declares a length
+far shorter than the real payload, followed by a non-PUSI continuation
+packet, must reassemble to the *full* combined length - stashing the fix
+out of `mr_ts.c` and rebuilding reproduces the exact truncated-length
+failure this test exists to catch, run as part of `make check`.
+
+This is also why `mr_ts_mp2_check.c`'s two-PES fixture (one video PES, one
+audio PES, nothing after) now returns audio first and video second: the
+video PES here has no second video PES after it to trigger emission via
+the next-PUSI path, so it is only ever recognized as complete by the final
+end-of-stream drain - after the audio PES (the very next, and only
+remaining, PES in the stream) has already emitted through the ordinary
+in-loop path. Before the fix, this fixture's declared video length
+happened to exactly match its real payload, so video emitted eagerly and
+arrived first - correct only by coincidence of the fixture's own numbers,
+not a property the fix needed to preserve.
+
 ## AGA direct-planar C2P notes
 `mr_c2p_mode MR_C2P_DIRECT` (`--direct-c2p`, GUI "Direct") is a single hand
 kernel (`core/mr_yuv_dither_planar_direct_m68k.S`) that dithers straight to
@@ -752,6 +811,193 @@ toolchain build is subsumed by `build.yml`'s existing `build` job, which
 already compiles `Makefile.amiga`'s `all` target end to end - the direct-
 planar files being unconditionally part of `CORE` now means that job
 proves their real-toolchain link for free.
+
+## H.264 CABAC notes
+**A real-hardware trace and a host callgrind profile agreed that CABAC/CAVLC
+parsing plus MV prediction cost roughly 56% of H.264 decode time - about
+twice motion compensation - but `ih264d_stage_profile.c`'s own mc/deblock/
+recon/intra buckets had no way to say which part of that 56% actually
+dominated.** `ih264d_cabac_profile.h`/`.c` add three more buckets alongside
+those: `bin_us`/`bin_count` (every `ih264d_decode_bin()` call - mb_type,
+cbp, ref_idx, mvd, intra pred modes, mb_qp_delta), `coeff_us`/`coeff_count`
+(residual coefficient parsing, 4x4 and 8x8 alike), and `mvpred_us`/
+`mvpred_count` (MV *prediction* - the median-of-neighbours arithmetic, not
+entropy decoding; mvd itself is CABAC-coded and already counted under
+`bin_us`). These three do not overlap each other - coefficient decode and MV
+prediction are both self-contained arithmetic that never call back into
+`ih264d_decode_bin()` - so `bin_us+coeff_us+mvpred_us` is a real, additive
+subtotal, unlike (say) `mc_us` versus `core_us`. Reported via mrplay.c's new
+"h264 cabac:" line, independent of `MR_H264_STAGE_PROFILE` (opt in with
+`CABAC_PROFILE=1`).
+
+There is deliberately no fourth "macroblock parsing" bucket. The mb_type/
+cbp/ref_idx/mvd/intra-mode/mb_qp_delta syntax-element dispatch that drives
+all three buckets above (`dec_struct_t::pf_parse_inter_mb`, assigned to
+`ih264d_parse_pmb_cabac()`/`ih264d_parse_bmb_cabac()` once per slice) cannot
+be intercepted the same way: unlike bin/coeff/mvpred (each called from a
+*different* file than the one defining them, so --wrap has a normal
+cross-object relocation to redirect), that assignment happens in the *same*
+file that defines the target function - the same shape as the mvpred
+dispatch's own already-documented same-object pitfall, but for a pointer
+*assignment* rather than a *call*. Confirmed empirically with a minimal
+repro compiled for m68k before trusting either way: a same-file function-
+pointer assignment *does* leave a relocation against the target symbol
+(`objdump -r` shows `R_68K_32 target_fn`, unlike a same-file direct call,
+which resolves to a branch with no relocation left for the linker to
+touch) - but linking a full end-to-end repro with `--wrap=target_fn` and
+checking the actual patched value showed the reference still resolves to
+the original function, not `__wrap_target_fn`: the reference is satisfied
+against the object's own local definition before the wrap rename takes
+effect. So a wrapper installed this way would link cleanly and silently
+never fire - exactly the failure mode `ih264d_mvpred_dispatch_port.c`'s
+header warns about for the call case, just reached from the opposite
+direction (a data reference with a relocation, not a branch without one).
+Reimplementing both ~200-line per-slice-type dispatchers from scratch (the
+fix that file applied for a real optimisation) is not justified just to add
+a diagnostic counter. The remaining cost is still derivable, just not
+directly measured: `core_us - mc_us - deblock_us - recon_us - intra_us -
+bin_us - coeff_us - mvpred_us` is that combined remainder - the same
+unattributed-remainder idea `ih264d_stage_profile.h` already uses, just a
+much smaller and more useful one now that three of its four components are
+broken out.
+
+**The CABAC bin wrapper's own overhead is a real, measurable cost - but the
+first attempt at removing it broke the one build that actually matters, and
+was reverted.** `ih264d_cabac_wrap.c`'s `__wrap_ih264d_decode_bin()` - the
+GNU-ld `--wrap` trampoline redirecting every one of the ~40+ vendored call
+sites for the single most-executed CABAC primitive - is a plain C function
+whose entire body is `return mr_ih264d_decode_bin_m68k(u4_ctx_inc,
+ps_src_bin_ctxt, ps_bitstrm, ps_cab_env);`. That is a second full
+call/return layer - its own prologue/epilogue, its own reload of all four
+arguments from its caller's stack frame to pass down again - wrapped around
+a function whose own header comment already justifies hand-asm on the
+strength of "keeping every live value pinned in registers across the whole
+function body". Paid on every single decoded bin (tens of thousands of
+calls per frame), this is exactly the kind of per-call tax that primitive
+was hand-written to avoid one layer further out.
+
+The first fix tried: `--wrap` only needs a symbol named
+`__wrap_ih264d_decode_bin` to exist somewhere in the link with the right
+calling convention, so `ih264_m68k_cabac.S` exported that name directly as
+a second label at the exact same address as `mr_ih264d_decode_bin_m68k` -
+no C code at all. This built, linked and decoded every H.264 fixture
+correctly under `m68k-linux-gnu`/qemu (`make check-m68k`, unchanged
+worst-frame MAE) - **but failed the real AmigaOS link**: `m68k-amigaos-gcc`/
+Bebbo's `ld` reported `undefined reference to ih264d_decode_bin` building
+for real, something the qemu/ELF toolchain this project's CI relies on for
+everything else in this family of fixes was structurally unable to catch
+(exactly the class of gap "Validate against ffmpeg" above already warns
+about, just for a *linking* behaviour rather than instruction safety or
+bit-exactness this time - the same shape as the AmigaOS-underscore lesson
+in the 68060 MP2 kernel notes, though the mechanism isn't identical: adding
+a `_`-prefixed alias is *not* what's missing here, since `--wrap`'s own
+existing cross-object usages in this file's siblings
+(`ih264d_mvpred_dispatch_port.c`, `ih264d_parse_cabac_coeff_port.c`,
+`ih264d_update_qp_wrap.c`) already link on real Amiga hardware with a bare,
+undecorated `--wrap=` argument same as here). What's different about this
+one case is that its `__wrap_...` symbol was provided by hand-written
+assembly with no C function at all, instead of a compiled C trampoline -
+something about that specifically does not survive Bebbo's link. Root
+cause not pinned down: there is no AmigaOS toolchain on this dev host to
+iterate against (see "Validate against ffmpeg"), so this needed a real
+build to catch and would need a real build to keep investigating.
+
+Reverted rather than shipped broken for the one target that matters:
+`ih264_m68k_cabac.S` no longer exports `__wrap_ih264d_decode_bin` at all,
+and `ih264d_cabac_wrap.c`'s C trampoline unconditionally provides the
+symbol again in every `MR_M68K_ASM` build, exactly as it always did. The
+`MR_H264_CABAC_PROFILE` `bin_us`/`bin_count` timing (two `clock()` calls)
+is now a runtime branch *inside* that one always-present function instead
+of a second file competing to provide the symbol - a build with the flag
+times the call, a build without does not, but both are the same trampoline
+shape, the one already proven to link on real Amiga hardware.
+`ih264d_parse_cabac_coeff_port.c`'s and `ih264d_mvpred_dispatch_port.c`'s
+own wrap functions still use the rename-and-thin-trampoline split for their
+`MR_H264_CABAC_PROFILE` timing (unaffected by this - those symbols were
+never touched, only `ih264d_decode_bin`'s was) - their
+mechanically-diffed-against-vendored bodies stay untouched either way, and
+they were never the ones this specific link failure hit.
+
+Net effect: the profiling counters (`bin_us`/`coeff_us`/`mvpred_us`) stand
+as designed and verified. The wrapper-overhead *removal* does not - it is
+back to paying the extra call/return layer on every decoded bin, same as
+before this investigation started. A real fix needs either a real AmigaOS
+toolchain session to iterate against directly, or a different mechanism
+that doesn't route a hand-asm-only symbol through `--wrap` in the first
+place (e.g. teaching `ih264d_cabac_wrap.c`'s trampoline itself to become a
+tail call the compiler can eliminate, rather than trying to bypass it
+entirely) - not attempted here.
+
+Verified on real m68k/big-endian under qemu (both mechanisms, before the
+revert and after): `tests/run_m68k_check.sh`'s default build links and
+decodes every existing H.264 fixture with unchanged worst-frame MAE either
+way, a `-DMR_H264_CABAC_PROFILE=1` build (`mr_decode_cabac_profile.m68k`,
+one dedicated H.264 clip) decodes bit-for-bit identically, and the existing
+differential CABAC/mvpred fuzz tests (`mr_h264_m68k_check`,
+`mr_h264_cabac_coeff_check`, `mr_h264_mvpred_dispatch_check`) and the
+68060 disassembly scan of `vendor/libavc_port` all pass unchanged on host
+and m68k alike. None of that caught the AmigaOS link failure - only an
+actual `m68k-amigaos-gcc` build did, which is exactly the gap this section
+exists to record.
+
+**Fast/Turbo's bilinear luma path had one genuinely hot branch doing per-
+pixel general multiplication where the weights never change within a call -
+now specialised into four constant-weight functions instead.** Full-quality
+six-tap interpolation is hand-asm (`ih264_m68k_interp.S`), but Fast/Turbo's
+degraded bilinear quarter-pel path (`ih264_mc_degrade.c`'s `luma_bilinear()`,
+installed into all 15 non-copy `apf_inter_pred_luma[]` slots) is still
+scalar C, and its two "one axis is whole/half-pel" branches already use the
+file's own established packed-byte idiom (`copy_row_u8()`/`avg_row_u8()`,
+four bytes at a time through a 32-bit register) - only the general "both
+axes fractional" branch (slots 5/7/13/15, dx and dy both in {1,3}) was left
+doing `inv*src[col] + dx*src[col+1]` with `dx`/`dy` as ordinary `WORD32`
+runtime locals, so GCC had no constant to fold the multiply against.
+
+Four new functions (`luma_bilinear_qpel_1_1`/`_3_1`/`_1_3`/`_3_3`,
+`ih264_mc_degrade.c`) are byte-for-byte the same computation as that
+branch - same rolling two-row buffer, same swap - with `dx`/`dy` baked in
+as compile-time literals in four separate instantiations of one macro
+instead. That alone is enough for GCC's own constant-multiply strength
+reduction to turn every `MULS.L`/`MULU.L` into a plain move or a single
+shift-and-add on m68k - confirmed by grepping each function's `-O2 -S`
+output on `m68k-linux-gnu-gcc -mcpu=68030`: zero `muls`/`mulu` instructions
+in any of the four, versus the generic branch which still has them. No
+hand-written assembly needed for this part of the win - the multiply
+disappears because the compiler can see it is multiplying by 1 or 3, not
+because anything was manually scheduled into registers.
+
+These four slots are exactly where BBC One and similar Fast/Turbo live
+streams spend real bilinear-path decode time: real (non-integer,
+non-half-pel) motion almost always lands on a fractional offset in *both*
+axes, and `dx`/`dy`==0 or ==2 (the cases the packed-average/copy fast paths
+already cover) are comparatively rare. Verified via the existing
+`check_luma_bilinear()` in `tests/mr_h264_mc_degrade_check.c`, which already
+iterates every `apf_inter_pred_luma[]` slot (0-15) against the spec formula
+in `bilinear_reference()` across every H.264 partition geometry (4x4
+through 16x16) - no test changes were needed, since installing these four
+functions in place of `luma_bilinear()` at those slots is exactly what the
+test already exercises. Passes bit-exact on host and on real m68k/big-endian
+under qemu (`check-m68k`) alike.
+
+A genuine "packed loads/stores" version of this same branch - processing
+four pixels per iteration through 32-bit registers the way
+`copy_row_u8()`/`avg_row_u8()` already do, rather than one pixel per loop
+iteration - was investigated and deliberately not attempted here. Unlike
+rounded averaging (`avg_u8x4()`'s `(a|b) - (((a^b)&mask)>>1)` identity,
+which conveniently never leaves the 8-bit range at any intermediate step),
+a general `weight_a*a + weight_b*b` needs a genuine multiply per lane and
+headroom wider than 8 bits per lane for the intermediate sum (worst case
+`3*255+3*255=1530`, 11 bits) before the final `>>2`/`>>4` and narrowing back
+to a byte - a legitimate SWAR (SIMD-within-a-register) technique, using
+16-bit lanes in a 32-bit register instead of `avg_u8x4()`'s 8-bit ones, but
+one this pass did not attempt to hand-derive and verify without a reference
+to check it against beyond first-principles reasoning. A real follow-up,
+not bundled into this same-breath change.
+
+Real-hardware speedup - the reason for doing this - still needs a
+68030/68060 pass to confirm, per this file's standing qemu-vs-hardware
+caveat; this section only proves the multiply is actually gone from the
+generated code and that removing it changed nothing about correctness.
 
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`

@@ -83,6 +83,23 @@
  * make check / make check-m68k H.264-vs-ffmpeg conformance suite (worst
  * per-frame MAE must stay unchanged) and a qemu -d exec trace hit-count
  * check that this function actually fires during real decode.
+ *
+ * A prior version of this file tried exporting __wrap_ih264d_decode_bin
+ * directly from here (a second label at this same address, no C code at
+ * all) to remove ih264d_cabac_wrap.c's C trampoline layer entirely. That
+ * broke the real AmigaOS link ("undefined reference to ih264d_decode_bin",
+ * m68k-amigaos-gcc/Bebbo's ld) even though it built and ran correctly under
+ * m68k-linux-gnu/qemu - proof that --wrap's plain cross-object case (this
+ * primitive's ~40+ vendored call sites, ih264d_cabac_wrap.c's C trampoline,
+ * same pattern as the mvpred/coeff/update_qp wrap ports) is not exercised
+ * identically by both toolchains, and something about a --wrap target
+ * provided purely by hand-written assembly - as opposed to by a compiled C
+ * function - specifically does not survive Bebbo's link. Root cause not
+ * pinned down (no AmigaOS toolchain on this dev host to iterate against -
+ * see "Validate against ffmpeg" above), so reverted rather than shipped
+ * broken for the one target that matters. See ih264d_cabac_wrap.c for
+ * where the trampoline (and its optional MR_H264_CABAC_PROFILE timing)
+ * lives now - unconditionally, in every build.
  */
 #if defined(MR_M68K_ASM)
 	.text

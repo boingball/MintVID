@@ -315,8 +315,13 @@ static void hls_fetch_reclaim(void)
             s->buf = g_req.buf;
             s->len = g_req.len;
             s->ok = g_req.ok;
-            strncpy(s->error, g_req.error, sizeof s->error - 1);
-            s->error[sizeof s->error - 1] = 0;
+            /* g_req.error is the same fixed size and always already
+             * NUL-terminated by whoever filled it (hls_fetch_download()'s
+             * own strncpy+explicit-NUL pattern, or req->error[0]=0) - a
+             * straight memcpy of the whole buffer avoids a
+             * -Wstringop-truncation false positive from strncpy() copying
+             * exactly sizeof-1 bytes between two same-sized buffers. */
+            memcpy(s->error, g_req.error, sizeof s->error);
         } else {
             hls_fetch_free_ready();
             g_have_ready = 1;
@@ -326,8 +331,7 @@ static void hls_fetch_reclaim(void)
             g_ready_buf = g_req.buf;
             g_ready_len = g_req.len;
             g_ready_ok = g_req.ok;
-            strncpy(g_ready_error, g_req.error, sizeof g_ready_error - 1);
-            g_ready_error[sizeof g_ready_error - 1] = 0;
+            memcpy(g_ready_error, g_req.error, sizeof g_ready_error);
         }
     }
     hls_fetch_pump();

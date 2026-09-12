@@ -83,6 +83,11 @@
 #include "ih264d_utils.h"
 #include "ih264_m68k_optim.h"
 
+#if defined(MR_H264_CABAC_PROFILE)
+#include "ih264d_cabac_profile.h"
+#include <time.h>
+#endif
+
 #if defined(MR_M68K_ASM)
 #define READ_COEFF4X4(bitstrm, ctxcat, sig_ctx, dec, coded_ctx) \
     mr_ih264d_read_coeff4x4_cabac_m68k((void *)(bitstrm), (ctxcat), \
@@ -142,10 +147,22 @@ static UWORD32 mr_cabac_parse_8x8block(WORD16 *pi2_coeff_block,
     return u4_csbp;
 }
 
-/* Transcribed from ih264d_parse_residual4x4_cabac() - see file header. */
+/* Transcribed from ih264d_parse_residual4x4_cabac() - see file header.
+ * Named __wrap_... directly in a normal build (the production --wrap
+ * target, no extra call layer); renamed to a plain static helper under
+ * MR_H264_CABAC_PROFILE, where a thin timing trampoline below takes the
+ * public name instead - this function's own body is untouched either way,
+ * preserving the "mechanically diffed against the vendored source" claim
+ * in the file header. */
+#if defined(MR_H264_CABAC_PROFILE)
+static WORD32 mr_parse_residual4x4_cabac_impl(dec_struct_t *ps_dec,
+                                              dec_mb_info_t *ps_cur_mb_info,
+                                              UWORD8 u1_offset)
+#else
 WORD32 __wrap_ih264d_parse_residual4x4_cabac(dec_struct_t *ps_dec,
                                              dec_mb_info_t *ps_cur_mb_info,
                                              UWORD8 u1_offset)
+#endif
 {
     UWORD8 u1_cbp = ps_cur_mb_info->u1_cbp;
     UWORD16 ui16_csbp = 0;
@@ -427,19 +444,64 @@ WORD32 __wrap_ih264d_parse_residual4x4_cabac(dec_struct_t *ps_dec,
     return 0;
 }
 
+#if defined(MR_H264_CABAC_PROFILE)
+/* Both wrap functions in this file feed the same coeff_us/coeff_count
+ * bucket (see ih264d_cabac_profile.h) - residual coefficient parsing is one
+ * conceptual stage from a profiling point of view, regardless of which of
+ * the two entry points below is on the call stack. */
+WORD32 __wrap_ih264d_parse_residual4x4_cabac(dec_struct_t *ps_dec,
+                                             dec_mb_info_t *ps_cur_mb_info,
+                                             UWORD8 u1_offset)
+{
+    WORD32 ret;
+    clock_t t0 = clock();
+    ret = mr_parse_residual4x4_cabac_impl(ps_dec, ps_cur_mb_info, u1_offset);
+    mr_h264_cabac_profile_add_coeff(
+        (unsigned long)((clock() - t0) * 1000000UL / CLOCKS_PER_SEC));
+    return ret;
+}
+#endif
+
 /*
  * ih264d_read_coeff4x4_cabac()'s one genuinely cross-file call site -
  * ih264d_parse_islice.c:687, decoding the Intra16x16 luma DC block -
  * *is* a normal linker reference this project's own code doesn't
  * originate, so --wrap works on it directly, same as ih264d_decode_bin.
+ * Named __wrap_... directly in a normal build; renamed to a plain static
+ * helper under MR_H264_CABAC_PROFILE, same split as the function above.
  */
+#if defined(MR_H264_CABAC_PROFILE)
+static UWORD8 mr_read_coeff4x4_cabac_impl(dec_bit_stream_t *ps_bitstrm,
+                                          UWORD32 u4_ctxcat,
+                                         bin_ctxt_model_t *ps_ctxt_sig_coeff,
+                                         dec_struct_t *ps_dec,
+                                         bin_ctxt_model_t *ps_ctxt_coded)
+#else
+UWORD8 __wrap_ih264d_read_coeff4x4_cabac(dec_bit_stream_t *ps_bitstrm,
+                                         UWORD32 u4_ctxcat,
+                                         bin_ctxt_model_t *ps_ctxt_sig_coeff,
+                                         dec_struct_t *ps_dec,
+                                         bin_ctxt_model_t *ps_ctxt_coded)
+#endif
+{
+    return READ_COEFF4X4(ps_bitstrm, u4_ctxcat, ps_ctxt_sig_coeff, ps_dec,
+                         ps_ctxt_coded);
+}
+
+#if defined(MR_H264_CABAC_PROFILE)
 UWORD8 __wrap_ih264d_read_coeff4x4_cabac(dec_bit_stream_t *ps_bitstrm,
                                          UWORD32 u4_ctxcat,
                                          bin_ctxt_model_t *ps_ctxt_sig_coeff,
                                          dec_struct_t *ps_dec,
                                          bin_ctxt_model_t *ps_ctxt_coded)
 {
-    return READ_COEFF4X4(ps_bitstrm, u4_ctxcat, ps_ctxt_sig_coeff, ps_dec,
-                         ps_ctxt_coded);
+    UWORD8 ret;
+    clock_t t0 = clock();
+    ret = mr_read_coeff4x4_cabac_impl(ps_bitstrm, u4_ctxcat, ps_ctxt_sig_coeff,
+                                      ps_dec, ps_ctxt_coded);
+    mr_h264_cabac_profile_add_coeff(
+        (unsigned long)((clock() - t0) * 1000000UL / CLOCKS_PER_SEC));
+    return ret;
 }
+#endif
 #endif /* MR_M68K_ASM */
