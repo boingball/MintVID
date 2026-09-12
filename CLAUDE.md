@@ -857,6 +857,65 @@ asm-overhead claim in this file; the counters this section adds are what
 that pass should read to find the next target once `bin_us`'s own overhead
 is accounted for.
 
+**Fast/Turbo's bilinear luma path had one genuinely hot branch doing per-
+pixel general multiplication where the weights never change within a call -
+now specialised into four constant-weight functions instead.** Full-quality
+six-tap interpolation is hand-asm (`ih264_m68k_interp.S`), but Fast/Turbo's
+degraded bilinear quarter-pel path (`ih264_mc_degrade.c`'s `luma_bilinear()`,
+installed into all 15 non-copy `apf_inter_pred_luma[]` slots) is still
+scalar C, and its two "one axis is whole/half-pel" branches already use the
+file's own established packed-byte idiom (`copy_row_u8()`/`avg_row_u8()`,
+four bytes at a time through a 32-bit register) - only the general "both
+axes fractional" branch (slots 5/7/13/15, dx and dy both in {1,3}) was left
+doing `inv*src[col] + dx*src[col+1]` with `dx`/`dy` as ordinary `WORD32`
+runtime locals, so GCC had no constant to fold the multiply against.
+
+Four new functions (`luma_bilinear_qpel_1_1`/`_3_1`/`_1_3`/`_3_3`,
+`ih264_mc_degrade.c`) are byte-for-byte the same computation as that
+branch - same rolling two-row buffer, same swap - with `dx`/`dy` baked in
+as compile-time literals in four separate instantiations of one macro
+instead. That alone is enough for GCC's own constant-multiply strength
+reduction to turn every `MULS.L`/`MULU.L` into a plain move or a single
+shift-and-add on m68k - confirmed by grepping each function's `-O2 -S`
+output on `m68k-linux-gnu-gcc -mcpu=68030`: zero `muls`/`mulu` instructions
+in any of the four, versus the generic branch which still has them. No
+hand-written assembly needed for this part of the win - the multiply
+disappears because the compiler can see it is multiplying by 1 or 3, not
+because anything was manually scheduled into registers.
+
+These four slots are exactly where BBC One and similar Fast/Turbo live
+streams spend real bilinear-path decode time: real (non-integer,
+non-half-pel) motion almost always lands on a fractional offset in *both*
+axes, and `dx`/`dy`==0 or ==2 (the cases the packed-average/copy fast paths
+already cover) are comparatively rare. Verified via the existing
+`check_luma_bilinear()` in `tests/mr_h264_mc_degrade_check.c`, which already
+iterates every `apf_inter_pred_luma[]` slot (0-15) against the spec formula
+in `bilinear_reference()` across every H.264 partition geometry (4x4
+through 16x16) - no test changes were needed, since installing these four
+functions in place of `luma_bilinear()` at those slots is exactly what the
+test already exercises. Passes bit-exact on host and on real m68k/big-endian
+under qemu (`check-m68k`) alike.
+
+A genuine "packed loads/stores" version of this same branch - processing
+four pixels per iteration through 32-bit registers the way
+`copy_row_u8()`/`avg_row_u8()` already do, rather than one pixel per loop
+iteration - was investigated and deliberately not attempted here. Unlike
+rounded averaging (`avg_u8x4()`'s `(a|b) - (((a^b)&mask)>>1)` identity,
+which conveniently never leaves the 8-bit range at any intermediate step),
+a general `weight_a*a + weight_b*b` needs a genuine multiply per lane and
+headroom wider than 8 bits per lane for the intermediate sum (worst case
+`3*255+3*255=1530`, 11 bits) before the final `>>2`/`>>4` and narrowing back
+to a byte - a legitimate SWAR (SIMD-within-a-register) technique, using
+16-bit lanes in a 32-bit register instead of `avg_u8x4()`'s 8-bit ones, but
+one this pass did not attempt to hand-derive and verify without a reference
+to check it against beyond first-principles reasoning. A real follow-up,
+not bundled into this same-breath change.
+
+Real-hardware speedup - the reason for doing this - still needs a
+68030/68060 pass to confirm, per this file's standing qemu-vs-hardware
+caveat; this section only proves the multiply is actually gone from the
+generated code and that removing it changed nothing about correctness.
+
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4

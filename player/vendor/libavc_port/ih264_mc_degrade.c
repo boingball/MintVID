@@ -286,6 +286,73 @@ static void luma_bilinear(UWORD8 *src, UWORD8 *dst, WORD32 src_strd,
     }
 }
 
+/*
+ * Full 2D quarter-pel bilinear (dx and dy both fractional) with the two
+ * weights baked in as compile-time literals instead of luma_bilinear()'s
+ * runtime dydx, one instantiation per apf_inter_pred_luma[] slot that needs
+ * it: 5=(dx1,dy1), 7=(dx3,dy1), 13=(dx1,dy3), 15=(dx3,dy3) - the four
+ * positions where both fractional offsets are genuinely non-zero and
+ * non-half-pel (dx/dy==2 and dx/dy==0 are already exact fast paths inside
+ * luma_bilinear() itself: avg_row_u8()'s packed rounded-average trick for
+ * half-pel, copy_row_u8() for whole-sample, so those never reach here).
+ * BBC One and similar Fast/Turbo live streams spend real decode time in
+ * exactly these four slots - the ones ih264d_form_mb_part_info_*() reaches
+ * whenever a motion vector's fractional part isn't a clean half or whole
+ * sample in one axis, the common case for real (non-integer, non-half-pel)
+ * motion.
+ *
+ * Byte-for-byte the same computation as luma_bilinear()'s general branch
+ * (bilinear_h_row() twice into a rolling two-row buffer, then a weighted
+ * vertical combine) - only the two weights change from runtime values to
+ * literal 1s and 3s. That is enough for GCC's own constant-multiply
+ * strength reduction to replace every MULS.L/MULU.L with a shift-and-add
+ * (`x`, `x<<1`, or `(x<<1)+x`) at -O2 on m68k - confirmed by inspecting
+ * `m68k-linux-gnu-gcc -mcpu=68030 -O2 -S` output for each of the four
+ * instantiations below: none contain a muls/mulu instruction. No hand-
+ * written assembly needed to get the "avoid per-pixel general
+ * multiplication" win the generic runtime-dx/dy path cannot get on its
+ * own (dx/dy there are ordinary WORD32 locals, not literals, so GCC has no
+ * constant to fold into a shift).
+ *
+ * Verified bit-exact via the existing check_luma_bilinear() in
+ * tests/mr_h264_mc_degrade_check.c, which already iterates every
+ * apf_inter_pred_luma[] slot (0-15) against the spec formula in
+ * bilinear_reference() for every H.264 partition geometry - no test
+ * changes needed, these four slots are simply no longer luma_bilinear()
+ * itself once installed below.
+ */
+#define LUMA_BILINEAR_QPEL(DX, DY) \
+static void luma_bilinear_qpel_##DX##_##DY(UWORD8 *src, UWORD8 *dst, \
+                                           WORD32 src_strd, WORD32 dst_strd, \
+                                           WORD32 ht, WORD32 wd, \
+                                           UWORD8 *tmp, WORD32 dydx) \
+{ \
+    WORD32 buf[2][16]; \
+    WORD32 *top = buf[0], *bot = buf[1]; \
+    const WORD32 inv_x = 4 - (DX), inv_y = 4 - (DY); \
+    WORD32 row, col; \
+    (void)tmp; (void)dydx; \
+    for(col = 0; col < wd; col++) \
+        top[col] = inv_x * src[col] + (DX) * src[col + 1]; \
+    for(row = 0; row < ht; row++) \
+    { \
+        const UWORD8 *next = src + src_strd; \
+        WORD32 *swap; \
+        for(col = 0; col < wd; col++) \
+            bot[col] = inv_x * next[col] + (DX) * next[col + 1]; \
+        for(col = 0; col < wd; col++) \
+            dst[col] = (UWORD8)((inv_y * top[col] + (DY) * bot[col] + 8) >> 4); \
+        swap = top; top = bot; bot = swap; \
+        src += src_strd; \
+        dst += dst_strd; \
+    } \
+}
+LUMA_BILINEAR_QPEL(1, 1)
+LUMA_BILINEAR_QPEL(3, 1)
+LUMA_BILINEAR_QPEL(1, 3)
+LUMA_BILINEAR_QPEL(3, 3)
+#undef LUMA_BILINEAR_QPEL
+
 /* Slot 0 - the whole-sample position - in every filter set. */
 MR_FORCE_INLINE ih264_inter_pred_luma_ft *luma_copy_fn(void)
 {
@@ -360,6 +427,13 @@ void mr_h264_port_install_inter_pred(void *handle, mr_mc_quality quality)
             codec->apf_inter_pred_luma[0] = luma_copy_fn();
             for(i = 1; i < 16; i++)
                 codec->apf_inter_pred_luma[i] = luma_bilinear;
+            /* The four full-2D-fractional slots get the constant-weight
+             * specialisations above instead of luma_bilinear()'s runtime
+             * dx/dy - see the header comment on LUMA_BILINEAR_QPEL. */
+            codec->apf_inter_pred_luma[5]  = luma_bilinear_qpel_1_1;
+            codec->apf_inter_pred_luma[7]  = luma_bilinear_qpel_3_1;
+            codec->apf_inter_pred_luma[13] = luma_bilinear_qpel_1_3;
+            codec->apf_inter_pred_luma[15] = luma_bilinear_qpel_3_3;
             codec->pf_inter_pred_chroma = chroma_dispatch;
             break;
 
