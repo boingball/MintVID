@@ -69,6 +69,59 @@
  * --riva-c2p or --cd32 as the qualifying c2p backend (only --c2p/"Portable"
  * has), and interaction with --lace (excluded from eligibility entirely, so
  * untested by construction rather than merely unconfirmed).
+ *
+ * EXPERIMENTAL: HAM6/HAM8 copper-assisted vertical doubling. The same
+ * mechanism was extended to HAM6 and HAM8 (aga_open()'s copper_vdouble
+ * eligibility test below no longer excludes s->ham outright - it now only
+ * requires HAM8 to have real AGA, same as HAM8 itself already requires
+ * earlier in aga_open()). This is a genuine change of what gets displayed
+ * twice, not just a relaxed condition, so it earned its own correctness
+ * argument rather than inheriting the indexed case's by assumption:
+ *
+ *   - build_copper_vdouble() itself needed no change at all. It only ever
+ *     repeats bitplane *addresses* for `depth` planes/row - it has no idea
+ *     whether those bitplanes hold palette indices or HAM control/data
+ *     bytes, so the exact same WAIT/rewind-BPLxPT list that is already
+ *     confirmed correct for indexed output works unmodified for HAM8's 8
+ *     planes or HAM6's 6.
+ *   - The real question is whether repeating a HAM row's *encoded bytes*
+ *     unchanged on the next physical scanline reproduces the identical
+ *     decoded pixels there - i.e. whether HAM's hold-and-modify state is
+ *     genuinely independent from one raster line to the next. It is:
+ *     core/mr_ham.c's encoder and decoder both reset held R/G/B to (0,0,0)
+ *     at the start of every row ("held colour (line start = 0)"), matching
+ *     real AGA hardware's own per-scanline HAM reset - this project's
+ *     existing ffmpeg-validated HAM dither already depends on that being
+ *     true, it is not a new assumption introduced here. Given that, decoding
+ *     a row is a pure function of that row's own bytes with no carry-in from
+ *     the row above, so displaying the same bytes on a second scanline must
+ *     decode to the same pixels there too.
+ *   - Horizontal doubling (mr_scale2x_u8_horiz() under copper_vdouble,
+ *     mr_scale2x_u8() otherwise - both already generic over indexed vs. HAM
+ *     bytes, unchanged by this extension) duplicates each encoded HAM byte
+ *     immediately after itself. This is also provably safe: HAM's control
+ *     codes are 00 (select a fresh base colour - fully determined by the
+ *     byte alone, independent of any prior state) or a modify code that
+ *     holds two channels and sets the third to an *absolute* data value
+ *     (never a delta). Applying either kind of code a second time, with the
+ *     state it just produced as input, reproduces the exact same output: a
+ *     select code re-selects the same colour; a modify code re-sets the same
+ *     channel to the same absolute value while the other two channels stay
+ *     held at what the first application already set them to. So the pair
+ *     (original byte, duplicate byte) always decodes to (colour X, colour X)
+ *     - which is exactly what horizontal 2x is supposed to produce.
+ *
+ * Both arguments are pure state-machine reasoning about mr_ham.c's own
+ * documented semantics, not something this dev host can execute against
+ * real Denise hardware - HAM8 in particular changes register-level colour
+ * generation, not just which bytes end up in which planes, so treat this as
+ * unverified below the level of "the state machine says this must be
+ * correct" until a real A1200 run confirms it, exactly like the indexed case
+ * before its own hardware pass. Kalms is still excluded for HAM the same way
+ * it always was (kalms_kind == KALMS_NONE is still required): HAM6/HAM8
+ * Kalms kernels compute their own row addressing from the bitmap's real
+ * BytesPerRow with no arbitrary output stride to double, the same reason
+ * Kalms is excluded for indexed output.
  */
 #include "amiga_display.h"
 #include "display_backend.h"
@@ -143,8 +196,16 @@ void display_aga_frame_timing(unsigned long *enc_ms, unsigned long *blit_ms)
 static int s_diag_depth = -1, s_diag_ham = 0, s_diag_scale = 1, s_diag_resize = 0;
 static const char *s_diag_c2p = "standard";
 static const char *s_diag_chipset = "OCS";
+/* Whether --copper-vdouble is not just requested but actually engaged for
+ * the currently open screen (s->copper_vdouble, captured at aga_open() time)
+ * - see the "requested but doesn't qualify" printf in aga_open() for the
+ * runtime message this mirrors. Combined with s_diag_ham above, this is what
+ * lets mrplay --time's "AGA path:" line answer "was HAM copper doubling
+ * really active" rather than merely "was it asked for". */
+static int s_diag_copper = 0;
 void display_aga_describe(int *depth, int *ham, int *scale, int *resize,
-                          const char **c2p, const char **chipset)
+                          const char **c2p, const char **chipset,
+                          int *copper)
 {
     if (depth)   *depth   = s_diag_depth;
     if (ham)     *ham     = s_diag_ham;
@@ -152,6 +213,7 @@ void display_aga_describe(int *depth, int *ham, int *scale, int *resize,
     if (resize)  *resize  = s_diag_resize;
     if (c2p)     *c2p     = s_diag_c2p;
     if (chipset) *chipset = s_diag_chipset;
+    if (copper)  *copper  = s_diag_copper;
 }
 
 int display_aga_kalms_timing(unsigned long *conversion_ms)
@@ -672,25 +734,41 @@ static void *aga_open(int w, int h, const char *title)
      * downgraded by the compatibility check just above - *and* one of c2p/
      * riva_c2p_mode/akiko explicitly selected, since otherwise KALMS_NONE
      * just means "fell through to WritePixelArray8", whose Y-coordinate
-     * rectangle API has no destination stride to double), no HAM (a HAM row
-     * could in principle repeat the same way, but this first cut keeps the
-     * eligible geometry to the one already covered by aga_supports_indexed()'s
-     * "plain indexed, no HAM" shape) and no interlace (CWAIT's vertical
-     * position compares against a field-relative line count once
-     * interlaced, which this does not attempt to account for). */
-    s->copper_vdouble = g_aga_copper_vdouble && scale == 2 && !s->ham &&
+     * rectangle API has no destination stride to double), fixed (non-resize)
+     * geometry - guaranteed by scale == 2 itself, see the dw/dh computation
+     * above, checked again here for documentation - and no interlace
+     * (CWAIT's vertical position compares against a field-relative line
+     * count once interlaced, which this does not attempt to account for).
+     *
+     * HAM6/HAM8 (EXPERIMENTAL - see the file header comment's own section
+     * for the correctness argument): s->ham == 8 must additionally have real
+     * AGA. In practice that is already guaranteed by this point - HAM8
+     * without chipset_has_aga() was downgraded to HAM6 earlier in this
+     * function - but the check is repeated explicitly here rather than
+     * relied upon implicitly, since it is this line, not the earlier
+     * downgrade, that is the actual copper-eligibility contract. */
+    s->copper_vdouble = g_aga_copper_vdouble && scale == 2 && !resize &&
                         !lace && s->kalms_kind == KALMS_NONE &&
                         (c2p || riva_c2p_mode || akiko) &&
+                        (!s->ham || s->ham == 6 ||
+                         (s->ham == 8 && chipset_has_aga())) &&
                         build_copper_vdouble(s, h, depth);
-    if (g_aga_copper_vdouble)
-        printf(s->copper_vdouble
-               ? "planar: copper-assisted vertical doubling active "
-                 "(confirmed on real AGA hardware with --c2p; "
-                 "--riva-c2p/--cd32 and ECS/OCS not yet exercised - "
-                 "see display_aga.c)\n"
-               : "planar: --copper-vdouble requested but this geometry "
-                 "doesn't qualify (needs --2x, no HAM/lace, and an "
-                 "explicit --c2p/--riva-c2p/--cd32); using normal 2x\n");
+    if (g_aga_copper_vdouble) {
+        if (s->copper_vdouble && s->ham)
+            printf("planar: copper-assisted vertical doubling active on "
+                   "HAM%d (EXPERIMENTAL - not yet confirmed on real AGA "
+                   "hardware; see display_aga.c)\n", s->ham);
+        else if (s->copper_vdouble)
+            printf("planar: copper-assisted vertical doubling active "
+                   "(confirmed on real AGA hardware with --c2p; "
+                   "--riva-c2p/--cd32 and ECS/OCS not yet exercised - "
+                   "see display_aga.c)\n");
+        else
+            printf("planar: --copper-vdouble requested but this geometry "
+                   "doesn't qualify (needs --2x, no lace, an explicit "
+                   "--c2p/--riva-c2p/--cd32, and HAM8 needs real AGA); "
+                   "using normal 2x\n");
+    }
 
     /* padded + cleared so C2P's pad columns are black */
     if (s->kalms_kind != KALMS_2X2_8) {
@@ -716,7 +794,7 @@ static void *aga_open(int w, int h, const char *title)
         s->temprp.BitMap = s->tempbm;
     }
     s_diag_depth = s->depth; s_diag_ham = s->ham; s_diag_scale = s->scale;
-    s_diag_resize = s->resize;
+    s_diag_resize = s->resize; s_diag_copper = s->copper_vdouble;
     s_diag_chipset = chipset_has_aga() ? "AGA" :
                      chipset_has_ecs_denise() ? "ECS" : "OCS";
     s_diag_c2p = s->kalms_kind == KALMS_2X2_8 ?

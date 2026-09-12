@@ -411,9 +411,26 @@ static struct Window *cgx_open_window(cgx_state *s, const char *title,
             WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_RAWKEY | IDCMP_NEWSIZE,
             TAG_END);
     } else {
+        /* WA_Left/WA_Top pin the window to the pubscreen's top-left corner
+         * from the moment it opens. The previous version left these unset
+         * (Intuition's own top-left default), then measured the just-opened
+         * window's returned Height and called ChangeWindowBox() to move it
+         * down to a vertically-centered position - which is visible on real
+         * hardware as the window opening at the top and then visibly
+         * snapping down a moment later, since open and move are two
+         * separate, observable steps. Passing WA_Top (and WA_Left) here
+         * instead means Intuition places the window at its final position
+         * in the same operation that creates it - no second move, no snap.
+         * This does give up vertical centering (there is no way to know a
+         * not-yet-opened window's Height in advance to center it without
+         * guessing at the pubscreen's font/border metrics, which is exactly
+         * what the removed post-open measurement existed to avoid) in
+         * favour of a fixed, jump-free top-left position, consistent with
+         * the "flush left" preference this window already opens with. */
         win = OpenWindowTags(NULL,
             WA_PubScreen, (ULONG)scr,
             WA_Title, (ULONG)(title ? title : "MintVID"),
+            WA_Left, 0, WA_Top, 0,
             WA_InnerWidth, (ULONG)inner_w,
             WA_InnerHeight, (ULONG)inner_h,
             WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
@@ -422,22 +439,6 @@ static struct Window *cgx_open_window(cgx_state *s, const char *title,
             WA_MaxWidth, (ULONG)-1, WA_MaxHeight, (ULONG)-1,
             WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_RAWKEY | IDCMP_NEWSIZE,
             TAG_END);
-        if (win) {
-            /* Neither WA_Left nor WA_Top was given above, so Intuition
-             * pins the window to the pubscreen's top-left corner - fine
-             * for the fullscreen branch (which fills the screen anyway),
-             * but a window sized to a small video otherwise opens jammed
-             * into the corner. Re-center using the window's own returned
-             * Width/Height so this needs no guess at the pubscreen's
-             * font/border metrics; same ChangeWindowBox() already used
-             * below to restore a saved position after a fullscreen
-             * toggle. */
-            int cx = (scr->Width  - win->Width)  / 2;
-            int cy = (scr->Height - win->Height) / 2;
-            if (cx < 0) cx = 0;
-            if (cy < 0) cy = 0;
-            ChangeWindowBox(win, cx, cy, win->Width, win->Height);
-        }
     }
     UnlockPubScreen(NULL, scr);
     return win;

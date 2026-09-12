@@ -314,9 +314,6 @@ static void update_mode_controls(gt_app *app, int output_changed)
                                   : MR_C2P_STANDARD;
     int kalms_available;
     int direct_available;
-    int ham_mode = selected < app->mode_count &&
-                   (app->modes[selected] == MR_DISPLAY_HAM6 ||
-                    app->modes[selected] == MR_DISPLAY_HAM8);
     int copper_ok;
 
     /* HAM8 uses the normal eight-plane Kalms converter. CPU-specific 040/060
@@ -377,19 +374,26 @@ static void update_mode_controls(gt_app *app, int output_changed)
     }
 
     /* Copper 2x (scale index 2) only ever does anything for a plain c2p/
-     * riva-c2p/Akiko geometry with no HAM - see display_aga.c's own
-     * eligibility check in aga_open(). Kalms/Standard(WPA)/Direct and
-     * either HAM mode all silently no-op it at runtime instead of erroring,
-     * which is exactly what let a real-hardware test "succeed" against
-     * plain --2x without the copper path ever actually running - so snap
-     * back to index 1 (2x) here instead of leaving a selection that looks
-     * chosen but was never honoured. Re-checked on every mode/c2p/scale
-     * change (all three call this function) so no ordering of clicks can
-     * leave Copper selected under an incompatible combination. */
-    copper_ok = !ham_mode &&
-               (selected_c2p_mode == MR_C2P_WPA ||
+     * riva-c2p/Akiko geometry - see display_aga.c's own eligibility check in
+     * aga_open(). Kalms/Standard(WPA)/Direct all silently no-op it at
+     * runtime instead of erroring, which is exactly what let a real-hardware
+     * test "succeed" against plain --2x without the copper path ever
+     * actually running - so snap back to index 1 (2x) here instead of
+     * leaving a selection that looks chosen but was never honoured.
+     * Re-checked on every mode/c2p/scale change (all three call this
+     * function) so no ordering of clicks can leave Copper selected under an
+     * incompatible combination.
+     *
+     * HAM6/HAM8 no longer disqualify Copper here (EXPERIMENTAL - see
+     * display_aga.c's file header comment for the correctness argument and
+     * its unconfirmed-on-real-hardware status): aga_open() downgrades HAM8
+     * to HAM6 on a non-AGA chipset before its own copper eligibility check
+     * runs, so either HAM selection here always resolves to something the
+     * backend can actually honour - there is no chipset case this GUI needs
+     * to pre-filter that aga_open() doesn't already handle. */
+    copper_ok = selected_c2p_mode == MR_C2P_WPA ||
                 selected_c2p_mode == MR_C2P_RIVA ||
-                selected_c2p_mode == MR_C2P_AKIKO);
+                selected_c2p_mode == MR_C2P_AKIKO;
     if (!copper_ok && gad_value(app, app->scale, GTCY_Active) == 2)
         GT_SetGadgetAttrs(app->scale, app->window, NULL,
                          GTCY_Active, 1, TAG_DONE);

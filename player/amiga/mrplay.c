@@ -2071,15 +2071,18 @@ int main(int argc, char **argv)
     if (use_yuv_indexed_queue)
         mr_mpeg2_set_yuv_output(&dec, 1);
     if (want_time) {
-        int diag_depth, diag_ham, diag_scale, diag_resize;
+        int diag_depth, diag_ham, diag_scale, diag_resize, diag_copper;
         const char *diag_c2p, *diag_chipset;
         display_aga_describe(&diag_depth, &diag_ham, &diag_scale,
-                             &diag_resize, &diag_c2p, &diag_chipset);
+                             &diag_resize, &diag_c2p, &diag_chipset,
+                             &diag_copper);
         if (diag_depth >= 0)
             printf("AGA path: chipset=%s depth=%d ham=%d scale=%d resize=%d "
-                   "c2p=%s yuv=%s\n", diag_chipset, diag_depth, diag_ham,
-                   diag_scale, diag_resize, diag_c2p,
-                   use_yuv_indexed_queue ? "supported" : "unsupported");
+                   "c2p=%s yuv=%s copper=%d%s\n", diag_chipset, diag_depth,
+                   diag_ham, diag_scale, diag_resize, diag_c2p,
+                   use_yuv_indexed_queue ? "supported" : "unsupported",
+                   diag_copper,
+                   diag_copper && diag_ham ? " (HAM, EXPERIMENTAL)" : "");
         if (use_yuv_indexed_queue && yuv_ham)
             printf("video path: YUV420P %dx%d -> HAM%d %dx%d %s\n",
                    vi->width, vi->height, yuv_ham, yuv_dst_w, yuv_dst_h,

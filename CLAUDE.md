@@ -908,6 +908,121 @@ ECS/OCS chipsets, and `--riva-c2p`/`--cd32` as the qualifying c2p backend
 eligibility entirely, so untested by construction rather than merely
 unconfirmed.
 
+**EXPERIMENTAL extension: the same mechanism now also covers HAM6/HAM8,
+still gated behind the one `--copper-vdouble` opt-in and still off by
+default.** The indexed case above is confirmed on real AGA hardware; this
+extension is not - it rests on a correctness argument about HAM's own
+semantics, not yet a real-hardware run, and the two are kept explicitly
+distinguishable at runtime (see the diagnostics paragraph below) rather than
+folded into one "copper active" claim.
+
+Two things had to be true for repeating a HAM row on the real raster to be
+safe, and both were checked against `core/mr_ham.c`'s actual semantics
+rather than assumed:
+
+- **Vertical (row) repeat**: is HAM's hold-and-modify state independent
+  from one scanline to the next, so that redisplaying an unchanged row's
+  bytes on the following physical line decodes to the same pixels there?
+  Yes - `mr_ham_encode()` and `mr_ham_decode()` both reset held R/G/B to
+  `(0,0,0)` at the start of every row (the encoder's own comment: "held
+  colour (line start = 0)"), modelling real AGA hardware's per-scanline HAM
+  reset. This project's existing ffmpeg-validated HAM dither already
+  depends on that being true - it is not a new assumption introduced for
+  Copper doubling, just one this feature now also leans on. Given a
+  per-row-independent decode, the same byte sequence on two different
+  scanlines must produce the same pixels on both, which is exactly what
+  `build_copper_vdouble()`'s row-rewind already does for indexed output -
+  the function itself needed no change at all, since it only ever repeats
+  bitplane *addresses* for `depth` planes and has no notion of what those
+  planes hold.
+- **Horizontal (byte) repeat**: `--2x`'s width-doubling duplicates each
+  encoded byte immediately after itself (`mr_scale2x_u8_horiz()` under
+  `copper_vdouble`, `mr_scale2x_u8()` otherwise - both already generic over
+  indexed vs. HAM bytes, unchanged by this extension). Is applying the same
+  HAM control+data byte twice in a row safe? Yes, by cases on HAM's two
+  control-code families: a "select" code (00) fully determines the new RGB
+  from the byte alone, independent of prior state, so it is trivially
+  idempotent under repetition; a "modify" code holds two channels and sets
+  the third to an *absolute* data value (never a delta relative to the
+  previous pixel), so re-applying it holds the same two channels (already
+  equal to what the first application set, since only the modify code's own
+  channel changed) and re-sets the same channel to the same absolute value -
+  producing an identical result both times.
+
+Both arguments are pure state-machine reasoning about `mr_ham.c`'s
+documented semantics, checked against the actual encoder/decoder source
+rather than assumed - but HAM8 in particular changes register-level colour
+generation on real Denise/Lisa hardware, not just which bytes land in which
+planes, so this is unverified below the level of "the state machine says
+this must be correct" until a real A1200 run confirms it, exactly as the
+indexed case was before its own hardware pass documented above.
+
+Eligibility in `aga_open()` (`display_aga.c`) is the indexed case's own
+condition with the `!s->ham` exclusion relaxed to allow HAM6 unconditionally
+and HAM8 only with `chipset_has_aga()` true (redundant in practice with the
+existing HAM8-needs-AGA downgrade earlier in `aga_open()`, but checked again
+explicitly at the point that actually grants Copper eligibility rather than
+relied upon implicitly): `--2x` active, non-interlaced, fixed (non-resize)
+geometry, and `kalms_kind == KALMS_NONE` with an explicit `--c2p`/
+`--riva-c2p`/`--cd32` backend - Kalms is excluded for HAM the same way it
+always was, since its HAM6/HAM8 kernels compute their own row addressing
+from the bitmap's real `BytesPerRow` with no arbitrary output stride to
+double. `aga_show()`'s and `aga_blit()`'s encode/widen/blit code needed no
+change at all beyond the eligibility gate - they were already written
+generically over "chunky byte value semantics" (a palette index or a HAM
+control byte look identical to C2P and to the copper list alike), so the
+existing indexed-only restriction was purely a cautious eligibility check in
+`aga_open()`, not a structural limit anywhere else in the pipeline.
+
+Both GUIs' `copper_ok` gating (`mrgui.c`, `mrgui_gadtools.c`) dropped its
+`!ham_mode` exclusion for the same reason: `aga_open()` already downgrades
+HAM8 to HAM6 on a non-AGA chipset before its own copper eligibility check
+runs, so either HAM selection in the Scale chooser always resolves to
+something the backend can actually honour - there is no chipset case the
+GUI needs to pre-filter that `aga_open()` doesn't already handle itself.
+
+Diagnostics: `display_aga_describe()` gained a `copper` out-parameter
+reporting whether `--copper-vdouble` is not just requested but actually
+engaged for the current screen (`s->copper_vdouble`, captured at
+`aga_open()` time) - mirrors the "requested but doesn't qualify" printf
+`aga_open()` already prints at open time. `mrplay --time`'s "AGA path:" line
+now prints `copper=0/1`, tagged `(HAM, EXPERIMENTAL)` when both `copper=1`
+and `ham` is non-zero, so a real-hardware trace can answer "was HAM Copper
+doubling really active" rather than merely "was it asked for" - the same
+gap the GUI-exposure fix earlier in this file's indexed-case notes exists to
+close for the indexed case.
+
+Host-testable: `tests/mr_iptv_check.c` pins that `--display ham6`/`ham8`
+plus `--scale-2x --copper-vdouble` round-trip through
+`mr_play_options_parse()`/`mr_build_player_arguments()`/
+`mr_build_iptv_arguments()` exactly like the existing indexed
+AGA-display case, that a HAM display without `--scale-2x` never emits
+`--copper-vdouble` in the normal (non-explicit) argument form even with
+`copper_vdouble` set (matching the pre-existing `o->scale_2x &&
+o->copper_vdouble` guard in `append_playback_flags()`), and that the
+existing indexed `--aga` + `--2x` + `--copper-vdouble` case is unchanged.
+None of this proves the *runtime* behaviour on real Denise/Lisa hardware -
+only the options-layer plumbing, which was already generic across HAM and
+indexed displays before this change and needed no edits itself.
+
+**Do not treat this as confirmed until a real A1200 pass clears it.** The
+real-hardware test plan for this extension: (A) normal HAM6/HAM8 with no
+Copper, as a baseline; (B) the same clip with `--2x --copper-vdouble`; (C)
+static colour bars/gradients, where any per-line HAM state leakage would be
+most visible as banding; (D) fast scene changes and black frames; (E)
+several minutes of continuous playback; (F) ESC exit and relaunch at least
+ten times, confirming no Guru `81000005` on exit (the indexed case's own
+shutdown-crash fix - see above - is chipset/ViewPort-level and applies
+identically regardless of HAM, but repeated-exit testing is cheap insurance
+given how real that crash turned out to be); (G) smoothness and audio sync
+on a 68060/50 system. Until that passes, this extension ships opt-in and
+off by default, with the normal (non-copper) HAM6/HAM8/Kalms path completely
+unchanged - `g_aga_copper_vdouble` still defaults to 0 (`display_set_
+copper_vdouble()` is never called unless `--copper-vdouble` is passed
+explicitly), and every other HAM code path (Kalms HAM6/HAM8, HAM without
+`--2x`, HAM with `--2x` and no Copper) runs through exactly the same
+`mr_ham_encode()`/`mr_scale2x_u8()`/`aga_blit()` calls it always did.
+
 ## H.264 CABAC notes
 **A real-hardware trace and a host callgrind profile agreed that CABAC/CAVLC
 parsing plus MV prediction cost roughly 56% of H.264 decode time - about
