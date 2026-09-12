@@ -1851,11 +1851,6 @@ int main(void)
                 }
                 break;
 
-            case WMHI_IDCMPUPDATE:
-                if ((result & WMHI_GADGETMASK) == G_VOLUME)
-                    apply_gui_volume(volume_slider);
-                break;
-
             default:
                 break;
             }
