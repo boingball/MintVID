@@ -3596,6 +3596,17 @@ int main(int argc, char **argv)
                         if (mrescue != h264_dynamic_skip_active) {
                             mr_h264_set_dynamic_skip(&dec, mrescue);
                             h264_dynamic_skip_active = mrescue;
+                            /* No prior visibility existed into whether this
+                             * call actually fired - a real-hardware/WinUAE
+                             * report of "didn't seem to do anything" had
+                             * nothing in the log to confirm or rule out
+                             * escalation itself versus some other cost
+                             * dominating. Matches micro-rescue's own
+                             * entering/exiting print style and --time
+                             * gating just above. */
+                            if (want_time)
+                                printf("h264-dynamic-skip: %s (IVD_SKIP_PB)\n",
+                                       mrescue ? "engaging" : "releasing");
                         }
                     }
                     mr_h264_set_skip_output(&dec, skip_stale_output);

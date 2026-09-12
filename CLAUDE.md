@@ -1826,6 +1826,57 @@ retest to confirm.
   above)
 - `./mr_decode <avi>` / `--ppm <dir>` / `--check <refdir>`
 
+**A real-hardware/WinUAE report ("didn't seem to do anything") on a 720p
+YouTube Live stream needed a host-side measurement to actually settle,
+not more source reading.** The shared log showed `micro-rescue: entering`
+firing repeatedly (so the escalation trigger condition was real) with
+`late=` climbing without bound across the whole session (757ms -> 9686ms)
+and `phase=h264-decode phase-duration=` staying at 60-97ms throughout, with
+no visible drop after entering micro-rescue - looking, from the log alone,
+like the escalation wasn't reducing decode cost at all.
+
+Rather than guess further from source, two ad-hoc host probes (not checked
+in - one-off verification against this repo's real, patched libavc, linked
+the same way `mr_decode` is via `make mr_decode TESTSRC=...`) settled
+whether `mr_h264_set_dynamic_skip()` genuinely does anything on this
+codebase's actual decoder build. The first probe (escalate cold, before any
+packet) decoded zero frames start-to-finish - initially alarming, until
+checked against `test_h264_high.mp4`'s own shape: 24 frames, effectively
+one GOP, no second IDR to "wake up" on - exactly the single-GOP case this
+mechanism is expected to freeze through, not a bug. The second probe
+escalated mid-stream instead (decode packets 1-4 normally, escalate, decode
+the rest under `MR_H264_SPEED_TURBO_GT` both before and after, matching the
+real log's own performance mode) and timed each `mr_decoder_decode()` call
+directly: **0.175 ms/packet before escalation, 0.021 ms/packet after -
+roughly 8x cheaper**, confirming the mechanism itself is real and correctly
+wired on this repo's own libavc, not just plausible from reading
+`ih264d_parse_slice.c` in isolation.
+
+That leaves two explanations for the real-hardware report, and there was no
+way to add a printf and re-derive it, this time - the reasonable working
+guesses are: (1) the shared log predates this fix landing (built from a
+branch/commit without it) - plausible and simple, or (2) on a genuinely
+720p/30fps stream, whatever is costing 60-97ms per iteration is dominated
+by something dynamic skip cannot touch - TS demux reads, PES/Annex-B NAL
+reassembly, or simply enough P/I-slice macroblocks even after B-skip that
+the picture is still expensive - rather than by macroblock reconstruction
+dynamic skip actually removes. `late=` never recovering even once across
+the whole session is also consistent with 720p simply exceeding this
+target's real-time budget regardless of skip strategy, the same
+"`--throughput` exists because slow-but-moving beats silent, not because
+it makes the stream decodable in real time" position this file already
+takes.
+
+Added a `--time`-gated `h264-dynamic-skip: engaging/releasing (IVD_SKIP_PB)`
+printf (`mrplay.c`, right where `mr_h264_set_dynamic_skip()` is called) -
+there was previously no way to tell from a log whether escalation actually
+fired at all, which is exactly the gap that made this report ambiguous to
+diagnose. A fresh real-hardware trace with this line present will show
+directly whether escalation is engaging on that build, closing off
+explanation (1) - and if it is engaging and decode cost still doesn't drop,
+that's real evidence for (2) worth its own `STAGE_PROFILE=1` capture rather
+than further guessing.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
