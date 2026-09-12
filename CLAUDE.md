@@ -1210,6 +1210,108 @@ Real-hardware speedup - the reason for doing this - still needs a
 caveat; this section only proves the multiply is actually gone from the
 generated code and that removing it changed nothing about correctness.
 
+## In-app help (AmigaGuide) and remembered last folder
+`MintVID.guide` (repo root) already existed - a polished 1.2.0-era manual
+(Overview, What's New, Installation, Controls, GUI editions, IPTV, YouTube,
+Formats, Troubleshooting, Reporting a problem, Licensing, Support - 12
+nodes, each with a "Back to Contents" link) that `Makefile.amiga`'s
+`release` target already copies into every packaged build
+(`if [ -f ../MintVID.guide ]; then cp ... fi`). It was never actually wired
+to anything at runtime, though: nothing in any GUI ever opened it. Two
+things were missing, not the whole file - and the first pass at this
+session's own change nearly deleted the existing manual outright by
+writing over it without reading it first, caught only by the file showing
+as modified rather than new in `git status`; the restore-then-extend
+approach below is what actually shipped, not the original overwrite.
+
+Four new nodes fill real content gaps the existing manual didn't cover at
+all - `Audio` (rate/mono/no-audio/Fast buffer), `Live streaming and
+networking` (`--net-queue`/`--live-resync`), `Command line (mrplay)`
+(direct invocation examples) and `Codec support list` (an explicit
+per-FourCC accepted/rejected table, condensed from README.md's own audit
+table, cross-linked from the existing prose `Formats` node rather than
+replacing it) - linked from both `MAIN` and `TOCPage`'s identical topic
+lists (the file already duplicates that list in two nodes; both had to be
+updated together to stay in sync). `Controls` gained two sentences noting
+the new `Guide...` menu item and the remembered last-folder feature.
+Every node/endnode pair, `@{b}`/`@{i}`/`@{u}` markup pair and `LINK` target
+was checked mechanically against the raw text (18 nodes, all balanced, no
+dangling link) before publishing, the same discipline the original
+13-node draft of this section was checked with - real AmigaGuide/Multiview
+parsing still cannot be exercised on this dev host.
+
+The actual runtime gap that needed real code (not just guide content):
+opened from every GUI's `MintVID` title-bar menu via a new `Guide...` item
+(`mr_gui_open_guide()` in `amiga/mr_gui_menu.c`, shared by all six GUI
+binaries the same way `mr_gui_show_about()` already is).
+
+**First attempt used `amigaguide.library`'s `OpenAmigaGuideAsync()`
+directly, compiled clean on the real `m68k-amigaos-gcc`/NDK CI build, and
+still did not open the guide on real hardware.** This is exactly the gap
+this file's own "Validate against ffmpeg" section warns about in its
+sharpest form yet: a *compile* success proves nothing about *runtime*
+correctness for an API this tree had never called before, and there was no
+way to catch that gap without an actual AmigaOS run - which the user
+provided, reporting the menu item simply did nothing. Only `nag_Name` was
+ever set on a zero-initialised `struct NewAmigaGuide`, deliberately
+minimising which struct fields the code depended on getting right - and
+that minimalism is exactly why the bug is hard to pin down from here:
+plausible causes include a wrong (if plausible-looking) field name that
+happened to occupy space the library silently ignored rather than one CI's
+compiler flagged, a genuinely different real prototype/tag convention for
+`OpenAmigaGuideAsync()`, or simply needing more than a bare `nag_Name` to
+actually launch (e.g. a screen or public-screen name) - none of which is
+distinguishable from here, since there is still no AmigaOS toolchain/NDK on
+this dev host to test any of them against.
+
+**Fixed by not calling `amigaguide.library` at all - launching the
+standard AmigaOS `AmigaGuide` command as a subprocess instead, the same
+`LoadSeg()`+`CreateNewProcTags()` shape this project already uses (and has
+confirmed working on real hardware) for `mrplay`/`iptvgui`/`ytgui`.** The
+user's own steer: "should be the same as how MintPRINT opens etc" -
+another of their AmigaOS applications, whose own Guide help apparently
+already works this way. `mr_gui_open_guide()` now runs `AmigaGuide
+PROGDIR:MintVID.guide` (normally `C:AmigaGuide`, present on the standard
+command path, not shipped beside MintVID's own binaries) as a detached
+process, with `MintVID.guide`'s presence still checked with `Lock()` first
+for a clearer error message. This removes essentially all of the "genuinely
+new NDK struct" risk the first attempt carried: `NP_Seglist`/
+`NP_FreeSeglist`/`NP_Arguments`/`NP_StackSize`/`NP_Cli`/`NP_CommandName`/
+`NP_Name` are the identical tags already proven, three times over, to both
+compile *and run correctly on real hardware* in this exact file
+(`mrgui.c`'s `open_iptv_browser()`/`open_youtube_browser()`/
+`start_player()`) - the only genuinely new element is which external
+command gets launched, not the launch mechanism itself. Still needs its own
+real-hardware confirmation before being trusted the way the mrplay/iptvgui/
+ytgui launches already are, but it no longer carries the first attempt's
+specific, now-demonstrated failure mode.
+
+The local-file browser's last-used drawer is now remembered across
+relaunches - `ENVARC:MintVID.lastdir` (mirrored to `ENV:` at boot, so it
+survives a reboot, unlike `mr_master_options.h`'s deliberately volatile `T:`
+controller->browser snapshot) via a new `amiga/mr_last_dir.h`, using only
+the same plain `Open`/`Read`/`Write`/`Close`/`Rename`/`DeleteFile`
+dos.library calls `mr_master_options.h` already proves compile for AmigaOS
+in this tree - no new API surface there. The two GUIs plug it in
+differently, matching how each already gets a chosen path:
+`mrgui_gadtools.c`'s `browse()` reads the ASL `FileRequester`'s own
+`fr_Drawer` field directly (already used in this exact file for the
+existing `fr_Drawer`/`fr_File` -> path join, so definitely real) and seeds
+`ASLFR_InitialDrawer` on first allocation; `mrgui.c`'s embedded
+`GETFILE_GetClass()` gadget has no equivalent read-back of "the current
+drawer" it is proven to expose, so the drawer is instead derived by hand
+from the already-proven-readable `GETFILE_FullFile` path
+(`mr_last_dir_from_path()` - keep everything up to and including the last
+`/` or `:`), and seeded back in via `GETFILE_Drawer` at gadget creation -
+the one new, unverified tag name on that side, using the same
+"real toolchain CI + real hardware" verification path as the AmigaGuide
+piece above. Every buffer passed to a tag expecting a string that might
+outlive the call it is set in (`initial_drawer` in `mrgui.c`'s `main()`,
+`last_dir` as a `static` local in `mrgui_gadtools.c`'s `browse()`) is
+deliberately given a lifetime spanning the whole relevant window's life,
+sidestepping any question of whether ReAction/ASL copy the string at
+Alloc/NewObject time or merely retain the pointer.
+
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4

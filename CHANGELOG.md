@@ -23,6 +23,22 @@
 
 ### Added
 
+- Every GUI's title-bar **MintVID** menu gained a **Guide...** item, opening
+  `MintVID.guide` by launching the standard `AmigaGuide` command as a
+  subprocess (the same launch mechanism already used for mrplay/iptvgui/
+  ytgui), alongside the existing About/Quit items - the release target
+  already copies this file into each packaged build, but nothing ever
+  actually opened it. `MintVID.guide` itself also gained four nodes the
+  existing manual didn't have: Audio, Live streaming and networking,
+  Command line (mrplay), and an explicit per-codec support list. Falls back
+  to an EasyRequest telling the user where to find the plain-text file if
+  the AmigaGuide command or the guide itself isn't available. An earlier
+  version of this called amigaguide.library directly; it compiled and
+  passed CI but did not actually open the guide on real hardware, so it was
+  replaced with this subprocess approach - see CLAUDE.md.
+- Both the ReAction and GadTools main controllers now remember the local
+  file browser's last-used drawer (`ENVARC:MintVID.lastdir`, so it survives
+  a reboot) and reopen there next time, instead of always starting fresh.
 - `make check-audio` gained an MPEG-2.5 MP3 fixture (11.025 kHz stereo in AVI),
   which covers both the newly reachable Helix path and MintVID's own
   `mp3_frame_bytes()`, whose MPEG-2.5 frame-length arithmetic had never run.

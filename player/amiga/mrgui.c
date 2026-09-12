@@ -46,6 +46,7 @@
 #include "mr_master_options.h"
 #include "mr_akiko.h"
 #include "mr_gui_menu.h"
+#include "mr_last_dir.h"
 #include "mr_player_status.h"
 
 MINTVID_DECLARE_VERSION(mintvid_version_tag, "MintVID");
@@ -473,6 +474,12 @@ static void update_file_info(Object *file, Object *info,
     if (!path || !*path)
         return;
 
+    {
+        char drawer[256];
+        mr_last_dir_from_path((const char *)path, drawer, sizeof(drawer));
+        mr_last_dir_save(drawer);
+    }
+
     ext = strrchr((const char *)path, '.');
     lock = Lock(path, ACCESS_READ);
     if (lock && Examine(lock, &fib)) {
@@ -847,6 +854,8 @@ int main(void)
     int status;
     int have_rtg;
     int default_mode;
+    char initial_drawer[256];
+    int have_initial_drawer;
 
     window_object = NULL;
     timermask = 0;
@@ -974,15 +983,35 @@ int main(void)
         !add_chooser_node(&fast_buffer_modes, "16 MB"))
         goto cleanup;
 
-    file = (Object *)NewObject(GETFILE_GetClass(), NULL,
-                               GA_ID, G_FILE,
-                               GA_RelVerify, TRUE,
-                               GETFILE_TitleText, (ULONG)"Choose a video",
-                               GETFILE_Pattern, (ULONG)MR_VIDEO_FILE_PATTERN,
-                               GETFILE_DoPatterns, TRUE,
-                               GETFILE_ReadOnly, TRUE,
-                               GETFILE_DrawersOnly, FALSE,
-                               TAG_DONE);
+    /* Seed the embedded file requester's starting drawer from the last one
+     * used, saved via mr_last_dir_save() in update_file_info() below.
+     * GETFILE_Drawer is a real ReAction getfile.gadget tag, but - like every
+     * NDK-only detail in this file - there is no AmigaOS toolchain on this
+     * dev host to check its exact behaviour against (see CLAUDE.md's
+     * "Validate against ffmpeg" section); the real m68k-amigaos-gcc CI build
+     * and a real-hardware run are what actually confirm it. */
+    have_initial_drawer = mr_last_dir_load(initial_drawer,
+                                           sizeof(initial_drawer));
+    file = have_initial_drawer
+        ? (Object *)NewObject(GETFILE_GetClass(), NULL,
+                              GA_ID, G_FILE,
+                              GA_RelVerify, TRUE,
+                              GETFILE_TitleText, (ULONG)"Choose a video",
+                              GETFILE_Pattern, (ULONG)MR_VIDEO_FILE_PATTERN,
+                              GETFILE_DoPatterns, TRUE,
+                              GETFILE_ReadOnly, TRUE,
+                              GETFILE_DrawersOnly, FALSE,
+                              GETFILE_Drawer, (ULONG)initial_drawer,
+                              TAG_DONE)
+        : (Object *)NewObject(GETFILE_GetClass(), NULL,
+                              GA_ID, G_FILE,
+                              GA_RelVerify, TRUE,
+                              GETFILE_TitleText, (ULONG)"Choose a video",
+                              GETFILE_Pattern, (ULONG)MR_VIDEO_FILE_PATTERN,
+                              GETFILE_DoPatterns, TRUE,
+                              GETFILE_ReadOnly, TRUE,
+                              GETFILE_DrawersOnly, FALSE,
+                              TAG_DONE);
     mode = (Object *)NewObject(CHOOSER_GetClass(), NULL,
                                GA_ID, G_MODE,
                                GA_RelVerify, TRUE,
@@ -1264,6 +1293,8 @@ int main(void)
                 int action = mr_gui_menu_action(&app_menu, code);
                 if (action == MR_GUI_MENU_ABOUT)
                     mr_gui_show_about(window, "ReAction edition");
+                else if (action == MR_GUI_MENU_GUIDE)
+                    mr_gui_open_guide(&app_menu, window);
                 else if (action == MR_GUI_MENU_QUIT)
                     goto done;
                 break;

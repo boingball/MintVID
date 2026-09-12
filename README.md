@@ -417,10 +417,15 @@ operation. AVI, MKV and network/live sources don't have a keyframe index yet
 and keep cursor-right as the fast-forward toggle instead. Cursor up/down adjust
 Paula's volume in the same 8/64 steps as ytgui's **Vol -**/**Vol +** buttons.
 
-Every GUI has a **MintVID > About MintVID...** menu containing the project
-credits and support link. **MintVID > Quit** closes that frontend cleanly.
+Every GUI has a **MintVID** title-bar menu with **Guide...** (opens
+[`MintVID.guide`](MintVID.guide) via AmigaGuide, with full in-app help and a
+codec support list - keep the file beside the binaries; the release target
+copies it in automatically), **About MintVID...** and **Quit**, which closes
+that frontend cleanly.
 
-The controller's file gadget identifies the selected file. On launch, `mrplay`
+The controller's file gadget identifies the selected file, and both the
+ReAction and GadTools controllers now remember the last drawer a video was
+picked from (`ENVARC:MintVID.lastdir`) and reopen there next time. On launch, `mrplay`
 also reports the container type, video codec/FourCC, dimensions, frame rate and
 audio format to its console, which is useful metadata when testing unfamiliar
 files. Once a file starts playing, the same Info: field also mirrors a live

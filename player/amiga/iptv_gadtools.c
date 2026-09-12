@@ -534,7 +534,7 @@ int main(int argc,char **argv)
         app.timer_running=0;poll_status(&app);timer_start(&app);}
       while((msg=GT_GetIMsg(app.window->UserPort))!=NULL){ULONG cls=msg->Class;UWORD code=msg->Code;struct Gadget *gad=(struct Gadget *)msg->IAddress;UWORD id=gad?gad->GadgetID:0;GT_ReplyIMsg(msg);
         if(cls==IDCMP_CLOSEWINDOW)done=1;else if(cls==IDCMP_REFRESHWINDOW){GT_BeginRefresh(app.window);GT_EndRefresh(app.window,TRUE);}
-        else if(cls==IDCMP_MENUPICK){int action=mr_gui_menu_action(&app.menu,code);if(action==MR_GUI_MENU_ABOUT)mr_gui_show_about(app.window,"IPTV GadTools edition (OS 3.0)");else if(action==MR_GUI_MENU_QUIT)done=1;}
+        else if(cls==IDCMP_MENUPICK){int action=mr_gui_menu_action(&app.menu,code);if(action==MR_GUI_MENU_ABOUT)mr_gui_show_about(app.window,"IPTV GadTools edition (OS 3.0)");else if(action==MR_GUI_MENU_GUIDE)mr_gui_open_guide(&app.menu,app.window);else if(action==MR_GUI_MENU_QUIT)done=1;}
         else if(cls==IDCMP_GADGETUP){if(id==G_CLOSE)done=1;else if(id==G_CHANNELS)channel_clicked(&app,code);else if(id==G_SEARCH||id==G_CATEGORY)rebuild(&app);else if(id==G_COUNTRY)load_directory(&app);
           else if(id==G_REFRESH){if(refresh(&app))load_directory(&app);}else if(id==G_PLAY)play_selected(&app);else if(id==G_NEXT)next_stream(&app);
           else if(id==G_STOP)set_text(&app,app.status,stop_player()?"Playback stopped.":"No stream is playing.");else if(id==G_OPEN)open_url(&app);

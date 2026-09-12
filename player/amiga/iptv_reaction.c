@@ -1024,6 +1024,8 @@ int main(int argc, char **argv) {
         int action = mr_gui_menu_action(&app_menu, code);
         if (action == MR_GUI_MENU_ABOUT)
           mr_gui_show_about(window, "IPTV ReAction edition");
+        else if (action == MR_GUI_MENU_GUIDE)
+          mr_gui_open_guide(&app_menu, window);
         else if (action == MR_GUI_MENU_QUIT)
           goto done;
         continue;
