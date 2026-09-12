@@ -56,11 +56,11 @@ MINTVID_DECLARE_VERSION(iptvgui_version_tag, "iptvgui");
  * are captured here so a failing stream can be inspected without a Shell.
  * Persistent storage, not RAM: - see the matching comment in
  * youtube_reaction.c for why (a hard lockup needs a reset to clear, which
- * also wipes RAM: and the log with it; UHD0: survives that). This is
+ * also wipes RAM: and the log with it; NAS0: survives that). This is
  * exactly the scenario that motivated the change: an IPTV stream that hard-
  * locks mrplay during startup is the case where the log is needed most and
  * RAM: was least likely to still have it afterward. */
-#define MRPLAY_LOG_FILE "UHD0:MintVID.log"
+#define MRPLAY_LOG_FILE "NAS0:MintVID.log"
 
 /* Cleared at GUI launch: the first logged stream truncates the file, later ones
  * append, so a whole session's streams accumulate in one log (see start_stream). */

@@ -507,6 +507,14 @@ typedef struct playback_stats {
     uint64_t latency_us, refill_block_us, refill_delayed_ready_us;
     unsigned long video_decode_max_us, display_max_us, sleep_max_error_us;
     unsigned decoded, presented, late, dropped, samples;
+    /* queued is decoded frames that actually made it into the ring buffer -
+     * decoded but not queued (a full-queue/stale-skip/OOM drop, all counted
+     * in `dropped` too) and queued but not yet presented (still sitting in
+     * the live `qcount`) are the two gaps --live-diag's periodic report
+     * exists to make visible. Always maintained (see its increment site by
+     * queue_copy_*'s success check), not gated by want_time - it costs one
+     * unsigned increment alongside the pre-existing qcount++. */
+    unsigned queued;
     uint64_t rtg_prepare_us, rtg_scale_us, rtg_convert_us, rtg_copy_us;
     uint64_t rtg_blit_us, rtg_clip_us, rtg_total_us;
     /* mr_display_timing::service_us's own accumulator - see its declaration
@@ -624,6 +632,14 @@ typedef struct scheduler_trace {
     uint64_t last_audio_gap_print_us;
     unsigned long delay_ticks;
     int enabled;
+    /* --live-diag: independent of `enabled` (which is want_time). Checked by
+     * service_audio_for_display()'s heartbeat - see live_diag_report() and
+     * that heartbeat's own CLOCKS_PER_SEC-gated check. live_diag_last_clock
+     * is a plain clock() reading (not monotonic_us()'s ReadEClock+64-bit-
+     * divide chain), rate-limiting the heartbeat to about once a second
+     * regardless of how often service_audio_for_display() itself is called. */
+    int live_diag;
+    clock_t live_diag_last_clock;
     video_presenter *presenter;        /* NULL until the scheduler wires it up   */
 } scheduler_trace;
 
@@ -734,6 +750,29 @@ static void present_service_frame(video_presenter *vp)
     vp->presenting = 0;
 }
 
+/* --live-diag: one state line, printed only when the flag is on. Safe with
+ * an incomplete presenter (NULL, or not yet wired up by the scheduler -
+ * see video_presenter's own "NULL until the scheduler wires it up" note):
+ * every field is read through its own guard, so this can be (and is)
+ * called from points in main() that run before playback even starts, as
+ * well as from inside service_audio_for_display()'s heartbeat below. */
+static void live_diag_report(scheduler_trace *trace, const char *tag)
+{
+    video_presenter *vp;
+    if (!trace || !trace->live_diag) return;
+    vp = trace->presenter;
+    printf("live-diag: %s qcount=%d audio-buffered=%lu ms decoded=%u "
+           "queued=%u presented=%u dropped=%u playback-started=%d\n",
+           tag,
+           vp && vp->qcount ? *vp->qcount : -1,
+           trace->audio ? audio_buffered_ms(trace->audio) : 0UL,
+           vp && vp->stats ? vp->stats->decoded : 0U,
+           vp && vp->stats ? vp->stats->queued : 0U,
+           vp && vp->stats ? vp->stats->presented : 0U,
+           vp && vp->stats ? vp->stats->dropped : 0U,
+           vp && vp->playback_started ? *vp->playback_started : -1);
+}
+
 static void service_audio_for_display(void *opaque)
 {
     scheduler_trace *trace = (scheduler_trace *)opaque;
@@ -788,6 +827,25 @@ static void service_audio_for_display(void *opaque)
     /* Audio first (it is the master clock), then advance video against it if the
      * scheduler has released the queue for a blocking fetch. */
     if (trace->presenter) present_service_frame(trace->presenter);
+    /* --live-diag heartbeat. This function is the one thing still reachable
+     * while the main loop itself is parked deep inside a blocking network
+     * read (via service_player_during_io() from hls_fetch_wait_busy()'s
+     * ~20 ms poll, or via mr_ts.c's own every-16-TS-packet service call) -
+     * exactly the case a genuine stall (a hung DNS lookup, a wedged TCP
+     * read) needs a periodic report to be visible at all, rather than only
+     * ever seeing the state at the moment a blocking call finally returns.
+     * clock() (not monotonic_us()) rate-limits this to keep the cost of
+     * being on to one cheap libc call per invocation, no EClock/divide
+     * chain, and only when a caller actually asked for it. */
+    if (trace->live_diag) {
+        clock_t now_c = clock();
+        if (!trace->live_diag_last_clock ||
+            (unsigned long)(now_c - trace->live_diag_last_clock) >=
+                (unsigned long)CLOCKS_PER_SEC) {
+            trace->live_diag_last_clock = now_c;
+            live_diag_report(trace, "tick");
+        }
+    }
 }
 
 /* EClock is per-machine monotonic and normally much finer than the 20 ms DOS
@@ -1520,6 +1578,14 @@ int main(int argc, char **argv)
     int net_queue = 0;  /* 0 = built-in default (network depth 1)             */
     int live_resync = 0;  /* --live-resync: catch up after a big stall, and
                            * reconnect a live stream that drops out            */
+    /* --live-diag: cheap, always-informative state prints (segment requested/
+     * completed, queue depth, audio-buffered ms, decoded/queued/presented
+     * counts, and the exact point playback stalls or gives up) for
+     * diagnosing a live-stream freeze on real hardware without paying
+     * --time's own per-frame monotonic_us()/clock() overhead. See
+     * live_diag_report() and its call sites below, and the g_verbose wiring
+     * into core/mr_hls.c's own segment-open prints just below. */
+    int live_diag = 0;
     int auto_close_eof = 0; /* finite GUI media should release its window      */
     int audio_unavailable = 0;
     const char *audio_failure = NULL;
@@ -1627,7 +1693,7 @@ int main(int argc, char **argv)
                "[--fast-buffer=auto|off|4|8|16] "
                "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+|turbogt] "
                "[--audio-rate=normal|low] [--no-audio] [--audio-mono] "
-               "[--time]\n");
+               "[--time] [--live-diag]\n");
         return mrplay_exit(5);
     }
     {   /* display options anywhere on the command line */
@@ -1679,6 +1745,7 @@ int main(int argc, char **argv)
             else if (!strncmp(argv[i], "--net-queue=", 12))
                 net_queue = (int)strtoul(argv[i] + 12, NULL, 10);
             else if (!strcmp(argv[i], "--live-resync")) live_resync = 1;
+            else if (!strcmp(argv[i], "--live-diag")) live_diag = 1;
             else if (!strncmp(argv[i], "--h264-speed=", 13)) {
                 const char *mode = argv[i] + 13;
                 if (!strcmp(mode, "auto")) h264_speed = -1;
@@ -1853,7 +1920,14 @@ int main(int argc, char **argv)
 
     printf("mrplay: opening %s\n", media_path);
     player_status(MR_PLAYER_STATE_OPENING, "", "Connecting to stream...");
-    mr_hls_set_verbose(want_time);
+    /* --live-diag reuses mr_hls.c's existing g_verbose-gated segment-open
+     * prints (see open_seg()'s "opening segment N of M" / "ready" / "open
+     * failed" lines there) rather than adding a parallel diagnostic path -
+     * those prints are already exactly "segment requested/completed", and
+     * a real-hardware log where "opening segment N" has no matching
+     * completion line before the log goes quiet names the exact segment a
+     * stall happened on. */
+    mr_hls_set_verbose(want_time || live_diag);
 
     dx = mr_demux_open_file_ex(media_path,
                                have_http_options ? &http_options : NULL);
@@ -2213,7 +2287,7 @@ int main(int argc, char **argv)
 
     ticks = frame_ticks(vi->rate, vi->scale);
     memset(&trace, 0, sizeof trace);
-    trace.audio = audio; trace.enabled = want_time;
+    trace.audio = audio; trace.enabled = want_time; trace.live_diag = live_diag;
     trace.phase = "startup"; trace.phase_started_us = monotonic_us();
     display_set_service(disp, audio ? service_audio_for_display : NULL, &trace);
     mr_demux_set_service(dx, audio ? service_audio_for_display : NULL, &trace);
@@ -3045,12 +3119,15 @@ int main(int argc, char **argv)
         if (input_eof && !qcount && !loop && network_source && live_resync) {
             int tries, backoff = 12;                 /* ~0.5 s, grows to ~4 s   */
             const mr_video_info *nvi;
+            live_diag_report(&trace, "reconnect-begin");
             /* If an unhealthy TLS drop has disabled HTTPS for this process, no
              * reopen can ever succeed - end cleanly instead of spinning through
              * every retry. (This is the AmiSSL "relaunch to resume" limitation.) */
             if (mr_http_tls_disabled()) {
                 display_set_status(disp, "Connection lost - relaunch");
                 if (want_time) printf("live-reconnect: HTTPS disabled, ending\n");
+                live_diag_report(&trace, "stop: reconnect-tls-disabled");
+                if (live_diag) Flush(Output());
                 break;
             }
             /* Give up if we keep reopening but never actually play: a stream that
@@ -3061,6 +3138,8 @@ int main(int argc, char **argv)
                 reconnects_without_progress = 0;
                 frames_at_last_reconnect = frames;
             } else if (++reconnects_without_progress > LIVE_RECONNECT_STALL_LIMIT) {
+                live_diag_report(&trace, "stop: reconnect-no-progress");
+                if (live_diag) Flush(Output());
                 break;
             }
             if (audio) { audio_set_running(audio, 0); audio_flush(audio); }
@@ -3089,11 +3168,18 @@ int main(int argc, char **argv)
                 backoff = backoff < 100 ? backoff * 2 : 100;   /* cap ~4 s */
             }
             if (quit) break;
-            if (!dx) break;                     /* gave up: end playback */
+            if (!dx) {                          /* gave up: end playback */
+                live_diag_report(&trace, "stop: reconnect-failed");
+                if (live_diag) Flush(Output());
+                break;
+            }
             nvi = mr_demux_video(dx);
             if (!nvi || !nvi->valid || nvi->width != vi->width ||
-                nvi->height != vi->height)
+                nvi->height != vi->height) {
+                live_diag_report(&trace, "stop: reconnect-shape-mismatch");
+                if (live_diag) Flush(Output());
                 break;                          /* different shape: stop cleanly */
+            }
             vi = nvi;
             if (mr_decoder_reset(&dec) != MR_OK ||
                 !apply_h264_speed(&dec, h264_speed, 0)) break;
@@ -3128,6 +3214,7 @@ int main(int argc, char **argv)
             if (audio) media_clock_rebase(&mc, audio_elapsed_us(audio), 0);
             else memset(&mc, 0, sizeof mc);
             stats.timing_rebases++;
+            live_diag_report(&trace, "reconnect-succeeded");
             continue;
         }
 
@@ -3221,7 +3308,15 @@ int main(int argc, char **argv)
                 if (rescue_active) {
                     rescue_episode_packets++; stats.rescue_packets++;
                 }
-                if (next != MR_OK) input_eof = 1;
+                if (next != MR_OK) {
+                    /* can_decode's own !input_eof term means this branch only
+                     * runs once per genuine 0->1 transition - the exact
+                     * moment the demuxer stopped delivering packets, whether
+                     * that turns out to be a clean end of stream or the
+                     * start of a stall/reconnect. */
+                    input_eof = 1;
+                    live_diag_report(&trace, "demux-stopped");
+                }
                 else if (!pkt.is_video) {
                     if (want_time) { video_run = 0; stats.audio_packets++; }
                     if (audio && audio_dec) {
@@ -3631,6 +3726,7 @@ int main(int argc, char **argv)
                                 goto drain_decoded_output;
                             }
                             qcount++;
+                            stats.queued++;
                             if (h264_pipeline_diag_enabled && h264_pipeline_stage < 2) {
                                 h264_pipeline_checkpoint_player("queue-copy",
                                                                 qcount, playback_started);
@@ -3660,6 +3756,7 @@ drain_decoded_output:
                                AUDIO_STARTUP_TARGET_MS || input_eof)) {
                     playback_started = qcount > 0;
                     if (playback_started) {
+                        live_diag_report(&trace, "started");
                         now = monotonic_us();
                         mono_base_us = now - vq[qhead].pts_us;
                         /* Rebase the audio-derived media clock to the same
@@ -3718,6 +3815,7 @@ drain_decoded_output:
             }
         }
     }
+    live_diag_report(&trace, quit ? "stop: quit" : "stop: loop-exit");
     }
     /* `presenter` lived in the scheduler block just closed; the display service
      * hook is still installed and fires during the teardown flush's blits, so

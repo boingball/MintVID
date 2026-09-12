@@ -402,6 +402,17 @@ static int open_seg(hls_source *h, size_t i)
 {
     int timing = mr_source_timing_enabled();
     clock_t started = timing ? clock() : 0;
+    /* Independent of the --time-gated `started` above (and of the fuller
+     * mr_source_timing_add_hls_segment() accounting further down): a single
+     * clock() read bracketing this whole call, always taken under g_verbose
+     * alone, is cheap enough (one libc call per segment open, not per
+     * packet/frame) to report "requested -> completed" timing even when the
+     * caller never asked for full --time instrumentation. This is what lets
+     * a real-hardware log show exactly which segment a stall happened on:
+     * "opening segment N" with no matching "ready"/"failed" line before the
+     * log goes quiet means the fetch that started for segment N never
+     * returned. */
+    clock_t diag_started = g_verbose ? clock() : 0;
     mr_source *s;
     size_t len;
     if (i >= h->nsegs) return 0;
@@ -432,9 +443,11 @@ static int open_seg(hls_source *h, size_t i)
         s = hls_open(h->segs[i], h->have_options ? &h->options : NULL, 1);
     if (!s) {
         if (g_verbose)
-            printf("HLS: segment %lu open failed: %s (URL %lu bytes)\n",
+            printf("HLS: segment %lu open failed: %s (URL %lu bytes, %lu ms)\n",
                    (unsigned long)(i + 1), mr_source_last_error(),
-                   (unsigned long)strlen(h->segs[i]));
+                   (unsigned long)strlen(h->segs[i]),
+                   (unsigned long)((clock() - diag_started) * 1000UL /
+                                    CLOCKS_PER_SEC));
         return 0;
     }
     len = mr_source_length(s);
@@ -442,13 +455,17 @@ static int open_seg(hls_source *h, size_t i)
         mr_source_close(s);
         mr_source_set_error("HLS segment omitted a usable Content-Length");
         if (g_verbose)
-            printf("HLS: segment %lu has no usable length\n",
-                   (unsigned long)(i + 1));
+            printf("HLS: segment %lu has no usable length (%lu ms)\n",
+                   (unsigned long)(i + 1),
+                   (unsigned long)((clock() - diag_started) * 1000UL /
+                                    CLOCKS_PER_SEC));
         return 0;
     }
     if (g_verbose)
-        printf("HLS: segment %lu ready (%lu KB)\n",
-               (unsigned long)(i + 1), (unsigned long)(len / 1024));
+        printf("HLS: segment %lu ready (%lu KB, %lu ms)\n",
+               (unsigned long)(i + 1), (unsigned long)(len / 1024),
+               (unsigned long)((clock() - diag_started) * 1000UL /
+                                CLOCKS_PER_SEC));
     h->cur = s;
     h->cur_seg = i;
     h->seg_start[i + 1] = h->seg_start[i] + len;
@@ -499,6 +516,9 @@ static int hls_refetch_live(hls_source *h)
      * close it before fetching the playlist so only one HTTP/S connection is
      * ever open at once (see open_seg). */
     if (h->cur) { mr_source_close(h->cur); h->cur = NULL; }
+    if (g_verbose)
+        printf("HLS: playback reached the live edge (%lu known segments); "
+               "polling playlist for more\n", (unsigned long)h->nsegs);
     /* Poll no faster than about half the target duration: fresh segments appear
      * on that cadence, so a tighter poll only hammers the server (and, single-
      * threaded, freezes the caller for each round-trip). */
@@ -516,13 +536,27 @@ static int hls_refetch_live(hls_source *h)
             return 0;
         text = fetch_text(h->playlist_url,
                           h->have_options ? &h->options : NULL);
-        if (!text) return 0;                       /* playlist gone / error    */
+        if (!text) {
+            if (g_verbose)
+                printf("HLS: live playlist re-fetch failed (attempt %d/%d): "
+                       "%s\n", tries + 1, HLS_LIVE_REFETCH_MAX,
+                       mr_source_last_error());
+            return 0;                               /* playlist gone / error    */
+        }
         st = merge_playlist(text, h->playlist_url, h, &added);
         mr_free(text);
         if (st != MR_OK) return 0;
-        if (added > 0) return 1;                    /* fresh segments to play   */
+        if (added > 0) {
+            if (g_verbose)
+                printf("HLS: live playlist grew by %d segment(s) (attempt "
+                       "%d/%d)\n", added, tries + 1, HLS_LIVE_REFETCH_MAX);
+            return 1;                                /* fresh segments to play   */
+        }
         if (!h->live) return 0;                     /* ENDLIST arrived: done    */
     }
+    if (g_verbose)
+        printf("HLS: live playlist stalled after %d attempts - giving up\n",
+               HLS_LIVE_REFETCH_MAX);
     mr_source_set_error("live HLS playlist stalled (no new segments)");
     return 0;
 }

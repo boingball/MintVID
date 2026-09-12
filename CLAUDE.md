@@ -1312,6 +1312,188 @@ deliberately given a lifetime spanning the whole relevant window's life,
 sidestepping any question of whether ReAction/ASL copy the string at
 Alloc/NewObject time or merely retain the pointer.
 
+## Live HLS playback stall notes (IPTV/YouTube live)
+
+Real A1200 regression report: BBC One (IPTV) and YouTube live both
+sometimes display only 1-3 frames, then audio stutters and video stops -
+under AGA + Kalms + TurboGT + mono audio + low audio rate + Fast buffer
+auto, with Copper doubling not active (Kalms excludes it). Local file
+playback is unaffected. This session audited the shared live/network path
+(`amiga/hls_fetch.c`'s background worker, `core/mr_hls.c`'s segment
+open/lookahead, `amiga/mrplay.c`'s queue-startup/audio-startup gating and
+audio-rescue) end to end and added always-on diagnostics, but could not
+reproduce the freeze itself - there is no AmigaOS toolchain, no live A1200,
+and no real network stream on this dev host (see "Validate against ffmpeg"
+above for the standing limitation this falls under). Everything below is
+either a structural fact provable from the diff/source, or an explicitly
+labelled hypothesis pending a real-hardware trace with the new diagnostics.
+
+**PR #180 (Copper-assisted vertical doubling for HAM6/HAM8) cannot be the
+cause - its diff never touches this path.** `git show --stat` on that
+merge lists exactly `CLAUDE.md`, `amiga/amiga_display.h`,
+`amiga/display_aga.c`, `amiga/display_cgx.c`, `amiga/mrgui.c`,
+`amiga/mrgui_gadtools.c`, a 13-line `amiga/mrplay.c` hunk (the "AGA path:"
+`--time` diagnostic line and a Scale-chooser wiring change, both inert
+unless `--copper-vdouble` is passed), and `tests/mr_iptv_check.c`. None of
+`hls_fetch.c`, `mr_hls.c`, `audio_paula.c`, or the queue/audio-startup
+logic in `mrplay.c` appear in it at all - and the report's own repro notes
+Copper is not even active (Kalms excludes it). This structurally rules out
+PR180; whatever the cause is, it predates that PR or was introduced by
+PR176/177.
+
+**PR #176/#177 did touch this path substantially, but every functional
+change found there is a fix, not a new regression, on its own terms:**
+- `mr_ts.c`'s "stop trusting a video PES's own declared length" fix (see
+  the "MPEG-TS video PES notes" section above) makes video PES
+  reassembly *more* correct for exactly the live-IPTV case this report
+  describes - it replaced a bug that silently truncated oversized video
+  access units, not a bug that starves audio. Nothing about the fix makes
+  `mr_ts_next_packet()` wait longer to emit an *audio* PES (audio still
+  completes on its own declared length, independent of the video PES's
+  accumulation state), so it should not, on its own, explain the audio
+  stutter symptom.
+- `mr_mpeg2_set_service()` wiring (`mr_mpeg2.c`/`mr_mpeg2.h`, then wired
+  into every `mr_decoder_reset()`/reconnect site in `mrplay.c`) *adds*
+  audio servicing during MPEG-2 decode that was previously missing,
+  mirroring the H.264 path - another fix, not a new gap.
+  BBC One and most UK DVB-derived IPTV rebroadcasts are MPEG-2, so this is
+  the most on-topic change in the branch, but it is additive (more
+  servicing, not less) and so is not an obvious source of a new stall.
+- The Paula worker task priority was experimentally dropped from 5 to 0
+  and then reverted back to 5 within this same branch (see
+  `2070d32`/`0188216` in git log) *before* it reached this repo's main
+  history - `amiga/audio_paula.c` currently still creates that task at
+  `NP_Priority 5`, unchanged from before PR176. The revert commit records
+  that the priority-0 build was followed by a real hard lockup needing a
+  reset, with no `--time` log to explain it - worth remembering as a
+  precedent (a live task-priority imbalance on this target *can* produce a
+  total freeze with no diagnostic trail) even though the current code is
+  back at the old, long-tested value.
+- `hls_fetch.c`'s only change in this range is `strncpy`→`memcpy` for a
+  `-Wstringop-truncation` warning - behaviourally inert.
+
+**`core/mr_hls.c`'s lookahead is single-segment, not the
+`HLS_FETCH_LOOKAHEAD_DEPTH=3` its own sibling comment implies - by
+deliberate, pre-existing design, not a regression.** `amiga/hls_fetch.c`
+provisions three lookahead slots, but `open_seg()` only ever calls
+`mr_http_prefetch_hint()` once, for `i+1`. This used to hint several
+segments ahead (`ff94726`, "Buffer several compressed HLS segments ahead
+instead of just one") and was deliberately reverted to one (`bda717b`,
+"Stabilize HLS shutdown by restoring single-segment lookahead") for
+teardown stability - both commits predate PR176/177/180 by over a week.
+The practical effect: there is normally at most one segment of compressed
+lookahead cushioning a fetch stall, however long that segment's own fetch
+takes. This is unchanged by anything in this investigation's date range,
+so it is not "the regression", but it does mean a single slow segment
+fetch (YouTube live has been observed to stall over a second - see
+`hls_fetch.c`'s own design note) has less margin than the sibling comment
+suggests, and is worth reconsidering as a real, separate improvement if
+the new diagnostics show fetch stalls (not a hang) as the dominant cost.
+
+**Leading hypothesis for a freeze with *no* recovery and *no* diagnostic
+output (as opposed to ordinary jitter, which the existing
+`present_service_frame()`/audio-rescue machinery already rides out): an
+unbounded DNS lookup on a segment fetch, with no reachable path to cancel
+it.** `core/mr_http.c`'s `connect_socket()` calls `gethostbyname()` fresh
+on every connection (no keep-alive/connection reuse in this codebase -
+confirmed by grep: every `connect_socket()` call path opens and closes its
+own socket, matching the "two HTTP/S connections must never be open at
+once" AmiSSL constraint documented in `hls_fetch.c`). Its own comment
+documents this as "the one blocking bsdsocket call in this file's whole
+call chain with no timeout of its own" - `connect()` is bounded by
+`connect_with_timeout()`, `recv()`/`send()` by `SO_RCVTIMEO`/`SO_SNDTIMEO`,
+but `gethostbyname()` has none, relying entirely on
+`hls_fetch_cancel()`/`hls_fetch_kick()`'s `SIGBREAKF_CTRL_C` signal to
+unstick it. That cancel is *only* ever called from two places:
+`hls_fetch_stop()` (teardown) and the live-reconnect block in `mrplay.c`
+(`input_eof && !qcount && !loop && network_source && live_resync`) - which
+requires the *current* blocking fetch to have already returned before
+reconnect logic can run at all. A DNS resolver stall (a flaky mobile/home
+network path, a CDN edge host rotated per segment, a transient resolver
+hiccup) hitting the fetch for segment 2 - right after segment 1's ~1-3
+frames have already drained through the presentation queue - would freeze
+the single task with no way to unstick itself, no error, and no recovery:
+audio drains its cushion and stutters (Paula genuinely starves - nothing
+is decoding), and video simply stops, exactly matching this report. This
+condition predates PR176/177/180 entirely (the `connect_socket()` design
+note is older code), so it is not a regression from this investigation's
+date range either - it is offered as the most structurally plausible
+*mechanism* for the reported symptom, not a proven cause. It is also
+consistent with the fault being intermittent ("sometimes") and reproducing
+on two otherwise-unrelated services (IPTV and YouTube live) that share
+only this fetch path, while local file playback (no network fetch at all)
+is unaffected.
+
+**A related, previously-silent gap: the live-reconnect path's
+resolution-mismatch bailout gave up with zero diagnostic output.**
+`mrplay.c`'s reconnect block ends playback outright (`break`, no message
+at all, `--time` or not) if a freshly reopened live URL's video dimensions
+differ from the stream that just dropped - plausible if a live-edge
+reconnect briefly lands on an ad/bumper/slate of a different resolution.
+This does not match "1-3 frames on *first* play" (it can only fire after
+at least one successful reconnect attempt), but it is a second, real way
+this class of stream can go silently dark, and it now reports via
+`--live-diag` (see below) rather than saying nothing.
+
+**Diagnostics added this session, all opt-in and independent of `--time`'s
+own per-frame `monotonic_us()`/`clock()` overhead**, so a real-hardware
+repro run no longer needs full `--time` instrumentation (which this file's
+own "qemu vs hardware" and MP2/H.264 sections already document as
+measurably perturbing timing-sensitive playback) to localize a stall:
+- `mr_hls_set_verbose()` (already existing, previously tied only to
+  `want_time`) is now also engaged by a new `--live-diag` flag. Its
+  existing `open_seg()` prints ("opening segment N of M" / "segment N
+  ready (KB, ms)" / "segment N open failed (ms)") already are exactly
+  "segment requested/completed" - a log where "opening segment N" has no
+  matching completion line before it goes quiet names the exact segment a
+  stall happened on. `hls_refetch_live()` gained matching prints for the
+  live-edge playlist poll (start, growth, re-fetch failure, give-up).
+  Segment-open timing now uses a `g_verbose`-gated `clock()` bracket
+  independent of the fuller `--time`-gated `mr_source_timing_*` path, so
+  elapsed ms is visible without it.
+- `mrplay.c` gained `--live-diag`, `live_diag_report()`, and a periodic
+  heartbeat inside `service_audio_for_display()` - the one thing still
+  reachable while the main loop is parked deep inside a blocking fetch
+  (via `service_player_during_io()`'s ~20 ms poll in
+  `hls_fetch_wait_busy()`, or `mr_ts.c`'s own every-16-TS-packet service
+  call), which is exactly what a hang like the `gethostbyname()` scenario
+  above needs to become visible instead of silent. Rate-limited with
+  `clock()` (not `monotonic_us()`) to about once a second. Reports
+  `qcount`, audio-buffered ms, and cumulative decoded/queued/presented/
+  dropped counts (`playback_stats` gained a `queued` counter - frames that
+  actually made it into the ring buffer, distinct from `decoded`, which
+  also counts frames immediately dropped for a full queue/stale-skip/OOM).
+  Explicit one-shot reports fire at: playback start, the exact
+  `input_eof` 0→1 transition (the moment the demuxer stopped delivering
+  packets), every live-reconnect stage (begin/succeeded, and each of the
+  TLS-disabled/no-progress/fetch-failed/shape-mismatch give-up reasons,
+  each previously silent except under `--time`), and final loop exit
+  (quit vs. natural end). The give-up points also `Flush(Output())` when
+  `--live-diag` is on, matching this file's established durable-log
+  pattern (see the `NAS0:MintVID.log` notes above) so the very last state
+  before the process exits is not left sitting in a write-back cache.
+  None of this is wired into the IPTV/YouTube GUI launchers yet (they
+  build their command lines via `core/mr_play_options.c`, untouched here);
+  add `--live-diag` there once a real-hardware run confirms this is the
+  right lens, or pass it by hand via Shell in the meantime.
+
+**Real-hardware test plan once this lands**: reproduce the BBC One/YouTube
+live freeze with `--live-diag` (Shell-launched, or the log-capture Debug
+toggle's `--time` swapped for `--live-diag` temporarily) and read the tail
+of the log. An "opening segment N" line with nothing after it names a
+hung fetch (most likely the DNS hypothesis above, or a wedged
+`recv()`/`SO_RCVTIMEO` that isn't actually firing on this stack); a
+"tick" heartbeat that keeps advancing while `qcount` stays 0 and
+decoded/presented stop climbing, with no matching "opening segment"
+line at all, points instead at the scheduler/decode side (`can_decode`
+gating, `mr_ts.c`'s PES reassembly, or the audio-rescue state machine)
+rather than the network fetch; a "demux-stopped" report followed by
+nothing (no "reconnect-begin") means `live_resync` never triggered -
+worth confirming `--live-resync` is actually reaching the process
+(it defaults on via `core/mr_play_options.c`, but a Shell-launched repro
+without it would misleadingly look identical to a reconnect that gave up
+silently before this session's diagnostics).
+
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4
