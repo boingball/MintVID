@@ -88,6 +88,7 @@ enum {
     G_H264,
     G_LACE,
     G_2X,
+    G_COPPER,
     G_AUDIO_RATE,
     G_FAST_BUFFER,
     G_NO_AUDIO,
@@ -306,14 +307,14 @@ static void stop_player_and_wait(void)
 static void set_info(Object *info, struct Window *window, const char *text);
 
 static void read_play_options(Object *mode, Object *c2p, Object *h264,
-                              Object *lace, Object *twox,
+                              Object *lace, Object *twox, Object *copper,
                               Object *audio_rate, Object *fast_buffer,
                               Object *no_audio,
                               Object *mono_audio,
                               mr_play_options *options)
 {
     ULONG selected = 0, selected_c2p = 0, selected_h264 = 0;
-    ULONG checked_lace = 0, checked_2x = 0;
+    ULONG checked_lace = 0, checked_2x = 0, checked_copper = 0;
     ULONG selected_audio_rate = 0, selected_fast_buffer = 0;
     ULONG checked_no_audio = 0, checked_mono = 0;
     mr_play_options_default(options);
@@ -322,6 +323,7 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
     GetAttr(CHOOSER_Selected, h264, &selected_h264);
     GetAttr(CHECKBOX_Checked, lace, &checked_lace);
     GetAttr(CHECKBOX_Checked, twox, &checked_2x);
+    GetAttr(CHECKBOX_Checked, copper, &checked_copper);
     GetAttr(CHOOSER_Selected, audio_rate, &selected_audio_rate);
     GetAttr(CHOOSER_Selected, fast_buffer, &selected_fast_buffer);
     GetAttr(CHECKBOX_Checked, no_audio, &checked_no_audio);
@@ -332,6 +334,7 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
                  ? c2p_values[selected_c2p] : MR_C2P_STANDARD;
     options->laced = checked_lace != 0;
     options->scale_2x = checked_2x != 0;
+    options->copper_vdouble = checked_copper != 0;
     options->h264_performance = selected_h264 <= MR_H264_PERF_TURBO_GT
                               ? (mr_h264_performance)selected_h264
                               : MR_H264_PERF_AUTO;
@@ -346,20 +349,20 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
 
 static void publish_play_options(mr_master_options_port *master_options,
                                  Object *mode, Object *c2p, Object *h264,
-                                 Object *lace, Object *twox,
+                                 Object *lace, Object *twox, Object *copper,
                                  Object *audio_rate, Object *fast_buffer,
                                  Object *no_audio,
                                  Object *mono_audio)
 {
     mr_play_options options;
 
-    read_play_options(mode, c2p, h264, lace, twox, audio_rate, fast_buffer,
+    read_play_options(mode, c2p, h264, lace, twox, copper, audio_rate, fast_buffer,
                       no_audio, mono_audio, &options);
     mr_master_options_publish(master_options, &options);
 }
 
 static void open_iptv_browser(Object *mode, Object *c2p, Object *h264,
-                              Object *lace, Object *twox,
+                              Object *lace, Object *twox, Object *copper,
                               Object *audio_rate, Object *fast_buffer,
                               Object *no_audio,
                               Object *mono_audio, Object *info,
@@ -370,7 +373,7 @@ static void open_iptv_browser(Object *mode, Object *c2p, Object *h264,
     char arguments[512];
     mr_play_options options;
 
-    read_play_options(mode, c2p, h264, lace, twox, audio_rate, fast_buffer,
+    read_play_options(mode, c2p, h264, lace, twox, copper, audio_rate, fast_buffer,
                       no_audio, mono_audio, &options);
     if (!mr_build_iptv_arguments(arguments, sizeof(arguments), &options)) {
         set_info(info, window, "Could not build IPTV playback options.");
@@ -402,7 +405,7 @@ static void open_iptv_browser(Object *mode, Object *c2p, Object *h264,
 }
 
 static void open_youtube_browser(Object *mode, Object *c2p, Object *h264,
-                                 Object *lace, Object *twox,
+                                 Object *lace, Object *twox, Object *copper,
                                  Object *audio_rate, Object *fast_buffer,
                                  Object *no_audio,
                                  Object *mono_audio, Object *info,
@@ -413,7 +416,7 @@ static void open_youtube_browser(Object *mode, Object *c2p, Object *h264,
     char arguments[512];
     mr_play_options options;
 
-    read_play_options(mode, c2p, h264, lace, twox, audio_rate, fast_buffer,
+    read_play_options(mode, c2p, h264, lace, twox, copper, audio_rate, fast_buffer,
                       no_audio, mono_audio, &options);
     if (!mr_build_iptv_arguments(arguments, sizeof(arguments), &options)) {
         set_info(info, window, "Could not build YouTube playback options.");
@@ -485,8 +488,8 @@ static void update_file_info(Object *file, Object *info,
 }
 
 static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
-                                 Object *twox, struct Window *window,
-                                 int output_changed)
+                                 Object *twox, Object *copper,
+                                 struct Window *window, int output_changed)
 {
     ULONG selected;
     ULONG disable_chipset_options;
@@ -550,11 +553,18 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
                        GA_Disabled, TRUE,
                        CHECKBOX_Checked, FALSE,
                        TAG_DONE);
+        SetGadgetAttrs((struct Gadget *)copper, window, NULL,
+                       GA_Disabled, TRUE,
+                       CHECKBOX_Checked, FALSE,
+                       TAG_DONE);
     } else {
         SetGadgetAttrs((struct Gadget *)lace, window, NULL,
                        GA_Disabled, FALSE,
                        TAG_DONE);
         SetGadgetAttrs((struct Gadget *)twox, window, NULL,
+                       GA_Disabled, FALSE,
+                       TAG_DONE);
+        SetGadgetAttrs((struct Gadget *)copper, window, NULL,
                        GA_Disabled, FALSE,
                        TAG_DONE);
     }
@@ -690,7 +700,7 @@ static void start_iptv_launch(Object *info, struct Window *window,
 
 static void start_player(Object *file, Object *mode, Object *c2p,
                          Object *h264,
-                         Object *lace, Object *twox,
+                         Object *lace, Object *twox, Object *copper,
                          Object *audio_rate, Object *fast_buffer,
                          Object *no_audio,
                          Object *mono_audio, Object *info,
@@ -725,7 +735,7 @@ static void start_player(Object *file, Object *mode, Object *c2p,
     strncpy(path, (const char *)full_file, sizeof(path) - 1);
     path[sizeof(path) - 1] = 0;
 
-    read_play_options(mode, c2p, h264, lace, twox, audio_rate, fast_buffer,
+    read_play_options(mode, c2p, h264, lace, twox, copper, audio_rate, fast_buffer,
                       no_audio, mono_audio, &options);
     if (!mr_build_player_arguments(args, sizeof(args), &options, path,
                                    NULL, NULL)) {
@@ -767,6 +777,7 @@ int main(void)
     Object *h264;
     Object *lace;
     Object *twox;
+    Object *copper;
     Object *audio_rate;
     Object *fast_buffer;
     Object *no_audio;
@@ -816,6 +827,7 @@ int main(void)
     h264 = NULL;
     lace = NULL;
     twox = NULL;
+    copper = NULL;
     audio_rate = NULL;
     fast_buffer = NULL;
     no_audio = NULL;
@@ -952,6 +964,11 @@ int main(void)
                                GA_Text, (ULONG)"2x",
                                GA_RelVerify, TRUE,
                                TAG_DONE);
+    copper = (Object *)NewObject(CHECKBOX_GetClass(), NULL,
+                                 GA_ID, G_COPPER,
+                                 GA_Text, (ULONG)"Copper 2x",
+                                 GA_RelVerify, TRUE,
+                                 TAG_DONE);
     audio_rate = (Object *)NewObject(CHOOSER_GetClass(), NULL,
                                      GA_ID, G_AUDIO_RATE,
                                      GA_RelVerify, TRUE,
@@ -998,7 +1015,7 @@ int main(void)
                                             LABEL_Text, (ULONG)"Fast buffer",
                                             TAG_DONE);
 
-    if (!file || !mode || !c2p || !h264 || !lace || !twox ||
+    if (!file || !mode || !c2p || !h264 || !lace || !twox || !copper ||
         !audio_rate || !fast_buffer || !no_audio || !mono_audio || !info ||
         !file_label || !display_label || !c2p_label || !h264_label ||
         !audio_rate_label || !fast_buffer_label)
@@ -1006,7 +1023,11 @@ int main(void)
 
     /* Keep the option area comfortably inside a 640-pixel A1200 Workbench.
      * The tightly-related display/C2P/H.264 controls stay together on the
-     * first row; audio and buffering live on the second row. */
+     * first row; audio and buffering live on the second row. "Copper 2x"
+     * sits right after "2x" since it only ever does anything when 2x is
+     * also on (display_aga.c silently ignores it otherwise) - four small
+     * fixed-width checkboxes/choosers should still fit, but this is the
+     * spot to trim first if a real 640-wide Workbench run says otherwise. */
     controls_top = (Object *)NewObject(LAYOUT_GetClass(), NULL,
                                        LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ,
                                        LAYOUT_SpaceInner, TRUE,
@@ -1019,6 +1040,8 @@ int main(void)
                                        LAYOUT_AddChild, (ULONG)lace,
                                        CHILD_WeightedWidth, 0,
                                        LAYOUT_AddChild, (ULONG)twox,
+                                       CHILD_WeightedWidth, 0,
+                                       LAYOUT_AddChild, (ULONG)copper,
                                        CHILD_WeightedWidth, 0,
                                        TAG_DONE);
     if (!controls_top)
@@ -1163,9 +1186,9 @@ int main(void)
         goto cleanup;
     mr_gui_menu_open(&app_menu, window);
 
-    update_mode_controls(mode, c2p, lace, twox, window, TRUE);
+    update_mode_controls(mode, c2p, lace, twox, copper, window, TRUE);
     master_options = mr_master_options_open();
-    publish_play_options(master_options, mode, c2p, h264, lace, twox,
+    publish_play_options(master_options, mode, c2p, h264, lace, twox, copper,
                          audio_rate, fast_buffer, no_audio, mono_audio);
     GetAttr(WINDOW_SigMask, window_object, &sigmask);
     if (status_timer_open()) {
@@ -1209,33 +1232,34 @@ int main(void)
                     break;
 
                 case G_MODE:
-                    update_mode_controls(mode, c2p, lace, twox, window, TRUE);
+                    update_mode_controls(mode, c2p, lace, twox, copper, window, TRUE);
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, fast_buffer,
+                                         lace, twox, copper, audio_rate, fast_buffer,
                                          no_audio, mono_audio);
                     break;
 
                 case G_C2P:
-                    update_mode_controls(mode, c2p, lace, twox, window, FALSE);
+                    update_mode_controls(mode, c2p, lace, twox, copper, window, FALSE);
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, fast_buffer,
+                                         lace, twox, copper, audio_rate, fast_buffer,
                                          no_audio, mono_audio);
                     break;
 
                 case G_H264:
                 case G_LACE:
                 case G_2X:
+                case G_COPPER:
                 case G_AUDIO_RATE:
                 case G_FAST_BUFFER:
                 case G_NO_AUDIO:
                 case G_MONO_AUDIO:
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, fast_buffer,
+                                         lace, twox, copper, audio_rate, fast_buffer,
                                          no_audio, mono_audio);
                     break;
 
                 case G_PLAY:
-                    start_player(file, mode, c2p, h264, lace, twox,
+                    start_player(file, mode, c2p, h264, lace, twox, copper,
                                  audio_rate, fast_buffer, no_audio, mono_audio,
                                  info, window);
                     break;
@@ -1254,19 +1278,19 @@ int main(void)
 
                 case G_IPTV:
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, fast_buffer,
+                                         lace, twox, copper, audio_rate, fast_buffer,
                                          no_audio, mono_audio);
                     start_iptv_launch(info, window, iptv_button);
-                    open_iptv_browser(mode, c2p, h264, lace, twox,
+                    open_iptv_browser(mode, c2p, h264, lace, twox, copper,
                                       audio_rate, fast_buffer, no_audio,
                                       mono_audio, info, window);
                     break;
 
                 case G_YOUTUBE:
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, fast_buffer,
+                                         lace, twox, copper, audio_rate, fast_buffer,
                                          no_audio, mono_audio);
-                    open_youtube_browser(mode, c2p, h264, lace, twox,
+                    open_youtube_browser(mode, c2p, h264, lace, twox, copper,
                                          audio_rate, fast_buffer, no_audio,
                                          mono_audio, info, window);
                     break;
@@ -1308,6 +1332,7 @@ cleanup:
                 if (h264) DisposeObject(h264);
                 if (lace) DisposeObject(lace);
                 if (twox) DisposeObject(twox);
+                if (copper) DisposeObject(copper);
                 if (display_label) DisposeObject(display_label);
                 if (c2p_label) DisposeObject(c2p_label);
                 if (h264_label) DisposeObject(h264_label);

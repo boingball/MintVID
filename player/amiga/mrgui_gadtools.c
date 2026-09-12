@@ -46,7 +46,7 @@ struct Library *CyberGfxBase;
 extern struct Library *GadToolsBase;
 
 enum {
-    G_FILE = 1, G_BROWSE, G_MODE, G_C2P, G_H264, G_LACE, G_2X,
+    G_FILE = 1, G_BROWSE, G_MODE, G_C2P, G_H264, G_LACE, G_2X, G_COPPER,
     G_AUDIO_RATE, G_FAST_BUFFER, G_NO_AUDIO, G_MONO_AUDIO,
     G_PLAY, G_PAUSE, G_STOP, G_FAST, G_IPTV, G_YOUTUBE, G_INFO
 };
@@ -56,7 +56,7 @@ typedef struct gt_app {
     struct Window *window;
     APTR visual;
     struct Gadget *gadgets;
-    struct Gadget *file, *mode, *c2p, *h264, *lace, *twox, *info;
+    struct Gadget *file, *mode, *c2p, *h264, *lace, *twox, *copper, *info;
     struct Gadget *audio_rate, *fast_buffer, *no_audio, *mono_audio;
     struct Gadget *iptv;
     /* iptvgui-GT's own process exists (LoadSeg()/CreateNewProcTags() has
@@ -272,6 +272,7 @@ static void read_options(gt_app *app, mr_play_options *options)
                               : MR_H264_PERF_AUTO;
     options->laced = gad_value(app, app->lace, GTCB_Checked) != 0;
     options->scale_2x = gad_value(app, app->twox, GTCB_Checked) != 0;
+    options->copper_vdouble = gad_value(app, app->copper, GTCB_Checked) != 0;
     options->audio_rate = audio_rate == 1
                         ? MR_AUDIO_RATE_LOW : MR_AUDIO_RATE_NORMAL;
     options->fast_buffer = fast_buffer <= MR_FAST_BUFFER_16MB
@@ -349,6 +350,8 @@ static void update_mode_controls(gt_app *app, int output_changed)
     GT_SetGadgetAttrs(app->lace, app->window, NULL,
                      GA_Disabled, disabled, TAG_DONE);
     GT_SetGadgetAttrs(app->twox, app->window, NULL,
+                     GA_Disabled, disabled, TAG_DONE);
+    GT_SetGadgetAttrs(app->copper, app->window, NULL,
                      GA_Disabled, disabled, TAG_DONE);
 }
 
@@ -578,6 +581,12 @@ static int build_window(gt_app *app)
         94, 14, "No audio", GTCB_Checked, FALSE);
     app->mono_audio = g = add_gadget(app, g, CHECKBOX_KIND, G_MONO_AUDIO, 445,
         69, 110, 14, "Mono audio", GTCB_Checked, FALSE);
+    /* No room left on the 2x/Laced row at this window width (2x already
+     * ends at x=626 of WIN_W=632) - tucked in after Mono audio instead,
+     * where 632-555=77px was still free. Only ever does anything when 2x
+     * is also checked; see display_aga.c's --copper-vdouble. */
+    app->copper = g = add_gadget(app, g, CHECKBOX_KIND, G_COPPER, 561, 69,
+        60, 14, "Copper", GTCB_Checked, FALSE);
 
     /* Compact transport strip.  ASCII keeps the glyphs available on stock
      * Topaz while making the controls much narrower than word labels. */
@@ -716,7 +725,7 @@ int main(void)
                     update_mode_controls(&app, FALSE);
                     publish_options(&app);
                     break;
-                case G_H264: case G_LACE: case G_2X:
+                case G_H264: case G_LACE: case G_2X: case G_COPPER:
                 case G_AUDIO_RATE: case G_FAST_BUFFER:
                 case G_NO_AUDIO: case G_MONO_AUDIO:
                     publish_options(&app); break;

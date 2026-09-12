@@ -109,6 +109,7 @@ static inline int mr_master_options_apply(mr_play_options *options)
     options->c2p = master.c2p;
     options->laced = master.laced;
     options->scale_2x = master.scale_2x;
+    options->copper_vdouble = master.copper_vdouble;
     options->h264_performance = master.h264_performance;
     options->audio_rate = master.audio_rate;
     options->fast_buffer = master.fast_buffer;

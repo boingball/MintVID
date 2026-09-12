@@ -136,7 +136,10 @@ static int append_playback_flags(char *out, size_t cap,
                 !append_option(out, cap, c2p_name(o->c2p)) ||
                 !append_option(out, cap, o->laced ? "--laced" : "--no-laced") ||
                 !append_option(out, cap, o->scale_2x ? "--scale-2x" :
-                                                       "--no-scale-2x")) return 0;
+                                                       "--no-scale-2x") ||
+                !append_option(out, cap, o->copper_vdouble ?
+                               "--copper-vdouble" : "--no-copper-vdouble"))
+                return 0;
         }
     } else {
         if (o->display == MR_DISPLAY_AGA && !append_option(out, cap, "--aga")) return 0;
@@ -158,6 +161,8 @@ static int append_playback_flags(char *out, size_t cap,
             if (!append_option(out, cap, flag)) return 0;
             if (o->laced && !append_option(out, cap, "--lace")) return 0;
             if (o->scale_2x && !append_option(out, cap, "--2x")) return 0;
+            if (o->scale_2x && o->copper_vdouble &&
+                !append_option(out, cap, "--copper-vdouble")) return 0;
         }
     }
     if (o->hls_low && !append_option(out, cap, "--hls-low")) return 0;
@@ -282,6 +287,8 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
         else if (!strcmp(arg, "--no-laced")) o->laced = 0;
         else if (!strcmp(arg, "--scale-2x")) o->scale_2x = 1;
         else if (!strcmp(arg, "--no-scale-2x")) o->scale_2x = 0;
+        else if (!strcmp(arg, "--copper-vdouble")) o->copper_vdouble = 1;
+        else if (!strcmp(arg, "--no-copper-vdouble")) o->copper_vdouble = 0;
         else if (!strcmp(arg, "--hls-low")) o->hls_low = 1;
         else if (!strcmp(arg, "--live-resync")) o->live_resync = 1;
         else if (!strcmp(arg, "--no-live-resync")) o->live_resync = 0;
@@ -381,13 +388,15 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
                  o->live_resync ? " / Live-resync" : "");
     else
         snprintf(out, cap,
-                 "Playback: %s / %s / Lace %s / 2x %s / %s / H264 %s / Audio %s / Fast buffer %s%s",
+                 "Playback: %s / %s / Lace %s / 2x %s%s / %s / H264 %s / Audio %s / Fast buffer %s%s",
                  o->display == MR_DISPLAY_HAM6 ? "HAM6" :
                  o->display == MR_DISPLAY_HAM8 ? "HAM8" :
                  o->display == MR_DISPLAY_AGA_ECS32 ? "ECS (32)" :
                  o->display == MR_DISPLAY_AGA_ECS16 ? "ECS (16)" : "Native planar",
                  c2p_name(o->c2p), o->laced ? "on" : "off",
-                 o->scale_2x ? "on" : "off", hls, h264, audio,
+                 o->scale_2x ? "on" : "off",
+                 o->scale_2x && o->copper_vdouble ? " (copper)" : "",
+                 hls, h264, audio,
                  fast_buffer_text(o),
                  o->live_resync ? " / Live-resync" : "");
 }

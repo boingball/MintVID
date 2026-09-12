@@ -362,7 +362,7 @@ int main(void) {
                                       launch.user_agent, NULL));
     assert(mr_build_iptv_arguments(args, sizeof(args), &options));
     assert(strstr(args, "--display aga --c2p kalms --no-laced "
-                        "--no-scale-2x --hls-low"));
+                        "--no-scale-2x --no-copper-vdouble --hls-low"));
     assert(strstr(args, "--h264-speed=turbogt"));
     assert(strstr(args, "--fast-buffer=auto"));
     {
