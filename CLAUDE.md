@@ -1245,28 +1245,46 @@ opened from every GUI's `MintVID` title-bar menu via a new `Guide...` item
 (`mr_gui_open_guide()` in `amiga/mr_gui_menu.c`, shared by all six GUI
 binaries the same way `mr_gui_show_about()` already is).
 
-This is a new class of unverified-here code, not just another instance of
-the standing "no AmigaOS toolchain" gap: every previous Amiga-only file in
-this tree at least reused headers/APIs already proven to compile elsewhere
-in the same codebase (graphics.library, intuition.library, dos.library,
-gadtools.library, ReAction). `amigaguide.library` is a genuinely new
-dependency with no existing usage anywhere in this tree to check field
-names against, and - per this file's very first lesson (CINIT/CWAIT/CMOVE/
-CEND turning out not to exist) - guessing at NDK struct layout from memory
-is exactly the failure mode this project learned to avoid. The mitigation:
-`mr_gui_open_guide()` only ever references one field of `struct
-NewAmigaGuide`, `nag_Name` (the guide's file/database name) - the one field
-every known real-world usage of `OpenAmigaGuideAsync()` sets, on a
-zero-initialised (`memset`) struct, so getting a trailing field's exact
-name or position wrong cannot affect compilation at all. A missing library
-or missing guide file both degrade to an `EasyRequestArgs()` message
-(mirroring `mr_gui_show_about()`'s own existing pattern) rather than a
-silent no-op or a crash. Still, only two things can actually confirm this
-works: the real `m68k-amigaos-gcc`/NDK CI build (which fails outright, not
-silently, on a genuinely wrong field name - a much safer failure mode than
-the copper-vdouble saga's silent-wrong-behaviour risk above) and a real
-AmigaOS run confirming the async viewer actually opens and renders
-`MintVID.guide` correctly.
+**First attempt used `amigaguide.library`'s `OpenAmigaGuideAsync()`
+directly, compiled clean on the real `m68k-amigaos-gcc`/NDK CI build, and
+still did not open the guide on real hardware.** This is exactly the gap
+this file's own "Validate against ffmpeg" section warns about in its
+sharpest form yet: a *compile* success proves nothing about *runtime*
+correctness for an API this tree had never called before, and there was no
+way to catch that gap without an actual AmigaOS run - which the user
+provided, reporting the menu item simply did nothing. Only `nag_Name` was
+ever set on a zero-initialised `struct NewAmigaGuide`, deliberately
+minimising which struct fields the code depended on getting right - and
+that minimalism is exactly why the bug is hard to pin down from here:
+plausible causes include a wrong (if plausible-looking) field name that
+happened to occupy space the library silently ignored rather than one CI's
+compiler flagged, a genuinely different real prototype/tag convention for
+`OpenAmigaGuideAsync()`, or simply needing more than a bare `nag_Name` to
+actually launch (e.g. a screen or public-screen name) - none of which is
+distinguishable from here, since there is still no AmigaOS toolchain/NDK on
+this dev host to test any of them against.
+
+**Fixed by not calling `amigaguide.library` at all - launching the
+standard AmigaOS `AmigaGuide` command as a subprocess instead, the same
+`LoadSeg()`+`CreateNewProcTags()` shape this project already uses (and has
+confirmed working on real hardware) for `mrplay`/`iptvgui`/`ytgui`.** The
+user's own steer: "should be the same as how MintPRINT opens etc" -
+another of their AmigaOS applications, whose own Guide help apparently
+already works this way. `mr_gui_open_guide()` now runs `AmigaGuide
+PROGDIR:MintVID.guide` (normally `C:AmigaGuide`, present on the standard
+command path, not shipped beside MintVID's own binaries) as a detached
+process, with `MintVID.guide`'s presence still checked with `Lock()` first
+for a clearer error message. This removes essentially all of the "genuinely
+new NDK struct" risk the first attempt carried: `NP_Seglist`/
+`NP_FreeSeglist`/`NP_Arguments`/`NP_StackSize`/`NP_Cli`/`NP_CommandName`/
+`NP_Name` are the identical tags already proven, three times over, to both
+compile *and run correctly on real hardware* in this exact file
+(`mrgui.c`'s `open_iptv_browser()`/`open_youtube_browser()`/
+`start_player()`) - the only genuinely new element is which external
+command gets launched, not the launch mechanism itself. Still needs its own
+real-hardware confirmation before being trusted the way the mrplay/iptvgui/
+ytgui launches already are, but it no longer carries the first attempt's
+specific, now-demonstrated failure mode.
 
 The local-file browser's last-used drawer is now remembered across
 relaunches - `ENVARC:MintVID.lastdir` (mirrored to `ENV:` at boot, so it

@@ -2,9 +2,8 @@
 
 #include <intuition/intuition.h>
 #include <libraries/gadtools.h>
-#include <libraries/amigaguide.h>
 #include <dos/dos.h>
-#include <proto/amigaguide.h>
+#include <dos/dostags.h>
 #include <proto/dos.h>
 #include <proto/exec.h>
 #include <proto/gadtools.h>
@@ -12,7 +11,12 @@
 #include <string.h>
 
 struct Library *GadToolsBase;
-struct Library *AmigaGuideBase;
+
+/* Stack for the "AmigaGuide" process mr_gui_open_guide() launches - a
+ * lightweight system utility, unlike mrplay's $STACK:320000 (libavc H.264
+ * needs), so a modest size well above the Shell's own ~4-8 KB default is
+ * plenty. */
+#define MR_GUIDE_STACK_SIZE 20000UL
 
 #define MR_MENU_USER_GUIDE ((APTR)1)
 #define MR_MENU_USER_ABOUT ((APTR)2)
@@ -73,11 +77,6 @@ void mr_gui_menu_close(mr_gui_menu *menu, struct Window *window)
         GadToolsBase = NULL;
     }
     menu->owns_gadtools = 0;
-    if (AmigaGuideBase && menu->owns_amigaguide) {
-        CloseLibrary(AmigaGuideBase);
-        AmigaGuideBase = NULL;
-    }
-    menu->owns_amigaguide = 0;
 }
 
 int mr_gui_menu_action(mr_gui_menu *menu, UWORD code)
@@ -100,83 +99,77 @@ int mr_gui_menu_action(mr_gui_menu *menu, UWORD code)
     return MR_GUI_MENU_NONE;
 }
 
+static void guide_error(struct Window *window, const char *text)
+{
+    struct EasyStruct request;
+    request.es_StructSize = sizeof(request);
+    request.es_Flags = 0;
+    request.es_Title = (UBYTE *)"MintVID Guide";
+    request.es_TextFormat = (UBYTE *)text;
+    request.es_GadgetFormat = (UBYTE *)"OK";
+    EasyRequestArgs(window, &request, NULL, NULL);
+}
+
 /*
- * Opens PROGDIR:MintVID.guide via amigaguide.library's asynchronous viewer -
- * a separate process/window the library manages independently, so this
- * never blocks the calling GUI's own event loop and there is no handle to
- * track or close afterwards (CloseAmigaGuide() is for a caller that keeps
- * driving the guide's own message port, which nothing here does).
- * amigaguide.library ships with every AmigaOS 2.1+ install (README states
- * a 3.0+ minimum for this project, so it is always expected to be present),
- * but is opened defensively all the same, matching mr_gui_menu_open()'s own
- * handling of gadtools.library - a missing library or guide file degrades
- * to an EasyRequest rather than silently doing nothing or crashing.
+ * Opens PROGDIR:MintVID.guide the same way every other MintVID GUI launches
+ * a support binary - see open_iptv_browser()/open_youtube_browser()/
+ * start_player() in mrgui.c, the already-proven LoadSeg()+
+ * CreateNewProcTags() shape used to start iptvgui/ytgui/mrplay - rather
+ * than calling amigaguide.library directly. Runs the standard AmigaOS
+ * "AmigaGuide" command (normally C:AmigaGuide, part of a standard 2.1+/
+ * 3.0+ installation - present on the command path, not shipped beside
+ * MintVID's own binaries) with the guide's PROGDIR:-relative path as its
+ * one argument; that command itself does whatever amigaguide.library/
+ * Multiview plumbing is needed, using the exact toolchain every AmigaGuide-
+ * literate utility (including this project's own MintPRINT) already relies
+ * on to display its own help - so it needs no NDK struct this project has
+ * no way to check against, unlike the first version of this function.
  *
- * Only nag_Name is set on the (zero-initialised) struct NewAmigaGuide -
- * every other field is left at its zeroed default. This is deliberate, not
- * an oversight: there is no real AmigaOS toolchain/NDK on this project's dev
- * host to check the exact field set of the real <libraries/amigaguide.h>
- * against (see CLAUDE.md's "Validate against ffmpeg" section for the same
- * gap affecting every other Amiga-only file), so the safest usage touches
- * only the one field every known example of this call sets - the guide's
- * name - and lets the library default everything else (screen, position,
- * size) itself. Real verification is the same as for any other NDK-only
- * code in this tree: the CI build against the real m68k-amigaos-gcc/NDK
- * toolchain, which fails outright on a wrong field name rather than
- * miscompiling, and a real-hardware run to confirm the viewer actually
- * opens and shows the guide correctly.
+ * The process runs detached (NP_Cli TRUE, no output/error stream wired
+ * back) and this function does not wait for it - same fire-and-forget
+ * shape as opening a video window and moving on.
  */
 void mr_gui_open_guide(mr_gui_menu *menu, struct Window *window)
 {
-    struct NewAmigaGuide nag;
     BPTR lock;
+    BPTR seglist;
+    struct Process *process;
+    char arguments[64];
 
-    if (!menu)
-        return;
-    if (!AmigaGuideBase) {
-        AmigaGuideBase = OpenLibrary((CONST_STRPTR)"amigaguide.library", 0);
-        menu->owns_amigaguide = AmigaGuideBase != NULL;
-    }
-    if (!AmigaGuideBase) {
-        struct EasyStruct request;
-        request.es_StructSize = sizeof(request);
-        request.es_Flags = 0;
-        request.es_Title = (UBYTE *)"MintVID Guide";
-        request.es_TextFormat = (UBYTE *)
-            "amigaguide.library is not available on this system.\n"
-            "It ships with a standard AmigaOS 3.0+ installation.\n"
-            "You can still read PROGDIR:MintVID.guide as plain text.";
-        request.es_GadgetFormat = (UBYTE *)"OK";
-        EasyRequestArgs(window, &request, NULL, NULL);
-        return;
-    }
+    (void)menu;
 
     lock = Lock((CONST_STRPTR)"PROGDIR:MintVID.guide", ACCESS_READ);
     if (!lock) {
-        struct EasyStruct request;
-        request.es_StructSize = sizeof(request);
-        request.es_Flags = 0;
-        request.es_Title = (UBYTE *)"MintVID Guide";
-        request.es_TextFormat = (UBYTE *)
+        guide_error(window,
             "MintVID.guide was not found next to this program.\n"
-            "Keep it in the same drawer as the MintVID binaries.";
-        request.es_GadgetFormat = (UBYTE *)"OK";
-        EasyRequestArgs(window, &request, NULL, NULL);
+            "Keep it in the same drawer as the MintVID binaries.");
         return;
     }
     UnLock(lock);
 
-    memset(&nag, 0, sizeof(nag));
-    nag.nag_Name = (STRPTR)"PROGDIR:MintVID.guide";
-    if (!OpenAmigaGuideAsync(&nag, TAG_DONE)) {
-        struct EasyStruct request;
-        request.es_StructSize = sizeof(request);
-        request.es_Flags = 0;
-        request.es_Title = (UBYTE *)"MintVID Guide";
-        request.es_TextFormat = (UBYTE *)
-            "Could not open MintVID.guide.";
-        request.es_GadgetFormat = (UBYTE *)"OK";
-        EasyRequestArgs(window, &request, NULL, NULL);
+    seglist = LoadSeg((CONST_STRPTR)"AmigaGuide");
+    if (!seglist) {
+        guide_error(window,
+            "The AmigaGuide command was not found (normally\n"
+            "C:AmigaGuide, part of a standard AmigaOS 2.1+/3.0+\n"
+            "installation). You can still read MintVID.guide with\n"
+            "a text editor.");
+        return;
+    }
+
+    strcpy(arguments, "PROGDIR:MintVID.guide\n");
+    process = CreateNewProcTags(
+        NP_Seglist, seglist,
+        NP_FreeSeglist, TRUE,
+        NP_Arguments, (ULONG)arguments,
+        NP_StackSize, MR_GUIDE_STACK_SIZE,
+        NP_Cli, TRUE,
+        NP_CommandName, (ULONG)"AmigaGuide",
+        NP_Name, (ULONG)"MintVID Guide",
+        TAG_END);
+    if (!process) {
+        UnLoadSeg(seglist);
+        guide_error(window, "Could not start the AmigaGuide command.");
     }
 }
 

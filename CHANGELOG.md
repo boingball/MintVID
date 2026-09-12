@@ -24,17 +24,18 @@
 ### Added
 
 - Every GUI's title-bar **MintVID** menu gained a **Guide...** item, opening
-  `MintVID.guide` via amigaguide.library's asynchronous viewer, alongside the
-  existing About/Quit items - the release target already copies this file
-  into each packaged build, but nothing ever actually opened it. `MintVID.guide`
-  itself also gained four nodes the existing manual didn't have: Audio,
-  Live streaming and networking, Command line (mrplay), and an explicit
-  per-codec support list. Falls back to an EasyRequest telling the user
-  where to find the plain-text file if amigaguide.library or the guide
-  itself isn't available. Unverified beyond the real m68k-amigaos-gcc CI
-  build - there is no AmigaOS toolchain/NDK on the dev host to check
-  amigaguide.library's exact API against, so only `nag_Name` (the one field
-  every known usage sets) is referenced; see CLAUDE.md.
+  `MintVID.guide` by launching the standard `AmigaGuide` command as a
+  subprocess (the same launch mechanism already used for mrplay/iptvgui/
+  ytgui), alongside the existing About/Quit items - the release target
+  already copies this file into each packaged build, but nothing ever
+  actually opened it. `MintVID.guide` itself also gained four nodes the
+  existing manual didn't have: Audio, Live streaming and networking,
+  Command line (mrplay), and an explicit per-codec support list. Falls back
+  to an EasyRequest telling the user where to find the plain-text file if
+  the AmigaGuide command or the guide itself isn't available. An earlier
+  version of this called amigaguide.library directly; it compiled and
+  passed CI but did not actually open the guide on real hardware, so it was
+  replaced with this subprocess approach - see CLAUDE.md.
 - Both the ReAction and GadTools main controllers now remember the local
   file browser's last-used drawer (`ENVARC:MintVID.lastdir`, so it survives
   a reboot) and reopen there next time, instead of always starting fresh.
