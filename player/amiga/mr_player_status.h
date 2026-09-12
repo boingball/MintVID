@@ -45,6 +45,7 @@
 #define MR_PLAYER_COMMAND_FULLSCREEN (1UL << 2)
 #define MR_PLAYER_COMMAND_VOLUME_DOWN (1UL << 3)
 #define MR_PLAYER_COMMAND_VOLUME_UP   (1UL << 4)
+#define MR_PLAYER_COMMAND_VOLUME_SET  (1UL << 5)
 
 enum {
   MR_PLAYER_STATE_STARTING = 0, /* process up, nothing opened yet            */
@@ -83,6 +84,7 @@ mr_player_status_snapshot_valid(const mr_player_status_snapshot *snapshot) {
 typedef struct {
   struct MsgPort port;
   volatile ULONG commands;
+  volatile ULONG volume; /* Paula volume, 0..64, for absolute GUI updates */
   mr_player_status status;
 } mr_player_control_port;
 
@@ -129,6 +131,23 @@ static inline void mr_player_status_set(mr_player_control_port *block,
   block->status.seq++;
   block->status.magic = MR_PLAYER_STATUS_MAGIC;
   Permit();
+}
+
+static inline int mr_player_control_set_volume(ULONG volume) {
+  mr_player_control_port *block;
+  int sent = 0;
+  if (volume > 64)
+    volume = 64;
+  Forbid();
+  block = (mr_player_control_port *)FindPort((CONST_STRPTR)MR_IPTV_PLAYER_PORT);
+  if (block && block->status.magic == MR_PLAYER_STATUS_MAGIC) {
+    block->volume = volume;
+    block->commands |= MR_PLAYER_COMMAND_VOLUME_SET;
+    Signal(block->port.mp_SigTask, SIGBREAKF_CTRL_E);
+    sent = 1;
+  }
+  Permit();
+  return sent;
 }
 
 /* Reader (IPTV controller). Copies the currently published status into `out`.

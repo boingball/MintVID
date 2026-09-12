@@ -50,8 +50,8 @@ extern struct Library *GadToolsBase;
 enum {
     G_FILE = 1, G_BROWSE, G_MODE, G_C2P, G_H264, G_LACE, G_SCALE,
     G_AUDIO_RATE, G_FAST_BUFFER, G_NO_AUDIO, G_MONO_AUDIO, G_VIDEO_MODE,
-    G_PLAY, G_PAUSE, G_STOP, G_FAST, G_IPTV, G_YOUTUBE, G_INFO,
-    G_VOLUME_DOWN, G_VOLUME_UP, G_PLAYLIST
+    G_PLAY, G_PAUSE, G_STOP, G_FAST, G_IPTV, G_YOUTUBE, G_VOLUME, G_INFO,
+    G_PLAYLIST
 };
 
 typedef struct gt_app {
@@ -61,7 +61,7 @@ typedef struct gt_app {
     struct Gadget *gadgets;
     struct Gadget *file, *mode, *c2p, *h264, *lace, *scale, *info;
     struct Gadget *audio_rate, *fast_buffer, *no_audio, *mono_audio;
-    struct Gadget *video_mode;
+    struct Gadget *video_mode, *volume;
     struct Gadget *iptv;
     struct Window *plWin;
     struct Gadget *plGadgets, *plGadContext, *plGadList;
@@ -889,6 +889,24 @@ static struct Gadget *add_gadget(gt_app *app, struct Gadget *previous,
     return CreateGadget(kind, previous, &ng, tag1, data1, TAG_DONE);
 }
 
+static struct Gadget *add_slider(gt_app *app, struct Gadget *previous,
+                                 UWORD id, int x, int y, int w, int h)
+{
+    struct NewGadget ng;
+    memset(&ng, 0, sizeof(ng));
+    ng.ng_LeftEdge = x;
+    ng.ng_TopEdge = y;
+    ng.ng_Width = w;
+    ng.ng_Height = h;
+    ng.ng_GadgetText = (STRPTR)"";
+    ng.ng_TextAttr = (struct TextAttr *)&topaz;
+    ng.ng_GadgetID = id;
+    ng.ng_VisualInfo = app->visual;
+    return CreateGadget(SLIDER_KIND, previous, &ng,
+                        GTSL_Min, 0, GTSL_Max, 64, GTSL_Level, 64,
+                        TAG_DONE);
+}
+
 static int build_window(gt_app *app)
 {
     struct Gadget *g;
@@ -988,28 +1006,26 @@ static int build_window(gt_app *app)
     app->video_mode = g = add_gadget(app, g, CYCLE_KIND, G_VIDEO_MODE, 8, 92,
         180, 16, "", GTCY_Labels, (ULONG)video_labels);
 
-    /* Compact transport strip.  ASCII keeps the glyphs available on stock
-     * Topaz while making the controls much narrower than word labels. */
-    g = add_gadget(app, g, BUTTON_KIND, G_PLAY, 8, 116, 42, 18, ">",
+    /* VLC-style lower strip: media buttons stay flush left, the volume
+     * slider follows them, and IPTV/YouTube sit before Playlist in the
+     * remaining space. */
+    g = add_gadget(app, g, BUTTON_KIND, G_PLAY, 8, 116, 32, 18, ">",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_PAUSE, 56, 116, 42, 18, "||",
+    g = add_gadget(app, g, BUTTON_KIND, G_PAUSE, 44, 116, 32, 18, "||",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_STOP, 104, 116, 42, 18, "[]",
+    g = add_gadget(app, g, BUTTON_KIND, G_STOP, 80, 116, 32, 18, "[]",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_FAST, 152, 116, 48, 18, ">>",
+    g = add_gadget(app, g, BUTTON_KIND, G_FAST, 116, 116, 40, 18, ">>",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_VOLUME_DOWN, 204, 116, 30, 18,
-                   "-", TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_VOLUME_UP, 238, 116, 30, 18,
-                   "+", TAG_IGNORE, 0);
+    app->volume = g = add_slider(app, g, G_VOLUME, 166, 116, 150, 18);
+    if (!app->volume)
+        return 0;
 
-    /* Browsers get their own row so transport and service actions are visually
-     * distinct and the controller never grows horizontally again. */
-    app->iptv = g = add_gadget(app, g, BUTTON_KIND, G_IPTV, 8, 140, 100, 18,
+    app->iptv = g = add_gadget(app, g, BUTTON_KIND, G_IPTV, 326, 116, 84, 18,
                               "IPTV...", TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_YOUTUBE, 114, 140, 110, 18,
+    g = add_gadget(app, g, BUTTON_KIND, G_YOUTUBE, 414, 116, 98, 18,
                    "YouTube...", TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_PLAYLIST, 230, 140, 100, 18,
+    g = add_gadget(app, g, BUTTON_KIND, G_PLAYLIST, 516, 116, 110, 18,
                    "Playlist", TAG_IGNORE, 0);
     app->info = g = add_gadget(app, g, TEXT_KIND, G_INFO, 8, 164, 615, 16,
         "", GTTX_Text, (ULONG)"No file selected");
@@ -1124,12 +1140,14 @@ int main(void)
                 case G_PAUSE: signal_player(SIGBREAKF_CTRL_D); break;
                 case G_STOP: stop_player(); break;
                 case G_FAST: signal_player(SIGBREAKF_CTRL_E); break;
-                case G_VOLUME_DOWN:
-                    mr_player_control_send(MR_PLAYER_COMMAND_VOLUME_DOWN);
+                case G_VOLUME: {
+                    ULONG level = 64;
+                    if (app.volume)
+                        GT_GetGadgetAttrs(app.volume, app.window, NULL,
+                                          GTSL_Level, &level, TAG_DONE);
+                    mr_player_control_set_volume(level);
                     break;
-                case G_VOLUME_UP:
-                    mr_player_control_send(MR_PLAYER_COMMAND_VOLUME_UP);
-                    break;
+                }
                 case G_PLAYLIST:
                     if (!app.plWin)
                         gt_playlist_open(&app);

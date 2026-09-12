@@ -24,6 +24,7 @@
 #include <libraries/asl.h>
 #include <gadgets/layout.h>
 #include <gadgets/string.h>
+#include <gadgets/slider.h>
 #include <images/label.h>
 #include <reaction/reaction.h>
 #include <reaction/reaction_macros.h>
@@ -42,6 +43,7 @@
 #include <proto/label.h>
 #include <proto/layout.h>
 #include <proto/string.h>
+#include <proto/slider.h>
 #include <proto/window.h>
 #include <stdio.h>
 #include <string.h>
@@ -82,6 +84,7 @@ struct Library *ChooserBase;
 struct Library *GetFileBase;
 struct Library *ListBrowserBase;
 struct Library *StringBase;
+struct Library *SliderBase;
 struct Library *LabelBase;
 
 enum {
@@ -102,8 +105,7 @@ enum {
     G_VIDEO_MODE,
     G_IPTV,
     G_YOUTUBE,
-    G_VOLUME_DOWN,
-    G_VOLUME_UP,
+    G_VOLUME,
     G_PLAYLIST
 };
 
@@ -183,13 +185,15 @@ static int open_reaction_classes(void)
                                   MRGUI_CLASS_VERSION);
     StringBase = OpenLibrary((CONST_STRPTR)"gadgets/string.gadget",
                              MRGUI_CLASS_VERSION);
+    SliderBase = OpenLibrary((CONST_STRPTR)"gadgets/slider.gadget",
+                             MRGUI_CLASS_VERSION);
     LabelBase = OpenLibrary((CONST_STRPTR)"images/label.image",
                             MRGUI_CLASS_VERSION);
 
     return IntuitionBase && GfxBase && UtilityBase && AslBase &&
            WindowBase && LayoutBase && ButtonBase && CheckBoxBase &&
            ChooserBase && GetFileBase && ListBrowserBase && StringBase &&
-           LabelBase;
+           SliderBase && LabelBase;
 }
 
 static void close_reaction_classes(void)
@@ -201,6 +205,10 @@ static void close_reaction_classes(void)
     if (StringBase) {
         CloseLibrary(StringBase);
         StringBase = NULL;
+    }
+    if (SliderBase) {
+        CloseLibrary(SliderBase);
+        SliderBase = NULL;
     }
     if (GetFileBase) {
         CloseLibrary(GetFileBase);
@@ -1170,6 +1178,15 @@ static void mrg_playlist_handle(mrg_playlist_window *p)
     }
 }
 
+static void apply_gui_volume(Object *slider)
+{
+    ULONG level = 64;
+    if (slider) {
+        GetAttr(SLIDER_Level, slider, &level);
+        mr_player_control_set_volume(level);
+    }
+}
+
 int main(void)
 {
     Object *window_object;
@@ -1206,8 +1223,7 @@ int main(void)
     Object *ff_button;
     Object *iptv_button;
     Object *youtube_button;
-    Object *volume_down_button;
-    Object *volume_up_button;
+    Object *volume_slider;
     Object *playlist_button;
     struct Window *window;
     mr_playlist playlist;
@@ -1267,8 +1283,7 @@ int main(void)
     ff_button = NULL;
     iptv_button = NULL;
     youtube_button = NULL;
-    volume_down_button = NULL;
-    volume_up_button = NULL;
+    volume_slider = NULL;
     playlist_button = NULL;
     memset(&playlist_gui, 0, sizeof(playlist_gui));
     mr_playlist_init(&playlist);
@@ -1586,38 +1601,45 @@ int main(void)
                                          GA_Text, (ULONG)"YouTube...",
                                          GA_RelVerify, TRUE,
                                          TAG_DONE);
-    volume_down_button = (Object *)NewObject(BUTTON_GetClass(), NULL,
-                                             GA_ID, G_VOLUME_DOWN,
-                                             GA_Text, (ULONG)"-",
-                                             GA_RelVerify, TRUE, TAG_DONE);
-    volume_up_button = (Object *)NewObject(BUTTON_GetClass(), NULL,
-                                           GA_ID, G_VOLUME_UP,
-                                           GA_Text, (ULONG)"+",
-                                           GA_RelVerify, TRUE, TAG_DONE);
+    volume_slider = (Object *)NewObject(SLIDER_GetClass(), NULL,
+                                         GA_ID, G_VOLUME,
+                                         GA_RelVerify, TRUE,
+                                         SLIDER_Min, 0,
+                                         SLIDER_Max, 64,
+                                         SLIDER_Level, 64,
+                                         SLIDER_Orientation, SLIDER_HORIZONTAL,
+                                         TAG_DONE);
     playlist_button = (Object *)NewObject(BUTTON_GetClass(), NULL,
                                           GA_ID, G_PLAYLIST,
                                           GA_Text, (ULONG)"Playlist",
                                           GA_RelVerify, TRUE, TAG_DONE);
     if (!play_button || !pause_button || !stop_button || !ff_button ||
-        !iptv_button || !youtube_button || !volume_down_button ||
-        !volume_up_button || !playlist_button)
+        !iptv_button || !youtube_button || !volume_slider ||
+        !playlist_button)
         goto cleanup;
 
+    /* VLC-style lower strip: fixed media buttons on the left, a real
+     * horizontal volume slider in the middle, and browser/playlist actions
+     * grouped tightly on the right. Explicit min/max widths stop ReAction
+     * distributing the small buttons across the full window. */
     transport = (Object *)NewObject(LAYOUT_GetClass(), NULL,
                                      LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ,
                                      LAYOUT_SpaceInner, TRUE,
                                      LAYOUT_AddChild, (ULONG)play_button,
                                      CHILD_WeightedWidth, 0,
+                                     CHILD_MinWidth, 30, CHILD_MaxWidth, 30,
                                      LAYOUT_AddChild, (ULONG)pause_button,
                                      CHILD_WeightedWidth, 0,
+                                     CHILD_MinWidth, 30, CHILD_MaxWidth, 30,
                                      LAYOUT_AddChild, (ULONG)stop_button,
                                      CHILD_WeightedWidth, 0,
+                                     CHILD_MinWidth, 30, CHILD_MaxWidth, 30,
                                      LAYOUT_AddChild, (ULONG)ff_button,
                                      CHILD_WeightedWidth, 0,
-                                     LAYOUT_AddChild, (ULONG)volume_down_button,
-                                     CHILD_WeightedWidth, 0,
-                                     LAYOUT_AddChild, (ULONG)volume_up_button,
-                                     CHILD_WeightedWidth, 0,
+                                     CHILD_MinWidth, 34, CHILD_MaxWidth, 34,
+                                     LAYOUT_AddChild, (ULONG)volume_slider,
+                                     CHILD_WeightedWidth, 1,
+                                     CHILD_MinWidth, 110,
                                      TAG_DONE);
     if (!transport)
         goto cleanup;
@@ -1627,21 +1649,24 @@ int main(void)
                                     LAYOUT_SpaceInner, TRUE,
                                     LAYOUT_AddChild, (ULONG)iptv_button,
                                     CHILD_WeightedWidth, 0,
+                                    CHILD_MinWidth, 72, CHILD_MaxWidth, 72,
                                     LAYOUT_AddChild, (ULONG)youtube_button,
                                     CHILD_WeightedWidth, 0,
+                                    CHILD_MinWidth, 82, CHILD_MaxWidth, 82,
                                     LAYOUT_AddChild, (ULONG)playlist_button,
                                     CHILD_WeightedWidth, 0,
+                                    CHILD_MinWidth, 76, CHILD_MaxWidth, 76,
                                     TAG_DONE);
     if (!services)
         goto cleanup;
 
     buttons = (Object *)NewObject(LAYOUT_GetClass(), NULL,
-                                   LAYOUT_Orientation, LAYOUT_ORIENT_VERT,
+                                   LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ,
                                    LAYOUT_SpaceInner, TRUE,
                                    LAYOUT_AddChild, (ULONG)transport,
-                                   CHILD_WeightedHeight, 0,
+                                   CHILD_WeightedWidth, 1,
                                    LAYOUT_AddChild, (ULONG)services,
-                                   CHILD_WeightedHeight, 0,
+                                   CHILD_WeightedWidth, 0,
                                    TAG_DONE);
     if (!buttons)
         goto cleanup;
@@ -1789,12 +1814,8 @@ int main(void)
                     signal_player(SIGBREAKF_CTRL_E);
                     break;
 
-                case G_VOLUME_DOWN:
-                    mr_player_control_send(MR_PLAYER_COMMAND_VOLUME_DOWN);
-                    break;
-
-                case G_VOLUME_UP:
-                    mr_player_control_send(MR_PLAYER_COMMAND_VOLUME_UP);
+                case G_VOLUME:
+                    apply_gui_volume(volume_slider);
                     break;
 
                 case G_PLAYLIST:
@@ -1828,6 +1849,11 @@ int main(void)
                 default:
                     break;
                 }
+                break;
+
+            case WMHI_IDCMPUPDATE:
+                if ((result & WMHI_GADGETMASK) == G_VOLUME)
+                    apply_gui_volume(volume_slider);
                 break;
 
             default:
@@ -1895,8 +1921,7 @@ cleanup:
                 if (pause_button) DisposeObject(pause_button);
                 if (stop_button) DisposeObject(stop_button);
                 if (ff_button) DisposeObject(ff_button);
-                if (volume_down_button) DisposeObject(volume_down_button);
-                if (volume_up_button) DisposeObject(volume_up_button);
+                if (volume_slider) DisposeObject(volume_slider);
             }
             if (services) {
                 DisposeObject(services);
