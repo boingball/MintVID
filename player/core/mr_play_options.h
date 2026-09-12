@@ -72,6 +72,14 @@ typedef struct mr_play_options {
     mr_c2p_mode c2p;
     int laced;
     int scale_2x;
+    /* pass --copper-vdouble: AGA-only, opt-in, confirmed on real AGA
+     * hardware with --c2p (portable) - see amiga/display_aga.c's file
+     * header comment and build_copper_vdouble(); --riva-c2p/--cd32 and
+     * ECS/OCS chipsets not yet exercised. No effect unless scale_2x is also
+     * set and the chosen c2p/display combination qualifies (display_aga.c
+     * decides that at runtime; an ineligible combination just plays
+     * normally). */
+    int copper_vdouble;
     int hls_low;
     unsigned hls_max_width;
     unsigned hls_max_height;

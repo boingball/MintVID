@@ -812,6 +812,102 @@ already compiles `Makefile.amiga`'s `all` target end to end - the direct-
 planar files being unconditionally part of `CORE` now means that job
 proves their real-toolchain link for free.
 
+## AGA copper-assisted vertical doubling notes
+`--copper-vdouble` (`display_set_copper_vdouble()`, `g_aga_copper_vdouble`,
+GUI "Copper 2x") is a genuinely different kind of scale-up from the
+software `mr_scale2x_u8()` path `--2x` normally uses: instead of the CPU
+duplicating every encoded row so both an even and an odd physical scanline
+hold real pixel data, it dithers/C2Ps only the even rows and lets a copper
+list - built once, when the screen opens, since the bitplane addresses it
+pokes never move for the life of the screen - repeat each one a second time
+on the real raster. The mechanism: Agnus auto-increments BPLxPT by one row
+after every *displayed* scanline regardless of copper activity, so a single
+WAIT+MOVE per source row, firing only on the "repeat" (odd) physical line
+and rewinding BPLxPT back to the row just shown, is enough - the following
+auto-increment lands correctly on the *next* source row with no further
+help. Halves the rows `aga_show()` has to encode and C2P for the scale==2
+case. Only qualifies for a plain `--c2p`/`--riva-c2p`/`--cd32` geometry, no
+HAM, no `--lace`: Kalms' hand-tuned kernels compute their own row
+addressing from the real `BytesPerRow` with no way to take an arbitrary
+output stride, and WritePixelArray8's rectangle-of-Y-coordinates API has no
+stride concept to double at all.
+
+Getting this built at all needed correcting two wrong assumptions about
+the actual NDK, not just the raster-timing math. `graphics/copper.h`'s
+`CINIT`/`CWAIT`/`CMOVE`/`CEND` turned out to be a Commodore RKM *example*
+convention this project wrongly assumed shipped as real macros - the real
+header only provides the raw `struct CopIns`/`CopList`/`UCopList`
+primitives, populated directly instead (one `struct CopIns` per WAIT or
+MOVE, built into a caller-allocated array, wrapped in a `CopList`/
+`UCopList` pair, attached via `UCopIns`). And `MrgCop()` takes `struct
+View*`, not `struct ViewPort*` - GCC caught the original `&s->scr->ViewPort`
+call as an incompatible-pointer-type *warning*, not an error, so it slipped
+through compile-only verification; `MakeScreen()`+`RethinkDisplay()` (called
+right after, for exactly this "a screen's ViewPort changed" case) call
+`MrgCop()` internally at the correct scope anyway, so the fix was simply to
+delete the miscast call rather than fix its argument. Both were only caught
+because the user extracted and pasted in the actual NDK headers
+(`graphics/copper.h`, `hardware/custom.h`) this Bebbo toolchain ships -
+there is no AmigaOS toolchain on this dev host at all, so this file
+couldn't even be syntax-checked, let alone cross-built for qemu, unlike
+every other Amiga-only file in this tree.
+
+The GUI side had its own real gap: neither ReAction (`mrgui.c`) nor
+GadTools (`mrgui_gadtools.c`) ever exposed a c2p choice that actually
+qualifies for Copper 2x on a non-CD32 machine - only "Standard" (`--wpa`),
+Kalms, CD32/Akiko and Direct were selectable, and the portable `--c2p`
+backend (confusingly, the enum value for it is `MR_C2P_WPA`, while
+`MR_C2P_STANDARD` is the one that maps to `--wpa`) was never added as an
+option. A real-hardware test that ticked Copper 2x under Standard or Kalms
+"worked" in the sense that the picture was fine - because in both cases
+`copper_vdouble` silently failed its eligibility check and fell back to
+plain `--2x`, with no visible sign the copper path never actually ran.
+Fixed by adding "Portable" as a selectable c2p option in both GUIs, and by
+replacing the separate "2x"/"Copper 2x" checkboxes with one three-way Scale
+chooser (None/2x/Copper 2x) whose "Copper 2x" entry `update_mode_controls()`
+snaps back to plain 2x whenever the current c2p backend or display mode
+(HAM6/HAM8 also don't qualify) wouldn't actually honour it - re-checked on
+every Mode/C2P/Scale change so no order of clicks can leave it stuck
+selected under a combination that was silently doing nothing.
+
+Once a qualifying combination (`--c2p`/"Portable" + `--2x` + Copper 2x) was
+actually reachable, real AGA hardware confirmed the picture correct for the
+whole session - but closing the player crashed with Guru 81000005 (CPU Zero
+Divide), not a bad picture, a hard crash on exit, and it took two attempts
+to fix. `aga_close()` used to call `FreeVPortCopLists()`+`RethinkDisplay()`
+on the screen while it was still fully open and active, ahead of the normal
+`WaitBlit`/`CloseWindow`/`CloseScreen` sequence; the first fix removed that
+call outright, on the theory that `CloseScreen()` (called a few lines
+later, exercised safely by every AGA session ever) already tears down a
+screen's `UCopIns` as part of its own teardown. It did not fix the crash -
+a retest hit the same Guru, meaning `CloseScreen()` itself was choking on a
+screen whose `ViewPort.UCopIns` still pointed at the custom list, not only
+the explicit call that was removed. The actual fix is an explicit five-step
+shutdown lifecycle in `aga_close()` (and mirrored in `aga_open()`'s `fail:`
+path): (1) stop blits and close the window first; (2) detach the custom
+list by clearing `ViewPort.UCopIns` directly, *not* via
+`FreeVPortCopLists()` (which also frees - detach and free are kept as two
+separate, ordered steps); (3) rebuild/restore the display with
+`RethinkDisplay()` while the window is already gone and the ViewPort is
+back to plain, *before* `CloseScreen()` ever runs; (4) only then close the
+screen; (5) only then free the three manually `AllocMem()`'d blocks (the
+`UCopList`, `CopList` and `CopIns` array - `aga_state` gained `ucop_cl`/
+`ucop_ci`/`ucop_ninst` fields to make this possible, since previously only
+the `UCopList` itself was tracked and the rest was implicitly left to
+`FreeVPortCopLists()`) exactly once, now that nothing else frees them.
+Confirmed on a real-hardware retest: no crash on exit.
+
+Two attempts at the same real-hardware bug, both looking equally reasonable
+until actually tested, is worth remembering as its own lesson: a
+"this should fix it" explanation is not the same as a retest confirming it
+did, especially for chipset-internal behaviour (`CloseScreen()`'s own
+handling of a lingering `UCopIns`) that no amount of source-reading on this
+dev host can substitute for. Not yet exercised on real hardware at all:
+ECS/OCS chipsets, and `--riva-c2p`/`--cd32` as the qualifying c2p backend
+(only `--c2p`/"Portable" has been tested); `--lace` is excluded from
+eligibility entirely, so untested by construction rather than merely
+unconfirmed.
+
 ## H.264 CABAC notes
 **A real-hardware trace and a host callgrind profile agreed that CABAC/CAVLC
 parsing plus MV prediction cost roughly 56% of H.264 decode time - about

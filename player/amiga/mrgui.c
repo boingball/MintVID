@@ -87,7 +87,7 @@ enum {
     G_C2P,
     G_H264,
     G_LACE,
-    G_2X,
+    G_SCALE,
     G_AUDIO_RATE,
     G_FAST_BUFFER,
     G_NO_AUDIO,
@@ -100,7 +100,7 @@ enum {
  * hard-coded row number. This map is populated alongside the labels. */
 static mr_display_mode mode_values[7];
 static unsigned mode_count;
-static mr_c2p_mode c2p_values[4];
+static mr_c2p_mode c2p_values[5];
 static unsigned c2p_count;
 static int add_chooser_node(struct List *list, const char *text);
 
@@ -306,14 +306,14 @@ static void stop_player_and_wait(void)
 static void set_info(Object *info, struct Window *window, const char *text);
 
 static void read_play_options(Object *mode, Object *c2p, Object *h264,
-                              Object *lace, Object *twox,
+                              Object *lace, Object *scale,
                               Object *audio_rate, Object *fast_buffer,
                               Object *no_audio,
                               Object *mono_audio,
                               mr_play_options *options)
 {
     ULONG selected = 0, selected_c2p = 0, selected_h264 = 0;
-    ULONG checked_lace = 0, checked_2x = 0;
+    ULONG checked_lace = 0, selected_scale = 0;
     ULONG selected_audio_rate = 0, selected_fast_buffer = 0;
     ULONG checked_no_audio = 0, checked_mono = 0;
     mr_play_options_default(options);
@@ -321,7 +321,7 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
     GetAttr(CHOOSER_Selected, c2p, &selected_c2p);
     GetAttr(CHOOSER_Selected, h264, &selected_h264);
     GetAttr(CHECKBOX_Checked, lace, &checked_lace);
-    GetAttr(CHECKBOX_Checked, twox, &checked_2x);
+    GetAttr(CHOOSER_Selected, scale, &selected_scale);
     GetAttr(CHOOSER_Selected, audio_rate, &selected_audio_rate);
     GetAttr(CHOOSER_Selected, fast_buffer, &selected_fast_buffer);
     GetAttr(CHECKBOX_Checked, no_audio, &checked_no_audio);
@@ -331,7 +331,12 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
     options->c2p = selected_c2p < c2p_count
                  ? c2p_values[selected_c2p] : MR_C2P_STANDARD;
     options->laced = checked_lace != 0;
-    options->scale_2x = checked_2x != 0;
+    /* Scale rows are fixed and never chipset-dependent - unlike mode/c2p,
+     * no value-array indirection is needed: 0=None, 1=2x, 2=Copper 2x (see
+     * where scale_modes is built in main()). update_mode_controls() is what
+     * keeps row 2 from ever landing here when it wouldn't actually engage. */
+    options->scale_2x = selected_scale >= 1;
+    options->copper_vdouble = selected_scale == 2;
     options->h264_performance = selected_h264 <= MR_H264_PERF_TURBO_GT
                               ? (mr_h264_performance)selected_h264
                               : MR_H264_PERF_AUTO;
@@ -346,20 +351,20 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
 
 static void publish_play_options(mr_master_options_port *master_options,
                                  Object *mode, Object *c2p, Object *h264,
-                                 Object *lace, Object *twox,
+                                 Object *lace, Object *scale,
                                  Object *audio_rate, Object *fast_buffer,
                                  Object *no_audio,
                                  Object *mono_audio)
 {
     mr_play_options options;
 
-    read_play_options(mode, c2p, h264, lace, twox, audio_rate, fast_buffer,
+    read_play_options(mode, c2p, h264, lace, scale, audio_rate, fast_buffer,
                       no_audio, mono_audio, &options);
     mr_master_options_publish(master_options, &options);
 }
 
 static void open_iptv_browser(Object *mode, Object *c2p, Object *h264,
-                              Object *lace, Object *twox,
+                              Object *lace, Object *scale,
                               Object *audio_rate, Object *fast_buffer,
                               Object *no_audio,
                               Object *mono_audio, Object *info,
@@ -370,7 +375,7 @@ static void open_iptv_browser(Object *mode, Object *c2p, Object *h264,
     char arguments[512];
     mr_play_options options;
 
-    read_play_options(mode, c2p, h264, lace, twox, audio_rate, fast_buffer,
+    read_play_options(mode, c2p, h264, lace, scale, audio_rate, fast_buffer,
                       no_audio, mono_audio, &options);
     if (!mr_build_iptv_arguments(arguments, sizeof(arguments), &options)) {
         set_info(info, window, "Could not build IPTV playback options.");
@@ -402,7 +407,7 @@ static void open_iptv_browser(Object *mode, Object *c2p, Object *h264,
 }
 
 static void open_youtube_browser(Object *mode, Object *c2p, Object *h264,
-                                 Object *lace, Object *twox,
+                                 Object *lace, Object *scale,
                                  Object *audio_rate, Object *fast_buffer,
                                  Object *no_audio,
                                  Object *mono_audio, Object *info,
@@ -413,7 +418,7 @@ static void open_youtube_browser(Object *mode, Object *c2p, Object *h264,
     char arguments[512];
     mr_play_options options;
 
-    read_play_options(mode, c2p, h264, lace, twox, audio_rate, fast_buffer,
+    read_play_options(mode, c2p, h264, lace, scale, audio_rate, fast_buffer,
                       no_audio, mono_audio, &options);
     if (!mr_build_iptv_arguments(arguments, sizeof(arguments), &options)) {
         set_info(info, window, "Could not build YouTube playback options.");
@@ -485,15 +490,18 @@ static void update_file_info(Object *file, Object *info,
 }
 
 static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
-                                 Object *twox, struct Window *window,
+                                 Object *scale, struct Window *window,
                                  int output_changed)
 {
     ULONG selected;
     ULONG disable_chipset_options;
     ULONG selected_c2p;
+    ULONG selected_scale;
     mr_c2p_mode selected_c2p_mode;
     int kalms_available;
     int direct_available;
+    int ham_mode;
+    int copper_ok;
 
     selected = 0;
     GetAttr(CHOOSER_Selected, mode, &selected);
@@ -501,6 +509,9 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
                               (mode_values[selected] == MR_DISPLAY_CGX ||
                                mode_values[selected] == MR_DISPLAY_P96)
                             ? TRUE : FALSE;
+    ham_mode = selected < mode_count &&
+              (mode_values[selected] == MR_DISPLAY_HAM6 ||
+               mode_values[selected] == MR_DISPLAY_HAM8);
 
     selected_c2p = 0;
     GetAttr(CHOOSER_Selected, c2p, &selected_c2p);
@@ -531,11 +542,13 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
         !disable_chipset_options && !kalms_available) {
         SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
                        CHOOSER_Selected, c2p_row(MR_C2P_STANDARD), TAG_DONE);
+        selected_c2p_mode = MR_C2P_STANDARD;
     }
     if (selected_c2p_mode == MR_C2P_DIRECT &&
         !disable_chipset_options && !direct_available) {
         SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
                        CHOOSER_Selected, c2p_row(MR_C2P_STANDARD), TAG_DONE);
+        selected_c2p_mode = MR_C2P_STANDARD;
     }
 
     SetGadgetAttrs((struct Gadget *)c2p, window, NULL,
@@ -546,17 +559,39 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
                        GA_Disabled, TRUE,
                        CHECKBOX_Checked, FALSE,
                        TAG_DONE);
-        SetGadgetAttrs((struct Gadget *)twox, window, NULL,
+        SetGadgetAttrs((struct Gadget *)scale, window, NULL,
                        GA_Disabled, TRUE,
-                       CHECKBOX_Checked, FALSE,
+                       CHOOSER_Selected, 0,
                        TAG_DONE);
-    } else {
-        SetGadgetAttrs((struct Gadget *)lace, window, NULL,
-                       GA_Disabled, FALSE,
-                       TAG_DONE);
-        SetGadgetAttrs((struct Gadget *)twox, window, NULL,
-                       GA_Disabled, FALSE,
-                       TAG_DONE);
+        return;
+    }
+    SetGadgetAttrs((struct Gadget *)lace, window, NULL,
+                   GA_Disabled, FALSE,
+                   TAG_DONE);
+    SetGadgetAttrs((struct Gadget *)scale, window, NULL,
+                   GA_Disabled, FALSE,
+                   TAG_DONE);
+
+    /* Copper 2x (row 2 of the Scale chooser) only ever does anything for a
+     * plain c2p/riva-c2p/Akiko geometry with no HAM - see display_aga.c's
+     * own eligibility check in aga_open(). Kalms/Standard(WPA)/Direct and
+     * either HAM mode all silently no-op it at runtime instead of erroring,
+     * which is exactly what let a real-hardware test "succeed" against
+     * plain --2x without the copper path ever actually running - so snap
+     * back to row 1 (2x) here instead of leaving a selection that looks
+     * chosen but was never honoured. Re-checked on every mode/c2p/scale
+     * change (all three call this function) so no ordering of clicks can
+     * leave Copper selected under an incompatible combination. */
+    copper_ok = !ham_mode &&
+               (selected_c2p_mode == MR_C2P_WPA ||
+                selected_c2p_mode == MR_C2P_RIVA ||
+                selected_c2p_mode == MR_C2P_AKIKO);
+    if (!copper_ok) {
+        selected_scale = 0;
+        GetAttr(CHOOSER_Selected, scale, &selected_scale);
+        if (selected_scale == 2)
+            SetGadgetAttrs((struct Gadget *)scale, window, NULL,
+                           CHOOSER_Selected, 1, TAG_DONE);
     }
 }
 
@@ -690,7 +725,7 @@ static void start_iptv_launch(Object *info, struct Window *window,
 
 static void start_player(Object *file, Object *mode, Object *c2p,
                          Object *h264,
-                         Object *lace, Object *twox,
+                         Object *lace, Object *scale,
                          Object *audio_rate, Object *fast_buffer,
                          Object *no_audio,
                          Object *mono_audio, Object *info,
@@ -725,7 +760,7 @@ static void start_player(Object *file, Object *mode, Object *c2p,
     strncpy(path, (const char *)full_file, sizeof(path) - 1);
     path[sizeof(path) - 1] = 0;
 
-    read_play_options(mode, c2p, h264, lace, twox, audio_rate, fast_buffer,
+    read_play_options(mode, c2p, h264, lace, scale, audio_rate, fast_buffer,
                       no_audio, mono_audio, &options);
     if (!mr_build_player_arguments(args, sizeof(args), &options, path,
                                    NULL, NULL)) {
@@ -766,7 +801,7 @@ int main(void)
     Object *c2p;
     Object *h264;
     Object *lace;
-    Object *twox;
+    Object *scale;
     Object *audio_rate;
     Object *fast_buffer;
     Object *no_audio;
@@ -783,6 +818,7 @@ int main(void)
     Object *display_label;
     Object *c2p_label;
     Object *h264_label;
+    Object *scale_label;
     Object *audio_rate_label;
     Object *fast_buffer_label;
     Object *play_button;
@@ -797,6 +833,7 @@ int main(void)
     struct List modes;
     struct List c2p_modes;
     struct List h264_modes;
+    struct List scale_modes;
     struct List audio_rate_modes;
     struct List fast_buffer_modes;
     ULONG sigmask;
@@ -815,7 +852,8 @@ int main(void)
     c2p = NULL;
     h264 = NULL;
     lace = NULL;
-    twox = NULL;
+    scale = NULL;
+    scale_label = NULL;
     audio_rate = NULL;
     fast_buffer = NULL;
     no_audio = NULL;
@@ -857,6 +895,9 @@ int main(void)
     h264_modes.lh_Head = (struct Node *)&h264_modes.lh_Tail;
     h264_modes.lh_Tail = NULL;
     h264_modes.lh_TailPred = (struct Node *)&h264_modes.lh_Head;
+    scale_modes.lh_Head = (struct Node *)&scale_modes.lh_Tail;
+    scale_modes.lh_Tail = NULL;
+    scale_modes.lh_TailPred = (struct Node *)&scale_modes.lh_Head;
     audio_rate_modes.lh_Head = (struct Node *)&audio_rate_modes.lh_Tail;
     audio_rate_modes.lh_Tail = NULL;
     audio_rate_modes.lh_TailPred = (struct Node *)&audio_rate_modes.lh_Head;
@@ -891,7 +932,15 @@ int main(void)
     if (!add_c2p_node(&c2p_modes, "Standard", MR_C2P_STANDARD) ||
         (mr_akiko_available() &&
          !add_c2p_node(&c2p_modes, "CD32", MR_C2P_AKIKO)) ||
-        !add_c2p_node(&c2p_modes, "Kalms", MR_C2P_KALMS)
+        !add_c2p_node(&c2p_modes, "Kalms", MR_C2P_KALMS) ||
+        /* The only other --2x-and-scale_2x-independent backend besides
+         * Kalms - i.e. the one non-CD32 choice that actually qualifies for
+         * Copper 2x (display_aga.c's copper_vdouble excludes Kalms/WPA/
+         * Standard entirely, since only this portable mr_c2p8 kernel,
+         * --riva-c2p and Akiko take an arbitrary output stride). Was never
+         * exposed here before, silently leaving Copper 2x with no reachable
+         * qualifying c2p choice on a non-CD32 machine. */
+        !add_c2p_node(&c2p_modes, "Portable", MR_C2P_WPA)
 #ifdef MR_KALMS_040
         || !add_c2p_node(&c2p_modes, "Direct", MR_C2P_DIRECT)
 #endif
@@ -904,6 +953,13 @@ int main(void)
         !add_chooser_node(&h264_modes, "Turbo") ||
         !add_chooser_node(&h264_modes, "Turbo+") ||
         !add_chooser_node(&h264_modes, "TurboGT"))
+        goto cleanup;
+    /* Rows are fixed, unlike mode/c2p - no value-array indirection needed;
+     * read_play_options() and update_mode_controls() both hard-code
+     * 0=None, 1=2x, 2=Copper 2x to match this exact order. */
+    if (!add_chooser_node(&scale_modes, "None") ||
+        !add_chooser_node(&scale_modes, "2x") ||
+        !add_chooser_node(&scale_modes, "Copper 2x"))
         goto cleanup;
     if (!add_chooser_node(&audio_rate_modes, "Normal") ||
         !add_chooser_node(&audio_rate_modes, "Low"))
@@ -947,11 +1003,15 @@ int main(void)
                                GA_Text, (ULONG)"Laced",
                                GA_RelVerify, TRUE,
                                TAG_DONE);
-    twox = (Object *)NewObject(CHECKBOX_GetClass(), NULL,
-                               GA_ID, G_2X,
-                               GA_Text, (ULONG)"2x",
-                               GA_RelVerify, TRUE,
-                               TAG_DONE);
+    scale = (Object *)NewObject(CHOOSER_GetClass(), NULL,
+                                GA_ID, G_SCALE,
+                                GA_RelVerify, TRUE,
+                                CHOOSER_Labels, (ULONG)&scale_modes,
+                                CHOOSER_Selected, 0,
+                                TAG_DONE);
+    scale_label = (Object *)NewObject(LABEL_GetClass(), NULL,
+                                      LABEL_Text, (ULONG)"Scale",
+                                      TAG_DONE);
     audio_rate = (Object *)NewObject(CHOOSER_GetClass(), NULL,
                                      GA_ID, G_AUDIO_RATE,
                                      GA_RelVerify, TRUE,
@@ -998,15 +1058,20 @@ int main(void)
                                             LABEL_Text, (ULONG)"Fast buffer",
                                             TAG_DONE);
 
-    if (!file || !mode || !c2p || !h264 || !lace || !twox ||
+    if (!file || !mode || !c2p || !h264 || !lace || !scale ||
         !audio_rate || !fast_buffer || !no_audio || !mono_audio || !info ||
         !file_label || !display_label || !c2p_label || !h264_label ||
-        !audio_rate_label || !fast_buffer_label)
+        !scale_label || !audio_rate_label || !fast_buffer_label)
         goto cleanup;
 
     /* Keep the option area comfortably inside a 640-pixel A1200 Workbench.
      * The tightly-related display/C2P/H.264 controls stay together on the
-     * first row; audio and buffering live on the second row. */
+     * first row; audio and buffering live on the second row. Scale (None/
+     * 2x/Copper 2x) replaces the old separate 2x and Copper 2x checkboxes -
+     * Copper only ever does anything on top of 2x, and only for a c2p/
+     * display combination that supports it (update_mode_controls() snaps
+     * the selection back to plain 2x otherwise), so one three-way chooser
+     * reads better than two checkboxes whose relationship wasn't visible. */
     controls_top = (Object *)NewObject(LAYOUT_GetClass(), NULL,
                                        LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ,
                                        LAYOUT_SpaceInner, TRUE,
@@ -1018,8 +1083,8 @@ int main(void)
                                        CHILD_Label, (ULONG)h264_label,
                                        LAYOUT_AddChild, (ULONG)lace,
                                        CHILD_WeightedWidth, 0,
-                                       LAYOUT_AddChild, (ULONG)twox,
-                                       CHILD_WeightedWidth, 0,
+                                       LAYOUT_AddChild, (ULONG)scale,
+                                       CHILD_Label, (ULONG)scale_label,
                                        TAG_DONE);
     if (!controls_top)
         goto cleanup;
@@ -1163,9 +1228,9 @@ int main(void)
         goto cleanup;
     mr_gui_menu_open(&app_menu, window);
 
-    update_mode_controls(mode, c2p, lace, twox, window, TRUE);
+    update_mode_controls(mode, c2p, lace, scale, window, TRUE);
     master_options = mr_master_options_open();
-    publish_play_options(master_options, mode, c2p, h264, lace, twox,
+    publish_play_options(master_options, mode, c2p, h264, lace, scale,
                          audio_rate, fast_buffer, no_audio, mono_audio);
     GetAttr(WINDOW_SigMask, window_object, &sigmask);
     if (status_timer_open()) {
@@ -1209,33 +1274,42 @@ int main(void)
                     break;
 
                 case G_MODE:
-                    update_mode_controls(mode, c2p, lace, twox, window, TRUE);
+                    update_mode_controls(mode, c2p, lace, scale, window, TRUE);
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, fast_buffer,
+                                         lace, scale, audio_rate, fast_buffer,
                                          no_audio, mono_audio);
                     break;
 
                 case G_C2P:
-                    update_mode_controls(mode, c2p, lace, twox, window, FALSE);
+                    update_mode_controls(mode, c2p, lace, scale, window, FALSE);
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, fast_buffer,
+                                         lace, scale, audio_rate, fast_buffer,
+                                         no_audio, mono_audio);
+                    break;
+
+                case G_SCALE:
+                    /* Re-validate here too (not just on G_MODE/G_C2P): picking
+                     * an incompatible c2p/mode first and only then Copper 2x
+                     * must snap back just as reliably as the reverse order. */
+                    update_mode_controls(mode, c2p, lace, scale, window, FALSE);
+                    publish_play_options(master_options, mode, c2p, h264,
+                                         lace, scale, audio_rate, fast_buffer,
                                          no_audio, mono_audio);
                     break;
 
                 case G_H264:
                 case G_LACE:
-                case G_2X:
                 case G_AUDIO_RATE:
                 case G_FAST_BUFFER:
                 case G_NO_AUDIO:
                 case G_MONO_AUDIO:
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, fast_buffer,
+                                         lace, scale, audio_rate, fast_buffer,
                                          no_audio, mono_audio);
                     break;
 
                 case G_PLAY:
-                    start_player(file, mode, c2p, h264, lace, twox,
+                    start_player(file, mode, c2p, h264, lace, scale,
                                  audio_rate, fast_buffer, no_audio, mono_audio,
                                  info, window);
                     break;
@@ -1254,19 +1328,19 @@ int main(void)
 
                 case G_IPTV:
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, fast_buffer,
+                                         lace, scale, audio_rate, fast_buffer,
                                          no_audio, mono_audio);
                     start_iptv_launch(info, window, iptv_button);
-                    open_iptv_browser(mode, c2p, h264, lace, twox,
+                    open_iptv_browser(mode, c2p, h264, lace, scale,
                                       audio_rate, fast_buffer, no_audio,
                                       mono_audio, info, window);
                     break;
 
                 case G_YOUTUBE:
                     publish_play_options(master_options, mode, c2p, h264,
-                                         lace, twox, audio_rate, fast_buffer,
+                                         lace, scale, audio_rate, fast_buffer,
                                          no_audio, mono_audio);
-                    open_youtube_browser(mode, c2p, h264, lace, twox,
+                    open_youtube_browser(mode, c2p, h264, lace, scale,
                                          audio_rate, fast_buffer, no_audio,
                                          mono_audio, info, window);
                     break;
@@ -1307,10 +1381,11 @@ cleanup:
                 if (c2p) DisposeObject(c2p);
                 if (h264) DisposeObject(h264);
                 if (lace) DisposeObject(lace);
-                if (twox) DisposeObject(twox);
+                if (scale) DisposeObject(scale);
                 if (display_label) DisposeObject(display_label);
                 if (c2p_label) DisposeObject(c2p_label);
                 if (h264_label) DisposeObject(h264_label);
+                if (scale_label) DisposeObject(scale_label);
             }
             if (controls_bottom) {
                 DisposeObject(controls_bottom);
@@ -1354,6 +1429,7 @@ cleanup:
     free_chooser_nodes(&modes);
     free_chooser_nodes(&c2p_modes);
     free_chooser_nodes(&h264_modes);
+    free_chooser_nodes(&scale_modes);
     free_chooser_nodes(&audio_rate_modes);
     free_chooser_nodes(&fast_buffer_modes);
     close_reaction_classes();

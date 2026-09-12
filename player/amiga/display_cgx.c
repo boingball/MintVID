@@ -422,6 +422,22 @@ static struct Window *cgx_open_window(cgx_state *s, const char *title,
             WA_MaxWidth, (ULONG)-1, WA_MaxHeight, (ULONG)-1,
             WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_RAWKEY | IDCMP_NEWSIZE,
             TAG_END);
+        if (win) {
+            /* Neither WA_Left nor WA_Top was given above, so Intuition
+             * pins the window to the pubscreen's top-left corner - fine
+             * for the fullscreen branch (which fills the screen anyway),
+             * but a window sized to a small video otherwise opens jammed
+             * into the corner. Re-center using the window's own returned
+             * Width/Height so this needs no guess at the pubscreen's
+             * font/border metrics; same ChangeWindowBox() already used
+             * below to restore a saved position after a fullscreen
+             * toggle. */
+            int cx = (scr->Width  - win->Width)  / 2;
+            int cy = (scr->Height - win->Height) / 2;
+            if (cx < 0) cx = 0;
+            if (cy < 0) cy = 0;
+            ChangeWindowBox(win, cx, cy, win->Width, win->Height);
+        }
     }
     UnlockPubScreen(NULL, scr);
     return win;
