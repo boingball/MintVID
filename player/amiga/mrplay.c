@@ -1603,6 +1603,15 @@ int main(int argc, char **argv)
      * live_diag_report() and its call sites below, and the g_verbose wiring
      * into core/mr_hls.c's own segment-open prints just below. */
     int live_diag = 0;
+    /* --throughput/--no-throughput: override this session's throughput-mode
+     * default (network_source - see its own computation below) instead of
+     * following it. -1 means "not overridden, use the default". Throughput
+     * mode trades real-time A/V sync for guaranteed forward progress on a
+     * source whose decode can't keep up with the live/container PTS clock -
+     * see throughput_mode's own declaration below for what it changes and
+     * why, and the "Live HLS playback stall notes" section of CLAUDE.md for
+     * the real-hardware regression this exists to fix. */
+    int throughput_flag = -1;
     int auto_close_eof = 0; /* finite GUI media should release its window      */
     int audio_unavailable = 0;
     const char *audio_failure = NULL;
@@ -1710,7 +1719,7 @@ int main(int argc, char **argv)
                "[--fast-buffer=auto|off|4|8|16] "
                "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+|turbogt] "
                "[--audio-rate=normal|low] [--no-audio] [--audio-mono] "
-               "[--time] [--live-diag]\n");
+               "[--time] [--live-diag] [--throughput|--no-throughput]\n");
         return mrplay_exit(5);
     }
     {   /* display options anywhere on the command line */
@@ -1763,6 +1772,8 @@ int main(int argc, char **argv)
                 net_queue = (int)strtoul(argv[i] + 12, NULL, 10);
             else if (!strcmp(argv[i], "--live-resync")) live_resync = 1;
             else if (!strcmp(argv[i], "--live-diag")) live_diag = 1;
+            else if (!strcmp(argv[i], "--throughput")) throughput_flag = 1;
+            else if (!strcmp(argv[i], "--no-throughput")) throughput_flag = 0;
             else if (!strncmp(argv[i], "--h264-speed=", 13)) {
                 const char *mode = argv[i] + 13;
                 if (!strcmp(mode, "auto")) h264_speed = -1;
@@ -2356,6 +2367,28 @@ int main(int argc, char **argv)
     {
         int playback_started = 0;
         int network_source = mr_source_is_url(media_path);
+        /* Throughput mode: on a network/HLS source, real-time decode
+         * throughput is not guaranteed (see CLAUDE.md's "Live HLS playback
+         * stall notes" - a real A1200 regression where a stream that fell
+         * behind the live PTS clock had every subsequent frame marked
+         * skip_stale_output/micro-rescue-shed, decoding reference-only and
+         * never reaching the display queue again, forever). Slow-but-moving
+         * video is the better failure mode than audio-with-no-video on this
+         * target, so on a network source (or whenever --throughput forces
+         * it) the packet-scheduling section below never marks a frame
+         * skip_stale_output purely for PTS lateness, and never lets PTS
+         * lateness enter micro-rescue's frame-shedding state either - only
+         * a genuinely full video_cap queue still drops a frame (the one
+         * safety check kept unconditionally, so memory cannot grow without
+         * bound), and the existing audio service callbacks are entirely
+         * unaffected, so Paula keeps being fed exactly as before. Local
+         * (non-network) playback is unchanged by default - real-time A/V
+         * sync remains the goal there, where decode throughput is not in
+         * question the way a live/HLS source's can be - and mr_ps.c's own
+         * MPEG-PS PTS fix (see "MPEG-PS timestamps come from the PES
+         * header" above) is untouched either way. */
+        int throughput_mode = throughput_flag >= 0 ? throughput_flag
+                                                    : network_source;
         int frames_at_last_reconnect = 0, reconnects_without_progress = 0;
         int startup_depth = network_source ? 1 : 2;
         /* Network sources default to a single decoded frame (see the comment on
@@ -2443,6 +2476,15 @@ int main(int argc, char **argv)
                    video_cap, network_source ? "network" : "disk", cushion_ms,
                    (unsigned long)(frame_bytes / 1024),
                    (unsigned long)(free_any / 1024));
+        /* Always printed, not want_time-gated: throughput_mode changes real
+         * playback behaviour (whether a slow decoder still shows frames or
+         * goes silent-video), not just diagnostics - see its own
+         * declaration above. */
+        if (throughput_mode)
+            printf("throughput mode: on (%s) - frames are never skipped for "
+                   "PTS lateness or micro-rescue, only for a full queue\n",
+                   throughput_flag >= 0 ? "forced by --throughput"
+                                        : "network source");
 
         /* Wire the present-during-fetch context onto the shared service callback.
          * It touches the queue only while `released` is set around the blocking
@@ -3448,7 +3490,18 @@ int main(int argc, char **argv)
                      * full either way and simply dropped). Apply the same
                      * offset here so both sides of the comparison are in the
                      * same clock. */
-                    if (playback_started && pkt.has_pts) {
+                    /* !throughput_mode: micro-rescue's own entry condition is
+                     * PTS lateness (see MICRO_RESCUE_ENTRY_US's declaration
+                     * above) - the same signal throughput_mode disables for
+                     * skip_stale_output just below, for the same reason (see
+                     * throughput_mode's own declaration). Skipping this
+                     * whole block leaves micro_rescue.active at whatever it
+                     * already was, which is never anything but 0 in
+                     * throughput mode since this is the only place it is
+                     * ever entered - so the mr_micro_rescue_tick() safety
+                     * timeout at the top of the loop has nothing to time
+                     * out either. */
+                    if (!throughput_mode && playback_started && pkt.has_pts) {
                         int64_t adjusted_pkt_pts_us =
                             (int64_t)pkt.pts_us + container_pts_adjust_us;
                         int64_t pkt_late_us = (int64_t)mono_media_clock_us -
@@ -3494,9 +3547,24 @@ int main(int argc, char **argv)
                          * skip logic correctly doing its job against a
                          * decode-speed problem it did not create, not a bug
                          * in the rebase itself; see the Live HLS notes below
-                         * for the investigation this instrumented. */
+                         * for the investigation this instrumented.
+                         *
+                         * !throughput_mode guards pts_late here the same way
+                         * it guards micro-rescue's entry just above (see
+                         * throughput_mode's own declaration): on a network
+                         * source, real-time decode throughput is not
+                         * guaranteed, and once a stream falls behind, this
+                         * clause - now that container_pts_adjust_us makes it
+                         * meaningful - would otherwise mark every subsequent
+                         * frame skip_stale_output forever, decoding
+                         * reference-only and never reaching the display
+                         * queue again. queue_full is left unconditional -
+                         * the one safety check that must always hold, so a
+                         * source that decodes faster than it presents still
+                         * cannot grow the video queue without bound. */
                         int queue_full = qcount >= video_cap;
-                        int pts_late = playback_started && pkt.has_pts &&
+                        int pts_late = !throughput_mode &&
+                            playback_started && pkt.has_pts &&
                             (int64_t)mono_media_clock_us -
                                 ((int64_t)pkt.pts_us + container_pts_adjust_us) >
                                 (int64_t)period_us;

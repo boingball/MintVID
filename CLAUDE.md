@@ -1589,6 +1589,68 @@ either speeding up decode for this stream shape or adding a bounded
 "force at least one frame through" escape valve to the lateness check -
 not something to guess at without that next capture.
 
+**Fixed (product decision, not waiting on the STAGE_PROFILE capture above):
+`--throughput` mode.** The user's own call, independent of ever pinning
+down *why* decode can be this slow on this stream: on this target,
+slow-but-moving video beats audio-with-silent-video, full stop. Whatever
+turns out to be true about the 68060/50 decode-speed mystery above, a
+source whose decode throughput cannot be guaranteed (any network/HLS
+source, by construction, once the fetch itself is no longer the
+bottleneck) should never let itself get locked into the failure mode the
+`skip_pts_late` hypothesis describes - a frame marked stale once and then
+every frame after it forever, because the check that marks it can never
+be satisfied once the player is behind and decode cannot claw the deficit
+back.
+
+`throughput_mode` (defaults to `network_source`, override with the new
+`--throughput`/`--no-throughput` flags) removes exactly the two PTS-
+lateness signals identified above and nothing else:
+- `skip_stale_output`'s `pts_late` clause (the `container_pts_adjust_us`-
+  rebased comparison PR #174 made meaningful) is forced false in
+  throughput mode - a frame is now skipped only when `video_cap` is
+  genuinely full.
+- Micro-rescue's own entry condition (`mr_micro_rescue_on_packet()`,
+  driven by the identical `pkt_late_us` computation) is skipped
+  altogether in throughput mode, so `micro_rescue.active` never becomes
+  true from lateness and its own OR-term in `skip_stale_output` is moot
+  for the same reason.
+
+Left deliberately untouched, per the user's own scoping: the `queue_full`
+(`qcount >= video_cap`) clause - the one safety check that must always
+hold, so a decoder racing ahead of presentation still cannot grow the
+video queue without bound; the existing `service_audio_for_display()`
+wiring - Paula keeps being fed exactly as before, throughput mode changes
+nothing about audio; and `core/mr_ps.c`'s MPEG-PS PTS fix (see the
+"MPEG-PS timestamps come from the PES header" note above) - that is a
+different container's timestamp-*presence* bug, not this one's lateness-
+*gating* behaviour, and is not touched by anything in this change.
+
+Two related mechanisms were surveyed and deliberately left as-is, since
+the user's request named `skip_stale_output` and micro-rescue
+specifically: `present_service_frame()`'s own catch-up loop (drops queued
+frames from the front, skipping ahead within the backlog, while
+`late_us > period_us && qcount > 1`) still runs - it always shows
+*something* each time it is invoked as long as more than one frame is
+queued, which is a different failure shape from the "nothing displays
+again, ever" this change targets, so it was left alone rather than
+folded into throughput_mode without being asked; and the catastrophic
+"live-resync: N ms behind live, catching up" fast-forward path (`--live-
+resync`, on by default via `core/mr_play_options.c`) still discards
+audio and decodes reference-only to reach the live edge - a different,
+already-opt-in mechanism for a different purpose (catching up to a live
+edge, not per-frame pacing), also left untouched pending its own
+real-hardware read once throughput mode's effect is confirmed.
+
+Not wired into the IPTV/YouTube GUI launchers yet, same as `--live-diag`
+- `core/mr_play_options.c` is untouched by this change. `make check`
+passes unchanged (this is entirely inside `amiga/mrplay.c`, which cannot
+be compiled on this dev host); the whole point of `throughput_mode` is a
+real-A1200-testable claim ("does video keep moving on a stream that
+falls behind, instead of going silent") that only a real-hardware run
+with `--live-diag` (`decoded`/`queued`/`presented` should now keep
+climbing instead of flatlining, and `skip-pts-late`/`skip-micro-rescue`
+should stay at 0) can actually confirm.
+
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4
