@@ -46,7 +46,7 @@ struct Library *CyberGfxBase;
 extern struct Library *GadToolsBase;
 
 enum {
-    G_FILE = 1, G_BROWSE, G_MODE, G_C2P, G_H264, G_LACE, G_2X, G_COPPER,
+    G_FILE = 1, G_BROWSE, G_MODE, G_C2P, G_H264, G_LACE, G_SCALE,
     G_AUDIO_RATE, G_FAST_BUFFER, G_NO_AUDIO, G_MONO_AUDIO,
     G_PLAY, G_PAUSE, G_STOP, G_FAST, G_IPTV, G_YOUTUBE, G_INFO
 };
@@ -56,7 +56,7 @@ typedef struct gt_app {
     struct Window *window;
     APTR visual;
     struct Gadget *gadgets;
-    struct Gadget *file, *mode, *c2p, *h264, *lace, *twox, *copper, *info;
+    struct Gadget *file, *mode, *c2p, *h264, *lace, *scale, *info;
     struct Gadget *audio_rate, *fast_buffer, *no_audio, *mono_audio;
     struct Gadget *iptv;
     /* iptvgui-GT's own process exists (LoadSeg()/CreateNewProcTags() has
@@ -85,6 +85,16 @@ static STRPTR h264_labels[] = {(STRPTR)"H.264: Auto", (STRPTR)"H.264: Quality",
                               (STRPTR)"H.264: Balanced", (STRPTR)"H.264: Fast",
                               (STRPTR)"H.264: Turbo", (STRPTR)"H.264: Turbo+",
                               (STRPTR)"H.264: TurboGT", NULL};
+/* Fixed, unlike mode_labels/c2p_labels - no value-array indirection needed:
+ * read_options()/update_mode_controls() both hard-code 0=None, 1=2x,
+ * 2=Copper 2x to match this exact order. GadTools cycle gadgets don't
+ * support swapping their label list at runtime, unlike mrgui.c's ReAction
+ * Chooser, so unlike that file this can't remove "Copper 2x" from the list
+ * when it wouldn't do anything - update_mode_controls() instead snaps the
+ * active index back to 1 (2x) when the current c2p/mode doesn't qualify,
+ * the same GTCY_Active correction it already does for the c2p cycle. */
+static STRPTR scale_labels[] = {(STRPTR)"None", (STRPTR)"2x",
+                               (STRPTR)"Copper 2x", NULL};
 static STRPTR audio_rate_labels[] = {(STRPTR)"Audio: Normal",
                                     (STRPTR)"Audio: Low", NULL};
 static STRPTR fast_buffer_labels[] = {(STRPTR)"Fast buffer: Auto",
@@ -271,8 +281,11 @@ static void read_options(gt_app *app, mr_play_options *options)
                               ? (mr_h264_performance)h264
                               : MR_H264_PERF_AUTO;
     options->laced = gad_value(app, app->lace, GTCB_Checked) != 0;
-    options->scale_2x = gad_value(app, app->twox, GTCB_Checked) != 0;
-    options->copper_vdouble = gad_value(app, app->copper, GTCB_Checked) != 0;
+    {
+        ULONG scale_sel = gad_value(app, app->scale, GTCY_Active);
+        options->scale_2x = scale_sel >= 1;
+        options->copper_vdouble = scale_sel == 2;
+    }
     options->audio_rate = audio_rate == 1
                         ? MR_AUDIO_RATE_LOW : MR_AUDIO_RATE_NORMAL;
     options->fast_buffer = fast_buffer <= MR_FAST_BUFFER_16MB
@@ -301,6 +314,10 @@ static void update_mode_controls(gt_app *app, int output_changed)
                                   : MR_C2P_STANDARD;
     int kalms_available;
     int direct_available;
+    int ham_mode = selected < app->mode_count &&
+                   (app->modes[selected] == MR_DISPLAY_HAM6 ||
+                    app->modes[selected] == MR_DISPLAY_HAM8);
+    int copper_ok;
 
     /* HAM8 uses the normal eight-plane Kalms converter. CPU-specific 040/060
      * GUI builds also keep Kalms selected for the linked HAM6 bitmap kernel.
@@ -338,21 +355,44 @@ static void update_mode_controls(gt_app *app, int output_changed)
         !disabled && !kalms_available) {
         GT_SetGadgetAttrs(app->c2p, app->window, NULL,
                          GTCY_Active, c2p_row(app, MR_C2P_STANDARD), TAG_DONE);
+        selected_c2p_mode = MR_C2P_STANDARD;
     }
     if (selected_c2p_mode == MR_C2P_DIRECT &&
         !disabled && !direct_available) {
         GT_SetGadgetAttrs(app->c2p, app->window, NULL,
                          GTCY_Active, c2p_row(app, MR_C2P_STANDARD), TAG_DONE);
+        selected_c2p_mode = MR_C2P_STANDARD;
     }
 
     GT_SetGadgetAttrs(app->c2p, app->window, NULL,
                      GA_Disabled, disabled, TAG_DONE);
     GT_SetGadgetAttrs(app->lace, app->window, NULL,
                      GA_Disabled, disabled, TAG_DONE);
-    GT_SetGadgetAttrs(app->twox, app->window, NULL,
+    GT_SetGadgetAttrs(app->scale, app->window, NULL,
                      GA_Disabled, disabled, TAG_DONE);
-    GT_SetGadgetAttrs(app->copper, app->window, NULL,
-                     GA_Disabled, disabled, TAG_DONE);
+    if (disabled) {
+        GT_SetGadgetAttrs(app->scale, app->window, NULL,
+                         GTCY_Active, 0, TAG_DONE);
+        return;
+    }
+
+    /* Copper 2x (scale index 2) only ever does anything for a plain c2p/
+     * riva-c2p/Akiko geometry with no HAM - see display_aga.c's own
+     * eligibility check in aga_open(). Kalms/Standard(WPA)/Direct and
+     * either HAM mode all silently no-op it at runtime instead of erroring,
+     * which is exactly what let a real-hardware test "succeed" against
+     * plain --2x without the copper path ever actually running - so snap
+     * back to index 1 (2x) here instead of leaving a selection that looks
+     * chosen but was never honoured. Re-checked on every mode/c2p/scale
+     * change (all three call this function) so no ordering of clicks can
+     * leave Copper selected under an incompatible combination. */
+    copper_ok = !ham_mode &&
+               (selected_c2p_mode == MR_C2P_WPA ||
+                selected_c2p_mode == MR_C2P_RIVA ||
+                selected_c2p_mode == MR_C2P_AKIKO);
+    if (!copper_ok && gad_value(app, app->scale, GTCY_Active) == 2)
+        GT_SetGadgetAttrs(app->scale, app->window, NULL,
+                         GTCY_Active, 1, TAG_DONE);
 }
 
 static struct Task *find_player(void)
@@ -575,8 +615,6 @@ static int build_window(gt_app *app)
         "", GTCY_Labels, (ULONG)h264_labels);
     app->lace = g = add_gadget(app, g, CHECKBOX_KIND, G_LACE, 516, 45, 68, 14,
         "Laced", GTCB_Checked, FALSE);
-    app->twox = g = add_gadget(app, g, CHECKBOX_KIND, G_2X, 590, 45, 36, 14,
-        "2x", GTCB_Checked, FALSE);
 
     /* Secondary audio/source options. */
     app->audio_rate = g = add_gadget(app, g, CYCLE_KIND, G_AUDIO_RATE, 8, 68,
@@ -587,12 +625,15 @@ static int build_window(gt_app *app)
         94, 14, "No audio", GTCB_Checked, FALSE);
     app->mono_audio = g = add_gadget(app, g, CHECKBOX_KIND, G_MONO_AUDIO, 445,
         69, 110, 14, "Mono audio", GTCB_Checked, FALSE);
-    /* No room left on the 2x/Laced row at this window width (2x already
-     * ends at x=626 of WIN_W=632) - tucked in after Mono audio instead,
-     * where 632-555=77px was still free. Only ever does anything when 2x
-     * is also checked; see display_aga.c's --copper-vdouble. */
-    app->copper = g = add_gadget(app, g, CHECKBOX_KIND, G_COPPER, 561, 69,
-        60, 14, "Copper", GTCB_Checked, FALSE);
+    /* Replaces the old separate 2x checkbox (was on the Mode/Laced row) and
+     * Copper checkbox (was right here) with one None/2x/Copper 2x cycle -
+     * update_mode_controls() snaps it back to 2x when the current c2p/mode
+     * doesn't support Copper. Tucked in after Mono audio, where
+     * 632-555=77px was free; "Copper 2x" is the widest label this cycle
+     * gadget ever shows, and this width is an estimate against topaz 8pt -
+     * unconfirmed against real hardware like the rest of this feature. */
+    app->scale = g = add_gadget(app, g, CYCLE_KIND, G_SCALE, 558, 68, 70, 16,
+        "", GTCY_Labels, (ULONG)scale_labels);
 
     /* Compact transport strip.  ASCII keeps the glyphs available on stock
      * Topaz while making the controls much narrower than word labels. */
@@ -731,7 +772,14 @@ int main(void)
                     update_mode_controls(&app, FALSE);
                     publish_options(&app);
                     break;
-                case G_H264: case G_LACE: case G_2X: case G_COPPER:
+                case G_SCALE:
+                    /* Re-validate here too (not just on G_MODE/G_C2P): picking
+                     * an incompatible c2p/mode first and only then Copper 2x
+                     * must snap back just as reliably as the reverse order. */
+                    update_mode_controls(&app, FALSE);
+                    publish_options(&app);
+                    break;
+                case G_H264: case G_LACE:
                 case G_AUDIO_RATE: case G_FAST_BUFFER:
                 case G_NO_AUDIO: case G_MONO_AUDIO:
                     publish_options(&app); break;
