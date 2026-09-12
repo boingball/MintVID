@@ -102,10 +102,20 @@ void display_set_ecs32(int on);
  * does), at the cost of one copper list poking BPLxPT directly - see the
  * "Copper-assisted vertical doubling" comment in display_aga.c for the
  * mechanism, its Kalms/direct-planar exclusion, and its verification
- * status: confirmed on real AGA hardware with --c2p (portable) - correct
- * picture for the whole session and a clean exit (a shutdown-path crash,
- * Guru 81000005, took two attempts to actually fix - see aga_close()'s
- * comment). --riva-c2p/--cd32 and ECS/OCS chipsets are not yet exercised.
+ * status: confirmed on real AGA hardware with --c2p (portable) indexed
+ * output - correct picture for the whole session and a clean exit (a
+ * shutdown-path crash, Guru 81000005, took two attempts to actually fix -
+ * see aga_close()'s comment). --riva-c2p/--cd32 and ECS/OCS chipsets are not
+ * yet exercised for indexed output.
+ *
+ * HAM6/HAM8 (EXPERIMENTAL): the same mechanism now also applies to HAM6 and
+ * HAM8 output (HAM8 requires real AGA, same as HAM8 itself does). This is
+ * backed by a correctness argument about HAM's hold-and-modify state being
+ * per-scanline-independent (see display_aga.c's file header comment for the
+ * full reasoning), not yet by a real-hardware run - treat any HAM +
+ * --copper-vdouble combination as unverified until confirmed on real AGA
+ * hardware, separately from the indexed case above.
+ *
  * No effect unless scale==2 is also in effect (--2x) and the geometry
  * doesn't fall onto a Kalms/direct-planar path. */
 void display_set_copper_vdouble(int on);
@@ -135,9 +145,14 @@ int display_aga_kalms_timing(unsigned long *conversion_ms);
  * take the identical code path today and this string exists only so --time
  * output and bug reports can tell a real A500/PiStorm OCS run apart from an
  * ECS one instead of both silently reading "not AGA".
+ * copper reports whether --copper-vdouble is not just requested but actually
+ * engaged for this screen (0/1) - see display_set_copper_vdouble() for what
+ * "engaged" requires, including the HAM6/HAM8 extension and its experimental
+ * status.
  * Every out-parameter is optional (pass NULL to skip it). */
 void display_aga_describe(int *depth, int *ham, int *scale, int *resize,
-                          const char **c2p, const char **chipset);
+                          const char **c2p, const char **chipset,
+                          int *copper);
 
 /* Open a display able to show w*h frames: tries RTG (cybergraphics) first, then
  * falls back to AGA. Returns NULL only if neither works. */

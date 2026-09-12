@@ -470,6 +470,112 @@ int main(void) {
                                        launch.url, NULL, NULL));
       assert(strstr(args, "--aga --ecs-fast"));
     }
+    {
+      /* HAM6 + Copper 2x: options-layer round trip only - the pixel/state
+       * correctness argument for repeating a HAM row on real AGA hardware
+       * is documented in CLAUDE.md's "AGA copper-assisted vertical
+       * doubling notes" HAM extension and can only be confirmed on real
+       * hardware. mr_play_options_parse()/append_playback_flags() were
+       * already generic across HAM and indexed displays before that
+       * extension, so this pins that the HAM6 case keeps working exactly
+       * like the pre-existing indexed AGA case below. */
+      char *inherited[] = {"iptvgui", "--display", "ham6", "--c2p", "wpa",
+                           "--no-laced", "--scale-2x", "--copper-vdouble"};
+      char summary[160], args[4096], error[128];
+      mr_play_options parsed;
+      mr_play_options_default(&parsed);
+      assert(mr_play_options_parse(&parsed, 8, inherited, error,
+                                   sizeof(error)));
+      assert(parsed.display == MR_DISPLAY_HAM6 && parsed.c2p == MR_C2P_WPA &&
+             !parsed.laced && parsed.scale_2x && parsed.copper_vdouble);
+      assert(mr_build_player_arguments(args, sizeof(args), &parsed,
+                                       launch.url, NULL, NULL));
+      assert(strstr(args, "--aga --ham6"));
+      assert(strstr(args, "--c2p") && strstr(args, "--2x") &&
+             strstr(args, "--copper-vdouble"));
+      mr_play_options_summary(&parsed, summary, sizeof(summary));
+      assert(strstr(summary, "HAM6") && strstr(summary, "2x on (copper)"));
+      assert(mr_build_iptv_arguments(args, sizeof(args), &parsed));
+      assert(strstr(args, "--display ham6"));
+      assert(strstr(args, "--scale-2x --copper-vdouble"));
+
+      /* Dropping --scale-2x must drop --copper-vdouble from the normal
+       * (mrplay CLI) argument form even though copper_vdouble itself stays
+       * set - append_playback_flags()'s existing "o->scale_2x &&
+       * o->copper_vdouble" guard, previously only ever exercised for
+       * indexed AGA output; pinned here for HAM explicitly. */
+      parsed.scale_2x = 0;
+      assert(mr_build_player_arguments(args, sizeof(args), &parsed,
+                                       launch.url, NULL, NULL));
+      assert(!strstr(args, "--2x") && !strstr(args, "--copper-vdouble"));
+      mr_play_options_summary(&parsed, summary, sizeof(summary));
+      assert(strstr(summary, "2x off") && !strstr(summary, "(copper)"));
+    }
+    {
+      /* HAM8 + Copper 2x: same round trip, plus pinning that the normal
+       * HAM8 build flag is "--ham" (not "--ham6") - append_playback_flags()'s
+       * own pre-existing naming, unrelated to this feature but never
+       * previously exercised together with --copper-vdouble. */
+      char *inherited[] = {"iptvgui", "--display", "ham8", "--c2p", "riva",
+                           "--scale-2x", "--copper-vdouble"};
+      char summary[160], args[4096], error[128];
+      mr_play_options parsed;
+      mr_play_options_default(&parsed);
+      assert(mr_play_options_parse(&parsed, 7, inherited, error,
+                                   sizeof(error)));
+      assert(parsed.display == MR_DISPLAY_HAM8 && parsed.c2p == MR_C2P_RIVA &&
+             parsed.scale_2x && parsed.copper_vdouble);
+      assert(mr_build_player_arguments(args, sizeof(args), &parsed,
+                                       launch.url, NULL, NULL));
+      assert(strstr(args, "--aga --ham") && !strstr(args, "--ham6"));
+      assert(strstr(args, "--riva-c2p") && strstr(args, "--2x") &&
+             strstr(args, "--copper-vdouble"));
+      mr_play_options_summary(&parsed, summary, sizeof(summary));
+      assert(strstr(summary, "HAM8") && strstr(summary, "2x on (copper)"));
+    }
+    {
+      /* Regression: the pre-existing indexed AGA + --2x + --copper-vdouble
+       * case (the one confirmed on real AGA hardware) must round-trip
+       * exactly as before this HAM extension - no HAM flag appears, and
+       * the Copper flag/summary behave identically to the blocks above. */
+      char *inherited[] = {"iptvgui", "--display", "aga", "--c2p", "wpa",
+                           "--scale-2x", "--copper-vdouble"};
+      char summary[160], args[4096], error[128];
+      mr_play_options parsed;
+      mr_play_options_default(&parsed);
+      assert(mr_play_options_parse(&parsed, 7, inherited, error,
+                                   sizeof(error)));
+      assert(parsed.display == MR_DISPLAY_AGA && parsed.scale_2x &&
+             parsed.copper_vdouble);
+      assert(mr_build_player_arguments(args, sizeof(args), &parsed,
+                                       launch.url, NULL, NULL));
+      assert(!strstr(args, "--ham"));
+      assert(strstr(args, "--c2p") && strstr(args, "--2x") &&
+             strstr(args, "--copper-vdouble"));
+      mr_play_options_summary(&parsed, summary, sizeof(summary));
+      assert(strstr(summary, "Native planar") &&
+             strstr(summary, "2x on (copper)"));
+    }
+    {
+      /* Regression: the normal (non-Copper) HAM6/HAM8/Kalms path is
+       * unaffected by this extension - no Copper flag ever appears without
+       * --scale-2x, and the summary never claims "(copper)". */
+      char *inherited[] = {"iptvgui", "--display", "ham8", "--c2p", "kalms"};
+      char summary[160], args[4096], error[128];
+      mr_play_options parsed;
+      mr_play_options_default(&parsed);
+      assert(mr_play_options_parse(&parsed, 5, inherited, error,
+                                   sizeof(error)));
+      assert(parsed.display == MR_DISPLAY_HAM8 && !parsed.scale_2x &&
+             !parsed.copper_vdouble);
+      assert(mr_build_player_arguments(args, sizeof(args), &parsed,
+                                       launch.url, NULL, NULL));
+      assert(strstr(args, "--aga --ham") && strstr(args, "--kalms-c2p"));
+      assert(!strstr(args, "--2x") && !strstr(args, "--copper-vdouble"));
+      mr_play_options_summary(&parsed, summary, sizeof(summary));
+      assert(strstr(summary, "HAM8") && strstr(summary, "2x off") &&
+             !strstr(summary, "(copper)"));
+    }
   }
   remove("/tmp/mr_channels.json");
   remove("/tmp/mr_streams.json");
