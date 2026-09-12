@@ -424,19 +424,19 @@ static struct Window *cgx_open_window(cgx_state *s, const char *title,
             TAG_END);
         if (win) {
             /* Neither WA_Left nor WA_Top was given above, so Intuition
-             * pins the window to the pubscreen's top-left corner - fine
-             * for the fullscreen branch (which fills the screen anyway),
-             * but a window sized to a small video otherwise opens jammed
-             * into the corner. Re-center using the window's own returned
-             * Width/Height so this needs no guess at the pubscreen's
-             * font/border metrics; same ChangeWindowBox() already used
-             * below to restore a saved position after a fullscreen
-             * toggle. */
-            int cx = (scr->Width  - win->Width)  / 2;
+             * pins the window to the pubscreen's top-left corner. Left
+             * edge is kept at 0 rather than centered horizontally - a
+             * windowed app is easier to place alongside other windows
+             * (Workbench icons, other tools) when it consistently opens
+             * flush left instead of jumping to a size-dependent x each
+             * time. Vertical position is still centered using the
+             * window's own returned Height so this needs no guess at the
+             * pubscreen's font/border metrics; same ChangeWindowBox()
+             * already used below to restore a saved position after a
+             * fullscreen toggle. */
             int cy = (scr->Height - win->Height) / 2;
-            if (cx < 0) cx = 0;
             if (cy < 0) cy = 0;
-            ChangeWindowBox(win, cx, cy, win->Width, win->Height);
+            ChangeWindowBox(win, 0, cy, win->Width, win->Height);
         }
     }
     UnlockPubScreen(NULL, scr);
