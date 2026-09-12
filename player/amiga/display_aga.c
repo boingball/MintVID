@@ -44,13 +44,28 @@
  * stride plumbing through aga_blit()/aga_show() are all validated by that
  * run. Closing the player after such a session crashed with Guru 81000005
  * (CPU Zero Divide) on that same hardware, though - not a bad picture, a
- * hard crash on exit. Root-caused (as much as this dev host can) to
- * aga_close() calling FreeVPortCopLists()+RethinkDisplay() on the screen
- * while it was still fully open and active, before the normal WaitBlit/
- * CloseWindow/CloseScreen sequence - see aga_close()'s own comment. Fixed
- * by removing that call rather than reordering it, since there is no way
- * to verify a reordering from here either; the fix itself is not yet
- * re-confirmed on hardware.
+ * hard crash on exit, and it took two attempts to actually fix:
+ *
+ *   - First attempt: aga_close() used to call FreeVPortCopLists()+
+ *     RethinkDisplay() on the screen while it was still fully open and
+ *     active, before the normal WaitBlit/CloseWindow/CloseScreen sequence -
+ *     suspected as the cause, so removed outright rather than reordered.
+ *     Did not fix it - the same crash recurred on a retest, meaning
+ *     CloseScreen() itself was choking on a screen whose ViewPort.UCopIns
+ *     still pointed at the custom list, not (only) the explicit call this
+ *     removed.
+ *   - Second attempt (current code): an explicit five-step lifecycle in
+ *     aga_close() - stop blits and close the window first; detach the
+ *     custom list by clearing ViewPort.UCopIns directly; rebuild/restore
+ *     the display with RethinkDisplay() while the window is already gone
+ *     and the ViewPort is back to plain, *before* CloseScreen() ever runs;
+ *     only then close the screen; and only then free the three manually
+ *     AllocMem()'d blocks (s->ucop/ucop_cl/ucop_ci) exactly once, since
+ *     nothing else frees them now that FreeVPortCopLists() is never called
+ *     at all. See aga_close()'s own comment for the full reasoning. Not yet
+ *     re-confirmed on hardware - the first attempt looked just as
+ *     reasonable and wasn't enough, so this one should be treated the same
+ *     way until proven otherwise.
  */
 #include "amiga_display.h"
 #include "display_backend.h"
@@ -166,6 +181,9 @@ typedef struct {
     int             kalms_x0;        /* destination x of padded rectangle   */
     int             copper_vdouble;  /* see the file header comment          */
     struct UCopList *ucop;           /* NULL unless copper_vdouble is active */
+    struct CopList  *ucop_cl;        /* AllocMem'd alongside ucop - same      */
+    struct CopIns   *ucop_ci;        /* lifetime, freed together, once, in    */
+    int              ucop_ninst;     /* aga_close()/aga_open()'s fail: path.  */
     int             quit;
 } aga_state;
 
@@ -397,6 +415,9 @@ static int build_copper_vdouble(aga_state *s, int h, int depth)
     MakeScreen(s->scr);
     RethinkDisplay();
     s->ucop = ucl;
+    s->ucop_cl = cl;
+    s->ucop_ci = ci;
+    s->ucop_ninst = ninst;
     return 1;
 }
 
@@ -711,20 +732,23 @@ static void *aga_open(int w, int h, const char *title)
 
 fail:
     s_kalms_active = 0;
-    /* No explicit FreeVPortCopLists()/RethinkDisplay() here - CloseScreen()
-     * a few lines below already tears down this screen's ViewPort (UCopIns
-     * included), and s->ucop's AllocMem() blocks are reclaimed when this
-     * process exits either way. See aga_close()'s comment for why calling
-     * them explicitly, on a screen not yet being closed, is what a
-     * real-hardware run traced back to a Zero Divide (Guru 81000005) on
-     * exit - this fail path never got that far to prove it, but shares the
-     * same reasoning and removes the same risk pre-emptively. */
+    /* Same five-step lifecycle as aga_close() (see its comment for why):
+     * close the window first, detach+rebuild before CloseScreen(), then
+     * free the manually AllocMem()'d copper structures exactly once. */
+    CloseWindow(s->win);
+    if (s->ucop) {
+        s->scr->ViewPort.UCopIns = NULL;
+        RethinkDisplay();
+    }
+    CloseScreen(s->scr);
+    if (s->ucop_ci) FreeMem(s->ucop_ci,
+                            (size_t)s->ucop_ninst * sizeof(struct CopIns));
+    if (s->ucop_cl) FreeMem(s->ucop_cl, sizeof(struct CopList));
+    if (s->ucop) FreeMem(s->ucop, sizeof(struct UCopList));
     if (s->enc_alloc) free(s->enc_alloc);
     if (s->scaled) free(s->scaled);
     if (s->chunky_alloc) free(s->chunky_alloc);
     if (s->tempbm) FreeBitMap(s->tempbm);
-    CloseWindow(s->win);
-    CloseScreen(s->scr);
     free(s);
     return NULL;
 }
@@ -1247,31 +1271,31 @@ static void aga_close(void *handle)
      * exit, specifically with copper_vdouble active - i.e. exactly the
      * scenario this dev host cannot exercise (see the file header comment).
      * The picture itself was correct throughout playback; only closing
-     * crashed. The likely cause: this used to call FreeVPortCopLists()+
-     * RethinkDisplay() on s->scr right here, while the screen and window
-     * were both still fully open and active - RethinkDisplay() recomputes
-     * and reloads the *entire* system View (every open screen merged
-     * together), and doing that mid-lifecycle on a screen not yet being
-     * closed is not a sequence the normal open/show/close flow ever
-     * exercises. Removed rather than reordered: there is no way to verify
-     * a fix to that sequence from here, but CloseScreen() a few lines below
-     * (unconditionally reached for every AGA session, copper or not, and
-     * the one part of this shutdown path that real hardware has always
-     * exercised safely) already tears down the screen's ViewPort - UCopIns
-     * included - as part of its own normal, well-tested teardown, so there
-     * is nothing left for an explicit free here to do. s->ucop's AllocMem()
-     * blocks (the CopList/CopIns array and the UCopList itself) are not
-     * FreeMem'd individually either - reclaimed when this process exits,
-     * same as before. */
-    s->ucop = NULL;
+     * crashed. Two things were wrong, not one:
+     *
+     *   - The first fix (calling neither FreeVPortCopLists() nor
+     *     RethinkDisplay() at all, trusting CloseScreen() to tear down the
+     *     ViewPort's UCopIns on its own) did not stop the crash. CloseScreen()
+     *     itself was choking on a screen whose ViewPort.UCopIns still pointed
+     *     at our custom list.
+     *   - The real fix is an explicit five-step lifecycle: (1) stop blits and
+     *     close the window first, (2) detach the custom list by clearing
+     *     ViewPort.UCopIns directly (not via FreeVPortCopLists(), which also
+     *     frees - detaching and freeing are kept as two separate, ordered
+     *     steps here), (3) rebuild/restore the display with RethinkDisplay()
+     *     while the ViewPort is back to a plain, custom-copper-free state
+     *     and the window is already gone, *before* CloseScreen() ever runs,
+     *     (4) only then close the screen, and (5) free the three manually
+     *     AllocMem()'d blocks (ucop_ci, ucop_cl, ucop) ourselves, exactly
+     *     once, now that nothing else (no FreeVPortCopLists() call ever
+     *     happens) will free them. This still is not confirmed on hardware -
+     *     the previous fix looked just as reasonable and wasn't enough. */
 
-    /*
-     * Custom planar screens are shared Intuition/graphics objects.  On real
-     * hardware CloseWindow() returning does not guarantee that the last IDCMP
-     * message or blit/screen reference has disappeared on the same instruction.
-     * Losing the Screen pointer after a failed CloseScreen() leaves Workbench
-     * in a very unhappy state, so make shutdown deliberately conservative.
-     */
+    /* Step 1: stop blits and close the window. Custom planar screens are
+     * shared Intuition/graphics objects - on real hardware CloseWindow()
+     * returning does not guarantee that the last IDCMP message or blit/
+     * screen reference has disappeared on the same instruction, so make
+     * shutdown deliberately conservative. */
     if (s->win) {
         ModifyIDCMP(s->win, 0);
         if (s->win->UserPort) {
@@ -1290,6 +1314,15 @@ static void aga_close(void *handle)
         WaitTOF();
     }
 
+    /* Steps 2-3: detach the custom copper list and rebuild/restore the
+     * display - with the window already gone and blits already stopped -
+     * before CloseScreen() ever touches this screen. */
+    if (s->ucop && s->scr) {
+        s->scr->ViewPort.UCopIns = NULL;
+        RethinkDisplay();
+    }
+
+    /* Step 4: close the screen. */
     if (s->scr) {
         for (attempt = 0; attempt < 50; attempt++) {
             if (CloseScreen(s->scr)) {
@@ -1306,6 +1339,23 @@ static void aga_close(void *handle)
             printf("planar: custom screen closed after %d VBlank(s) "
                    "(shutdown)\n", attempt);
         }
+    }
+
+    /* Step 5: free the manually allocated Copper structures exactly once -
+     * only now that the screen referencing them is gone (or, in the "still
+     * busy" case above, has at least been detached and unmerged from the
+     * system display in steps 2-3). */
+    if (s->ucop_ci) {
+        FreeMem(s->ucop_ci, (size_t)s->ucop_ninst * sizeof(struct CopIns));
+        s->ucop_ci = NULL;
+    }
+    if (s->ucop_cl) {
+        FreeMem(s->ucop_cl, sizeof(struct CopList));
+        s->ucop_cl = NULL;
+    }
+    if (s->ucop) {
+        FreeMem(s->ucop, sizeof(struct UCopList));
+        s->ucop = NULL;
     }
 
     /* Keep all frame/blit storage alive until graphics has quiesced above. */
