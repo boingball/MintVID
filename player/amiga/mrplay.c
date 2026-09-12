@@ -522,6 +522,8 @@ typedef struct playback_stats {
     uint64_t h264_mc_us, h264_deblock_us, h264_recon_us, h264_intra_us;
     unsigned long h264_mc_max_us, h264_deblock_max_us, h264_recon_max_us;
     unsigned long h264_intra_max_us;
+    uint64_t h264_bin_us, h264_bin_count, h264_coeff_us, h264_coeff_count;
+    uint64_t h264_mvpred_us, h264_mvpred_count;
     uint64_t rescue_us;
     unsigned rescue_entries, rescue_packets, rescue_audio_packets;
     unsigned rescue_video_decoded, rescue_video_queued, rescue_video_skipped;
@@ -1167,6 +1169,31 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
                st->h264_core_max_us,
                (unsigned long)(st->h264_output_us / st->decoded),
                st->h264_output_max_us);
+#endif
+#if defined(MR_H264_CABAC_PROFILE)
+        /* Independent of MR_H264_STAGE_PROFILE above - see
+         * ih264d_cabac_profile.h. us/call (not us/decoded-frame like the
+         * line above) is the useful number here: it is what answers "does
+         * the wrapper's own register-save/stack-reload overhead actually
+         * matter", by comparing it against a rough per-bin instruction-cost
+         * estimate. */
+        printf("h264 cabac: bin=%lu/%lu us (%lu calls) coeff=%lu/%lu us "
+               "(%lu calls) mvpred=%lu/%lu us (%lu calls)\n",
+               (unsigned long)(st->h264_bin_us / st->decoded),
+               st->h264_bin_count
+                   ? (unsigned long)(st->h264_bin_us / st->h264_bin_count)
+                   : 0UL,
+               (unsigned long)st->h264_bin_count,
+               (unsigned long)(st->h264_coeff_us / st->decoded),
+               st->h264_coeff_count
+                   ? (unsigned long)(st->h264_coeff_us / st->h264_coeff_count)
+                   : 0UL,
+               (unsigned long)st->h264_coeff_count,
+               (unsigned long)(st->h264_mvpred_us / st->decoded),
+               st->h264_mvpred_count
+                   ? (unsigned long)(st->h264_mvpred_us / st->h264_mvpred_count)
+                   : 0UL,
+               (unsigned long)st->h264_mvpred_count);
 #endif
         if (audio) service_audio_for_display(trace);
     }
@@ -3354,6 +3381,12 @@ int main(int argc, char **argv)
                             stats.h264_recon_max_us = ht.recon_us;
                         if (ht.intra_us > stats.h264_intra_max_us)
                             stats.h264_intra_max_us = ht.intra_us;
+                        stats.h264_bin_us += ht.bin_us;
+                        stats.h264_bin_count += ht.bin_count;
+                        stats.h264_coeff_us += ht.coeff_us;
+                        stats.h264_coeff_count += ht.coeff_count;
+                        stats.h264_mvpred_us += ht.mvpred_us;
+                        stats.h264_mvpred_count += ht.mvpred_count;
                     }
                     if (decode_status == MR_ENOMEM) {
                         printf("h264-decode-oom: packet %lu len=%lu - "

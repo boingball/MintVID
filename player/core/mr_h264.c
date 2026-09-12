@@ -15,6 +15,7 @@
 #include "ivd.h"
 #include "ih264d.h"
 #include "ih264d_stage_profile.h"
+#include "ih264d_cabac_profile.h"
 #include "ih264_mc_degrade.h"
 
 #include <stdint.h>
@@ -799,6 +800,7 @@ static mr_status h264_decode(mr_decoder *dec,
 
             if (s->timing_enabled) {
                 mr_h264_stage_profile_reset();
+                mr_h264_cabac_profile_reset();
                 call_mark = clock();
             }
             r = decode_annexb(s, au_ts, annexb_buf + off,
@@ -811,6 +813,14 @@ static mr_status h264_decode(mr_decoder *dec,
                 s->timing.deblock_us += stage.deblock_us;
                 s->timing.recon_us += stage.recon_us;
                 s->timing.intra_us += stage.intra_us;
+                mr_h264_cabac_us cabac;
+                mr_h264_cabac_profile_get(&cabac);
+                s->timing.bin_us += cabac.bin_us;
+                s->timing.bin_count += cabac.bin_count;
+                s->timing.coeff_us += cabac.coeff_us;
+                s->timing.coeff_count += cabac.coeff_count;
+                s->timing.mvpred_us += cabac.mvpred_us;
+                s->timing.mvpred_count += cabac.mvpred_count;
             }
             used = sub_out.s_ivd_video_decode_op_t.u4_num_bytes_consumed;
 

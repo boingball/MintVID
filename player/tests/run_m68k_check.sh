@@ -41,6 +41,15 @@ CC="$M68K_CC -O2 -std=c99 -m68030 -static -g -DMR_HAVE_H264 -DMR_M68K_ASM=1 -DMR
 # safe - both already covered by the *_060_asm_check tests and
 # check_m68060_asm.sh respectively).
 CC_060="$M68K_CC -O2 -std=c99 -mcpu=68060 -static -g -DMR_HAVE_H264 -DMR_M68K_ASM=1 -DMR_PL_MPEG_SKIP_AUDIO_TIME=1 -DMR_H264_STAGE_PROFILE=1 $LIBAVC_FLAGS $LIBMPEG2_FLAGS $WARN_SILENCE"
+# Same as $CC, plus -DMR_H264_CABAC_PROFILE=1 - used once below to prove the
+# CABAC bin/coeff/mvpred timing breakdown (ih264d_cabac_profile.h) actually
+# compiles, links and decodes correctly. Deliberately NOT the default $CC:
+# that would mean every other m68k build/test in this script exercises
+# ih264d_cabac_wrap.c's timed C trampoline instead of ih264_m68k_cabac.S's
+# direct, zero-overhead __wrap_ih264d_decode_bin export - the opposite of
+# what a normal (non-profiling) Amiga build actually links, and the whole
+# point of that change.
+CC_CABAC_PROFILE="$CC -DMR_H264_CABAC_PROFILE=1"
 
 if ! command -v "$M68K_CC" >/dev/null 2>&1; then
     echo "ERROR: $M68K_CC not found. On Debian/Ubuntu:"
@@ -122,6 +131,7 @@ LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
     vendor/libavc_port/ih264d_function_selector_port.c \
     vendor/libavc_port/ih264_mc_degrade.c \
     vendor/libavc_port/ih264d_stage_profile.c \
+    vendor/libavc_port/ih264d_cabac_profile.c \
     vendor/libavc_port/ih264d_update_qp_wrap.c \
     vendor/libavc_port/ih264_m68k_optim.c \
     vendor/libavc_port/ih264_m68k_interp.S \
@@ -159,6 +169,27 @@ echo "== building mr_decode.m68k (m68k-optimised leaf functions + hand asm activ
 # function's `% 52` (an extended-dividend DIVSL.L on 68060, confirmed by
 # disassembly - see that file) with a divide-free add/subtract reduction.
 $CC -o "$BUILD/mr_decode.m68k" tests/mr_decode.c $CORE $LIBAVC_SRC \
+    -Wl,--wrap=ih264d_decode_bin \
+    -Wl,--wrap=ih264d_mvpred_nonmbaff \
+    -Wl,--wrap=ih264d_mvpred_nonmbaffB \
+    -Wl,--wrap=ih264d_parse_residual4x4_cabac \
+    -Wl,--wrap=ih264d_read_coeff4x4_cabac \
+    -Wl,--wrap=ih264d_update_qp
+
+echo "== building mr_decode_cabac_profile.m68k (MR_H264_CABAC_PROFILE=1) =="
+# Same link, $CC_CABAC_PROFILE instead of $CC - proves the diagnostic bin/
+# coeff/mvpred timing build (ih264d_cabac_wrap.c's C trampoline,
+# ih264d_parse_cabac_coeff_port.c's and ih264d_mvpred_dispatch_port.c's
+# timing trampolines) compiles, links and decodes correctly, not just that
+# it happens to compile on the host. Not run through the full conformance
+# suite - one H.264 clip below is enough to prove the wrap sites fire
+# without corrupting decode; every other m68k build/test in this script
+# deliberately keeps using $CC/$CC_060 (no CABAC_PROFILE) so the real
+# production path - ih264_m68k_cabac.S's direct __wrap_ih264d_decode_bin
+# export, no C trampoline at all - is what actually gets exercised by
+# default.
+$CC_CABAC_PROFILE -o "$BUILD/mr_decode_cabac_profile.m68k" tests/mr_decode.c \
+    $CORE $LIBAVC_SRC \
     -Wl,--wrap=ih264d_decode_bin \
     -Wl,--wrap=ih264d_mvpred_nonmbaff \
     -Wl,--wrap=ih264d_mvpred_nonmbaffB \
@@ -503,6 +534,9 @@ run "$BUILD/mr_mpeg1_decim_check_060.m68k" tests/assets/test_mp2_stereo.ts
 
 echo "[H.264 High Profile avc1 + B-frames, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_h264_high.mp4 \
+    --check tests/assets/ref_h264_high
+echo "[H.264 CABAC bin/coeff/mvpred profiling build (MR_H264_CABAC_PROFILE=1), real m68k/big-endian]"
+run "$BUILD/mr_decode_cabac_profile.m68k" tests/assets/test_h264_high.mp4 \
     --check tests/assets/ref_h264_high
 echo "[H.264 borrowed YUV display-buffer lifecycle, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_h264_high.mp4 --h264-yuv \

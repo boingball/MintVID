@@ -83,13 +83,55 @@
  * make check / make check-m68k H.264-vs-ffmpeg conformance suite (worst
  * per-frame MAE must stay unchanged) and a qemu -d exec trace hit-count
  * check that this function actually fires during real decode.
+ *
+ * __wrap_ih264d_decode_bin alias (below, !MR_H264_CABAC_PROFILE only):
+ * ih264d_cabac_wrap.c used to be the *only* place providing this symbol -
+ * a plain C function whose entire body was `return
+ * mr_ih264d_decode_bin_m68k(u4_ctx_inc, ps_src_bin_ctxt, ps_bitstrm,
+ * ps_cab_env);`. That is a second full call/return layer - its own
+ * prologue/epilogue, its own reload of all four arguments from its
+ * caller's stack frame to pass down again - wrapped around a function
+ * whose own header comment above already justifies hand-asm on the
+ * strength of "keeping every live value pinned in registers across the
+ * whole function body". Paid on every single decoded bin (mb_type, cbp,
+ * ref_idx, mvd, intra pred modes, mb_qp_delta, residual significance/
+ * coded_block_flag - tens of thousands of calls per frame), this was
+ * exactly the kind of per-call tax that primitive was hand-written to
+ * avoid one layer further out.
+ *
+ * The fix: --wrap only needs a symbol named __wrap_ih264d_decode_bin to
+ * exist somewhere in the link with the right calling convention - it does
+ * not have to be a C function. Exporting it as a second name for this
+ * exact same asm entry point (identical argument layout: this function's
+ * four arguments are exactly __wrap_ih264d_decode_bin's four arguments,
+ * ph264d_decode_bin's own C signature) removes the trampoline layer
+ * entirely - GNU ld's --wrap=ih264d_decode_bin now redirects every call
+ * directly into this function, with zero C code in between.
+ * mr_ih264d_decode_bin_m68k stays exported too (tests/mr_h264_m68k_check.c
+ * calls it directly by that name for the differential fuzz test above),
+ * both names simply labelling the same address.
+ *
+ * Gated !defined(MR_H264_CABAC_PROFILE): a diagnostic build wants the C
+ * trampoline back (see ih264d_cabac_wrap.c), so it can count and time
+ * every call through it instead - real overhead, opt-in only, same
+ * philosophy as every other wrapper in ih264d_stage_profile.c. The two
+ * files' guards are complementary (never both true at once), so exactly
+ * one of them provides __wrap_ih264d_decode_bin in any given build -
+ * never zero (--wrap hard-errors on a missing wrapper) and never both
+ * (duplicate symbol).
  */
 #if defined(MR_M68K_ASM)
 	.text
 	.even
 	.globl	mr_ih264d_decode_bin_m68k
+#if !defined(MR_H264_CABAC_PROFILE)
+	.globl	__wrap_ih264d_decode_bin
+#endif
 
 mr_ih264d_decode_bin_m68k:
+#if !defined(MR_H264_CABAC_PROFILE)
+__wrap_ih264d_decode_bin:
+#endif
 	movem.l	%d2-%d7/%a2-%a4,-(%sp)
 	move.l	40(%sp),%d0		/* u4_ctx_inc      (4+36)  */
 	movea.l	44(%sp),%a0		/* ps_src_bin_ctxt (8+36)  */

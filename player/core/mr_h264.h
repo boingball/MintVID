@@ -18,11 +18,17 @@ typedef struct mr_h264_timing {
     unsigned long input_us, core_us, output_us;
     /* Sub-stages of core_us, broken out via wrapped libavc function pointers
      * (vendor/libavc_port/ih264d_stage_profile.c): motion compensation,
-     * deblocking, IDCT/reconstruction, and intra prediction. core_us minus
-     * these four is everything else - bitstream/CABAC/CAVLC parsing, MV
-     * prediction, and per-MB bookkeeping - which has no single function
-     * pointer to wrap so is not broken out further. */
+     * deblocking, IDCT/reconstruction, and intra prediction. */
     unsigned long mc_us, deblock_us, recon_us, intra_us;
+    /* Further sub-stages under MR_H264_CABAC_PROFILE
+     * (vendor/libavc_port/ih264d_cabac_profile.h): CABAC bin decode,
+     * residual coefficient parsing, and MV prediction - see that header for
+     * why these three, and not a fourth "macroblock parsing" bucket, are as
+     * far as this breakdown goes. core_us minus all seven of mc/deblock/
+     * recon/intra/bin/coeff/mvpred is what remains unattributed - mostly
+     * macroblock-header syntax dispatch and per-MB bookkeeping. */
+    unsigned long bin_us, bin_count, coeff_us, coeff_count;
+    unsigned long mvpred_us, mvpred_count;
 } mr_h264_timing;
 typedef enum mr_h264_speed_mode {
     MR_H264_SPEED_QUALITY = 0,

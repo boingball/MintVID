@@ -753,6 +753,110 @@ already compiles `Makefile.amiga`'s `all` target end to end - the direct-
 planar files being unconditionally part of `CORE` now means that job
 proves their real-toolchain link for free.
 
+## H.264 CABAC notes
+**A real-hardware trace and a host callgrind profile agreed that CABAC/CAVLC
+parsing plus MV prediction cost roughly 56% of H.264 decode time - about
+twice motion compensation - but `ih264d_stage_profile.c`'s own mc/deblock/
+recon/intra buckets had no way to say which part of that 56% actually
+dominated.** `ih264d_cabac_profile.h`/`.c` add three more buckets alongside
+those: `bin_us`/`bin_count` (every `ih264d_decode_bin()` call - mb_type,
+cbp, ref_idx, mvd, intra pred modes, mb_qp_delta), `coeff_us`/`coeff_count`
+(residual coefficient parsing, 4x4 and 8x8 alike), and `mvpred_us`/
+`mvpred_count` (MV *prediction* - the median-of-neighbours arithmetic, not
+entropy decoding; mvd itself is CABAC-coded and already counted under
+`bin_us`). These three do not overlap each other - coefficient decode and MV
+prediction are both self-contained arithmetic that never call back into
+`ih264d_decode_bin()` - so `bin_us+coeff_us+mvpred_us` is a real, additive
+subtotal, unlike (say) `mc_us` versus `core_us`. Reported via mrplay.c's new
+"h264 cabac:" line, independent of `MR_H264_STAGE_PROFILE` (opt in with
+`CABAC_PROFILE=1`).
+
+There is deliberately no fourth "macroblock parsing" bucket. The mb_type/
+cbp/ref_idx/mvd/intra-mode/mb_qp_delta syntax-element dispatch that drives
+all three buckets above (`dec_struct_t::pf_parse_inter_mb`, assigned to
+`ih264d_parse_pmb_cabac()`/`ih264d_parse_bmb_cabac()` once per slice) cannot
+be intercepted the same way: unlike bin/coeff/mvpred (each called from a
+*different* file than the one defining them, so --wrap has a normal
+cross-object relocation to redirect), that assignment happens in the *same*
+file that defines the target function - the same shape as the mvpred
+dispatch's own already-documented same-object pitfall, but for a pointer
+*assignment* rather than a *call*. Confirmed empirically with a minimal
+repro compiled for m68k before trusting either way: a same-file function-
+pointer assignment *does* leave a relocation against the target symbol
+(`objdump -r` shows `R_68K_32 target_fn`, unlike a same-file direct call,
+which resolves to a branch with no relocation left for the linker to
+touch) - but linking a full end-to-end repro with `--wrap=target_fn` and
+checking the actual patched value showed the reference still resolves to
+the original function, not `__wrap_target_fn`: the reference is satisfied
+against the object's own local definition before the wrap rename takes
+effect. So a wrapper installed this way would link cleanly and silently
+never fire - exactly the failure mode `ih264d_mvpred_dispatch_port.c`'s
+header warns about for the call case, just reached from the opposite
+direction (a data reference with a relocation, not a branch without one).
+Reimplementing both ~200-line per-slice-type dispatchers from scratch (the
+fix that file applied for a real optimisation) is not justified just to add
+a diagnostic counter. The remaining cost is still derivable, just not
+directly measured: `core_us - mc_us - deblock_us - recon_us - intra_us -
+bin_us - coeff_us - mvpred_us` is that combined remainder - the same
+unattributed-remainder idea `ih264d_stage_profile.h` already uses, just a
+much smaller and more useful one now that three of its four components are
+broken out.
+
+**The CABAC bin wrapper's own overhead turned out to be a real, fixable
+cost, not just a candidate to measure.** `ih264d_cabac_wrap.c`'s
+`__wrap_ih264d_decode_bin()` - the GNU-ld `--wrap` trampoline redirecting
+every one of the ~40+ vendored call sites for the single most-executed
+CABAC primitive - was a plain C function whose entire body was `return
+mr_ih264d_decode_bin_m68k(u4_ctx_inc, ps_src_bin_ctxt, ps_bitstrm,
+ps_cab_env);`. That is a second full call/return layer - its own prologue/
+epilogue, its own reload of all four arguments from its caller's stack
+frame to pass down again - wrapped around a function whose own header
+comment already justifies hand-asm on the strength of "keeping every live
+value pinned in registers across the whole function body". Paid on every
+single decoded bin (tens of thousands of calls per frame), this was exactly
+the kind of per-call tax that primitive was hand-written to avoid one layer
+further out.
+
+The fix: `--wrap` only needs a symbol named `__wrap_ih264d_decode_bin` to
+exist somewhere in the link with the right calling convention - it does not
+have to be a C function. `ih264_m68k_cabac.S` now exports that name as a
+second label at the exact same address as `mr_ih264d_decode_bin_m68k` (the
+name the differential fuzz test still calls directly), so `--wrap=
+ih264d_decode_bin` redirects every call straight into the asm primitive
+with zero C code in between. `ih264d_cabac_wrap.c`'s C trampoline still
+exists but now only compiles in under `MR_H264_CABAC_PROFILE` (where it
+also feeds `bin_us`/`bin_count` via two `clock()` calls) - the two files'
+guards are complementary (`!defined(MR_H264_CABAC_PROFILE)` in the `.S`,
+`defined(...)` in the `.c`), so exactly one of them provides the symbol in
+any given build: never zero (`--wrap` hard-errors on a missing wrapper) and
+never both (duplicate symbol). `ih264d_parse_cabac_coeff_port.c`'s and
+`ih264d_mvpred_dispatch_port.c`'s own wrap functions get the same rename-
+and-thin-trampoline split for their `MR_H264_CABAC_PROFILE` timing (their
+mechanically-diffed-against-vendored bodies are otherwise untouched
+either way) - those two are called far less often per frame than
+`ih264d_decode_bin()`, so accepting one extra call layer only in the
+diagnostic build is a reasonable trade there; `ih264d_decode_bin()`'s much
+higher call volume is what justified removing it unconditionally instead.
+
+Verified on real m68k/big-endian under qemu two ways:
+`tests/run_m68k_check.sh`'s default build (no `CABAC_PROFILE`) links and
+decodes every existing H.264 fixture exactly as before (same worst-frame
+MAE as pre-change) - proving the direct-asm-export path is what actually
+gets linked and executed, not silently falling back to the vendored C the
+way a `--wrap` mistake would. A second build with `-DMR_H264_CABAC_PROFILE=1`
+(`mr_decode_cabac_profile.m68k`, one dedicated H.264 clip, not the whole
+suite) proves the diagnostic trampoline path also compiles, links and
+decodes bit-for-bit identically. The existing differential CABAC/mvpred
+fuzz tests (`mr_h264_m68k_check`, `mr_h264_cabac_coeff_check`,
+`mr_h264_mvpred_dispatch_check`) and the 68060 disassembly scan of
+`vendor/libavc_port` (still clean of extended `MULS.L`/`MULU.L`/divide and
+`__muldi3`/`__divdi3`/`__udivdi3`) all pass unchanged, on host and m68k
+alike. Actual speedup on real 68060/68030 silicon - the reason for doing
+this - still needs a real-hardware pass to confirm, same as every other
+asm-overhead claim in this file; the counters this section adds are what
+that pass should read to find the next target once `bin_us`'s own overhead
+is accounted for.
+
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4
