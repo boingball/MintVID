@@ -3,6 +3,7 @@
 #include "../iptv/mr_iptv.h"
 #include "mr_akiko.h"
 #include "mr_gui_menu.h"
+#include "mr_last_dir.h"
 #include "mr_master_options.h"
 #include "mr_player_status.h"
 
@@ -481,11 +482,31 @@ static void play_file(gt_app *app)
 
 static void browse(gt_app *app)
 {
-    if (!app->requester)
-        app->requester = AllocAslRequestTags(ASL_FileRequest,
-            ASLFR_TitleText, (ULONG)"Choose a video", ASLFR_DoSaveMode, FALSE,
-            ASLFR_RejectIcons, TRUE, ASLFR_DoPatterns, TRUE,
-            ASLFR_InitialPattern, (ULONG)MR_VIDEO_FILE_PATTERN, TAG_DONE);
+    /* Seed the requester's starting drawer from the last one used (saved
+     * below on a successful pick) only when allocating it for the first
+     * time - a live requester already remembers its own current drawer
+     * across repeated browse() calls within the same run, so re-passing
+     * ASLFR_InitialDrawer on every call would just be redundant. static so
+     * the buffer outlives this call, matching AllocAslRequestTags()'s own
+     * apparent expectation that ASLFR_InitialDrawer/ASLFR_InitialPattern
+     * strings remain valid - unconfirmed against the real NDK on this dev
+     * host, see CLAUDE.md's "Validate against ffmpeg" section. */
+    static char last_dir[256];
+    if (!app->requester) {
+        if (mr_last_dir_load(last_dir, sizeof(last_dir)))
+            app->requester = AllocAslRequestTags(ASL_FileRequest,
+                ASLFR_TitleText, (ULONG)"Choose a video",
+                ASLFR_DoSaveMode, FALSE, ASLFR_RejectIcons, TRUE,
+                ASLFR_DoPatterns, TRUE,
+                ASLFR_InitialPattern, (ULONG)MR_VIDEO_FILE_PATTERN,
+                ASLFR_InitialDrawer, (ULONG)last_dir, TAG_DONE);
+        else
+            app->requester = AllocAslRequestTags(ASL_FileRequest,
+                ASLFR_TitleText, (ULONG)"Choose a video",
+                ASLFR_DoSaveMode, FALSE, ASLFR_RejectIcons, TRUE,
+                ASLFR_DoPatterns, TRUE,
+                ASLFR_InitialPattern, (ULONG)MR_VIDEO_FILE_PATTERN, TAG_DONE);
+    }
     if (!app->requester ||
         !AslRequestTags(app->requester, ASLFR_Window, (ULONG)app->window,
                         TAG_DONE))
@@ -493,6 +514,7 @@ static void browse(gt_app *app)
     strncpy(app->path, (const char *)app->requester->fr_Drawer,
             sizeof(app->path) - 1);
     app->path[sizeof(app->path) - 1] = 0;
+    mr_last_dir_save((const char *)app->requester->fr_Drawer);
     if (!AddPart((STRPTR)app->path, app->requester->fr_File,
                  sizeof(app->path))) {
         set_info(app, "The selected path is too long.");
@@ -757,6 +779,8 @@ int main(void)
                 int action = mr_gui_menu_action(&app.menu, code);
                 if (action == MR_GUI_MENU_ABOUT)
                     mr_gui_show_about(app.window, "GadTools edition (OS 3.0)");
+                else if (action == MR_GUI_MENU_GUIDE)
+                    mr_gui_open_guide(&app.menu, app.window);
                 else if (action == MR_GUI_MENU_QUIT)
                     done = 1;
             } else if (cls == IDCMP_GADGETUP) {
