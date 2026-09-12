@@ -335,12 +335,12 @@ int main(void) {
                    "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
-    assert(!strcmp(args, "--fast-buffer=auto --h264-speed=turbogt "
+    assert(!strcmp(args, "--fast-buffer=auto --h264-speed=turbogt --throughput "
                          "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     options.h264_performance = MR_H264_PERF_AUTO;
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
-    assert(!strcmp(args, "--fast-buffer=auto "
+    assert(!strcmp(args, "--fast-buffer=auto --throughput "
                          "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     mr_play_options_default(&options);
     strcpy(launch.user_agent, "Mozilla/5.0 Test Agent");

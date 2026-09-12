@@ -30,8 +30,8 @@ MINTVID_DECLARE_VERSION(iptvgui_gt_version_tag, "iptvgui-GT");
 #define MRPLAY_STACK_SIZE 320000UL
 /* Persistent storage, not RAM: - see the matching comment in
  * youtube_reaction.c for why (a hard lockup needs a reset to clear, which
- * also wipes RAM: and the log with it; UHD0: survives that). */
-#define MRPLAY_LOG_FILE "UHD0:MintVID.log"
+ * also wipes RAM: and the log with it; NAS0: survives that). */
+#define MRPLAY_LOG_FILE "NAS0:MintVID.log"
 #define WIN_W 640
 #define WIN_H 356
 

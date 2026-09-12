@@ -34,7 +34,7 @@ MINTVID_DECLARE_VERSION(mintvid_gt_version_tag, "MintVID-GT");
  * Workbench.  The long display cycle still gets enough room for the RTG
  * label, while related controls are grouped across two option rows. */
 #define WIN_W 632
-#define WIN_H 180
+#define WIN_H 204
 
 #if defined(__GNUC__)
 static const char mrgui_gt_stack_cookie[] __attribute__((used))="$STACK:131072";
@@ -48,7 +48,7 @@ extern struct Library *GadToolsBase;
 
 enum {
     G_FILE = 1, G_BROWSE, G_MODE, G_C2P, G_H264, G_LACE, G_SCALE,
-    G_AUDIO_RATE, G_FAST_BUFFER, G_NO_AUDIO, G_MONO_AUDIO,
+    G_AUDIO_RATE, G_FAST_BUFFER, G_NO_AUDIO, G_MONO_AUDIO, G_VIDEO_MODE,
     G_PLAY, G_PAUSE, G_STOP, G_FAST, G_IPTV, G_YOUTUBE, G_INFO
 };
 
@@ -59,6 +59,7 @@ typedef struct gt_app {
     struct Gadget *gadgets;
     struct Gadget *file, *mode, *c2p, *h264, *lace, *scale, *info;
     struct Gadget *audio_rate, *fast_buffer, *no_audio, *mono_audio;
+    struct Gadget *video_mode;
     struct Gadget *iptv;
     /* iptvgui-GT's own process exists (LoadSeg()/CreateNewProcTags() has
      * returned) long before its window is actually open - it still has to
@@ -98,6 +99,14 @@ static STRPTR scale_labels[] = {(STRPTR)"None", (STRPTR)"2x",
                                (STRPTR)"Copper 2x", NULL};
 static STRPTR audio_rate_labels[] = {(STRPTR)"Audio: Normal",
                                     (STRPTR)"Audio: Low", NULL};
+/* Fixed, like scale_labels above: 0=All Frames (throughput on, the default -
+ * never skip a decoded frame purely for falling behind the playback clock,
+ * see mr_play_options.h's own throughput field), 1=Skip Frames (restores
+ * that lateness check). read_options() hard-codes this exact order. See
+ * CLAUDE.md's "Live HLS playback stall notes" for the real-hardware
+ * regression All Frames fixes. */
+static STRPTR video_labels[] = {(STRPTR)"Video: All Frames",
+                               (STRPTR)"Video: Skip Frames", NULL};
 static STRPTR fast_buffer_labels[] = {(STRPTR)"Fast buffer: Auto",
                                      (STRPTR)"Fast buffer: Off",
                                      (STRPTR)"Fast buffer: 4 MB",
@@ -178,10 +187,20 @@ static void poll_status(gt_app *app)
     set_info(app, line);
 }
 
-/* ~15s at the 250ms/4Hz status_timer tick above. Bounded so a launch that
+/* ~60s at the 250ms/4Hz status_timer tick above. Bounded so a launch that
  * never completes (missing binary, crash) doesn't leave the IPTV button
- * disabled and the busy pointer up forever. */
-#define IPTV_LAUNCH_TIMEOUT_TICKS 60UL
+ * disabled and the busy pointer up forever.
+ *
+ * Was 60 ticks (~15s), which real A1200/68060 hardware confirmed was too
+ * short - see the matching comment in mrgui.c's own IPTV_LAUNCH_TIMEOUT_TICKS
+ * for the real-hardware report: a cold channel-directory load plus a slow/
+ * network-backed cache refresh can legitimately take longer than that, and
+ * this watchdog fired before iptvgui-GT's window ever opened, showing
+ * "IPTV browser did not open (missing binary or crash?)" for a launch that
+ * was still genuinely in progress. Quadrupled to 240 ticks (~60s) rather
+ * than removed outright - a launch that is genuinely missing/crashed
+ * should still be reported eventually, just not this early. */
+#define IPTV_LAUNCH_TIMEOUT_TICKS 240UL
 
 /* Called on the same status_timer tick as poll_status() while an
  * iptvgui-GT launch is pending. Clears the busy indicator once its window
@@ -294,6 +313,8 @@ static void read_options(gt_app *app, mr_play_options *options)
                          : MR_FAST_BUFFER_AUTO;
     options->no_audio = gad_value(app, app->no_audio, GTCB_Checked) != 0;
     options->mono_audio = gad_value(app, app->mono_audio, GTCB_Checked) != 0;
+    options->throughput =
+        gad_value(app, app->video_mode, GTCY_Active) == 0;
 }
 
 static void publish_options(gt_app *app)
@@ -661,24 +682,34 @@ static int build_window(gt_app *app)
     app->scale = g = add_gadget(app, g, CYCLE_KIND, G_SCALE, 558, 68, 70, 16,
         "", GTCY_Labels, (ULONG)scale_labels);
 
+    /* Own row: --throughput/--no-throughput (see mr_play_options.h's
+     * throughput field and CLAUDE.md's "Live HLS playback stall notes").
+     * Index 0 ("All Frames") is both this cycle gadget's default GTCY_Active
+     * and mr_play_options_default()'s throughput=1, so no explicit
+     * GT_SetGadgetAttrs init is needed the way app->mode/c2p/h264 need
+     * below - a freshly created gadget already agrees with the struct
+     * default. read_options() reads it back with GTCY_Active == 0. */
+    app->video_mode = g = add_gadget(app, g, CYCLE_KIND, G_VIDEO_MODE, 8, 92,
+        180, 16, "", GTCY_Labels, (ULONG)video_labels);
+
     /* Compact transport strip.  ASCII keeps the glyphs available on stock
      * Topaz while making the controls much narrower than word labels. */
-    g = add_gadget(app, g, BUTTON_KIND, G_PLAY, 8, 92, 42, 18, ">",
+    g = add_gadget(app, g, BUTTON_KIND, G_PLAY, 8, 116, 42, 18, ">",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_PAUSE, 56, 92, 42, 18, "||",
+    g = add_gadget(app, g, BUTTON_KIND, G_PAUSE, 56, 116, 42, 18, "||",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_STOP, 104, 92, 42, 18, "[]",
+    g = add_gadget(app, g, BUTTON_KIND, G_STOP, 104, 116, 42, 18, "[]",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_FAST, 152, 92, 48, 18, ">>",
+    g = add_gadget(app, g, BUTTON_KIND, G_FAST, 152, 116, 48, 18, ">>",
                    TAG_IGNORE, 0);
 
     /* Browsers get their own row so transport and service actions are visually
      * distinct and the controller never grows horizontally again. */
-    app->iptv = g = add_gadget(app, g, BUTTON_KIND, G_IPTV, 8, 116, 100, 18,
+    app->iptv = g = add_gadget(app, g, BUTTON_KIND, G_IPTV, 8, 140, 100, 18,
                               "IPTV...", TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_YOUTUBE, 114, 116, 110, 18,
+    g = add_gadget(app, g, BUTTON_KIND, G_YOUTUBE, 114, 140, 110, 18,
                    "YouTube...", TAG_IGNORE, 0);
-    app->info = g = add_gadget(app, g, TEXT_KIND, G_INFO, 8, 140, 615, 16,
+    app->info = g = add_gadget(app, g, TEXT_KIND, G_INFO, 8, 164, 615, 16,
         "", GTTX_Text, (ULONG)"No file selected");
     if (!g)
         return 0;
@@ -810,6 +841,7 @@ int main(void)
                 case G_H264: case G_LACE:
                 case G_AUDIO_RATE: case G_FAST_BUFFER:
                 case G_NO_AUDIO: case G_MONO_AUDIO:
+                case G_VIDEO_MODE:
                     publish_options(&app); break;
                 default: break;
                 }

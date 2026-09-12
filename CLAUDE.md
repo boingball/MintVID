@@ -1312,6 +1312,430 @@ deliberately given a lifetime spanning the whole relevant window's life,
 sidestepping any question of whether ReAction/ASL copy the string at
 Alloc/NewObject time or merely retain the pointer.
 
+## Live HLS playback stall notes (IPTV/YouTube live)
+
+Real A1200 regression report: BBC One (IPTV) and YouTube live both
+sometimes display only 1-3 frames, then audio stutters and video stops -
+under AGA + Kalms + TurboGT + mono audio + low audio rate + Fast buffer
+auto, with Copper doubling not active (Kalms excludes it). Local file
+playback is unaffected. This session audited the shared live/network path
+(`amiga/hls_fetch.c`'s background worker, `core/mr_hls.c`'s segment
+open/lookahead, `amiga/mrplay.c`'s queue-startup/audio-startup gating and
+audio-rescue) end to end and added always-on diagnostics, but could not
+reproduce the freeze itself - there is no AmigaOS toolchain, no live A1200,
+and no real network stream on this dev host (see "Validate against ffmpeg"
+above for the standing limitation this falls under). Everything below is
+either a structural fact provable from the diff/source, or an explicitly
+labelled hypothesis pending a real-hardware trace with the new diagnostics.
+
+**PR #180 (Copper-assisted vertical doubling for HAM6/HAM8) cannot be the
+cause - its diff never touches this path.** `git show --stat` on that
+merge lists exactly `CLAUDE.md`, `amiga/amiga_display.h`,
+`amiga/display_aga.c`, `amiga/display_cgx.c`, `amiga/mrgui.c`,
+`amiga/mrgui_gadtools.c`, a 13-line `amiga/mrplay.c` hunk (the "AGA path:"
+`--time` diagnostic line and a Scale-chooser wiring change, both inert
+unless `--copper-vdouble` is passed), and `tests/mr_iptv_check.c`. None of
+`hls_fetch.c`, `mr_hls.c`, `audio_paula.c`, or the queue/audio-startup
+logic in `mrplay.c` appear in it at all - and the report's own repro notes
+Copper is not even active (Kalms excludes it). This structurally rules out
+PR180; whatever the cause is, it predates that PR or was introduced by
+PR176/177.
+
+**PR #176/#177 did touch this path substantially, but every functional
+change found there is a fix, not a new regression, on its own terms:**
+- `mr_ts.c`'s "stop trusting a video PES's own declared length" fix (see
+  the "MPEG-TS video PES notes" section above) makes video PES
+  reassembly *more* correct for exactly the live-IPTV case this report
+  describes - it replaced a bug that silently truncated oversized video
+  access units, not a bug that starves audio. Nothing about the fix makes
+  `mr_ts_next_packet()` wait longer to emit an *audio* PES (audio still
+  completes on its own declared length, independent of the video PES's
+  accumulation state), so it should not, on its own, explain the audio
+  stutter symptom.
+- `mr_mpeg2_set_service()` wiring (`mr_mpeg2.c`/`mr_mpeg2.h`, then wired
+  into every `mr_decoder_reset()`/reconnect site in `mrplay.c`) *adds*
+  audio servicing during MPEG-2 decode that was previously missing,
+  mirroring the H.264 path - another fix, not a new gap.
+  BBC One and most UK DVB-derived IPTV rebroadcasts are MPEG-2, so this is
+  the most on-topic change in the branch, but it is additive (more
+  servicing, not less) and so is not an obvious source of a new stall.
+- The Paula worker task priority was experimentally dropped from 5 to 0
+  and then reverted back to 5 within this same branch (see
+  `2070d32`/`0188216` in git log) *before* it reached this repo's main
+  history - `amiga/audio_paula.c` currently still creates that task at
+  `NP_Priority 5`, unchanged from before PR176. The revert commit records
+  that the priority-0 build was followed by a real hard lockup needing a
+  reset, with no `--time` log to explain it - worth remembering as a
+  precedent (a live task-priority imbalance on this target *can* produce a
+  total freeze with no diagnostic trail) even though the current code is
+  back at the old, long-tested value.
+- `hls_fetch.c`'s only change in this range is `strncpy`→`memcpy` for a
+  `-Wstringop-truncation` warning - behaviourally inert.
+
+**`core/mr_hls.c`'s lookahead is single-segment, not the
+`HLS_FETCH_LOOKAHEAD_DEPTH=3` its own sibling comment implies - by
+deliberate, pre-existing design, not a regression.** `amiga/hls_fetch.c`
+provisions three lookahead slots, but `open_seg()` only ever calls
+`mr_http_prefetch_hint()` once, for `i+1`. This used to hint several
+segments ahead (`ff94726`, "Buffer several compressed HLS segments ahead
+instead of just one") and was deliberately reverted to one (`bda717b`,
+"Stabilize HLS shutdown by restoring single-segment lookahead") for
+teardown stability - both commits predate PR176/177/180 by over a week.
+The practical effect: there is normally at most one segment of compressed
+lookahead cushioning a fetch stall, however long that segment's own fetch
+takes. This is unchanged by anything in this investigation's date range,
+so it is not "the regression", but it does mean a single slow segment
+fetch (YouTube live has been observed to stall over a second - see
+`hls_fetch.c`'s own design note) has less margin than the sibling comment
+suggests, and is worth reconsidering as a real, separate improvement if
+the new diagnostics show fetch stalls (not a hang) as the dominant cost.
+
+**Leading hypothesis for a freeze with *no* recovery and *no* diagnostic
+output (as opposed to ordinary jitter, which the existing
+`present_service_frame()`/audio-rescue machinery already rides out): an
+unbounded DNS lookup on a segment fetch, with no reachable path to cancel
+it.** `core/mr_http.c`'s `connect_socket()` calls `gethostbyname()` fresh
+on every connection (no keep-alive/connection reuse in this codebase -
+confirmed by grep: every `connect_socket()` call path opens and closes its
+own socket, matching the "two HTTP/S connections must never be open at
+once" AmiSSL constraint documented in `hls_fetch.c`). Its own comment
+documents this as "the one blocking bsdsocket call in this file's whole
+call chain with no timeout of its own" - `connect()` is bounded by
+`connect_with_timeout()`, `recv()`/`send()` by `SO_RCVTIMEO`/`SO_SNDTIMEO`,
+but `gethostbyname()` has none, relying entirely on
+`hls_fetch_cancel()`/`hls_fetch_kick()`'s `SIGBREAKF_CTRL_C` signal to
+unstick it. That cancel is *only* ever called from two places:
+`hls_fetch_stop()` (teardown) and the live-reconnect block in `mrplay.c`
+(`input_eof && !qcount && !loop && network_source && live_resync`) - which
+requires the *current* blocking fetch to have already returned before
+reconnect logic can run at all. A DNS resolver stall (a flaky mobile/home
+network path, a CDN edge host rotated per segment, a transient resolver
+hiccup) hitting the fetch for segment 2 - right after segment 1's ~1-3
+frames have already drained through the presentation queue - would freeze
+the single task with no way to unstick itself, no error, and no recovery:
+audio drains its cushion and stutters (Paula genuinely starves - nothing
+is decoding), and video simply stops, exactly matching this report. This
+condition predates PR176/177/180 entirely (the `connect_socket()` design
+note is older code), so it is not a regression from this investigation's
+date range either - it is offered as the most structurally plausible
+*mechanism* for the reported symptom, not a proven cause. It is also
+consistent with the fault being intermittent ("sometimes") and reproducing
+on two otherwise-unrelated services (IPTV and YouTube live) that share
+only this fetch path, while local file playback (no network fetch at all)
+is unaffected.
+
+**A related, previously-silent gap: the live-reconnect path's
+resolution-mismatch bailout gave up with zero diagnostic output.**
+`mrplay.c`'s reconnect block ends playback outright (`break`, no message
+at all, `--time` or not) if a freshly reopened live URL's video dimensions
+differ from the stream that just dropped - plausible if a live-edge
+reconnect briefly lands on an ad/bumper/slate of a different resolution.
+This does not match "1-3 frames on *first* play" (it can only fire after
+at least one successful reconnect attempt), but it is a second, real way
+this class of stream can go silently dark, and it now reports via
+`--live-diag` (see below) rather than saying nothing.
+
+**Diagnostics added this session, all opt-in and independent of `--time`'s
+own per-frame `monotonic_us()`/`clock()` overhead**, so a real-hardware
+repro run no longer needs full `--time` instrumentation (which this file's
+own "qemu vs hardware" and MP2/H.264 sections already document as
+measurably perturbing timing-sensitive playback) to localize a stall:
+- `mr_hls_set_verbose()` (already existing, previously tied only to
+  `want_time`) is now also engaged by a new `--live-diag` flag. Its
+  existing `open_seg()` prints ("opening segment N of M" / "segment N
+  ready (KB, ms)" / "segment N open failed (ms)") already are exactly
+  "segment requested/completed" - a log where "opening segment N" has no
+  matching completion line before it goes quiet names the exact segment a
+  stall happened on. `hls_refetch_live()` gained matching prints for the
+  live-edge playlist poll (start, growth, re-fetch failure, give-up).
+  Segment-open timing now uses a `g_verbose`-gated `clock()` bracket
+  independent of the fuller `--time`-gated `mr_source_timing_*` path, so
+  elapsed ms is visible without it.
+- `mrplay.c` gained `--live-diag`, `live_diag_report()`, and a periodic
+  heartbeat inside `service_audio_for_display()` - the one thing still
+  reachable while the main loop is parked deep inside a blocking fetch
+  (via `service_player_during_io()`'s ~20 ms poll in
+  `hls_fetch_wait_busy()`, or `mr_ts.c`'s own every-16-TS-packet service
+  call), which is exactly what a hang like the `gethostbyname()` scenario
+  above needs to become visible instead of silent. Rate-limited with
+  `clock()` (not `monotonic_us()`) to about once a second. Reports
+  `qcount`, audio-buffered ms, and cumulative decoded/queued/presented/
+  dropped counts (`playback_stats` gained a `queued` counter - frames that
+  actually made it into the ring buffer, distinct from `decoded`, which
+  also counts frames immediately dropped for a full queue/stale-skip/OOM).
+  Explicit one-shot reports fire at: playback start, the exact
+  `input_eof` 0→1 transition (the moment the demuxer stopped delivering
+  packets), every live-reconnect stage (begin/succeeded, and each of the
+  TLS-disabled/no-progress/fetch-failed/shape-mismatch give-up reasons,
+  each previously silent except under `--time`), and final loop exit
+  (quit vs. natural end). The give-up points also `Flush(Output())` when
+  `--live-diag` is on, matching this file's established durable-log
+  pattern (see the `NAS0:MintVID.log` notes above) so the very last state
+  before the process exits is not left sitting in a write-back cache.
+  None of this is wired into the IPTV/YouTube GUI launchers yet (they
+  build their command lines via `core/mr_play_options.c`, untouched here);
+  add `--live-diag` there once a real-hardware run confirms this is the
+  right lens, or pass it by hand via Shell in the meantime.
+
+**Real-hardware test plan once this lands**: reproduce the BBC One/YouTube
+live freeze with `--live-diag` (Shell-launched, or the log-capture Debug
+toggle's `--time` swapped for `--live-diag` temporarily) and read the tail
+of the log. An "opening segment N" line with nothing after it names a
+hung fetch (most likely the DNS hypothesis above, or a wedged
+`recv()`/`SO_RCVTIMEO` that isn't actually firing on this stack); a
+"tick" heartbeat that keeps advancing while `qcount` stays 0 and
+decoded/presented stop climbing, with no matching "opening segment"
+line at all, points instead at the scheduler/decode side (`can_decode`
+gating, `mr_ts.c`'s PES reassembly, or the audio-rescue state machine)
+rather than the network fetch; a "demux-stopped" report followed by
+nothing (no "reconnect-begin") means `live_resync` never triggered -
+worth confirming `--live-resync` is actually reaching the process
+(it defaults on via `core/mr_play_options.c`, but a Shell-launched repro
+without it would misleadingly look identical to a reconnect that gave up
+silently before this session's diagnostics).
+
+**Correction: a real A1200 bisect (`gh pr checkout`, PR-by-PR) narrows the
+regression to PR #174, not PR #176/#177 as guessed above.** The user
+confirmed PR #173 ("codex/fast-mem-buffer") still plays IPTV/YouTube live
+correctly on real hardware; PR #174
+("codex/mpeg-skip-msmpeg4v2-corruption", merge `7f9e32d`) is the first one
+that does not. A real-hardware log (`--time`, YouTube live, AGA+Kalms+
+TurboGT) from the *broken* build shows `vpkts`/`apkts` going completely
+flat (5 video/9 audio packets, unchanged) across a ~20 s stretch, `audio
+rescue: ... packets=0 ...` repeating every ~10 s with zero packets
+processed each episode, and `vdecode=1052-1945 ms` per frame against
+`libavc-core=40-234 ms` - a real, still-unexplained gap between wall-clock
+decode time and libavc's own self-reported cost, on a 256x144 stream on a
+68060/50 (confirmed: local H.264 files decode fine on the same machine).
+PR #174 touches none of `hls_fetch.c`/`mr_hls.c`/`mr_ts.c` at all - every
+hypothesis above this correction (the `gethostbyname()` stall, the single-
+segment lookahead margin) is therefore not the cause of *this* regression,
+though they remain real, independently-true observations about the fetch
+path worth keeping in mind for other failure modes.
+
+**Leading hypothesis, replacing the network-focused ones above: PR #174's
+own `mrplay.c` diff (`c3ee1d6..7f9e32d`) added exactly one *unconditional*
+(not `want_time`-gated) behavioural change to the H.264 packet-scheduling
+path - rebasing `pkt.pts_us` through `container_pts_adjust_us` before
+comparing it against `mono_media_clock_us` in the `skip_stale_output`/
+micro-rescue lateness check - and that fix, while itself correct, may be
+what turned a pre-existing decode-speed shortfall into a permanent stall.**
+Before PR #174, that check read `mono_media_clock_us - pkt.pts_us >
+period_us` using `pkt.pts_us` **unrebased** - for a live TS stream this is
+a large absolute 90 kHz PES clock value (hours of encoder uptime), while
+`mono_media_clock_us` is a small, session-relative value, so the
+subtraction was reliably a huge *negative* number and could never exceed
+`period_us`. That clause was therefore silently dead for any live/network
+source with real PES timestamps: frames were never marked stale purely for
+running behind, only for a full queue or active micro-rescue, so the
+decoder always attempted full output even on stale, decode-behind-schedule
+frames. That is consistent with "half speed" as reported for PR #173 -
+laggy, increasingly-behind, but still visibly advancing, since output was
+never suppressed on lateness grounds. PR #174's fix (see the "MPEG-TS
+video PES notes" section's own sibling fix for the *contents* of the
+comparison, and note this is a *different* fix, in `mrplay.c`'s own
+scheduler, not `mr_ts.c`) makes the comparison meaningful for the first
+time - `pkt.pts_us + container_pts_adjust_us` now really is in the same
+clock as `mono_media_clock_us`. Once decode cannot keep up in real time
+(a characteristic this correction's own log shows is already true on this
+hardware for this stream, independent of PR #174), the *now-correct*
+lateness check has something real to fire on and marks essentially every
+subsequent packet `skip_stale_output` - decoded reference-only, never
+queued, forever, unless/until the clock and the packet stream are brought
+back in sync. `queue_copy_*()` is only ever reached when
+`skip_stale_output` is false, so a stream that falls behind once and never
+recovers real-time throughput can go from "occasionally shows a late
+frame" (PR #173) to "shows nothing again after the first few" (PR #174)
+purely because the gating became accurate. This is offered as the
+leading, code-grounded hypothesis for *why* PR #174 is where the bisect
+landed - not yet proven, and deliberately not "fixed" by reverting the
+rebase (that would reintroduce the real cross-clock comparison bug the fix
+exists for) or by guessing at a workaround without hardware confirmation,
+per this file's own standing rule about live-tested state on this target.
+
+`playback_stats` gained three always-on counters to test this directly
+without `--time`: `skip_queue_full`, `skip_pts_late`, `skip_micro_rescue` -
+the `skip_stale_output` computation was split into its three named OR
+conditions (no change to the combined value or to which frames are
+skipped) so a drop can be attributed to exactly one, and all three are
+printed in every `--live-diag` report line
+(`skip-queue-full=`/`skip-pts-late=`/`skip-micro-rescue=`). If a real
+A1200 run shows `skip-pts-late` climbing in lockstep with `dropped` while
+`decoded`/`queued`/`presented` stay flat, that confirms this hypothesis
+directly; if `skip-queue-full` or `skip-micro-rescue` dominates instead,
+the cause is elsewhere (a genuinely oversized queue backlog, or
+micro-rescue itself cycling) and this hypothesis is wrong. Either reading
+is useful and was the point of adding the split rather than guessing
+further from the existing combined `dropped` counter alone.
+
+Still open, deliberately not guessed at further here: **why does a 68060/50
+take 1-2 seconds of wall-clock time to decode one 256x144 H.264 frame from
+a live TS source when the same machine decodes local H.264 files fine?**
+`libavc-core` (the decoder's own self-reported cost) is only 40-234 us/ms
+in the same log - a 5-10x gap from the wall-clock `vdecode` figure that
+this session could not attribute by reading `core/mr_h264.c` alone
+(`audio_service()` is a confirmed no-op; `present_service_frame()` is
+guaranteed cheap during decode since `released` is 0 throughout;
+`h264_diag_checkpoint()` and the quit-probe are both confirmed cheap/
+inactive below 720p). The next real-hardware capture should be built with
+`STAGE_PROFILE=1 CABAC_PROFILE=1` (`make -f Makefile.amiga mrplay
+STAGE_PROFILE=1 CABAC_PROFILE=1 ...`) to get the `mc=`/`deblock=`/`recon=`/
+`intra=` and `bin=`/`coeff=`/`mvpred=` breakdown lines and see whether they
+sum close to the wall-clock figure (found inside libavc) or not (missing
+time is in the wrapper/scheduler, needing a different kind of look). This
+may be an independent, pre-existing performance characteristic that
+PR #174's correctness fix merely exposed, in which case the real fix is
+either speeding up decode for this stream shape or adding a bounded
+"force at least one frame through" escape valve to the lateness check -
+not something to guess at without that next capture.
+
+**Fixed (product decision, not waiting on the STAGE_PROFILE capture above):
+`--throughput` mode.** The user's own call, independent of ever pinning
+down *why* decode can be this slow on this stream: on this target,
+slow-but-moving video beats audio-with-silent-video, full stop. Whatever
+turns out to be true about the 68060/50 decode-speed mystery above, a
+source whose decode throughput cannot be guaranteed (any network/HLS
+source, by construction, once the fetch itself is no longer the
+bottleneck) should never let itself get locked into the failure mode the
+`skip_pts_late` hypothesis describes - a frame marked stale once and then
+every frame after it forever, because the check that marks it can never
+be satisfied once the player is behind and decode cannot claw the deficit
+back.
+
+`throughput_mode` (defaults to `network_source`, override with the new
+`--throughput`/`--no-throughput` flags) removes exactly the two PTS-
+lateness signals identified above and nothing else:
+- `skip_stale_output`'s `pts_late` clause (the `container_pts_adjust_us`-
+  rebased comparison PR #174 made meaningful) is forced false in
+  throughput mode - a frame is now skipped only when `video_cap` is
+  genuinely full.
+- Micro-rescue's own entry condition (`mr_micro_rescue_on_packet()`,
+  driven by the identical `pkt_late_us` computation) is skipped
+  altogether in throughput mode, so `micro_rescue.active` never becomes
+  true from lateness and its own OR-term in `skip_stale_output` is moot
+  for the same reason.
+
+Left deliberately untouched, per the user's own scoping: the `queue_full`
+(`qcount >= video_cap`) clause - the one safety check that must always
+hold, so a decoder racing ahead of presentation still cannot grow the
+video queue without bound; the existing `service_audio_for_display()`
+wiring - Paula keeps being fed exactly as before, throughput mode changes
+nothing about audio; and `core/mr_ps.c`'s MPEG-PS PTS fix (see the
+"MPEG-PS timestamps come from the PES header" note above) - that is a
+different container's timestamp-*presence* bug, not this one's lateness-
+*gating* behaviour, and is not touched by anything in this change.
+
+Two related mechanisms were surveyed and deliberately left as-is, since
+the user's request named `skip_stale_output` and micro-rescue
+specifically: `present_service_frame()`'s own catch-up loop (drops queued
+frames from the front, skipping ahead within the backlog, while
+`late_us > period_us && qcount > 1`) still runs - it always shows
+*something* each time it is invoked as long as more than one frame is
+queued, which is a different failure shape from the "nothing displays
+again, ever" this change targets, so it was left alone rather than
+folded into throughput_mode without being asked; and the catastrophic
+"live-resync: N ms behind live, catching up" fast-forward path (`--live-
+resync`, on by default via `core/mr_play_options.c`) still discards
+audio and decodes reference-only to reach the live edge - a different,
+already-opt-in mechanism for a different purpose (catching up to a live
+edge, not per-frame pacing), also left untouched pending its own
+real-hardware read once throughput mode's effect is confirmed.
+
+Not wired into the IPTV/YouTube GUI launchers yet, same as `--live-diag`
+- `core/mr_play_options.c` is untouched by this change. `make check`
+passes unchanged (this is entirely inside `amiga/mrplay.c`, which cannot
+be compiled on this dev host); the whole point of `throughput_mode` is a
+real-A1200-testable claim ("does video keep moving on a stream that
+falls behind, instead of going silent") that only a real-hardware run
+with `--live-diag` (`decoded`/`queued`/`presented` should now keep
+climbing instead of flatlining, and `skip-pts-late`/`skip-micro-rescue`
+should stay at 0) can actually confirm.
+
+**Confirmed on real A1200/68060 hardware: `--throughput` (network-source
+default) fixes the reported freeze.** The user's own real-hardware retest
+after this landed: "yes thats brung it back - perfect" - IPTV/YouTube live
+now keeps playing video through a decode-behind-schedule stretch instead of
+going silent after 1-3 frames. This is the first hardware confirmation in
+this whole investigation chain (the PR174 bisect, the
+`container_pts_adjust_us` mechanism, and `throughput_mode` itself were all
+reasoned from source/logs until this point) - the fix is real, not just
+plausible.
+
+**Follow-up from that same real-hardware session: two more issues, both
+now fixed.**
+
+`--throughput`/`--no-throughput` is now also a GUI-facing choice, not just
+an implicit per-source default - the user's own request: "a setting for the
+end user as Video : Skip that turns on the throghput_mode", refined to the
+label actually shipped, "Video - All Frames, Skip Frames". `mr_play_options`
+(`core/mr_play_options.h`) gained a `throughput` field (default 1 - "All
+Frames", matching `mrplay.c`'s own `network_source` default so a GUI launch
+of a network stream behaves the same as a bare CLI launch with no explicit
+flag either way);`append_playback_flags()` (`core/mr_play_options.c`) now
+*always* emits one of `--throughput`/`--no-throughput` explicitly rather
+than only sometimes emitting `--throughput` - a GUI-launched session's
+choice needs to override `mrplay.c`'s own per-source default in *both*
+directions (forcing "Skip Frames" on a network stream, or "All Frames" on
+a local file, must both be expressible), which a conditionally-omitted flag
+can't do. `mr_play_options_parse()`/`mr_play_options_summary()` and
+`amiga/mr_master_options.h`'s `mr_master_options_apply()` (the `T:`-file
+snapshot IPTV/YouTube browsers read a launched-from-mrgui session's options
+through) all updated to match; `tests/mr_iptv_check.c`'s two exact-string
+pinned assertions needed their expected strings updated for the
+now-unconditional flag.
+
+Both GUIs (`amiga/mrgui.c` ReAction, `amiga/mrgui_gadtools.c` GadTools) grew
+a matching two-value chooser, "Video: All Frames" / "Video: Skip Frames",
+wired the same way every other play-option control in each file already is
+- read in `read_play_options()`/`read_options()`
+(`options->throughput = <selected index> == 0`), published through
+`publish_play_options()`/`publish_options()` on every change alongside the
+existing H.264/audio-rate/fast-buffer/no-audio/mono-audio controls. ReAction
+uses a `CHOOSER_GetClass()` object (`video_mode`/`video_mode_label`, disposed
+alongside the rest at teardown, its chooser nodes freed via the existing
+`free_chooser_nodes(&video_modes)` path); GadTools uses a `CYCLE_KIND`
+gadget (`app->video_mode`, freed automatically with the rest of the chain
+by `FreeGadgets(app->gadgets)` - GadTools has no per-gadget disposal call
+the way ReAction's `DisposeObject()` chain does). Index 0 ("All Frames") is
+both gadgets' natural default state and `mr_play_options_default()`'s
+`throughput = 1`, so neither needs an explicit initial-value push the way
+e.g. `app->h264`/`app->c2p` do in `build_window()` - a freshly created
+gadget already agrees with the struct default.
+
+`mrgui_gadtools.c`'s window had no free horizontal space left on the
+audio-options row (`audio_rate`/`fast_buffer`/`no_audio`/`mono_audio`/
+`scale` already fill 8-628px of the 632px-wide window), so the new cycle
+gadget got its own row instead of being squeezed in sideways: inserted at
+y=92 (`app->video_mode`, 180px wide - "Video: Skip Frames" is the widest
+label it ever shows), with the transport strip, browser buttons and info
+line each pushed down one row (92->116->140->164) and `WIN_H` grown from
+180 to 204 to match. `mrgui.c`'s ReAction layout needed no equivalent
+surgery - `LAYOUT_AddChild` auto-flows, so adding one more child to
+`controls_bottom` just makes that row's `HorizLayout` group wrap/grow on
+its own.
+
+Neither GUI change has been run on real hardware yet - same standing
+"amiga/*.c can only be reviewed, not compiled, on this dev host" limitation
+as every other GUI change in this file. `make check` (host-buildable core)
+is unaffected by any of this - `mr_play_options.c`/`mr_play_options.h` are
+the only non-Amiga-only files touched, and both pass with the updated
+`mr_iptv_check.c` expectations.
+
+**The second reported issue - "the iptv takes a while to open, but the
+status bar says failed, missing exe or crashed" - was a launch-timeout
+false positive, not an actual failure.** Both GUIs poll for the IPTV
+browser's status port to confirm it actually opened
+(`IPTV_LAUNCH_TIMEOUT_TICKS`, polled every `STATUS_POLL_MICROS`), and both
+had it set to 60 ticks at a 250ms poll interval - 15 seconds. On real
+A1200/68060 hardware, a legitimately slow channel-directory load/cache
+refresh can take longer than that, so the watchdog fired and reported "IPTV
+browser did not open (missing binary or crash?)" for a browser that was
+simply still starting, not one that had failed. Fixed by quadrupling
+`IPTV_LAUNCH_TIMEOUT_TICKS` to 240 (60 seconds) in both `amiga/mrgui.c` and
+`amiga/mrgui_gadtools.c` - a plain constant change, no new mechanism, so
+nothing else in either file needed to change alongside it. Not yet
+retested on real hardware.
+
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4

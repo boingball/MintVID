@@ -507,6 +507,26 @@ typedef struct playback_stats {
     uint64_t latency_us, refill_block_us, refill_delayed_ready_us;
     unsigned long video_decode_max_us, display_max_us, sleep_max_error_us;
     unsigned decoded, presented, late, dropped, samples;
+    /* queued is decoded frames that actually made it into the ring buffer -
+     * decoded but not queued (a full-queue/stale-skip/OOM drop, all counted
+     * in `dropped` too) and queued but not yet presented (still sitting in
+     * the live `qcount`) are the two gaps --live-diag's periodic report
+     * exists to make visible. Always maintained (see its increment site by
+     * queue_copy_*'s success check), not gated by want_time - it costs one
+     * unsigned increment alongside the pre-existing qcount++. */
+    unsigned queued;
+    /* Which of skip_stale_output's three OR'd conditions actually caused
+     * each stale-skip drop (see that site's own comment) - a frame can
+     * match more than one, so these are contribution counts, not a
+     * partition, and do not sum to the stale-skip share of `dropped`.
+     * skip_pts_late is the one to watch on a live/network stream: it is
+     * only meaningful once a packet's own PTS is rebased into the same
+     * clock as mono_media_clock_us (container_pts_adjust_us), so a stream
+     * that falls behind and never catches up will show this climbing
+     * while decoded/queued/presented stop moving - see the Live HLS
+     * playback stall notes in CLAUDE.md. Always maintained, not gated by
+     * want_time. */
+    unsigned skip_queue_full, skip_pts_late, skip_micro_rescue;
     uint64_t rtg_prepare_us, rtg_scale_us, rtg_convert_us, rtg_copy_us;
     uint64_t rtg_blit_us, rtg_clip_us, rtg_total_us;
     /* mr_display_timing::service_us's own accumulator - see its declaration
@@ -624,6 +644,14 @@ typedef struct scheduler_trace {
     uint64_t last_audio_gap_print_us;
     unsigned long delay_ticks;
     int enabled;
+    /* --live-diag: independent of `enabled` (which is want_time). Checked by
+     * service_audio_for_display()'s heartbeat - see live_diag_report() and
+     * that heartbeat's own CLOCKS_PER_SEC-gated check. live_diag_last_clock
+     * is a plain clock() reading (not monotonic_us()'s ReadEClock+64-bit-
+     * divide chain), rate-limiting the heartbeat to about once a second
+     * regardless of how often service_audio_for_display() itself is called. */
+    int live_diag;
+    clock_t live_diag_last_clock;
     video_presenter *presenter;        /* NULL until the scheduler wires it up   */
 } scheduler_trace;
 
@@ -734,6 +762,34 @@ static void present_service_frame(video_presenter *vp)
     vp->presenting = 0;
 }
 
+/* --live-diag: one state line, printed only when the flag is on. Safe with
+ * an incomplete presenter (NULL, or not yet wired up by the scheduler -
+ * see video_presenter's own "NULL until the scheduler wires it up" note):
+ * every field is read through its own guard, so this can be (and is)
+ * called from points in main() that run before playback even starts, as
+ * well as from inside service_audio_for_display()'s heartbeat below. */
+static void live_diag_report(scheduler_trace *trace, const char *tag)
+{
+    video_presenter *vp;
+    if (!trace || !trace->live_diag) return;
+    vp = trace->presenter;
+    printf("live-diag: %s qcount=%d audio-buffered=%lu ms decoded=%u "
+           "queued=%u presented=%u dropped=%u "
+           "skip-queue-full=%u skip-pts-late=%u skip-micro-rescue=%u "
+           "playback-started=%d\n",
+           tag,
+           vp && vp->qcount ? *vp->qcount : -1,
+           trace->audio ? audio_buffered_ms(trace->audio) : 0UL,
+           vp && vp->stats ? vp->stats->decoded : 0U,
+           vp && vp->stats ? vp->stats->queued : 0U,
+           vp && vp->stats ? vp->stats->presented : 0U,
+           vp && vp->stats ? vp->stats->dropped : 0U,
+           vp && vp->stats ? vp->stats->skip_queue_full : 0U,
+           vp && vp->stats ? vp->stats->skip_pts_late : 0U,
+           vp && vp->stats ? vp->stats->skip_micro_rescue : 0U,
+           vp && vp->playback_started ? *vp->playback_started : -1);
+}
+
 static void service_audio_for_display(void *opaque)
 {
     scheduler_trace *trace = (scheduler_trace *)opaque;
@@ -788,6 +844,25 @@ static void service_audio_for_display(void *opaque)
     /* Audio first (it is the master clock), then advance video against it if the
      * scheduler has released the queue for a blocking fetch. */
     if (trace->presenter) present_service_frame(trace->presenter);
+    /* --live-diag heartbeat. This function is the one thing still reachable
+     * while the main loop itself is parked deep inside a blocking network
+     * read (via service_player_during_io() from hls_fetch_wait_busy()'s
+     * ~20 ms poll, or via mr_ts.c's own every-16-TS-packet service call) -
+     * exactly the case a genuine stall (a hung DNS lookup, a wedged TCP
+     * read) needs a periodic report to be visible at all, rather than only
+     * ever seeing the state at the moment a blocking call finally returns.
+     * clock() (not monotonic_us()) rate-limits this to keep the cost of
+     * being on to one cheap libc call per invocation, no EClock/divide
+     * chain, and only when a caller actually asked for it. */
+    if (trace->live_diag) {
+        clock_t now_c = clock();
+        if (!trace->live_diag_last_clock ||
+            (unsigned long)(now_c - trace->live_diag_last_clock) >=
+                (unsigned long)CLOCKS_PER_SEC) {
+            trace->live_diag_last_clock = now_c;
+            live_diag_report(trace, "tick");
+        }
+    }
 }
 
 /* EClock is per-machine monotonic and normally much finer than the 20 ms DOS
@@ -1520,6 +1595,23 @@ int main(int argc, char **argv)
     int net_queue = 0;  /* 0 = built-in default (network depth 1)             */
     int live_resync = 0;  /* --live-resync: catch up after a big stall, and
                            * reconnect a live stream that drops out            */
+    /* --live-diag: cheap, always-informative state prints (segment requested/
+     * completed, queue depth, audio-buffered ms, decoded/queued/presented
+     * counts, and the exact point playback stalls or gives up) for
+     * diagnosing a live-stream freeze on real hardware without paying
+     * --time's own per-frame monotonic_us()/clock() overhead. See
+     * live_diag_report() and its call sites below, and the g_verbose wiring
+     * into core/mr_hls.c's own segment-open prints just below. */
+    int live_diag = 0;
+    /* --throughput/--no-throughput: override this session's throughput-mode
+     * default (network_source - see its own computation below) instead of
+     * following it. -1 means "not overridden, use the default". Throughput
+     * mode trades real-time A/V sync for guaranteed forward progress on a
+     * source whose decode can't keep up with the live/container PTS clock -
+     * see throughput_mode's own declaration below for what it changes and
+     * why, and the "Live HLS playback stall notes" section of CLAUDE.md for
+     * the real-hardware regression this exists to fix. */
+    int throughput_flag = -1;
     int auto_close_eof = 0; /* finite GUI media should release its window      */
     int audio_unavailable = 0;
     const char *audio_failure = NULL;
@@ -1627,7 +1719,7 @@ int main(int argc, char **argv)
                "[--fast-buffer=auto|off|4|8|16] "
                "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+|turbogt] "
                "[--audio-rate=normal|low] [--no-audio] [--audio-mono] "
-               "[--time]\n");
+               "[--time] [--live-diag] [--throughput|--no-throughput]\n");
         return mrplay_exit(5);
     }
     {   /* display options anywhere on the command line */
@@ -1679,6 +1771,9 @@ int main(int argc, char **argv)
             else if (!strncmp(argv[i], "--net-queue=", 12))
                 net_queue = (int)strtoul(argv[i] + 12, NULL, 10);
             else if (!strcmp(argv[i], "--live-resync")) live_resync = 1;
+            else if (!strcmp(argv[i], "--live-diag")) live_diag = 1;
+            else if (!strcmp(argv[i], "--throughput")) throughput_flag = 1;
+            else if (!strcmp(argv[i], "--no-throughput")) throughput_flag = 0;
             else if (!strncmp(argv[i], "--h264-speed=", 13)) {
                 const char *mode = argv[i] + 13;
                 if (!strcmp(mode, "auto")) h264_speed = -1;
@@ -1853,7 +1948,14 @@ int main(int argc, char **argv)
 
     printf("mrplay: opening %s\n", media_path);
     player_status(MR_PLAYER_STATE_OPENING, "", "Connecting to stream...");
-    mr_hls_set_verbose(want_time);
+    /* --live-diag reuses mr_hls.c's existing g_verbose-gated segment-open
+     * prints (see open_seg()'s "opening segment N of M" / "ready" / "open
+     * failed" lines there) rather than adding a parallel diagnostic path -
+     * those prints are already exactly "segment requested/completed", and
+     * a real-hardware log where "opening segment N" has no matching
+     * completion line before the log goes quiet names the exact segment a
+     * stall happened on. */
+    mr_hls_set_verbose(want_time || live_diag);
 
     dx = mr_demux_open_file_ex(media_path,
                                have_http_options ? &http_options : NULL);
@@ -2213,7 +2315,7 @@ int main(int argc, char **argv)
 
     ticks = frame_ticks(vi->rate, vi->scale);
     memset(&trace, 0, sizeof trace);
-    trace.audio = audio; trace.enabled = want_time;
+    trace.audio = audio; trace.enabled = want_time; trace.live_diag = live_diag;
     trace.phase = "startup"; trace.phase_started_us = monotonic_us();
     display_set_service(disp, audio ? service_audio_for_display : NULL, &trace);
     mr_demux_set_service(dx, audio ? service_audio_for_display : NULL, &trace);
@@ -2265,6 +2367,28 @@ int main(int argc, char **argv)
     {
         int playback_started = 0;
         int network_source = mr_source_is_url(media_path);
+        /* Throughput mode: on a network/HLS source, real-time decode
+         * throughput is not guaranteed (see CLAUDE.md's "Live HLS playback
+         * stall notes" - a real A1200 regression where a stream that fell
+         * behind the live PTS clock had every subsequent frame marked
+         * skip_stale_output/micro-rescue-shed, decoding reference-only and
+         * never reaching the display queue again, forever). Slow-but-moving
+         * video is the better failure mode than audio-with-no-video on this
+         * target, so on a network source (or whenever --throughput forces
+         * it) the packet-scheduling section below never marks a frame
+         * skip_stale_output purely for PTS lateness, and never lets PTS
+         * lateness enter micro-rescue's frame-shedding state either - only
+         * a genuinely full video_cap queue still drops a frame (the one
+         * safety check kept unconditionally, so memory cannot grow without
+         * bound), and the existing audio service callbacks are entirely
+         * unaffected, so Paula keeps being fed exactly as before. Local
+         * (non-network) playback is unchanged by default - real-time A/V
+         * sync remains the goal there, where decode throughput is not in
+         * question the way a live/HLS source's can be - and mr_ps.c's own
+         * MPEG-PS PTS fix (see "MPEG-PS timestamps come from the PES
+         * header" above) is untouched either way. */
+        int throughput_mode = throughput_flag >= 0 ? throughput_flag
+                                                    : network_source;
         int frames_at_last_reconnect = 0, reconnects_without_progress = 0;
         int startup_depth = network_source ? 1 : 2;
         /* Network sources default to a single decoded frame (see the comment on
@@ -2352,6 +2476,15 @@ int main(int argc, char **argv)
                    video_cap, network_source ? "network" : "disk", cushion_ms,
                    (unsigned long)(frame_bytes / 1024),
                    (unsigned long)(free_any / 1024));
+        /* Always printed, not want_time-gated: throughput_mode changes real
+         * playback behaviour (whether a slow decoder still shows frames or
+         * goes silent-video), not just diagnostics - see its own
+         * declaration above. */
+        if (throughput_mode)
+            printf("throughput mode: on (%s) - frames are never skipped for "
+                   "PTS lateness or micro-rescue, only for a full queue\n",
+                   throughput_flag >= 0 ? "forced by --throughput"
+                                        : "network source");
 
         /* Wire the present-during-fetch context onto the shared service callback.
          * It touches the queue only while `released` is set around the blocking
@@ -3045,12 +3178,15 @@ int main(int argc, char **argv)
         if (input_eof && !qcount && !loop && network_source && live_resync) {
             int tries, backoff = 12;                 /* ~0.5 s, grows to ~4 s   */
             const mr_video_info *nvi;
+            live_diag_report(&trace, "reconnect-begin");
             /* If an unhealthy TLS drop has disabled HTTPS for this process, no
              * reopen can ever succeed - end cleanly instead of spinning through
              * every retry. (This is the AmiSSL "relaunch to resume" limitation.) */
             if (mr_http_tls_disabled()) {
                 display_set_status(disp, "Connection lost - relaunch");
                 if (want_time) printf("live-reconnect: HTTPS disabled, ending\n");
+                live_diag_report(&trace, "stop: reconnect-tls-disabled");
+                if (live_diag) Flush(Output());
                 break;
             }
             /* Give up if we keep reopening but never actually play: a stream that
@@ -3061,6 +3197,8 @@ int main(int argc, char **argv)
                 reconnects_without_progress = 0;
                 frames_at_last_reconnect = frames;
             } else if (++reconnects_without_progress > LIVE_RECONNECT_STALL_LIMIT) {
+                live_diag_report(&trace, "stop: reconnect-no-progress");
+                if (live_diag) Flush(Output());
                 break;
             }
             if (audio) { audio_set_running(audio, 0); audio_flush(audio); }
@@ -3089,11 +3227,18 @@ int main(int argc, char **argv)
                 backoff = backoff < 100 ? backoff * 2 : 100;   /* cap ~4 s */
             }
             if (quit) break;
-            if (!dx) break;                     /* gave up: end playback */
+            if (!dx) {                          /* gave up: end playback */
+                live_diag_report(&trace, "stop: reconnect-failed");
+                if (live_diag) Flush(Output());
+                break;
+            }
             nvi = mr_demux_video(dx);
             if (!nvi || !nvi->valid || nvi->width != vi->width ||
-                nvi->height != vi->height)
+                nvi->height != vi->height) {
+                live_diag_report(&trace, "stop: reconnect-shape-mismatch");
+                if (live_diag) Flush(Output());
                 break;                          /* different shape: stop cleanly */
+            }
             vi = nvi;
             if (mr_decoder_reset(&dec) != MR_OK ||
                 !apply_h264_speed(&dec, h264_speed, 0)) break;
@@ -3128,6 +3273,7 @@ int main(int argc, char **argv)
             if (audio) media_clock_rebase(&mc, audio_elapsed_us(audio), 0);
             else memset(&mc, 0, sizeof mc);
             stats.timing_rebases++;
+            live_diag_report(&trace, "reconnect-succeeded");
             continue;
         }
 
@@ -3221,7 +3367,15 @@ int main(int argc, char **argv)
                 if (rescue_active) {
                     rescue_episode_packets++; stats.rescue_packets++;
                 }
-                if (next != MR_OK) input_eof = 1;
+                if (next != MR_OK) {
+                    /* can_decode's own !input_eof term means this branch only
+                     * runs once per genuine 0->1 transition - the exact
+                     * moment the demuxer stopped delivering packets, whether
+                     * that turns out to be a clean end of stream or the
+                     * start of a stall/reconnect. */
+                    input_eof = 1;
+                    live_diag_report(&trace, "demux-stopped");
+                }
                 else if (!pkt.is_video) {
                     if (want_time) { video_run = 0; stats.audio_packets++; }
                     if (audio && audio_dec) {
@@ -3250,6 +3404,8 @@ int main(int argc, char **argv)
                     mr_status decode_status;
                     uint64_t decode_end;
                     int skip_stale_output;
+                    int skip_reason_queue_full = 0, skip_reason_pts_late = 0,
+                        skip_reason_micro_rescue = 0;
                     int first_decoded_output = 1;
                     if (want_time) {
                         stats.video_packets++;
@@ -3334,7 +3490,18 @@ int main(int argc, char **argv)
                      * full either way and simply dropped). Apply the same
                      * offset here so both sides of the comparison are in the
                      * same clock. */
-                    if (playback_started && pkt.has_pts) {
+                    /* !throughput_mode: micro-rescue's own entry condition is
+                     * PTS lateness (see MICRO_RESCUE_ENTRY_US's declaration
+                     * above) - the same signal throughput_mode disables for
+                     * skip_stale_output just below, for the same reason (see
+                     * throughput_mode's own declaration). Skipping this
+                     * whole block leaves micro_rescue.active at whatever it
+                     * already was, which is never anything but 0 in
+                     * throughput mode since this is the only place it is
+                     * ever entered - so the mr_micro_rescue_tick() safety
+                     * timeout at the top of the loop has nothing to time
+                     * out either. */
+                    if (!throughput_mode && playback_started && pkt.has_pts) {
                         int64_t adjusted_pkt_pts_us =
                             (int64_t)pkt.pts_us + container_pts_adjust_us;
                         int64_t pkt_late_us = (int64_t)mono_media_clock_us -
@@ -3361,12 +3528,52 @@ int main(int argc, char **argv)
                                        (unsigned long)(mrr.episode_us / 1000));
                         }
                     }
-                    skip_stale_output = qcount >= video_cap ||
-                        (playback_started && pkt.has_pts &&
-                         (int64_t)mono_media_clock_us -
-                             ((int64_t)pkt.pts_us + container_pts_adjust_us) >
-                             (int64_t)period_us) ||
-                        micro_rescue.active;
+                    {
+                        /* Broken out from the single OR expression this used
+                         * to be so a drop can be attributed to exactly which
+                         * condition caused it (see the skip_queue_full/
+                         * skip_pts_late/skip_micro_rescue counters below) -
+                         * no change to the combined skip_stale_output value
+                         * or to which frames get skipped. skip_pts_late in
+                         * particular is the condition
+                         * container_pts_adjust_us made meaningful for a live/
+                         * network stream (a raw, un-rebased pkt.pts_us can
+                         * never exceed a near-zero mono_media_clock_us by
+                         * more than period_us, so before that rebase this
+                         * clause was effectively dead for exactly this kind
+                         * of source) - if a real-hardware run shows
+                         * skip-pts-late dominating drops on a stream that
+                         * decodes too slowly to ever catch up, that is the
+                         * skip logic correctly doing its job against a
+                         * decode-speed problem it did not create, not a bug
+                         * in the rebase itself; see the Live HLS notes below
+                         * for the investigation this instrumented.
+                         *
+                         * !throughput_mode guards pts_late here the same way
+                         * it guards micro-rescue's entry just above (see
+                         * throughput_mode's own declaration): on a network
+                         * source, real-time decode throughput is not
+                         * guaranteed, and once a stream falls behind, this
+                         * clause - now that container_pts_adjust_us makes it
+                         * meaningful - would otherwise mark every subsequent
+                         * frame skip_stale_output forever, decoding
+                         * reference-only and never reaching the display
+                         * queue again. queue_full is left unconditional -
+                         * the one safety check that must always hold, so a
+                         * source that decodes faster than it presents still
+                         * cannot grow the video queue without bound. */
+                        int queue_full = qcount >= video_cap;
+                        int pts_late = !throughput_mode &&
+                            playback_started && pkt.has_pts &&
+                            (int64_t)mono_media_clock_us -
+                                ((int64_t)pkt.pts_us + container_pts_adjust_us) >
+                                (int64_t)period_us;
+                        int mrescue = micro_rescue.active != 0;
+                        skip_stale_output = queue_full || pts_late || mrescue;
+                        skip_reason_queue_full = queue_full;
+                        skip_reason_pts_late = pts_late;
+                        skip_reason_micro_rescue = mrescue;
+                    }
                     mr_h264_set_skip_output(&dec, skip_stale_output);
                     mr_h264_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
                     mr_mpeg2_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
@@ -3549,6 +3756,10 @@ int main(int argc, char **argv)
                                 }
                                 if (micro_rescue.active)
                                     stats.micro_rescue_frames_skipped++;
+                                if (skip_reason_queue_full) stats.skip_queue_full++;
+                                if (skip_reason_pts_late) stats.skip_pts_late++;
+                                if (skip_reason_micro_rescue)
+                                    stats.skip_micro_rescue++;
                                 stats.dropped++;
                                 goto drain_decoded_output;
                             }
@@ -3631,6 +3842,7 @@ int main(int argc, char **argv)
                                 goto drain_decoded_output;
                             }
                             qcount++;
+                            stats.queued++;
                             if (h264_pipeline_diag_enabled && h264_pipeline_stage < 2) {
                                 h264_pipeline_checkpoint_player("queue-copy",
                                                                 qcount, playback_started);
@@ -3660,6 +3872,7 @@ drain_decoded_output:
                                AUDIO_STARTUP_TARGET_MS || input_eof)) {
                     playback_started = qcount > 0;
                     if (playback_started) {
+                        live_diag_report(&trace, "started");
                         now = monotonic_us();
                         mono_base_us = now - vq[qhead].pts_us;
                         /* Rebase the audio-derived media clock to the same
@@ -3718,6 +3931,7 @@ drain_decoded_output:
             }
         }
     }
+    live_diag_report(&trace, quit ? "stop: quit" : "stop: loop-exit");
     }
     /* `presenter` lived in the scheduler block just closed; the display service
      * hook is still installed and fires during the teardown flush's blits, so
