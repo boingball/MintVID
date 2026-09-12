@@ -1651,6 +1651,91 @@ with `--live-diag` (`decoded`/`queued`/`presented` should now keep
 climbing instead of flatlining, and `skip-pts-late`/`skip-micro-rescue`
 should stay at 0) can actually confirm.
 
+**Confirmed on real A1200/68060 hardware: `--throughput` (network-source
+default) fixes the reported freeze.** The user's own real-hardware retest
+after this landed: "yes thats brung it back - perfect" - IPTV/YouTube live
+now keeps playing video through a decode-behind-schedule stretch instead of
+going silent after 1-3 frames. This is the first hardware confirmation in
+this whole investigation chain (the PR174 bisect, the
+`container_pts_adjust_us` mechanism, and `throughput_mode` itself were all
+reasoned from source/logs until this point) - the fix is real, not just
+plausible.
+
+**Follow-up from that same real-hardware session: two more issues, both
+now fixed.**
+
+`--throughput`/`--no-throughput` is now also a GUI-facing choice, not just
+an implicit per-source default - the user's own request: "a setting for the
+end user as Video : Skip that turns on the throghput_mode", refined to the
+label actually shipped, "Video - All Frames, Skip Frames". `mr_play_options`
+(`core/mr_play_options.h`) gained a `throughput` field (default 1 - "All
+Frames", matching `mrplay.c`'s own `network_source` default so a GUI launch
+of a network stream behaves the same as a bare CLI launch with no explicit
+flag either way);`append_playback_flags()` (`core/mr_play_options.c`) now
+*always* emits one of `--throughput`/`--no-throughput` explicitly rather
+than only sometimes emitting `--throughput` - a GUI-launched session's
+choice needs to override `mrplay.c`'s own per-source default in *both*
+directions (forcing "Skip Frames" on a network stream, or "All Frames" on
+a local file, must both be expressible), which a conditionally-omitted flag
+can't do. `mr_play_options_parse()`/`mr_play_options_summary()` and
+`amiga/mr_master_options.h`'s `mr_master_options_apply()` (the `T:`-file
+snapshot IPTV/YouTube browsers read a launched-from-mrgui session's options
+through) all updated to match; `tests/mr_iptv_check.c`'s two exact-string
+pinned assertions needed their expected strings updated for the
+now-unconditional flag.
+
+Both GUIs (`amiga/mrgui.c` ReAction, `amiga/mrgui_gadtools.c` GadTools) grew
+a matching two-value chooser, "Video: All Frames" / "Video: Skip Frames",
+wired the same way every other play-option control in each file already is
+- read in `read_play_options()`/`read_options()`
+(`options->throughput = <selected index> == 0`), published through
+`publish_play_options()`/`publish_options()` on every change alongside the
+existing H.264/audio-rate/fast-buffer/no-audio/mono-audio controls. ReAction
+uses a `CHOOSER_GetClass()` object (`video_mode`/`video_mode_label`, disposed
+alongside the rest at teardown, its chooser nodes freed via the existing
+`free_chooser_nodes(&video_modes)` path); GadTools uses a `CYCLE_KIND`
+gadget (`app->video_mode`, freed automatically with the rest of the chain
+by `FreeGadgets(app->gadgets)` - GadTools has no per-gadget disposal call
+the way ReAction's `DisposeObject()` chain does). Index 0 ("All Frames") is
+both gadgets' natural default state and `mr_play_options_default()`'s
+`throughput = 1`, so neither needs an explicit initial-value push the way
+e.g. `app->h264`/`app->c2p` do in `build_window()` - a freshly created
+gadget already agrees with the struct default.
+
+`mrgui_gadtools.c`'s window had no free horizontal space left on the
+audio-options row (`audio_rate`/`fast_buffer`/`no_audio`/`mono_audio`/
+`scale` already fill 8-628px of the 632px-wide window), so the new cycle
+gadget got its own row instead of being squeezed in sideways: inserted at
+y=92 (`app->video_mode`, 180px wide - "Video: Skip Frames" is the widest
+label it ever shows), with the transport strip, browser buttons and info
+line each pushed down one row (92->116->140->164) and `WIN_H` grown from
+180 to 204 to match. `mrgui.c`'s ReAction layout needed no equivalent
+surgery - `LAYOUT_AddChild` auto-flows, so adding one more child to
+`controls_bottom` just makes that row's `HorizLayout` group wrap/grow on
+its own.
+
+Neither GUI change has been run on real hardware yet - same standing
+"amiga/*.c can only be reviewed, not compiled, on this dev host" limitation
+as every other GUI change in this file. `make check` (host-buildable core)
+is unaffected by any of this - `mr_play_options.c`/`mr_play_options.h` are
+the only non-Amiga-only files touched, and both pass with the updated
+`mr_iptv_check.c` expectations.
+
+**The second reported issue - "the iptv takes a while to open, but the
+status bar says failed, missing exe or crashed" - was a launch-timeout
+false positive, not an actual failure.** Both GUIs poll for the IPTV
+browser's status port to confirm it actually opened
+(`IPTV_LAUNCH_TIMEOUT_TICKS`, polled every `STATUS_POLL_MICROS`), and both
+had it set to 60 ticks at a 250ms poll interval - 15 seconds. On real
+A1200/68060 hardware, a legitimately slow channel-directory load/cache
+refresh can take longer than that, so the watchdog fired and reported "IPTV
+browser did not open (missing binary or crash?)" for a browser that was
+simply still starting, not one that had failed. Fixed by quadrupling
+`IPTV_LAUNCH_TIMEOUT_TICKS` to 240 (60 seconds) in both `amiga/mrgui.c` and
+`amiga/mrgui_gadtools.c` - a plain constant change, no new mechanism, so
+nothing else in either file needed to change alongside it. Not yet
+retested on real hardware.
+
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4

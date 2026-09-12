@@ -63,6 +63,14 @@ void mr_play_options_default(mr_play_options *o)
     o->h264_performance = MR_H264_PERF_TURBO_GT;
     o->audio_rate = MR_AUDIO_RATE_NORMAL;
     o->fast_buffer = MR_FAST_BUFFER_AUTO;
+    /* On by default for every GUI-launched session (local file or network
+     * alike) - see the real-hardware regression this fixed, in CLAUDE.md's
+     * "Live HLS playback stall notes". A direct "mrplay <url>" invocation
+     * with no options struct at all keeps mrplay.c's own conservative
+     * per-source default (on for a network/HLS source, off for a local
+     * file) instead, since neither --throughput nor --no-throughput is
+     * passed unless something built the command line through this file. */
+    o->throughput = 1;
 }
 
 static int append_text(char *out, size_t cap, const char *text)
@@ -205,6 +213,13 @@ static int append_playback_flags(char *out, size_t cap,
             !append_option(out, cap, "--audio-rate=low")) return 0;
         if (o->mono_audio && !append_option(out, cap, "--audio-mono")) return 0;
     }
+    /* Always explicit, like --fast-buffer= above: a GUI-launched session's
+     * choice (the "Video: All Frames / Skip Frames" control) should always
+     * override mrplay.c's own per-source default, in both directions - not
+     * just when forcing throughput mode on. */
+    if (!append_option(out, cap,
+                       o->throughput ? "--throughput" : "--no-throughput"))
+        return 0;
     return 1;
 }
 
@@ -314,6 +329,8 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
         else if (!strcmp(arg, "--no-audio")) o->no_audio = 1;
         else if (!strcmp(arg, "--audio-mono")) o->mono_audio = 1;
         else if (!strcmp(arg, "--audio-stereo")) o->mono_audio = 0;
+        else if (!strcmp(arg, "--throughput")) o->throughput = 1;
+        else if (!strcmp(arg, "--no-throughput")) o->throughput = 0;
         else if (!strncmp(arg, "--fast-buffer=", 14)) {
             value = arg + 14;
             if (!strcmp(value, "auto")) o->fast_buffer = MR_FAST_BUFFER_AUTO;
@@ -382,13 +399,14 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
            o->h264_performance == MR_H264_PERF_TURBO_GT ? "TurboGT" : "Auto";
     audio = audio_policy_text(o);
     if (o->display == MR_DISPLAY_CGX || o->display == MR_DISPLAY_P96)
-        snprintf(out, cap, "Playback: RTG (%s) / %s / H264 %s / Audio %s / Fast buffer %s%s",
+        snprintf(out, cap, "Playback: RTG (%s) / %s / H264 %s / Audio %s / Fast buffer %s%s / Video %s",
                  o->display == MR_DISPLAY_P96 ? "P96" : "WritePixel",
                  hls, h264, audio, fast_buffer_text(o),
-                 o->live_resync ? " / Live-resync" : "");
+                 o->live_resync ? " / Live-resync" : "",
+                 o->throughput ? "All Frames" : "Skip Frames");
     else
         snprintf(out, cap,
-                 "Playback: %s / %s / Lace %s / 2x %s%s / %s / H264 %s / Audio %s / Fast buffer %s%s",
+                 "Playback: %s / %s / Lace %s / 2x %s%s / %s / H264 %s / Audio %s / Fast buffer %s%s / Video %s",
                  o->display == MR_DISPLAY_HAM6 ? "HAM6" :
                  o->display == MR_DISPLAY_HAM8 ? "HAM8" :
                  o->display == MR_DISPLAY_AGA_ECS32 ? "ECS (32)" :
@@ -398,5 +416,6 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
                  o->scale_2x && o->copper_vdouble ? " (copper)" : "",
                  hls, h264, audio,
                  fast_buffer_text(o),
-                 o->live_resync ? " / Live-resync" : "");
+                 o->live_resync ? " / Live-resync" : "",
+                 o->throughput ? "All Frames" : "Skip Frames");
 }

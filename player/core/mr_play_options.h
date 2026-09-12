@@ -95,6 +95,21 @@ typedef struct mr_play_options {
      * per-channel synthesis work in MP3, MP2 and AC-3 (Helix AAC has no mono
      * mode, so there it only saves the downmix). */
     int mono_audio;
+    /* GUI label: "Video: All Frames" (1, the default) / "Skip Frames" (0).
+     * Non-zero passes --throughput, zero passes --no-throughput - always
+     * one or the other (see append_playback_flags()), so a GUI-launched
+     * session's explicit choice overrides mrplay.c's own per-source
+     * default (network/HLS on, local file off) in both directions. "All
+     * Frames" means never skip a decoded video frame purely for PTS
+     * lateness (skip_stale_output's pts_late clause and micro-rescue's own
+     * entry are both disabled - see mrplay.c's throughput_mode and
+     * CLAUDE.md's "Live HLS playback stall notes" for the real-hardware
+     * regression this fixed: a decode-bound stream that fell behind the
+     * live clock went from occasional lateness to no video at all once
+     * this same lateness check became correct). "Skip Frames" restores
+     * that lateness check, trading a frozen picture during a stall for
+     * staying closer to real-time sync once decode catches back up. */
+    int throughput;
 } mr_play_options;
 
 void mr_play_options_default(mr_play_options *options);
