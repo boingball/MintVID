@@ -102,11 +102,12 @@ void display_set_ecs32(int on);
  * does), at the cost of one copper list poking BPLxPT directly - see the
  * "Copper-assisted vertical doubling" comment in display_aga.c for the
  * mechanism, its Kalms/direct-planar exclusion, and its verification
- * status (none yet - no AmigaOS toolchain exists on this dev host to even
- * compile hardware/custom.h-based code, let alone confirm it against real
- * raster timing; this needs a real Amiga or WinUAE session before trusting
- * the picture it produces). No effect unless scale==2 is also in effect
- * (--2x) and the geometry doesn't fall onto a Kalms/direct-planar path. */
+ * status: confirmed on real AGA hardware with --c2p (portable) - correct
+ * picture for the whole session and a clean exit (a shutdown-path crash,
+ * Guru 81000005, took two attempts to actually fix - see aga_close()'s
+ * comment). --riva-c2p/--cd32 and ECS/OCS chipsets are not yet exercised.
+ * No effect unless scale==2 is also in effect (--2x) and the geometry
+ * doesn't fall onto a Kalms/direct-planar path. */
 void display_set_copper_vdouble(int on);
 
 /* Enable timing/diagnostic output for the RTG backend (mirrors --time).

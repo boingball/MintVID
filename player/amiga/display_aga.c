@@ -38,34 +38,37 @@
  * WritePixelArray8's rectangle-of-Y-coordinates API has no stride concept
  * at all to double, so both are excluded rather than force-fit.
  *
- * Confirmed on real AGA hardware (--c2p/"Portable", --2x, copper_vdouble
- * active): the picture is correct for the whole duration of playback - the
- * WAIT/MOVE mechanism itself, the TopEdge raster anchor, and the doubled-
- * stride plumbing through aga_blit()/aga_show() are all validated by that
- * run. Closing the player after such a session crashed with Guru 81000005
- * (CPU Zero Divide) on that same hardware, though - not a bad picture, a
- * hard crash on exit, and it took two attempts to actually fix:
+ * CONFIRMED WORKING on real AGA hardware (--c2p/"Portable", --2x,
+ * copper_vdouble active): the picture is correct for the whole duration of
+ * playback - the WAIT/MOVE mechanism itself, the TopEdge raster anchor, and
+ * the doubled-stride plumbing through aga_blit()/aga_show() are all
+ * validated by that run - and the player now exits cleanly afterwards too.
+ * Getting there took two attempts at the shutdown half specifically:
  *
  *   - First attempt: aga_close() used to call FreeVPortCopLists()+
  *     RethinkDisplay() on the screen while it was still fully open and
  *     active, before the normal WaitBlit/CloseWindow/CloseScreen sequence -
- *     suspected as the cause, so removed outright rather than reordered.
- *     Did not fix it - the same crash recurred on a retest, meaning
- *     CloseScreen() itself was choking on a screen whose ViewPort.UCopIns
- *     still pointed at the custom list, not (only) the explicit call this
- *     removed.
- *   - Second attempt (current code): an explicit five-step lifecycle in
- *     aga_close() - stop blits and close the window first; detach the
- *     custom list by clearing ViewPort.UCopIns directly; rebuild/restore
- *     the display with RethinkDisplay() while the window is already gone
- *     and the ViewPort is back to plain, *before* CloseScreen() ever runs;
- *     only then close the screen; and only then free the three manually
- *     AllocMem()'d blocks (s->ucop/ucop_cl/ucop_ci) exactly once, since
- *     nothing else frees them now that FreeVPortCopLists() is never called
- *     at all. See aga_close()'s own comment for the full reasoning. Not yet
- *     re-confirmed on hardware - the first attempt looked just as
- *     reasonable and wasn't enough, so this one should be treated the same
- *     way until proven otherwise.
+ *     suspected as the cause of a Guru 81000005 (CPU Zero Divide) on exit,
+ *     so removed outright rather than reordered. Did not fix it - the same
+ *     crash recurred on a retest, meaning CloseScreen() itself was choking
+ *     on a screen whose ViewPort.UCopIns still pointed at the custom list,
+ *     not (only) the explicit call this removed.
+ *   - Second attempt (current code, confirmed fixed): an explicit five-step
+ *     lifecycle in aga_close() - stop blits and close the window first;
+ *     detach the custom list by clearing ViewPort.UCopIns directly;
+ *     rebuild/restore the display with RethinkDisplay() while the window is
+ *     already gone and the ViewPort is back to plain, *before*
+ *     CloseScreen() ever runs; only then close the screen; and only then
+ *     free the three manually AllocMem()'d blocks (s->ucop/ucop_cl/ucop_ci)
+ *     exactly once, since nothing else frees them now that
+ *     FreeVPortCopLists() is never called at all. See aga_close()'s own
+ *     comment for the full reasoning - a real-hardware retest confirmed no
+ *     crash on exit.
+ *
+ * Not yet exercised on real hardware: ECS/OCS (only AGA has been tested),
+ * --riva-c2p or --cd32 as the qualifying c2p backend (only --c2p/"Portable"
+ * has), and interaction with --lace (excluded from eligibility entirely, so
+ * untested by construction rather than merely unconfirmed).
  */
 #include "amiga_display.h"
 #include "display_backend.h"
@@ -682,7 +685,9 @@ static void *aga_open(int w, int h, const char *title)
     if (g_aga_copper_vdouble)
         printf(s->copper_vdouble
                ? "planar: copper-assisted vertical doubling active "
-                 "(UNVERIFIED on real hardware - see display_aga.c)\n"
+                 "(confirmed on real AGA hardware with --c2p; "
+                 "--riva-c2p/--cd32 and ECS/OCS not yet exercised - "
+                 "see display_aga.c)\n"
                : "planar: --copper-vdouble requested but this geometry "
                  "doesn't qualify (needs --2x, no HAM/lace, and an "
                  "explicit --c2p/--riva-c2p/--cd32); using normal 2x\n");
