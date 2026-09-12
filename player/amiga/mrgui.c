@@ -6,6 +6,7 @@
 #include <exec/types.h>
 #include <exec/libraries.h>
 #include <exec/tasks.h>
+#include <exec/lists.h>
 #include <dos/dos.h>
 #include <dos/dostags.h>
 #include <devices/timer.h>
@@ -938,7 +939,7 @@ static void mrg_playlist_add_files(mrg_playlist_window *p)
         int i;
         if (req->fr_NumArgs > 0 && req->fr_ArgList) {
             for (i = 0; i < (int)req->fr_NumArgs; i++) {
-                strncpy(path, req->fr_Drawer ? req->fr_Drawer : "",
+                strncpy(path, req->fr_Drawer ? (const char *)req->fr_Drawer : "",
                         sizeof(path) - 1);
                 path[sizeof(path) - 1] = 0;
                 if (req->fr_ArgList[i].wa_Name &&
@@ -947,7 +948,7 @@ static void mrg_playlist_add_files(mrg_playlist_window *p)
                     mr_playlist_add(p->playlist, path);
             }
         } else if (req->fr_File && req->fr_File[0]) {
-            strncpy(path, req->fr_Drawer ? req->fr_Drawer : "",
+            strncpy(path, req->fr_Drawer ? (const char *)req->fr_Drawer : "",
                     sizeof(path) - 1);
             path[sizeof(path) - 1] = 0;
             if (AddPart((STRPTR)path, req->fr_File, sizeof(path)))
@@ -975,7 +976,7 @@ static void mrg_playlist_load_m3u(mrg_playlist_window *p)
         FreeAslRequest(req);
         return;
     }
-    strncpy(m3u, req->fr_Drawer ? req->fr_Drawer : "", sizeof(m3u) - 1);
+    strncpy(m3u, req->fr_Drawer ? (const char *)req->fr_Drawer : "", sizeof(m3u) - 1);
     m3u[sizeof(m3u) - 1] = 0;
     if (req->fr_File && req->fr_File[0])
         AddPart((STRPTR)m3u, req->fr_File, sizeof(m3u));
@@ -995,7 +996,7 @@ static void mrg_playlist_load_m3u(mrg_playlist_window *p)
         } else {
             strncpy(path, drawer, sizeof(path) - 1);
             path[sizeof(path) - 1] = 0;
-            if (!AddPart((STRPTR)path, line, sizeof(path)))
+            if (!AddPart((STRPTR)path, (STRPTR)line, sizeof(path)))
                 continue;
         }
         mr_playlist_add(p->playlist, path);
@@ -1021,7 +1022,7 @@ static void mrg_playlist_save_m3u(mrg_playlist_window *p)
         FreeAslRequest(req);
         return;
     }
-    strncpy(m3u, req->fr_Drawer ? req->fr_Drawer : "", sizeof(m3u) - 1);
+    strncpy(m3u, req->fr_Drawer ? (const char *)req->fr_Drawer : "", sizeof(m3u) - 1);
     m3u[sizeof(m3u) - 1] = 0;
     if (req->fr_File && req->fr_File[0])
         AddPart((STRPTR)m3u, req->fr_File, sizeof(m3u));
@@ -1135,8 +1136,6 @@ static void mrg_playlist_handle(mrg_playlist_window *p)
         case WMHI_CLOSEWINDOW:
             mrg_playlist_close(p);
             return;
-        case WMHI_REFRESHWINDOW:
-            break;
         case WMHI_GADGETUP:
             switch (result & WMHI_GADGETMASK) {
             case MRG_PL_LIST:
