@@ -1060,7 +1060,7 @@ static int mrg_playlist_open(mrg_playlist_window *p, mr_playlist *playlist,
     Object *add, *remove, *clear, *play, *load, *save, *close;
     Object *row1, *row2, *layout;
     memset(p, 0, sizeof(*p));
-    NewList(&p->nodes);
+    mr_playlist_list_init(&p->nodes);
     p->playlist = playlist;
     p->mode = mode; p->c2p = c2p; p->h264 = h264;
     p->lace = lace; p->scale = scale;

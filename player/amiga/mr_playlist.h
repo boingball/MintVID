@@ -1,6 +1,7 @@
 #ifndef MR_PLAYLIST_H
 #define MR_PLAYLIST_H
 
+#include <exec/lists.h>
 #include <string.h>
 
 #define MR_PLAYLIST_MAX 128
@@ -34,17 +35,39 @@ static inline const char *mr_playlist_base_name(const char *path)
     return last ? last : "";
 }
 
+
+static inline void mr_playlist_list_init(struct List *list)
+{
+    list->lh_Head = (struct Node *)&list->lh_Tail;
+    list->lh_Tail = (struct Node *)0;
+    list->lh_TailPred = (struct Node *)&list->lh_Head;
+    list->lh_Type = 0;
+}
+
+static inline void mr_playlist_copy(char *dst, unsigned long size,
+                                    const char *src)
+{
+    unsigned long i = 0;
+    if (!dst || size == 0)
+        return;
+    if (!src)
+        src = "";
+    while (i + 1 < size && src[i]) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = 0;
+}
+
 static inline int mr_playlist_add(mr_playlist *playlist, const char *path)
 {
     int n;
     if (!playlist || !path || !*path || playlist->count >= MR_PLAYLIST_MAX)
         return 0;
     n = playlist->count++;
-    strncpy(playlist->paths[n], path, MR_PLAYLIST_PATH_MAX - 1);
-    playlist->paths[n][MR_PLAYLIST_PATH_MAX - 1] = 0;
-    strncpy(playlist->names[n], mr_playlist_base_name(path),
-            MR_PLAYLIST_NAME_MAX - 1);
-    playlist->names[n][MR_PLAYLIST_NAME_MAX - 1] = 0;
+    mr_playlist_copy(playlist->paths[n], MR_PLAYLIST_PATH_MAX, path);
+    mr_playlist_copy(playlist->names[n], MR_PLAYLIST_NAME_MAX,
+                     mr_playlist_base_name(path));
     if (playlist->selected < 0)
         playlist->selected = 0;
     return 1;

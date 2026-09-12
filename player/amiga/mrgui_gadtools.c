@@ -522,7 +522,7 @@ static void gt_playlist_rebuild(gt_app *app)
 {
     int i;
     struct Node *node;
-    NewList(&app->plList);
+    mr_playlist_list_init(&app->plList);
     for (i = 0; i < app->playlist.count; i++) {
         node = &app->plNodes[i];
         node->ln_Name = app->playlist.names[i];
@@ -586,7 +586,7 @@ static void gt_playlist_add_files(gt_app *app)
         int i;
         if (req->fr_NumArgs > 0 && req->fr_ArgList) {
             for (i = 0; i < (int)req->fr_NumArgs; i++) {
-                strncpy(path, req->fr_Drawer ? req->fr_Drawer : "",
+                strncpy(path, req->fr_Drawer ? (const char *)req->fr_Drawer : "",
                         sizeof(path) - 1);
                 path[sizeof(path) - 1] = 0;
                 if (req->fr_ArgList[i].wa_Name &&
@@ -595,7 +595,7 @@ static void gt_playlist_add_files(gt_app *app)
                     mr_playlist_add(&app->playlist, path);
             }
         } else if (req->fr_File && req->fr_File[0]) {
-            strncpy(path, req->fr_Drawer ? req->fr_Drawer : "",
+            strncpy(path, req->fr_Drawer ? (const char *)req->fr_Drawer : "",
                     sizeof(path) - 1);
             path[sizeof(path) - 1] = 0;
             if (AddPart((STRPTR)path, req->fr_File, sizeof(path)))
@@ -623,7 +623,7 @@ static void gt_playlist_load_m3u(gt_app *app)
         FreeAslRequest(req);
         return;
     }
-    strncpy(m3u, req->fr_Drawer ? req->fr_Drawer : "", sizeof(m3u) - 1);
+    strncpy(m3u, req->fr_Drawer ? (const char *)req->fr_Drawer : "", sizeof(m3u) - 1);
     m3u[sizeof(m3u) - 1] = 0;
     if (req->fr_File && req->fr_File[0])
         AddPart((STRPTR)m3u, req->fr_File, sizeof(m3u));
@@ -643,7 +643,7 @@ static void gt_playlist_load_m3u(gt_app *app)
         } else {
             strncpy(path, drawer, sizeof(path) - 1);
             path[sizeof(path) - 1] = 0;
-            if (!AddPart((STRPTR)path, line, sizeof(path)))
+            if (!AddPart((STRPTR)path, (STRPTR)line, sizeof(path)))
                 continue;
         }
         mr_playlist_add(&app->playlist, path);
@@ -669,7 +669,7 @@ static void gt_playlist_save_m3u(gt_app *app)
         FreeAslRequest(req);
         return;
     }
-    strncpy(m3u, req->fr_Drawer ? req->fr_Drawer : "", sizeof(m3u) - 1);
+    strncpy(m3u, req->fr_Drawer ? (const char *)req->fr_Drawer : "", sizeof(m3u) - 1);
     m3u[sizeof(m3u) - 1] = 0;
     if (req->fr_File && req->fr_File[0])
         AddPart((STRPTR)m3u, req->fr_File, sizeof(m3u));
