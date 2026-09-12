@@ -30,16 +30,27 @@
  * check: there is no AmigaOS toolchain here at all (unlike every other
  * Amiga-only file in this tree, this one can't even be syntax-checked, let
  * alone cross-built for qemu), so build_copper_vdouble() and its call sites
- * in aga_blit()/aga_show() are unverified below the level of "reads as
- * correct C to a human" - a real Amiga or WinUAE session must confirm both
- * that it compiles and that the picture it produces is actually right
- * before this ships as anything but opt-in. It only ever activates for a
- * plain c2p/riva-c2p/Akiko geometry (kalms_kind == KALMS_NONE, checked in
- * aga_open()): Kalms' hand-tuned kernels compute their own row addressing
- * from the bitmap's real BytesPerRow and have no way to take an arbitrary
- * output stride, and WritePixelArray8's rectangle-of-Y-coordinates API has
- * no stride concept at all to double, so both are excluded rather than
- * force-fit.
+ * in aga_blit()/aga_show() started out unverified below the level of "reads
+ * as correct C to a human". It only ever activates for a plain c2p/riva-c2p/
+ * Akiko geometry (kalms_kind == KALMS_NONE, checked in aga_open()): Kalms'
+ * hand-tuned kernels compute their own row addressing from the bitmap's
+ * real BytesPerRow and have no way to take an arbitrary output stride, and
+ * WritePixelArray8's rectangle-of-Y-coordinates API has no stride concept
+ * at all to double, so both are excluded rather than force-fit.
+ *
+ * Confirmed on real AGA hardware (--c2p/"Portable", --2x, copper_vdouble
+ * active): the picture is correct for the whole duration of playback - the
+ * WAIT/MOVE mechanism itself, the TopEdge raster anchor, and the doubled-
+ * stride plumbing through aga_blit()/aga_show() are all validated by that
+ * run. Closing the player after such a session crashed with Guru 81000005
+ * (CPU Zero Divide) on that same hardware, though - not a bad picture, a
+ * hard crash on exit. Root-caused (as much as this dev host can) to
+ * aga_close() calling FreeVPortCopLists()+RethinkDisplay() on the screen
+ * while it was still fully open and active, before the normal WaitBlit/
+ * CloseWindow/CloseScreen sequence - see aga_close()'s own comment. Fixed
+ * by removing that call rather than reordering it, since there is no way
+ * to verify a reordering from here either; the fix itself is not yet
+ * re-confirmed on hardware.
  */
 #include "amiga_display.h"
 #include "display_backend.h"
@@ -700,7 +711,14 @@ static void *aga_open(int w, int h, const char *title)
 
 fail:
     s_kalms_active = 0;
-    if (s->ucop) { FreeVPortCopLists(&s->scr->ViewPort); RethinkDisplay(); }
+    /* No explicit FreeVPortCopLists()/RethinkDisplay() here - CloseScreen()
+     * a few lines below already tears down this screen's ViewPort (UCopIns
+     * included), and s->ucop's AllocMem() blocks are reclaimed when this
+     * process exits either way. See aga_close()'s comment for why calling
+     * them explicitly, on a screen not yet being closed, is what a
+     * real-hardware run traced back to a Zero Divide (Guru 81000005) on
+     * exit - this fail path never got that far to prove it, but shares the
+     * same reasoning and removes the same risk pre-emptively. */
     if (s->enc_alloc) free(s->enc_alloc);
     if (s->scaled) free(s->scaled);
     if (s->chunky_alloc) free(s->chunky_alloc);
@@ -1225,25 +1243,27 @@ static void aga_close(void *handle)
 
     mr_yuv_planar_queue_disable();
 
-    if (s->ucop && s->scr) {
-        /* Detach and free the copper-vdouble list before the screen itself
-         * starts tearing down - it is still actively rewriting BPLxPT every
-         * frame, and letting CloseScreen()'s own copper-chain rebuild race
-         * against a list still pointing at this screen's ViewPort is
-         * exactly the kind of ordering this dev host cannot exercise (see
-         * the file header comment). FreeVPortCopLists() is the documented
-         * pair to a UCopIns assignment (it does take struct ViewPort*,
-         * unlike MrgCop() - see build_copper_vdouble()'s comment for that
-         * mixup) - it is expected to free the CopList/CopIns array
-         * build_copper_vdouble() allocated as well as
-         * the UCopList itself, so none of those three blocks are separately
-         * FreeMem'd here (to avoid a double free) - unconfirmed on real
-         * hardware like everything else in this feature, see the file
-         * header comment. */
-        FreeVPortCopLists(&s->scr->ViewPort);
-        RethinkDisplay();
-        s->ucop = NULL;
-    }
+    /* A real-hardware run hit a Guru 81000005 (CPU Zero Divide) here, on
+     * exit, specifically with copper_vdouble active - i.e. exactly the
+     * scenario this dev host cannot exercise (see the file header comment).
+     * The picture itself was correct throughout playback; only closing
+     * crashed. The likely cause: this used to call FreeVPortCopLists()+
+     * RethinkDisplay() on s->scr right here, while the screen and window
+     * were both still fully open and active - RethinkDisplay() recomputes
+     * and reloads the *entire* system View (every open screen merged
+     * together), and doing that mid-lifecycle on a screen not yet being
+     * closed is not a sequence the normal open/show/close flow ever
+     * exercises. Removed rather than reordered: there is no way to verify
+     * a fix to that sequence from here, but CloseScreen() a few lines below
+     * (unconditionally reached for every AGA session, copper or not, and
+     * the one part of this shutdown path that real hardware has always
+     * exercised safely) already tears down the screen's ViewPort - UCopIns
+     * included - as part of its own normal, well-tested teardown, so there
+     * is nothing left for an explicit free here to do. s->ucop's AllocMem()
+     * blocks (the CopList/CopIns array and the UCopList itself) are not
+     * FreeMem'd individually either - reclaimed when this process exits,
+     * same as before. */
+    s->ucop = NULL;
 
     /*
      * Custom planar screens are shared Intuition/graphics objects.  On real
