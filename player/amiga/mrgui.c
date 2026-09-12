@@ -6,6 +6,7 @@
 #include <exec/types.h>
 #include <exec/libraries.h>
 #include <exec/tasks.h>
+#include <exec/lists.h>
 #include <dos/dos.h>
 #include <dos/dostags.h>
 #include <devices/timer.h>
@@ -19,6 +20,8 @@
 #include <gadgets/checkbox.h>
 #include <gadgets/chooser.h>
 #include <gadgets/getfile.h>
+#include <gadgets/listbrowser.h>
+#include <libraries/asl.h>
 #include <gadgets/layout.h>
 #include <gadgets/string.h>
 #include <images/label.h>
@@ -35,6 +38,7 @@
 #include <proto/checkbox.h>
 #include <proto/chooser.h>
 #include <proto/getfile.h>
+#include <proto/listbrowser.h>
 #include <proto/label.h>
 #include <proto/layout.h>
 #include <proto/string.h>
@@ -48,6 +52,7 @@
 #include "mr_gui_menu.h"
 #include "mr_last_dir.h"
 #include "mr_player_status.h"
+#include "mr_playlist.h"
 
 MINTVID_DECLARE_VERSION(mintvid_version_tag, "MintVID");
 
@@ -75,6 +80,7 @@ struct Library *ButtonBase;
 struct Library *CheckBoxBase;
 struct Library *ChooserBase;
 struct Library *GetFileBase;
+struct Library *ListBrowserBase;
 struct Library *StringBase;
 struct Library *LabelBase;
 
@@ -95,7 +101,10 @@ enum {
     G_MONO_AUDIO,
     G_VIDEO_MODE,
     G_IPTV,
-    G_YOUTUBE
+    G_YOUTUBE,
+    G_VOLUME_DOWN,
+    G_VOLUME_UP,
+    G_PLAYLIST
 };
 
 /* Chooser rows are chipset-dependent, so never infer a display mode from a
@@ -170,6 +179,8 @@ static int open_reaction_classes(void)
                               MRGUI_CLASS_VERSION);
     GetFileBase = OpenLibrary((CONST_STRPTR)"gadgets/getfile.gadget",
                               MRGUI_CLASS_VERSION);
+    ListBrowserBase = OpenLibrary((CONST_STRPTR)"gadgets/listbrowser.gadget",
+                                  MRGUI_CLASS_VERSION);
     StringBase = OpenLibrary((CONST_STRPTR)"gadgets/string.gadget",
                              MRGUI_CLASS_VERSION);
     LabelBase = OpenLibrary((CONST_STRPTR)"images/label.image",
@@ -177,7 +188,8 @@ static int open_reaction_classes(void)
 
     return IntuitionBase && GfxBase && UtilityBase && AslBase &&
            WindowBase && LayoutBase && ButtonBase && CheckBoxBase &&
-           ChooserBase && GetFileBase && StringBase && LabelBase;
+           ChooserBase && GetFileBase && ListBrowserBase && StringBase &&
+           LabelBase;
 }
 
 static void close_reaction_classes(void)
@@ -193,6 +205,10 @@ static void close_reaction_classes(void)
     if (GetFileBase) {
         CloseLibrary(GetFileBase);
         GetFileBase = NULL;
+    }
+    if (ListBrowserBase) {
+        CloseLibrary(ListBrowserBase);
+        ListBrowserBase = NULL;
     }
     if (ChooserBase) {
         CloseLibrary(ChooserBase);
@@ -755,44 +771,36 @@ static void start_iptv_launch(Object *info, struct Window *window,
     iptv_launch_ticks = 0;
 }
 
-static void start_player(Object *file, Object *mode, Object *c2p,
-                         Object *h264,
-                         Object *lace, Object *scale,
-                         Object *audio_rate, Object *fast_buffer,
-                         Object *no_audio,
-                         Object *mono_audio, Object *video_mode,
-                         Object *info,
-                         struct Window *window)
+static void start_player_path(const char *full_file, Object *mode,
+                              Object *c2p, Object *h264,
+                              Object *lace, Object *scale,
+                              Object *audio_rate, Object *fast_buffer,
+                              Object *no_audio,
+                              Object *mono_audio, Object *video_mode,
+                              Object *info,
+                              struct Window *window)
 {
     char path[512];
     char args[1600];
     mr_play_options options;
-    STRPTR full_file;
     BPTR seglist;
     struct Process *process;
 
-    full_file = NULL;
-
-    GetAttr(GETFILE_FullFile, file, (ULONG *)&full_file);
     if (!full_file || !*full_file) {
         set_info(info, window, "Choose a video first.");
         return;
     }
-
-    if (mr_path_is_audio_only((const char *)full_file)) {
+    if (mr_path_is_audio_only(full_file)) {
         set_info(info, window, "Audio-only file: use MintAMP instead.");
         return;
     }
-
     if (find_player()) {
         set_info(info, window,
                  "A MintVID player is already running; stop it first.");
         return;
     }
-
-    strncpy(path, (const char *)full_file, sizeof(path) - 1);
+    strncpy(path, full_file, sizeof(path) - 1);
     path[sizeof(path) - 1] = 0;
-
     read_play_options(mode, c2p, h264, lace, scale, audio_rate, fast_buffer,
                       no_audio, mono_audio, video_mode, &options);
     if (!mr_build_player_arguments(args, sizeof(args), &options, path,
@@ -800,7 +808,6 @@ static void start_player(Object *file, Object *mode, Object *c2p,
         set_info(info, window, "Could not build player arguments.");
         return;
     }
-
     seglist = LoadSeg((CONST_STRPTR)"PROGDIR:mrplay");
     if (!seglist)
         seglist = LoadSeg((CONST_STRPTR)"mrplay");
@@ -809,20 +816,357 @@ static void start_player(Object *file, Object *mode, Object *c2p,
                  "Could not load mrplay (keep it beside MintVID or in PATH).");
         return;
     }
-
     process = CreateNewProcTags(
-        NP_Seglist, seglist,
-        NP_FreeSeglist, TRUE,
-        NP_Arguments, (ULONG)args,
-        NP_StackSize, MRPLAY_STACK_SIZE,
-        NP_Cli, TRUE,
-        NP_CommandName, (ULONG)"mrplay",
-        NP_Name, (ULONG)"MintVID player",
-        TAG_END);
-
+        NP_Seglist, seglist, NP_FreeSeglist, TRUE,
+        NP_Arguments, (ULONG)args, NP_StackSize, MRPLAY_STACK_SIZE,
+        NP_Cli, TRUE, NP_CommandName, (ULONG)"mrplay",
+        NP_Name, (ULONG)"MintVID player", TAG_END);
     if (!process) {
         UnLoadSeg(seglist);
         set_info(info, window, "Could not create the mrplay process.");
+    }
+}
+
+static void start_player(Object *file, Object *mode, Object *c2p,
+                         Object *h264, Object *lace, Object *scale,
+                         Object *audio_rate, Object *fast_buffer,
+                         Object *no_audio, Object *mono_audio,
+                         Object *video_mode, Object *info,
+                         struct Window *window)
+{
+    STRPTR full_file = NULL;
+    GetAttr(GETFILE_FullFile, file, (ULONG *)&full_file);
+    start_player_path((const char *)full_file, mode, c2p, h264, lace, scale,
+                      audio_rate, fast_buffer, no_audio, mono_audio,
+                      video_mode, info, window);
+}
+
+
+
+#define MRG_PL_LIST 200
+#define MRG_PL_ADD 201
+#define MRG_PL_REMOVE 202
+#define MRG_PL_CLEAR 203
+#define MRG_PL_PLAY 204
+#define MRG_PL_LOAD 205
+#define MRG_PL_SAVE 206
+#define MRG_PL_CLOSE 207
+
+typedef struct mrg_playlist_window {
+    Object *window_object;
+    struct Window *window;
+    Object *list;
+    struct List nodes;
+    mr_playlist *playlist;
+    ULONG sigmask;
+    Object *mode, *c2p, *h264, *lace, *scale;
+    Object *audio_rate, *fast_buffer, *no_audio, *mono_audio, *video_mode;
+    Object *info;
+    struct Window *parent_window;
+} mrg_playlist_window;
+
+static void mrg_playlist_free_nodes(mrg_playlist_window *p)
+{
+    struct Node *node;
+    while ((node = RemHead(&p->nodes)) != NULL)
+        FreeListBrowserNode(node);
+}
+
+static struct Node *mrg_playlist_node_at(mrg_playlist_window *p, int index)
+{
+    struct Node *node;
+    int i = 0;
+    for (node = p->nodes.lh_Head; node && node->ln_Succ;
+         node = node->ln_Succ) {
+        if (i++ == index)
+            return node;
+    }
+    return NULL;
+}
+
+static void mrg_playlist_rebuild(mrg_playlist_window *p)
+{
+    int i;
+    mrg_playlist_free_nodes(p);
+    for (i = 0; i < p->playlist->count; i++) {
+        struct Node *node = AllocListBrowserNode(
+            1, LBNA_Column, 0, LBNCA_Text,
+            (ULONG)p->playlist->names[i], TAG_END);
+        if (!node)
+            break;
+        AddTail(&p->nodes, node);
+    }
+}
+
+static void mrg_playlist_refresh(mrg_playlist_window *p)
+{
+    struct Node *selected;
+    mrg_playlist_rebuild(p);
+    if (!p->window || !p->list)
+        return;
+    selected = mrg_playlist_node_at(p, p->playlist->selected);
+    SetGadgetAttrs((struct Gadget *)p->list, p->window, NULL,
+                   LISTBROWSER_Labels, (ULONG)&p->nodes,
+                   LISTBROWSER_SelectedNode, (ULONG)selected, TAG_DONE);
+}
+
+static void mrg_playlist_set_selected(mrg_playlist_window *p)
+{
+    struct Node *selected = NULL;
+    struct Node *node;
+    int i = 0;
+    GetAttr(LISTBROWSER_SelectedNode, p->list, (ULONG *)&selected);
+    for (node = p->nodes.lh_Head; node && node->ln_Succ;
+         node = node->ln_Succ, i++)
+        if (node == selected) {
+            p->playlist->selected = i;
+            return;
+        }
+}
+
+static void mrg_playlist_add_files(mrg_playlist_window *p)
+{
+    struct FileRequester *req;
+    req = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
+        ASLFR_TitleText, (ULONG)"Add videos to playlist",
+        ASLFR_DoMultiSelect, TRUE, ASLFR_DoPatterns, TRUE,
+        ASLFR_InitialPattern, (ULONG)MR_VIDEO_FILE_PATTERN, TAG_DONE);
+    if (!req)
+        return;
+    if (AslRequestTags(req, ASLFR_Window, (ULONG)p->window,
+                       ASLFR_SleepWindow, TRUE, TAG_DONE)) {
+        char path[MR_PLAYLIST_PATH_MAX];
+        int i;
+        if (req->fr_NumArgs > 0 && req->fr_ArgList) {
+            for (i = 0; i < (int)req->fr_NumArgs; i++) {
+                strncpy(path, req->fr_Drawer ? (const char *)req->fr_Drawer : "",
+                        sizeof(path) - 1);
+                path[sizeof(path) - 1] = 0;
+                if (req->fr_ArgList[i].wa_Name &&
+                    AddPart((STRPTR)path, req->fr_ArgList[i].wa_Name,
+                            sizeof(path)))
+                    mr_playlist_add(p->playlist, path);
+            }
+        } else if (req->fr_File && req->fr_File[0]) {
+            strncpy(path, req->fr_Drawer ? (const char *)req->fr_Drawer : "",
+                    sizeof(path) - 1);
+            path[sizeof(path) - 1] = 0;
+            if (AddPart((STRPTR)path, req->fr_File, sizeof(path)))
+                mr_playlist_add(p->playlist, path);
+        }
+    }
+    FreeAslRequest(req);
+    mrg_playlist_refresh(p);
+}
+
+static void mrg_playlist_load_m3u(mrg_playlist_window *p)
+{
+    struct FileRequester *req;
+    char m3u[MR_PLAYLIST_PATH_MAX], drawer[MR_PLAYLIST_PATH_MAX];
+    char line[MR_PLAYLIST_PATH_MAX];
+    FILE *file;
+    req = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
+        ASLFR_TitleText, (ULONG)"Load M3U Playlist",
+        ASLFR_DoPatterns, TRUE, ASLFR_InitialPattern, (ULONG)"#?.m3u",
+        TAG_DONE);
+    if (!req)
+        return;
+    if (!AslRequestTags(req, ASLFR_Window, (ULONG)p->window,
+                       ASLFR_SleepWindow, TRUE, TAG_DONE)) {
+        FreeAslRequest(req);
+        return;
+    }
+    strncpy(m3u, req->fr_Drawer ? (const char *)req->fr_Drawer : "", sizeof(m3u) - 1);
+    m3u[sizeof(m3u) - 1] = 0;
+    if (req->fr_File && req->fr_File[0])
+        AddPart((STRPTR)m3u, req->fr_File, sizeof(m3u));
+    FreeAslRequest(req);
+    if (!m3u[0] || !(file = fopen(m3u, "r")))
+        return;
+    mr_last_dir_from_path(m3u, drawer, sizeof(drawer));
+    while (fgets(line, sizeof(line), file)) {
+        char path[MR_PLAYLIST_PATH_MAX];
+        char *eol = strpbrk(line, "\r\n");
+        if (eol) *eol = 0;
+        if (!line[0] || line[0] == '#')
+            continue;
+        if (strchr(line, ':') || line[0] == '/') {
+            strncpy(path, line, sizeof(path) - 1);
+            path[sizeof(path) - 1] = 0;
+        } else {
+            strncpy(path, drawer, sizeof(path) - 1);
+            path[sizeof(path) - 1] = 0;
+            if (!AddPart((STRPTR)path, (STRPTR)line, sizeof(path)))
+                continue;
+        }
+        mr_playlist_add(p->playlist, path);
+    }
+    fclose(file);
+    mrg_playlist_refresh(p);
+}
+
+static void mrg_playlist_save_m3u(mrg_playlist_window *p)
+{
+    struct FileRequester *req;
+    char m3u[MR_PLAYLIST_PATH_MAX];
+    FILE *file;
+    int i;
+    req = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
+        ASLFR_TitleText, (ULONG)"Save M3U Playlist",
+        ASLFR_DoSaveMode, TRUE, ASLFR_InitialFile, (ULONG)"playlist.m3u",
+        TAG_DONE);
+    if (!req)
+        return;
+    if (!AslRequestTags(req, ASLFR_Window, (ULONG)p->window,
+                       ASLFR_SleepWindow, TRUE, TAG_DONE)) {
+        FreeAslRequest(req);
+        return;
+    }
+    strncpy(m3u, req->fr_Drawer ? (const char *)req->fr_Drawer : "", sizeof(m3u) - 1);
+    m3u[sizeof(m3u) - 1] = 0;
+    if (req->fr_File && req->fr_File[0])
+        AddPart((STRPTR)m3u, req->fr_File, sizeof(m3u));
+    FreeAslRequest(req);
+    if (!m3u[0] || !(file = fopen(m3u, "w")))
+        return;
+    fprintf(file, "#EXTM3U\n");
+    for (i = 0; i < p->playlist->count; i++)
+        fprintf(file, "%s\n", p->playlist->paths[i]);
+    fclose(file);
+}
+
+static void mrg_playlist_close(mrg_playlist_window *p)
+{
+    if (p->window_object) {
+        if (p->window)
+            RA_CloseWindow(p->window_object);
+        DisposeObject(p->window_object);
+    }
+    mrg_playlist_free_nodes(p);
+    p->window_object = NULL;
+    p->window = NULL;
+    p->list = NULL;
+    p->sigmask = 0;
+}
+
+static int mrg_playlist_open(mrg_playlist_window *p, mr_playlist *playlist,
+                             Object *mode, Object *c2p, Object *h264,
+                             Object *lace, Object *scale,
+                             Object *audio_rate, Object *fast_buffer,
+                             Object *no_audio, Object *mono_audio,
+                             Object *video_mode, Object *info,
+                             struct Window *parent)
+{
+    Object *add, *remove, *clear, *play, *load, *save, *close;
+    Object *row1, *row2, *layout;
+    memset(p, 0, sizeof(*p));
+    NewList(&p->nodes);
+    p->playlist = playlist;
+    p->mode = mode; p->c2p = c2p; p->h264 = h264;
+    p->lace = lace; p->scale = scale;
+    p->audio_rate = audio_rate; p->fast_buffer = fast_buffer;
+    p->no_audio = no_audio; p->mono_audio = mono_audio;
+    p->video_mode = video_mode; p->info = info;
+    p->parent_window = parent;
+    mrg_playlist_rebuild(p);
+    p->list = (Object *)NewObject(LISTBROWSER_GetClass(), NULL,
+        GA_ID, MRG_PL_LIST, GA_RelVerify, TRUE,
+        LISTBROWSER_Labels, (ULONG)&p->nodes,
+        LISTBROWSER_AutoFit, TRUE, LISTBROWSER_ShowSelected, TRUE,
+        LISTBROWSER_MinVisible, 12, TAG_DONE);
+    add = (Object *)NewObject(BUTTON_GetClass(), NULL,
+        GA_ID, MRG_PL_ADD, GA_Text, (ULONG)"Add", GA_RelVerify, TRUE, TAG_DONE);
+    remove = (Object *)NewObject(BUTTON_GetClass(), NULL,
+        GA_ID, MRG_PL_REMOVE, GA_Text, (ULONG)"Remove", GA_RelVerify, TRUE, TAG_DONE);
+    clear = (Object *)NewObject(BUTTON_GetClass(), NULL,
+        GA_ID, MRG_PL_CLEAR, GA_Text, (ULONG)"Clear", GA_RelVerify, TRUE, TAG_DONE);
+    play = (Object *)NewObject(BUTTON_GetClass(), NULL,
+        GA_ID, MRG_PL_PLAY, GA_Text, (ULONG)"Play", GA_RelVerify, TRUE, TAG_DONE);
+    load = (Object *)NewObject(BUTTON_GetClass(), NULL,
+        GA_ID, MRG_PL_LOAD, GA_Text, (ULONG)"Load M3U", GA_RelVerify, TRUE, TAG_DONE);
+    save = (Object *)NewObject(BUTTON_GetClass(), NULL,
+        GA_ID, MRG_PL_SAVE, GA_Text, (ULONG)"Save M3U", GA_RelVerify, TRUE, TAG_DONE);
+    close = (Object *)NewObject(BUTTON_GetClass(), NULL,
+        GA_ID, MRG_PL_CLOSE, GA_Text, (ULONG)"Close", GA_RelVerify, TRUE, TAG_DONE);
+    row1 = (Object *)NewObject(LAYOUT_GetClass(), NULL,
+        LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ, LAYOUT_SpaceInner, TRUE,
+        LAYOUT_AddChild, (ULONG)add, CHILD_WeightedWidth, 0,
+        LAYOUT_AddChild, (ULONG)remove, CHILD_WeightedWidth, 0,
+        LAYOUT_AddChild, (ULONG)clear, CHILD_WeightedWidth, 0,
+        LAYOUT_AddChild, (ULONG)play, CHILD_WeightedWidth, 0, TAG_DONE);
+    row2 = (Object *)NewObject(LAYOUT_GetClass(), NULL,
+        LAYOUT_Orientation, LAYOUT_ORIENT_HORIZ, LAYOUT_SpaceInner, TRUE,
+        LAYOUT_AddChild, (ULONG)load, CHILD_WeightedWidth, 0,
+        LAYOUT_AddChild, (ULONG)save, CHILD_WeightedWidth, 0,
+        LAYOUT_AddChild, (ULONG)close, CHILD_WeightedWidth, 0, TAG_DONE);
+    layout = (Object *)NewObject(LAYOUT_GetClass(), NULL,
+        LAYOUT_Orientation, LAYOUT_ORIENT_VERT, LAYOUT_SpaceOuter, TRUE,
+        LAYOUT_SpaceInner, TRUE,
+        LAYOUT_AddChild, (ULONG)p->list, CHILD_WeightedHeight, 1,
+        LAYOUT_AddChild, (ULONG)row1, CHILD_WeightedHeight, 0,
+        LAYOUT_AddChild, (ULONG)row2, CHILD_WeightedHeight, 0, TAG_DONE);
+    p->window_object = (Object *)NewObject(WINDOW_GetClass(), NULL,
+        WA_Title, (ULONG)"MintVID Playlist", WA_Activate, TRUE,
+        WA_DepthGadget, TRUE, WA_DragBar, TRUE, WA_CloseGadget, TRUE,
+        WA_IDCMP, IDCMP_GADGETUP | IDCMP_CLOSEWINDOW |
+                  IDCMP_REFRESHWINDOW,
+        WINDOW_Position, WPOS_CENTERSCREEN,
+        WINDOW_ParentGroup, (ULONG)layout, TAG_DONE);
+    if (!p->list || !add || !remove || !clear || !play || !load || !save ||
+        !close || !row1 || !row2 || !layout || !p->window_object)
+        goto fail;
+    p->window = (struct Window *)RA_OpenWindow(p->window_object);
+    if (!p->window)
+        goto fail;
+    GetAttr(WINDOW_SigMask, p->window_object, &p->sigmask);
+    return 1;
+fail:
+    mrg_playlist_close(p);
+    return 0;
+}
+
+static void mrg_playlist_handle(mrg_playlist_window *p)
+{
+    ULONG result;
+    UWORD code;
+    if (!p->window_object)
+        return;
+    while ((result = RA_HandleInput(p->window_object, &code)) != WMHI_LASTMSG) {
+        switch (result & WMHI_CLASSMASK) {
+        case WMHI_CLOSEWINDOW:
+            mrg_playlist_close(p);
+            return;
+        case WMHI_GADGETUP:
+            switch (result & WMHI_GADGETMASK) {
+            case MRG_PL_LIST:
+                mrg_playlist_set_selected(p);
+                break;
+            case MRG_PL_ADD: mrg_playlist_add_files(p); break;
+            case MRG_PL_REMOVE:
+                mr_playlist_remove(p->playlist, p->playlist->selected);
+                mrg_playlist_refresh(p);
+                break;
+            case MRG_PL_CLEAR:
+                mr_playlist_clear(p->playlist);
+                mrg_playlist_refresh(p);
+                break;
+            case MRG_PL_PLAY:
+                if (p->playlist->selected >= 0 &&
+                    p->playlist->selected < p->playlist->count) {
+                    p->playlist->current = p->playlist->selected;
+                    start_player_path(
+                        p->playlist->paths[p->playlist->selected], p->mode,
+                        p->c2p, p->h264, p->lace, p->scale, p->audio_rate,
+                        p->fast_buffer, p->no_audio, p->mono_audio,
+                        p->video_mode, p->info, p->parent_window);
+                }
+                break;
+            case MRG_PL_LOAD: mrg_playlist_load_m3u(p); break;
+            case MRG_PL_SAVE: mrg_playlist_save_m3u(p); break;
+            case MRG_PL_CLOSE: mrg_playlist_close(p); return;
+            }
+            break;
+        }
     }
 }
 
@@ -862,7 +1206,12 @@ int main(void)
     Object *ff_button;
     Object *iptv_button;
     Object *youtube_button;
+    Object *volume_down_button;
+    Object *volume_up_button;
+    Object *playlist_button;
     struct Window *window;
+    mr_playlist playlist;
+    mrg_playlist_window playlist_gui;
     mr_master_options_port *master_options;
     mr_gui_menu app_menu;
     struct List modes;
@@ -918,6 +1267,11 @@ int main(void)
     ff_button = NULL;
     iptv_button = NULL;
     youtube_button = NULL;
+    volume_down_button = NULL;
+    volume_up_button = NULL;
+    playlist_button = NULL;
+    memset(&playlist_gui, 0, sizeof(playlist_gui));
+    mr_playlist_init(&playlist);
     window = NULL;
     master_options = NULL;
     memset(&app_menu, 0, sizeof(app_menu));
@@ -1232,8 +1586,21 @@ int main(void)
                                          GA_Text, (ULONG)"YouTube...",
                                          GA_RelVerify, TRUE,
                                          TAG_DONE);
+    volume_down_button = (Object *)NewObject(BUTTON_GetClass(), NULL,
+                                             GA_ID, G_VOLUME_DOWN,
+                                             GA_Text, (ULONG)"-",
+                                             GA_RelVerify, TRUE, TAG_DONE);
+    volume_up_button = (Object *)NewObject(BUTTON_GetClass(), NULL,
+                                           GA_ID, G_VOLUME_UP,
+                                           GA_Text, (ULONG)"+",
+                                           GA_RelVerify, TRUE, TAG_DONE);
+    playlist_button = (Object *)NewObject(BUTTON_GetClass(), NULL,
+                                          GA_ID, G_PLAYLIST,
+                                          GA_Text, (ULONG)"Playlist",
+                                          GA_RelVerify, TRUE, TAG_DONE);
     if (!play_button || !pause_button || !stop_button || !ff_button ||
-        !iptv_button || !youtube_button)
+        !iptv_button || !youtube_button || !volume_down_button ||
+        !volume_up_button || !playlist_button)
         goto cleanup;
 
     transport = (Object *)NewObject(LAYOUT_GetClass(), NULL,
@@ -1247,6 +1614,10 @@ int main(void)
                                      CHILD_WeightedWidth, 0,
                                      LAYOUT_AddChild, (ULONG)ff_button,
                                      CHILD_WeightedWidth, 0,
+                                     LAYOUT_AddChild, (ULONG)volume_down_button,
+                                     CHILD_WeightedWidth, 0,
+                                     LAYOUT_AddChild, (ULONG)volume_up_button,
+                                     CHILD_WeightedWidth, 0,
                                      TAG_DONE);
     if (!transport)
         goto cleanup;
@@ -1257,6 +1628,8 @@ int main(void)
                                     LAYOUT_AddChild, (ULONG)iptv_button,
                                     CHILD_WeightedWidth, 0,
                                     LAYOUT_AddChild, (ULONG)youtube_button,
+                                    CHILD_WeightedWidth, 0,
+                                    LAYOUT_AddChild, (ULONG)playlist_button,
                                     CHILD_WeightedWidth, 0,
                                     TAG_DONE);
     if (!services)
@@ -1416,6 +1789,23 @@ int main(void)
                     signal_player(SIGBREAKF_CTRL_E);
                     break;
 
+                case G_VOLUME_DOWN:
+                    mr_player_control_send(MR_PLAYER_COMMAND_VOLUME_DOWN);
+                    break;
+
+                case G_VOLUME_UP:
+                    mr_player_control_send(MR_PLAYER_COMMAND_VOLUME_UP);
+                    break;
+
+                case G_PLAYLIST:
+                    if (!playlist_gui.window_object &&
+                        mrg_playlist_open(&playlist_gui, &playlist, mode, c2p,
+                                          h264, lace, scale, audio_rate,
+                                          fast_buffer, no_audio, mono_audio,
+                                          video_mode, info, window))
+                        sigmask |= playlist_gui.sigmask;
+                    break;
+
                 case G_IPTV:
                     publish_play_options(master_options, mode, c2p, h264,
                                          lace, scale, audio_rate, fast_buffer,
@@ -1444,9 +1834,13 @@ int main(void)
                 break;
             }
         }
+        if (playlist_gui.window_object &&
+            (signals & playlist_gui.sigmask))
+            mrg_playlist_handle(&playlist_gui);
     }
 
 done:
+    mrg_playlist_close(&playlist_gui);
     status = RETURN_OK;
     stop_player_and_wait();
 
@@ -1501,12 +1895,15 @@ cleanup:
                 if (pause_button) DisposeObject(pause_button);
                 if (stop_button) DisposeObject(stop_button);
                 if (ff_button) DisposeObject(ff_button);
+                if (volume_down_button) DisposeObject(volume_down_button);
+                if (volume_up_button) DisposeObject(volume_up_button);
             }
             if (services) {
                 DisposeObject(services);
             } else {
                 if (iptv_button) DisposeObject(iptv_button);
                 if (youtube_button) DisposeObject(youtube_button);
+                if (playlist_button) DisposeObject(playlist_button);
             }
         }
 

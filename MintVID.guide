@@ -1,21 +1,23 @@
 @database "MintVID.guide"
-@$VER: MintVID.guide 1.2 (5.9.2026)
+@$VER: MintVID.guide 1.3 (12.9.2026)
 @author "Darren \"boingball\" Banfi"
 @(c) "2026 Darren Banfi"
 @wordwrap
 @smartwrap
 
 @node MAIN "MintVID Guide"
-@{b}MintVID 1.2.0@{ub} - a codec-agnostic video player for accelerated 68k AmigaOS
+@{b}MintVID 1.3.0@{ub} - a codec-agnostic video player for accelerated 68k AmigaOS
 hardware, from 68030-class ECS/AGA systems up to PiStorm/RTG machines.
 
 This is the on-Amiga companion to the plain-text MintVID.readme. Pick a
 topic below (click, or press Return on a highlighted link):
 
   @{" Overview "            LINK Overview}
-  @{" What's new in 1.2.0 " LINK WhatsNew}
+  @{" What's new in 1.3.0 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
+  @{" Video frame policy "   LINK FramePolicy}
+  @{" Recommended settings " LINK Recommended}
   @{" The GUI editions "    LINK GUIEditions}
   @{" IPTV browser "        LINK IPTVBrowser}
   @{" YouTube "             LINK YouTube}
@@ -39,9 +41,11 @@ page below also links back here.
 @{b}MintVID Guide@{ub} - Contents
 
   @{" Overview "            LINK Overview}
-  @{" What's new in 1.2.0 " LINK WhatsNew}
+  @{" What's new in 1.3.0 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
+  @{" Video frame policy "   LINK FramePolicy}
+  @{" Recommended settings " LINK Recommended}
   @{" The GUI editions "    LINK GUIEditions}
   @{" IPTV browser "        LINK IPTVBrowser}
   @{" YouTube "             LINK YouTube}
@@ -56,33 +60,30 @@ page below also links back here.
   @{" Support MintVID "     LINK Support}
 @endnode
 
-@node WhatsNew "What's new in 1.2.0"
+
+@node WhatsNew "What's new in 1.3.0"
 @toc MintVID.guide/MAIN
-@{b}MintVID 1.2.0@{ub}
+@{b}MintVID 1.3.0@{ub}
 
-This is a performance release for real accelerated m68k systems. The WMV7/8
-and HLS stability work from 1.1.1 and the wider 1.1.0 improvements remain.
+MintVID 1.3.0 turns the recent playback and hardware work into a more
+usable release for real accelerated Amiga systems.
 
-  - Speeds up H.264 inverse-transform/reconstruction by inlining the tiny
-    operations previously called for individual coefficients and pixels.
-  - Selects an exact branchless luma-deblocking primitive for MintVID060;
-    MintVID030 and MintVID040 retain their established shorter sequence.
-  - Enables MintAMP's CPU-aware AAC Huffman, dequantisation, stereo and IMDCT
-    helpers by default. The 68030/040 editions use hardware full-result
-    multiplication. MintVID060 uses bit-exact partial products and avoids the
-    software-emulated register-pair MULS.L instruction.
-  - Gives H.263, MPEG-2, MPEG-4 Part 2, MP42/DIV2, WMV1 and WMV2 the existing
-    shared table-driven/m68k-ASM YUV output path.
-  - Adds a million-pair 68060 AAC arithmetic check to CI alongside the host
-    and big-endian m68k codec conformance suites.
+  - Adds an explicit @{b}Video: All Frames / Video: Skip Frames@{ub}
+    selector to both GUI editions. Skip Frames drops pictures that are
+    already late so a slower machine can catch up while audio and the media
+    timeline continue normally.
+  - Adds a clear recommended-settings guide for 68030 ECS/AGA, 68040/060
+    AGA and RTG, PiStorm/Emu68, and live HLS/IPTV playback.
+  - Includes the recent MPEG-1/MPEG-2, H.263+, WMV, H.264, AAC, MP2, AC-3,
+    mono-audio and Fast RAM buffering work from the development cycle.
+  - Ships the AmigaGuide manual with a Workbench icon and keeps it beside
+    every packaged CPU drawer.
+  - Keeps the 68060-safe AAC path, shared accelerated YUV output, H.264
+    speed modes, native YouTube playback and IPTV directory support from
+    the 1.2.x performance work.
 
-Real-A1200 68060 testing confirmed clean stereo AAC and brought the lowest-
-resolution BBC One H.264/HLS stream close to real time using AGA/HAM8. Turbo+
-keeps audio continuous and displays keyframes when full video remains beyond
-the machine. Performance still depends on CPU clock, stream and display mode.
-
-See CHANGELOG.txt in the release archive, or CHANGELOG.md in the source tree,
-for the detailed list.
+Performance still depends on the exact CPU, source, codec, resolution, audio
+and display mode. A supported format is not automatically a real-time format.
 
 @{" Back to Contents " LINK MintVID.guide/MAIN 0}
 @endnode
@@ -184,6 +185,14 @@ geometries keep the established route.
   Pause         toggles playback
   Stop          exits the player
   Fast forward  toggles unpaced decode
+  Volume -/+     adjusts Paula volume in 8/64 steps
+  Playlist       opens the playlist window
+
+The playlist window supports Add, Remove, Clear and Play, plus Load M3U and
+Save M3U. Entries are shown by filename and can be selected independently of
+the main file gadget; playback uses the same display, audio and video options
+as the controller.
+
 
 @{b}H.264 performance modes@{ub}
 
@@ -241,8 +250,105 @@ drawer a video was picked from, reopening there next time instead of
 always starting fresh. On launch mrplay reports the container type, video
 codec/FourCC, dimensions, frame rate and audio format to its console.
 
+For video timing choices see @{" Video frame policy " LINK FramePolicy}, and for
+complete hardware starting points see @{" Recommended settings " LINK Recommended}.
 For audio output settings (rate, mono, no-audio, Fast RAM buffering) see
 @{" Audio " LINK Audio}.
+
+@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@endnode
+
+
+@node FramePolicy "Video frame policy"
+@toc MintVID.guide/MAIN
+@{b}Video frame policy@{ub}
+
+The video selector is available in both the ReAction and GadTools
+controllers:
+
+  @{b}Video: All Frames@{ub}  Keep every decoded picture, even when the
+                         decoder has fallen behind the presentation clock.
+                         This is the default GUI setting and is the best
+                         starting point when playback is keeping up.
+
+  @{b}Video: Skip Frames@{ub} Drop decoded pictures that are already late,
+                         allowing the scheduler to catch up while the
+                         audio clock and media timeline continue normally.
+                         This does not change the compressed stream or make
+                         the decoder cheaper; it is a presentation-time
+                         recovery policy.
+
+Use @{b}Skip Frames@{ub} when a slower Amiga is visibly falling behind,
+particularly with H.264, larger pictures, or a demanding display mode. It
+can make motion less complete, but it is preferable to building an ever
+larger delay when the machine cannot decode and display every picture in
+time. Leave it on @{b}All Frames@{ub} for a source that is already smooth,
+or when every decoded picture matters more than catching up.
+
+The command-line equivalents are:
+
+  --throughput       keep late decoded pictures (All Frames)
+  --no-throughput    drop late decoded pictures (Skip Frames)
+
+These options affect presentation policy only. Audio servicing, timestamps,
+seeking and decoder selection are unchanged. A GUI-launched session always
+passes an explicit choice so the controller selection overrides mrplay's
+source-specific default. A direct network/HLS mrplay invocation defaults to
+throughput mode; a direct local-file invocation remains conservative unless
+you choose one of the switches explicitly.
+
+@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@endnode
+
+
+@node Recommended "Recommended settings"
+@toc MintVID.guide/MAIN
+@{b}Recommended settings@{ub}
+
+There is no single setting that makes every codec real time. Start with the
+CPU-matched release drawer, keep the complete drawer together, and change one
+setting at a time. The following are sensible starting points:
+
+  @{u}68030 ECS/AGA@{uu}
+    Display: AGA, lace off, 2x off
+    C2P: Standard/automatic fallback
+    Video: All Frames for light codecs; Skip Frames if playback falls behind
+    Audio: Normal; use Low or Mono only when the CPU is under pressure
+    Media: modest Cinepak, MPEG-1, MJPEG or other lightweight files
+
+  @{u}68040 or 68060 with AGA@{uu}
+    Display: AGA, HAM6 or HAM8; lace off, 2x off
+    C2P: Kalms is the normal starting point
+    H.264: TurboGT first; Turbo+ is the audio-first fallback
+    Video: All Frames when smooth; Skip Frames when decode is late
+    Audio: Normal; try Low/Mono for a difficult H.264 stream
+
+  @{u}68040 or 68060 with RTG@{uu}
+    Display: CGX or P96
+    C2P: ignored by RTG
+    H.264: TurboGT first; use a lower-resolution source before degrading
+    Video: All Frames when the source keeps up; Skip Frames to recover
+    Fast buffer: Auto for local files and direct/progressive HTTP media
+
+  @{u}PiStorm/Emu68@{uu}
+    Build: MintVID040
+    Display: CGX/P96 where available
+    H.264: TurboGT, then Fast if full quality is affordable
+    Video: All Frames is normally appropriate
+    Fast buffer: Auto; increase only when the source and free RAM justify it
+
+  @{u}Live HLS/IPTV@{uu}
+    Start with the GUI's All Frames, the default display mode, and the
+    source's low-resolution HLS variant.
+    Use Skip Frames only when the video is repeatedly falling behind.
+    For a direct mrplay command, --live-resync can recover from a live stall;
+    --net-queue=24 is a deeper read-ahead choice when free RAM allows it.
+    HTTPS requires an SSL=1 build; SSLCERTS=1 is recommended for releases.
+
+Keep lace and 2x off until the basic picture is working. They increase the
+display workload and are not a universal quality improvement. If the window
+is smooth but audio breaks up, try Audio: Low, Mono audio, or No audio before
+changing several video controls together.
 
 @{" Back to Contents " LINK MintVID.guide/MAIN 0}
 @endnode
