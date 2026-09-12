@@ -27,7 +27,10 @@ MINTVID_DECLARE_VERSION(ytgui_gt_version_tag, "ytgui-GT");
 
 #define YT_SEARCH_PAGE_MAX (6UL * 1024UL * 1024UL)
 #define MRPLAY_STACK_SIZE 320000UL
-#define MRPLAY_LOG_FILE "RAM:MintVID.log"
+/* Persistent storage, not RAM: - see the matching comment in
+ * youtube_reaction.c for why (a hard lockup needs a reset to clear, which
+ * also wipes RAM: and the log with it; UHD0: survives that). */
+#define MRPLAY_LOG_FILE "UHD0:MintVID.log"
 #define WIN_W 640
 #define WIN_H 356
 
@@ -679,7 +682,7 @@ int main(int argc, char **argv)
                     set_button_text(&app,app.log,
                                     app.debug_log?"Log: On":"Log: Off");
                     set_text(&app,app.status,app.debug_log
-                        ?"Timing log ON: next Play writes RAM:MintVID.log"
+                        ?"Timing log ON: next Play writes " MRPLAY_LOG_FILE
                         :"Timing log off.");
                 }
                 else if (id==G_PAUSE) mr_player_control_send(MR_PLAYER_COMMAND_PAUSE);
