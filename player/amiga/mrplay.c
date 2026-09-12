@@ -515,6 +515,18 @@ typedef struct playback_stats {
      * queue_copy_*'s success check), not gated by want_time - it costs one
      * unsigned increment alongside the pre-existing qcount++. */
     unsigned queued;
+    /* Which of skip_stale_output's three OR'd conditions actually caused
+     * each stale-skip drop (see that site's own comment) - a frame can
+     * match more than one, so these are contribution counts, not a
+     * partition, and do not sum to the stale-skip share of `dropped`.
+     * skip_pts_late is the one to watch on a live/network stream: it is
+     * only meaningful once a packet's own PTS is rebased into the same
+     * clock as mono_media_clock_us (container_pts_adjust_us), so a stream
+     * that falls behind and never catches up will show this climbing
+     * while decoded/queued/presented stop moving - see the Live HLS
+     * playback stall notes in CLAUDE.md. Always maintained, not gated by
+     * want_time. */
+    unsigned skip_queue_full, skip_pts_late, skip_micro_rescue;
     uint64_t rtg_prepare_us, rtg_scale_us, rtg_convert_us, rtg_copy_us;
     uint64_t rtg_blit_us, rtg_clip_us, rtg_total_us;
     /* mr_display_timing::service_us's own accumulator - see its declaration
@@ -762,7 +774,9 @@ static void live_diag_report(scheduler_trace *trace, const char *tag)
     if (!trace || !trace->live_diag) return;
     vp = trace->presenter;
     printf("live-diag: %s qcount=%d audio-buffered=%lu ms decoded=%u "
-           "queued=%u presented=%u dropped=%u playback-started=%d\n",
+           "queued=%u presented=%u dropped=%u "
+           "skip-queue-full=%u skip-pts-late=%u skip-micro-rescue=%u "
+           "playback-started=%d\n",
            tag,
            vp && vp->qcount ? *vp->qcount : -1,
            trace->audio ? audio_buffered_ms(trace->audio) : 0UL,
@@ -770,6 +784,9 @@ static void live_diag_report(scheduler_trace *trace, const char *tag)
            vp && vp->stats ? vp->stats->queued : 0U,
            vp && vp->stats ? vp->stats->presented : 0U,
            vp && vp->stats ? vp->stats->dropped : 0U,
+           vp && vp->stats ? vp->stats->skip_queue_full : 0U,
+           vp && vp->stats ? vp->stats->skip_pts_late : 0U,
+           vp && vp->stats ? vp->stats->skip_micro_rescue : 0U,
            vp && vp->playback_started ? *vp->playback_started : -1);
 }
 
@@ -3345,6 +3362,8 @@ int main(int argc, char **argv)
                     mr_status decode_status;
                     uint64_t decode_end;
                     int skip_stale_output;
+                    int skip_reason_queue_full = 0, skip_reason_pts_late = 0,
+                        skip_reason_micro_rescue = 0;
                     int first_decoded_output = 1;
                     if (want_time) {
                         stats.video_packets++;
@@ -3456,12 +3475,37 @@ int main(int argc, char **argv)
                                        (unsigned long)(mrr.episode_us / 1000));
                         }
                     }
-                    skip_stale_output = qcount >= video_cap ||
-                        (playback_started && pkt.has_pts &&
-                         (int64_t)mono_media_clock_us -
-                             ((int64_t)pkt.pts_us + container_pts_adjust_us) >
-                             (int64_t)period_us) ||
-                        micro_rescue.active;
+                    {
+                        /* Broken out from the single OR expression this used
+                         * to be so a drop can be attributed to exactly which
+                         * condition caused it (see the skip_queue_full/
+                         * skip_pts_late/skip_micro_rescue counters below) -
+                         * no change to the combined skip_stale_output value
+                         * or to which frames get skipped. skip_pts_late in
+                         * particular is the condition
+                         * container_pts_adjust_us made meaningful for a live/
+                         * network stream (a raw, un-rebased pkt.pts_us can
+                         * never exceed a near-zero mono_media_clock_us by
+                         * more than period_us, so before that rebase this
+                         * clause was effectively dead for exactly this kind
+                         * of source) - if a real-hardware run shows
+                         * skip-pts-late dominating drops on a stream that
+                         * decodes too slowly to ever catch up, that is the
+                         * skip logic correctly doing its job against a
+                         * decode-speed problem it did not create, not a bug
+                         * in the rebase itself; see the Live HLS notes below
+                         * for the investigation this instrumented. */
+                        int queue_full = qcount >= video_cap;
+                        int pts_late = playback_started && pkt.has_pts &&
+                            (int64_t)mono_media_clock_us -
+                                ((int64_t)pkt.pts_us + container_pts_adjust_us) >
+                                (int64_t)period_us;
+                        int mrescue = micro_rescue.active != 0;
+                        skip_stale_output = queue_full || pts_late || mrescue;
+                        skip_reason_queue_full = queue_full;
+                        skip_reason_pts_late = pts_late;
+                        skip_reason_micro_rescue = mrescue;
+                    }
                     mr_h264_set_skip_output(&dec, skip_stale_output);
                     mr_h264_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
                     mr_mpeg2_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
@@ -3644,6 +3688,10 @@ int main(int argc, char **argv)
                                 }
                                 if (micro_rescue.active)
                                     stats.micro_rescue_frames_skipped++;
+                                if (skip_reason_queue_full) stats.skip_queue_full++;
+                                if (skip_reason_pts_late) stats.skip_pts_late++;
+                                if (skip_reason_micro_rescue)
+                                    stats.skip_micro_rescue++;
                                 stats.dropped++;
                                 goto drain_decoded_output;
                             }

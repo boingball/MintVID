@@ -1494,6 +1494,101 @@ worth confirming `--live-resync` is actually reaching the process
 without it would misleadingly look identical to a reconnect that gave up
 silently before this session's diagnostics).
 
+**Correction: a real A1200 bisect (`gh pr checkout`, PR-by-PR) narrows the
+regression to PR #174, not PR #176/#177 as guessed above.** The user
+confirmed PR #173 ("codex/fast-mem-buffer") still plays IPTV/YouTube live
+correctly on real hardware; PR #174
+("codex/mpeg-skip-msmpeg4v2-corruption", merge `7f9e32d`) is the first one
+that does not. A real-hardware log (`--time`, YouTube live, AGA+Kalms+
+TurboGT) from the *broken* build shows `vpkts`/`apkts` going completely
+flat (5 video/9 audio packets, unchanged) across a ~20 s stretch, `audio
+rescue: ... packets=0 ...` repeating every ~10 s with zero packets
+processed each episode, and `vdecode=1052-1945 ms` per frame against
+`libavc-core=40-234 ms` - a real, still-unexplained gap between wall-clock
+decode time and libavc's own self-reported cost, on a 256x144 stream on a
+68060/50 (confirmed: local H.264 files decode fine on the same machine).
+PR #174 touches none of `hls_fetch.c`/`mr_hls.c`/`mr_ts.c` at all - every
+hypothesis above this correction (the `gethostbyname()` stall, the single-
+segment lookahead margin) is therefore not the cause of *this* regression,
+though they remain real, independently-true observations about the fetch
+path worth keeping in mind for other failure modes.
+
+**Leading hypothesis, replacing the network-focused ones above: PR #174's
+own `mrplay.c` diff (`c3ee1d6..7f9e32d`) added exactly one *unconditional*
+(not `want_time`-gated) behavioural change to the H.264 packet-scheduling
+path - rebasing `pkt.pts_us` through `container_pts_adjust_us` before
+comparing it against `mono_media_clock_us` in the `skip_stale_output`/
+micro-rescue lateness check - and that fix, while itself correct, may be
+what turned a pre-existing decode-speed shortfall into a permanent stall.**
+Before PR #174, that check read `mono_media_clock_us - pkt.pts_us >
+period_us` using `pkt.pts_us` **unrebased** - for a live TS stream this is
+a large absolute 90 kHz PES clock value (hours of encoder uptime), while
+`mono_media_clock_us` is a small, session-relative value, so the
+subtraction was reliably a huge *negative* number and could never exceed
+`period_us`. That clause was therefore silently dead for any live/network
+source with real PES timestamps: frames were never marked stale purely for
+running behind, only for a full queue or active micro-rescue, so the
+decoder always attempted full output even on stale, decode-behind-schedule
+frames. That is consistent with "half speed" as reported for PR #173 -
+laggy, increasingly-behind, but still visibly advancing, since output was
+never suppressed on lateness grounds. PR #174's fix (see the "MPEG-TS
+video PES notes" section's own sibling fix for the *contents* of the
+comparison, and note this is a *different* fix, in `mrplay.c`'s own
+scheduler, not `mr_ts.c`) makes the comparison meaningful for the first
+time - `pkt.pts_us + container_pts_adjust_us` now really is in the same
+clock as `mono_media_clock_us`. Once decode cannot keep up in real time
+(a characteristic this correction's own log shows is already true on this
+hardware for this stream, independent of PR #174), the *now-correct*
+lateness check has something real to fire on and marks essentially every
+subsequent packet `skip_stale_output` - decoded reference-only, never
+queued, forever, unless/until the clock and the packet stream are brought
+back in sync. `queue_copy_*()` is only ever reached when
+`skip_stale_output` is false, so a stream that falls behind once and never
+recovers real-time throughput can go from "occasionally shows a late
+frame" (PR #173) to "shows nothing again after the first few" (PR #174)
+purely because the gating became accurate. This is offered as the
+leading, code-grounded hypothesis for *why* PR #174 is where the bisect
+landed - not yet proven, and deliberately not "fixed" by reverting the
+rebase (that would reintroduce the real cross-clock comparison bug the fix
+exists for) or by guessing at a workaround without hardware confirmation,
+per this file's own standing rule about live-tested state on this target.
+
+`playback_stats` gained three always-on counters to test this directly
+without `--time`: `skip_queue_full`, `skip_pts_late`, `skip_micro_rescue` -
+the `skip_stale_output` computation was split into its three named OR
+conditions (no change to the combined value or to which frames are
+skipped) so a drop can be attributed to exactly one, and all three are
+printed in every `--live-diag` report line
+(`skip-queue-full=`/`skip-pts-late=`/`skip-micro-rescue=`). If a real
+A1200 run shows `skip-pts-late` climbing in lockstep with `dropped` while
+`decoded`/`queued`/`presented` stay flat, that confirms this hypothesis
+directly; if `skip-queue-full` or `skip-micro-rescue` dominates instead,
+the cause is elsewhere (a genuinely oversized queue backlog, or
+micro-rescue itself cycling) and this hypothesis is wrong. Either reading
+is useful and was the point of adding the split rather than guessing
+further from the existing combined `dropped` counter alone.
+
+Still open, deliberately not guessed at further here: **why does a 68060/50
+take 1-2 seconds of wall-clock time to decode one 256x144 H.264 frame from
+a live TS source when the same machine decodes local H.264 files fine?**
+`libavc-core` (the decoder's own self-reported cost) is only 40-234 us/ms
+in the same log - a 5-10x gap from the wall-clock `vdecode` figure that
+this session could not attribute by reading `core/mr_h264.c` alone
+(`audio_service()` is a confirmed no-op; `present_service_frame()` is
+guaranteed cheap during decode since `released` is 0 throughout;
+`h264_diag_checkpoint()` and the quit-probe are both confirmed cheap/
+inactive below 720p). The next real-hardware capture should be built with
+`STAGE_PROFILE=1 CABAC_PROFILE=1` (`make -f Makefile.amiga mrplay
+STAGE_PROFILE=1 CABAC_PROFILE=1 ...`) to get the `mc=`/`deblock=`/`recon=`/
+`intra=` and `bin=`/`coeff=`/`mvpred=` breakdown lines and see whether they
+sum close to the wall-clock figure (found inside libavc) or not (missing
+time is in the wrapper/scheduler, needing a different kind of look). This
+may be an independent, pre-existing performance characteristic that
+PR #174's correctness fix merely exposed, in which case the real fix is
+either speeding up decode for this stream shape or adding a bounded
+"force at least one frame through" escape valve to the lateness check -
+not something to guess at without that next capture.
+
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4
