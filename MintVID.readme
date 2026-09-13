@@ -26,6 +26,9 @@ WHAT'S NEW IN 1.3.0
   - Routes H.263, MPEG-2, MPEG-4 Part 2, MP42/DIV2, WMV1 and WMV2 through the
     shared table-driven/m68k-ASM YUV converter instead of six multiply-heavy
     scalar output loops.
+  - Lets ytgui and ytgui-GT accept a pasted YouTube video or live URL directly
+    in the search field, so a link found elsewhere can be played without
+    searching for the video again inside MintVID.
   - Real-A1200 68060 testing confirmed clean stereo AAC and brought the
     lowest-resolution BBC One H.264/HLS stream close to real time in AGA/HAM8.
     Turbo+ provides continuous audio with keyframe/slideshow video when the
@@ -95,6 +98,20 @@ WHAT IT PLAYS
   - Two complete GUI sets over the same player: ReAction (V44) and plain
     GadTools/Intuition (V37) for a standard AmigaOS 3.0 install, each with
     matching file, IPTV-directory and YouTube-search browser windows.
+
+YOUTUBE URL INPUT
+
+The YouTube browser can be used for links as well as searches. Paste a public
+YouTube URL into ytgui's search field and press Search. ytgui and ytgui-GT
+recognise normal watch links, /live/, /shorts/, /embed/ and youtu.be links,
+including links with extra query parameters. The URL is shown as a single
+selected result ready for Play, using the same playback options as an ordinary
+YouTube search result.
+
+This is useful when a video or live stream was found on another machine: copy
+or paste the link into MintVID instead of trying to find the same item again
+through YouTube search. URL recognition itself is local, but actual YouTube
+playback still needs the normal HTTPS/AmiSSL support.
 
 WMV compatibility notes: WMV1's low-bitrate spatial intra/inter prediction
 mode is not implemented and is rejected rather than approximated. WMV2's
