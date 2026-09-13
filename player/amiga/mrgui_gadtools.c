@@ -688,19 +688,25 @@ static int gt_playlist_open(gt_app *app)
     struct NewGadget ng;
     struct Gadget *gad;
     int bx, bw;
-    app->plVisual = GetVisualInfoA(app->screen, NULL);
-    if (!app->plVisual || !CreateContext(&app->plGadgets))
+    if (!app->window || app->plWin)
         return 0;
+    app->plVisual = GetVisualInfoA(app->window->WScreen, NULL);
+    if (!app->plVisual)
+        return 0;
+    if (!CreateContext(&app->plGadgets))
+        goto fail;
     app->plGadContext = app->plGadgets;
     gt_playlist_rebuild(app);
     memset(&ng, 0, sizeof(ng));
     ng.ng_LeftEdge = 8; ng.ng_TopEdge = 20;
     ng.ng_Width = 444; ng.ng_Height = 168;
+    ng.ng_Flags = 0;
     ng.ng_VisualInfo = app->plVisual; ng.ng_GadgetID = GT_PL_LIST;
     app->plGadList = gad = CreateGadget(LISTVIEW_KIND, app->plGadgets, &ng,
         GTLV_Labels, (ULONG)&app->plList,
         GTLV_Selected, app->playlist.selected >= 0 ?
                        (ULONG)app->playlist.selected : (ULONG)~0,
+        GTLV_ShowSelected, (ULONG)NULL,
         GA_RelVerify, TRUE, TAG_DONE);
     if (!gad) goto fail;
     bx = 8; bw = 108;
@@ -735,7 +741,7 @@ static int gt_playlist_open(gt_app *app)
     nw.MinHeight = nw.Height; nw.MaxHeight = nw.Height;
     nw.FirstGadget = app->plGadgets; nw.Screen = app->screen;
     nw.Type = CUSTOMSCREEN;
-    app->plWin = OpenWindow(&nw);
+    app->plWin = OpenWindowTags(&nw, TAG_DONE);
     if (!app->plWin) goto fail;
     AddGList(app->plWin, app->plGadgets, (UWORD)-1, -1, NULL);
     RefreshGList(app->plGadgets, app->plWin, NULL, -1);
@@ -749,9 +755,10 @@ fail:
 static void gt_playlist_handle(gt_app *app)
 {
     struct IntuiMessage *msg;
-    if (!app->plWin)
+    struct MsgPort *port;
+    if (!app->plWin || !(port = app->plWin->UserPort))
         return;
-    while ((msg = GT_GetIMsg(app->plWin->UserPort)) != NULL) {
+    while ((msg = GT_GetIMsg(port)) != NULL) {
         ULONG cls = msg->Class;
         UWORD code = msg->Code;
         struct Gadget *gad = (struct Gadget *)msg->IAddress;
@@ -1079,7 +1086,7 @@ static void cleanup(gt_app *app)
 int main(void)
 {
     gt_app app;
-    ULONG mask, playlist_mask = 0, timermask = 0;
+    ULONG mask, timermask = 0;
     int done = 0, rc = RETURN_FAIL;
     memset(&app, 0, sizeof(app));
     IntuitionBase = (struct IntuitionBase *)OpenLibrary(
@@ -1092,6 +1099,7 @@ int main(void)
         !build_window(&app))
         goto out;
     mr_playlist_init(&app.playlist);
+    mr_playlist_list_init(&app.plList);
     app.master = mr_master_options_open();
     update_mode_controls(&app, TRUE);
     publish_options(&app);
@@ -1103,6 +1111,8 @@ int main(void)
     }
     while (!done) {
         struct IntuiMessage *msg;
+        ULONG playlist_mask = (app.plWin && app.plWin->UserPort) ?
+            (1UL << app.plWin->UserPort->mp_SigBit) : 0;
         ULONG signals = Wait(mask | playlist_mask | timermask | SIGBREAKF_CTRL_C);
         if (signals & SIGBREAKF_CTRL_C)
             break;
@@ -1149,8 +1159,11 @@ int main(void)
                     break;
                 }
                 case G_PLAYLIST:
-                    if (!app.plWin && gt_playlist_open(&app))
-                        playlist_mask = 1UL << app.plWin->UserPort->mp_SigBit;
+                    if (app.plWin) {
+                        gt_playlist_close(&app);
+                    } else {
+                        gt_playlist_open(&app);
+                    }
                     break;
                 case G_IPTV: open_browser(&app, 0); break;
                 case G_YOUTUBE: open_browser(&app, 1); break;
@@ -1178,11 +1191,11 @@ int main(void)
                 }
             }
         }
-        if (playlist_mask && (signals & playlist_mask)) {
-            gt_playlist_handle(&app);
-            if (!app.plWin)
-                playlist_mask = 0;
-        }
+        /* MintAMP's secondary-window pattern: poll the playlist every loop.
+         * The signal only wakes us; the current UserPort is always read
+         * through the live window pointer, so opening/closing a window cannot
+         * leave a stale signal mask behind. */
+        gt_playlist_handle(&app);
     }
     rc = RETURN_OK;
     stop_player();
