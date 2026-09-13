@@ -739,7 +739,11 @@ static int gt_playlist_open(gt_app *app)
     nw.Title = (UBYTE *)"MintVID Playlist";
     nw.MinWidth = nw.Width; nw.MaxWidth = nw.Width;
     nw.MinHeight = nw.Height; nw.MaxHeight = nw.Height;
-    nw.FirstGadget = app->plGadgets; nw.Screen = app->screen;
+    /* AddGList() below owns installation of this secondary window's
+     * gadgets.  Do not also pass them as FirstGadget: MintAMP leaves this
+     * field NULL for its playlist window, and installing the same list twice
+     * corrupts Intuition's gadget chain on real AmigaOS. */
+    nw.FirstGadget = NULL; nw.Screen = app->screen;
     nw.Type = CUSTOMSCREEN;
     app->plWin = OpenWindowTags(&nw, TAG_DONE);
     if (!app->plWin) goto fail;
