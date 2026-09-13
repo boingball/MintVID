@@ -1469,8 +1469,8 @@ measurably perturbing timing-sensitive playback) to localize a stall:
   TLS-disabled/no-progress/fetch-failed/shape-mismatch give-up reasons,
   each previously silent except under `--time`), and final loop exit
   (quit vs. natural end). The give-up points also `Flush(Output())` when
-  `--live-diag` is on, matching this file's established durable-log
-  pattern (see the `NAS0:MintVID.log` notes above) so the very last state
+  `--live-diag` is on, matching this file's established RAM-log
+  pattern (see the `RAM:MintVID.log` notes above) so the very last state
   before the process exits is not left sitting in a write-back cache.
   None of this is wired into the IPTV/YouTube GUI launchers yet (they
   build their command lines via `core/mr_play_options.c`, untouched here);
