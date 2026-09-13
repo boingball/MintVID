@@ -1079,7 +1079,7 @@ static void cleanup(gt_app *app)
 int main(void)
 {
     gt_app app;
-    ULONG mask, timermask = 0;
+    ULONG mask, playlist_mask = 0, timermask = 0;
     int done = 0, rc = RETURN_FAIL;
     memset(&app, 0, sizeof(app));
     IntuitionBase = (struct IntuitionBase *)OpenLibrary(
@@ -1103,7 +1103,7 @@ int main(void)
     }
     while (!done) {
         struct IntuiMessage *msg;
-        ULONG signals = Wait(mask | timermask | SIGBREAKF_CTRL_C);
+        ULONG signals = Wait(mask | playlist_mask | timermask | SIGBREAKF_CTRL_C);
         if (signals & SIGBREAKF_CTRL_C)
             break;
         if (timermask && (signals & timermask)) {
@@ -1149,8 +1149,8 @@ int main(void)
                     break;
                 }
                 case G_PLAYLIST:
-                    if (!app.plWin)
-                        gt_playlist_open(&app);
+                    if (!app.plWin && gt_playlist_open(&app))
+                        playlist_mask = 1UL << app.plWin->UserPort->mp_SigBit;
                     break;
                 case G_IPTV: open_browser(&app, 0); break;
                 case G_YOUTUBE: open_browser(&app, 1); break;
@@ -1178,7 +1178,11 @@ int main(void)
                 }
             }
         }
-        gt_playlist_handle(&app);
+        if (playlist_mask && (signals & playlist_mask)) {
+            gt_playlist_handle(&app);
+            if (!app.plWin)
+                playlist_mask = 0;
+        }
     }
     rc = RETURN_OK;
     stop_player();
