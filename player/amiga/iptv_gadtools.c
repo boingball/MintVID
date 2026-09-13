@@ -28,10 +28,9 @@ MINTVID_DECLARE_VERSION(iptvgui_gt_version_tag, "iptvgui-GT");
 #define CHANNELS_URL "https://iptv-org.github.io/api/channels.json"
 #define STREAMS_URL  "https://iptv-org.github.io/api/streams.json"
 #define MRPLAY_STACK_SIZE 320000UL
-/* Persistent storage, not RAM: - see the matching comment in
- * youtube_reaction.c for why (a hard lockup needs a reset to clear, which
- * also wipes RAM: and the log with it; NAS0: survives that). */
-#define MRPLAY_LOG_FILE "NAS0:MintVID.log"
+/* Temporary diagnostic output stays in RAM: so it is easy to inspect
+ * during a normal debugging session without leaving a persistent log behind. */
+#define MRPLAY_LOG_FILE "RAM:MintVID.log"
 #define WIN_W 640
 #define WIN_H 356
 

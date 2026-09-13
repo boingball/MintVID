@@ -6,6 +6,7 @@
 #include "mr_last_dir.h"
 #include "mr_master_options.h"
 #include "mr_player_status.h"
+#include "mr_playlist.h"
 
 MINTVID_DECLARE_VERSION(mintvid_gt_version_tag, "MintVID-GT");
 
@@ -49,7 +50,8 @@ extern struct Library *GadToolsBase;
 enum {
     G_FILE = 1, G_BROWSE, G_MODE, G_C2P, G_H264, G_LACE, G_SCALE,
     G_AUDIO_RATE, G_FAST_BUFFER, G_NO_AUDIO, G_MONO_AUDIO, G_VIDEO_MODE,
-    G_PLAY, G_PAUSE, G_STOP, G_FAST, G_IPTV, G_YOUTUBE, G_INFO
+    G_PLAY, G_PAUSE, G_STOP, G_FAST, G_IPTV, G_YOUTUBE, G_VOLUME, G_INFO,
+    G_PLAYLIST
 };
 
 typedef struct gt_app {
@@ -59,8 +61,14 @@ typedef struct gt_app {
     struct Gadget *gadgets;
     struct Gadget *file, *mode, *c2p, *h264, *lace, *scale, *info;
     struct Gadget *audio_rate, *fast_buffer, *no_audio, *mono_audio;
-    struct Gadget *video_mode;
+    struct Gadget *video_mode, *volume;
     struct Gadget *iptv;
+    struct Window *plWin;
+    struct Gadget *plGadgets, *plGadContext, *plGadList;
+    APTR plVisual;
+    struct List plList;
+    struct Node plNodes[MR_PLAYLIST_MAX];
+    mr_playlist playlist;
     /* iptvgui-GT's own process exists (LoadSeg()/CreateNewProcTags() has
      * returned) long before its window is actually open - it still has to
      * load/refresh its channel cache first. Polled on the same timer tick
@@ -501,6 +509,305 @@ static void play_file(gt_app *app)
         set_info(app, "Starting playback...");
 }
 
+
+#define GT_PL_LIST 200
+#define GT_PL_ADD 201
+#define GT_PL_REMOVE 202
+#define GT_PL_CLEAR 203
+#define GT_PL_PLAY 204
+#define GT_PL_LOAD 205
+#define GT_PL_SAVE 206
+
+static void gt_playlist_rebuild(gt_app *app)
+{
+    int i;
+    struct Node *node;
+    mr_playlist_list_init(&app->plList);
+    for (i = 0; i < app->playlist.count; i++) {
+        node = &app->plNodes[i];
+        node->ln_Name = app->playlist.names[i];
+        node->ln_Type = NT_USER;
+        node->ln_Pri = 0;
+        AddTail(&app->plList, node);
+    }
+}
+
+static void gt_playlist_refresh(gt_app *app)
+{
+    gt_playlist_rebuild(app);
+    if (app->plWin && app->plGadList)
+        GT_SetGadgetAttrs(app->plGadList, app->plWin, NULL,
+            GTLV_Labels, (ULONG)&app->plList,
+            GTLV_Selected, app->playlist.selected >= 0 ?
+                           (ULONG)app->playlist.selected : (ULONG)~0,
+            TAG_DONE);
+}
+
+static void gt_playlist_close(gt_app *app)
+{
+    struct IntuiMessage *msg;
+    struct MsgPort *port;
+    if (!app->plWin)
+        goto free_resources;
+    port = app->plWin->UserPort;
+    if (port)
+        while ((msg = GT_GetIMsg(port)) != NULL)
+            GT_ReplyIMsg(msg);
+    ModifyIDCMP(app->plWin, 0);
+    if (app->plGadgets)
+        RemoveGList(app->plWin, app->plGadgets, -1);
+    CloseWindow(app->plWin);
+    app->plWin = NULL;
+free_resources:
+    if (app->plGadgets) {
+        FreeGadgets(app->plGadgets);
+        app->plGadgets = NULL;
+        app->plGadContext = NULL;
+        app->plGadList = NULL;
+    }
+    if (app->plVisual) {
+        FreeVisualInfo(app->plVisual);
+        app->plVisual = NULL;
+    }
+}
+
+static void gt_playlist_add_files(gt_app *app)
+{
+    struct FileRequester *req;
+    req = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
+        ASLFR_TitleText, (ULONG)"Add videos to playlist",
+        ASLFR_DoMultiSelect, TRUE, ASLFR_DoPatterns, TRUE,
+        ASLFR_InitialPattern, (ULONG)MR_VIDEO_FILE_PATTERN, TAG_DONE);
+    if (!req)
+        return;
+    if (AslRequestTags(req, ASLFR_Window, (ULONG)app->plWin,
+                       ASLFR_SleepWindow, TRUE, TAG_DONE)) {
+        char path[MR_PLAYLIST_PATH_MAX];
+        int i;
+        if (req->fr_NumArgs > 0 && req->fr_ArgList) {
+            for (i = 0; i < (int)req->fr_NumArgs; i++) {
+                strncpy(path, req->fr_Drawer ? (const char *)req->fr_Drawer : "",
+                        sizeof(path) - 1);
+                path[sizeof(path) - 1] = 0;
+                if (req->fr_ArgList[i].wa_Name &&
+                    AddPart((STRPTR)path, req->fr_ArgList[i].wa_Name,
+                            sizeof(path)))
+                    mr_playlist_add(&app->playlist, path);
+            }
+        } else if (req->fr_File && req->fr_File[0]) {
+            strncpy(path, req->fr_Drawer ? (const char *)req->fr_Drawer : "",
+                    sizeof(path) - 1);
+            path[sizeof(path) - 1] = 0;
+            if (AddPart((STRPTR)path, req->fr_File, sizeof(path)))
+                mr_playlist_add(&app->playlist, path);
+        }
+    }
+    FreeAslRequest(req);
+    gt_playlist_refresh(app);
+}
+
+static void gt_playlist_load_m3u(gt_app *app)
+{
+    struct FileRequester *req;
+    char m3u[MR_PLAYLIST_PATH_MAX], drawer[MR_PLAYLIST_PATH_MAX];
+    char line[MR_PLAYLIST_PATH_MAX];
+    FILE *file;
+    req = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
+        ASLFR_TitleText, (ULONG)"Load M3U Playlist",
+        ASLFR_DoPatterns, TRUE, ASLFR_InitialPattern, (ULONG)"#?.m3u",
+        TAG_DONE);
+    if (!req)
+        return;
+    if (!AslRequestTags(req, ASLFR_Window, (ULONG)app->plWin,
+                       ASLFR_SleepWindow, TRUE, TAG_DONE)) {
+        FreeAslRequest(req);
+        return;
+    }
+    strncpy(m3u, req->fr_Drawer ? (const char *)req->fr_Drawer : "", sizeof(m3u) - 1);
+    m3u[sizeof(m3u) - 1] = 0;
+    if (req->fr_File && req->fr_File[0])
+        AddPart((STRPTR)m3u, req->fr_File, sizeof(m3u));
+    FreeAslRequest(req);
+    if (!m3u[0] || !(file = fopen(m3u, "r")))
+        return;
+    mr_last_dir_from_path(m3u, drawer, sizeof(drawer));
+    while (fgets(line, sizeof(line), file)) {
+        char path[MR_PLAYLIST_PATH_MAX];
+        char *eol = strpbrk(line, "\r\n");
+        if (eol) *eol = 0;
+        if (!line[0] || line[0] == '#')
+            continue;
+        if (strchr(line, ':') || line[0] == '/') {
+            strncpy(path, line, sizeof(path) - 1);
+            path[sizeof(path) - 1] = 0;
+        } else {
+            strncpy(path, drawer, sizeof(path) - 1);
+            path[sizeof(path) - 1] = 0;
+            if (!AddPart((STRPTR)path, (STRPTR)line, sizeof(path)))
+                continue;
+        }
+        mr_playlist_add(&app->playlist, path);
+    }
+    fclose(file);
+    gt_playlist_refresh(app);
+}
+
+static void gt_playlist_save_m3u(gt_app *app)
+{
+    struct FileRequester *req;
+    char m3u[MR_PLAYLIST_PATH_MAX];
+    FILE *file;
+    int i;
+    req = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
+        ASLFR_TitleText, (ULONG)"Save M3U Playlist",
+        ASLFR_DoSaveMode, TRUE, ASLFR_InitialFile, (ULONG)"playlist.m3u",
+        TAG_DONE);
+    if (!req)
+        return;
+    if (!AslRequestTags(req, ASLFR_Window, (ULONG)app->plWin,
+                       ASLFR_SleepWindow, TRUE, TAG_DONE)) {
+        FreeAslRequest(req);
+        return;
+    }
+    strncpy(m3u, req->fr_Drawer ? (const char *)req->fr_Drawer : "", sizeof(m3u) - 1);
+    m3u[sizeof(m3u) - 1] = 0;
+    if (req->fr_File && req->fr_File[0])
+        AddPart((STRPTR)m3u, req->fr_File, sizeof(m3u));
+    FreeAslRequest(req);
+    if (!m3u[0] || !(file = fopen(m3u, "w")))
+        return;
+    fprintf(file, "#EXTM3U\n");
+    for (i = 0; i < app->playlist.count; i++)
+        fprintf(file, "%s\n", app->playlist.paths[i]);
+    fclose(file);
+}
+
+static int gt_playlist_open(gt_app *app)
+{
+    struct NewWindow nw;
+    struct NewGadget ng;
+    struct Gadget *gad;
+    int bx, bw;
+    if (!app->window || app->plWin)
+        return 0;
+    app->plVisual = GetVisualInfoA(app->window->WScreen, NULL);
+    if (!app->plVisual)
+        return 0;
+    if (!CreateContext(&app->plGadgets))
+        goto fail;
+    app->plGadContext = app->plGadgets;
+    gt_playlist_rebuild(app);
+    memset(&ng, 0, sizeof(ng));
+    ng.ng_LeftEdge = 8; ng.ng_TopEdge = 20;
+    ng.ng_Width = 444; ng.ng_Height = 168;
+    ng.ng_Flags = 0;
+    ng.ng_VisualInfo = app->plVisual; ng.ng_GadgetID = GT_PL_LIST;
+    app->plGadList = gad = CreateGadget(LISTVIEW_KIND, app->plGadgets, &ng,
+        GTLV_Labels, (ULONG)&app->plList,
+        GTLV_Selected, app->playlist.selected >= 0 ?
+                       (ULONG)app->playlist.selected : (ULONG)~0,
+        GTLV_ShowSelected, (ULONG)NULL,
+        GA_RelVerify, TRUE, TAG_DONE);
+    if (!gad) goto fail;
+    bx = 8; bw = 108;
+    ng.ng_TopEdge = 194; ng.ng_Width = bw; ng.ng_Height = 18;
+    ng.ng_GadgetText = (UBYTE *)"Add"; ng.ng_GadgetID = GT_PL_ADD;
+    ng.ng_LeftEdge = bx;
+    gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
+    bx += bw + 4; ng.ng_LeftEdge = bx;
+    ng.ng_GadgetText = (UBYTE *)"Remove"; ng.ng_GadgetID = GT_PL_REMOVE;
+    gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
+    bx += bw + 4; ng.ng_LeftEdge = bx;
+    ng.ng_GadgetText = (UBYTE *)"Clear"; ng.ng_GadgetID = GT_PL_CLEAR;
+    gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
+    bx += bw + 4; ng.ng_LeftEdge = bx;
+    ng.ng_GadgetText = (UBYTE *)"Play"; ng.ng_GadgetID = GT_PL_PLAY;
+    gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
+    bx = 8; bw = 164; ng.ng_TopEdge = 218; ng.ng_LeftEdge = bx;
+    ng.ng_GadgetText = (UBYTE *)"Load M3U"; ng.ng_GadgetID = GT_PL_LOAD;
+    gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
+    bx += bw + 4; ng.ng_LeftEdge = bx;
+    ng.ng_GadgetText = (UBYTE *)"Save M3U"; ng.ng_GadgetID = GT_PL_SAVE;
+    gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_DONE); if (!gad) goto fail;
+    memset(&nw, 0, sizeof(nw));
+    nw.LeftEdge = app->window->LeftEdge + 16;
+    nw.TopEdge = app->window->TopEdge + 16;
+    nw.Width = 476; nw.Height = 252;
+    nw.IDCMPFlags = IDCMP_GADGETUP | IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW;
+    nw.Flags = WFLG_CLOSEGADGET | WFLG_DRAGBAR | WFLG_DEPTHGADGET |
+               WFLG_SMART_REFRESH;
+    nw.Title = (UBYTE *)"MintVID Playlist";
+    nw.MinWidth = nw.Width; nw.MaxWidth = nw.Width;
+    nw.MinHeight = nw.Height; nw.MaxHeight = nw.Height;
+    /* AddGList() below owns installation of this secondary window's
+     * gadgets.  Do not also pass them as FirstGadget: MintAMP leaves this
+     * field NULL for its playlist window, and installing the same list twice
+     * corrupts Intuition's gadget chain on real AmigaOS. */
+    nw.FirstGadget = NULL; nw.Screen = app->screen;
+    nw.Type = CUSTOMSCREEN;
+    app->plWin = OpenWindowTags(&nw, TAG_DONE);
+    if (!app->plWin) goto fail;
+    AddGList(app->plWin, app->plGadgets, (UWORD)-1, -1, NULL);
+    RefreshGList(app->plGadgets, app->plWin, NULL, -1);
+    GT_RefreshWindow(app->plWin, NULL);
+    return 1;
+fail:
+    gt_playlist_close(app);
+    return 0;
+}
+
+static void gt_playlist_handle(gt_app *app)
+{
+    struct IntuiMessage *msg;
+    struct MsgPort *port;
+    if (!app->plWin || !(port = app->plWin->UserPort))
+        return;
+    while ((msg = GT_GetIMsg(port)) != NULL) {
+        ULONG cls = msg->Class;
+        UWORD code = msg->Code;
+        struct Gadget *gad = (struct Gadget *)msg->IAddress;
+        UWORD id = gad ? gad->GadgetID : 0;
+        GT_ReplyIMsg(msg);
+        if (cls == IDCMP_CLOSEWINDOW) {
+            gt_playlist_close(app);
+            return;
+        }
+        if (cls == IDCMP_REFRESHWINDOW) {
+            GT_BeginRefresh(app->plWin);
+            GT_EndRefresh(app->plWin, TRUE);
+            continue;
+        }
+        if (cls != IDCMP_GADGETUP)
+            continue;
+        switch (id) {
+        case GT_PL_LIST: app->playlist.selected = (int)code; break;
+        case GT_PL_ADD: gt_playlist_add_files(app); break;
+        case GT_PL_REMOVE:
+            mr_playlist_remove(&app->playlist, app->playlist.selected);
+            gt_playlist_refresh(app);
+            break;
+        case GT_PL_CLEAR:
+            mr_playlist_clear(&app->playlist);
+            gt_playlist_refresh(app);
+            break;
+        case GT_PL_PLAY:
+            if (app->playlist.selected >= 0 &&
+                app->playlist.selected < app->playlist.count) {
+                app->playlist.current = app->playlist.selected;
+                strncpy(app->path, app->playlist.paths[app->playlist.selected],
+                        sizeof(app->path) - 1);
+                app->path[sizeof(app->path) - 1] = 0;
+                GT_SetGadgetAttrs(app->file, app->window, NULL,
+                                  GTST_String, (ULONG)app->path, TAG_DONE);
+                play_file(app);
+            }
+            break;
+        case GT_PL_LOAD: gt_playlist_load_m3u(app); break;
+        case GT_PL_SAVE: gt_playlist_save_m3u(app); break;
+        }
+    }
+}
+
 static void browse(gt_app *app)
 {
     /* Seed the requester's starting drawer from the last one used (saved
@@ -591,6 +898,24 @@ static struct Gadget *add_gadget(gt_app *app, struct Gadget *previous,
         return CreateGadget(kind, previous, &ng, tag1, data1,
                             GTTX_Border, TRUE, TAG_DONE);
     return CreateGadget(kind, previous, &ng, tag1, data1, TAG_DONE);
+}
+
+static struct Gadget *add_slider(gt_app *app, struct Gadget *previous,
+                                 UWORD id, int x, int y, int w, int h)
+{
+    struct NewGadget ng;
+    memset(&ng, 0, sizeof(ng));
+    ng.ng_LeftEdge = x;
+    ng.ng_TopEdge = y;
+    ng.ng_Width = w;
+    ng.ng_Height = h;
+    ng.ng_GadgetText = (STRPTR)"";
+    ng.ng_TextAttr = (struct TextAttr *)&topaz;
+    ng.ng_GadgetID = id;
+    ng.ng_VisualInfo = app->visual;
+    return CreateGadget(SLIDER_KIND, previous, &ng,
+                        GTSL_Min, 0, GTSL_Max, 64, GTSL_Level, 64,
+                        TAG_DONE);
 }
 
 static int build_window(gt_app *app)
@@ -692,23 +1017,27 @@ static int build_window(gt_app *app)
     app->video_mode = g = add_gadget(app, g, CYCLE_KIND, G_VIDEO_MODE, 8, 92,
         180, 16, "", GTCY_Labels, (ULONG)video_labels);
 
-    /* Compact transport strip.  ASCII keeps the glyphs available on stock
-     * Topaz while making the controls much narrower than word labels. */
-    g = add_gadget(app, g, BUTTON_KIND, G_PLAY, 8, 116, 42, 18, ">",
+    /* VLC-style lower strip: media buttons stay flush left, the volume
+     * slider follows them, and IPTV/YouTube sit before Playlist in the
+     * remaining space. */
+    g = add_gadget(app, g, BUTTON_KIND, G_PLAY, 8, 116, 32, 18, ">",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_PAUSE, 56, 116, 42, 18, "||",
+    g = add_gadget(app, g, BUTTON_KIND, G_PAUSE, 44, 116, 32, 18, "||",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_STOP, 104, 116, 42, 18, "[]",
+    g = add_gadget(app, g, BUTTON_KIND, G_STOP, 80, 116, 32, 18, "[]",
                    TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_FAST, 152, 116, 48, 18, ">>",
+    g = add_gadget(app, g, BUTTON_KIND, G_FAST, 116, 116, 40, 18, ">>",
                    TAG_IGNORE, 0);
+    app->volume = g = add_slider(app, g, G_VOLUME, 166, 116, 150, 18);
+    if (!app->volume)
+        return 0;
 
-    /* Browsers get their own row so transport and service actions are visually
-     * distinct and the controller never grows horizontally again. */
-    app->iptv = g = add_gadget(app, g, BUTTON_KIND, G_IPTV, 8, 140, 100, 18,
+    app->iptv = g = add_gadget(app, g, BUTTON_KIND, G_IPTV, 326, 116, 84, 18,
                               "IPTV...", TAG_IGNORE, 0);
-    g = add_gadget(app, g, BUTTON_KIND, G_YOUTUBE, 114, 140, 110, 18,
+    g = add_gadget(app, g, BUTTON_KIND, G_YOUTUBE, 414, 116, 98, 18,
                    "YouTube...", TAG_IGNORE, 0);
+    g = add_gadget(app, g, BUTTON_KIND, G_PLAYLIST, 516, 116, 110, 18,
+                   "Playlist", TAG_IGNORE, 0);
     app->info = g = add_gadget(app, g, TEXT_KIND, G_INFO, 8, 164, 615, 16,
         "", GTTX_Text, (ULONG)"No file selected");
     if (!g)
@@ -773,6 +1102,8 @@ int main(void)
     if (!IntuitionBase || !GfxBase || !AslBase || !GadToolsBase ||
         !build_window(&app))
         goto out;
+    mr_playlist_init(&app.playlist);
+    mr_playlist_list_init(&app.plList);
     app.master = mr_master_options_open();
     update_mode_controls(&app, TRUE);
     publish_options(&app);
@@ -784,7 +1115,9 @@ int main(void)
     }
     while (!done) {
         struct IntuiMessage *msg;
-        ULONG signals = Wait(mask | timermask | SIGBREAKF_CTRL_C);
+        ULONG playlist_mask = (app.plWin && app.plWin->UserPort) ?
+            (1UL << app.plWin->UserPort->mp_SigBit) : 0;
+        ULONG signals = Wait(mask | playlist_mask | timermask | SIGBREAKF_CTRL_C);
         if (signals & SIGBREAKF_CTRL_C)
             break;
         if (timermask && (signals & timermask)) {
@@ -821,6 +1154,21 @@ int main(void)
                 case G_PAUSE: signal_player(SIGBREAKF_CTRL_D); break;
                 case G_STOP: stop_player(); break;
                 case G_FAST: signal_player(SIGBREAKF_CTRL_E); break;
+                case G_VOLUME: {
+                    ULONG level = 64;
+                    if (app.volume)
+                        GT_GetGadgetAttrs(app.volume, app.window, NULL,
+                                          GTSL_Level, (ULONG)&level, TAG_DONE);
+                    mr_player_control_set_volume(level);
+                    break;
+                }
+                case G_PLAYLIST:
+                    if (app.plWin) {
+                        gt_playlist_close(&app);
+                    } else {
+                        gt_playlist_open(&app);
+                    }
+                    break;
                 case G_IPTV: open_browser(&app, 0); break;
                 case G_YOUTUBE: open_browser(&app, 1); break;
                 case G_MODE:
@@ -847,10 +1195,16 @@ int main(void)
                 }
             }
         }
+        /* MintAMP's secondary-window pattern: poll the playlist every loop.
+         * The signal only wakes us; the current UserPort is always read
+         * through the live window pointer, so opening/closing a window cannot
+         * leave a stale signal mask behind. */
+        gt_playlist_handle(&app);
     }
     rc = RETURN_OK;
     stop_player();
 out:
+    gt_playlist_close(&app);
     cleanup(&app);
     if (CyberGfxBase) CloseLibrary(CyberGfxBase);
     if (GadToolsBase) { CloseLibrary(GadToolsBase); GadToolsBase = NULL; }

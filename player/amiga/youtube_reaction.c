@@ -49,15 +49,10 @@ MINTVID_DECLARE_VERSION(ytgui_version_tag, "ytgui");
 #define YT_CLASS_VERSION 44
 #define YT_SEARCH_PAGE_MAX (6UL * 1024UL * 1024UL)
 #define MRPLAY_STACK_SIZE 320000UL
-/* Persistent storage, not RAM: - a hard lockup (the kind --time logging is
- * often turned on specifically to catch) needs a hardware reset to clear,
- * which also wipes RAM: and takes the very log meant to explain the lockup
- * with it. NAS0: survives a reset; mrplay's own stdout is already fully
- * unbuffered (mrplay.c: setvbuf(stdout, NULL, _IONBF, 0)), and mrplay.c
- * periodically Flush()es this filehandle too, so as much of the log as
- * possible is durably on disk right up to the moment of a hang, not just
- * whatever happened to be in a buffer when things stopped. */
-#define MRPLAY_LOG_FILE "NAS0:MintVID.log"
+/* Temporary diagnostic output stays in RAM: so it is easy to inspect
+ * during a normal debugging session without leaving a persistent log behind.
+ * A reset may erase it; that is acceptable for this on-demand debug trace. */
+#define MRPLAY_LOG_FILE "RAM:MintVID.log"
 
 struct IntuitionBase *IntuitionBase;
 struct Library *UtilityBase, *WindowBase, *LayoutBase, *ButtonBase;

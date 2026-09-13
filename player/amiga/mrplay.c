@@ -1432,13 +1432,18 @@ static int apply_h264_speed(mr_decoder *dec, int requested, int verbose)
 
 /* Shared by the on-screen Vol -/+ controller commands and the display
  * window's own cursor up/down keys. */
-static void apply_volume_step(int delta)
+static void apply_volume_set(int volume)
 {
-    control_volume += delta;
-    if (control_volume < 0) control_volume = 0;
-    if (control_volume > 64) control_volume = 64;
+    if (volume < 0) volume = 0;
+    if (volume > 64) volume = 64;
+    control_volume = volume;
     if (control_audio) audio_set_volume(control_audio, control_volume);
     printf("volume: %d%%\n", control_volume * 100 / 64);
+}
+
+static void apply_volume_step(int delta)
+{
+    apply_volume_set(control_volume + delta);
 }
 
 /* The ReAction controller uses Ctrl-F for a normal stop so AmigaDOS does not
@@ -1450,17 +1455,21 @@ static int control_signal_event(amiga_display *disp)
     ULONG sig = SetSignal(0, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D |
                              SIGBREAKF_CTRL_E | SIGBREAKF_CTRL_F);
     ULONG commands = 0;
+    ULONG volume = 64;
     if (sig & (SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F)) return MR_EV_QUIT;
     if (sig & SIGBREAKF_CTRL_D) return MR_EV_PAUSE;
     if (sig & SIGBREAKF_CTRL_E) {
         if (control_block) {
             Forbid();
             commands = control_block->commands;
+            volume = control_block->volume;
             control_block->commands = 0;
             Permit();
         }
         if (commands & MR_PLAYER_COMMAND_FULLSCREEN)
             display_toggle_fullscreen(disp);
+        if (commands & MR_PLAYER_COMMAND_VOLUME_SET)
+            apply_volume_set((int)volume);
         if (commands & MR_PLAYER_COMMAND_VOLUME_DOWN) apply_volume_step(-8);
         if (commands & MR_PLAYER_COMMAND_VOLUME_UP) apply_volume_step(8);
         if (commands & MR_PLAYER_COMMAND_PAUSE) return MR_EV_PAUSE;

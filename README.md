@@ -23,9 +23,14 @@ with native Amiga playback across AGA, HAM and RTG systems.
 Performance scales strongly with CPU, codec, resolution and display mode;
 format support is not a promise of real-time playback on every 68k.
 
+MintVID 1.3.0 adds the final release-facing controls and documentation,
+including the Video: All Frames / Video: Skip Frames policy in both GUI
+editions and a complete recommended-settings guide for classic 68k, RTG,
+PiStorm/Emu68 and live HLS/IPTV use.
+
 ![MintVID playing an LGR YouTube video on AmigaOS](player/amiga/art/MintVID-YouTube.png)
 
-## What's new in 1.2.0
+## What's new in 1.3.0
 
 - **Faster H.264 on classic m68k:** inverse-transform/reconstruction hot loops
   inline their tiny per-coefficient helpers, removing large numbers of
@@ -45,6 +50,19 @@ format support is not a promise of real-time playback on every 68k.
   Turbo+ remains a useful audio-first keyframe/slideshow fallback.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+
+## Video frame policy
+
+Both GUI editions expose **Video: All Frames** and **Video: Skip Frames**.
+All Frames is the default and preserves every decoded picture. Skip Frames
+allows the scheduler to drop pictures that are already late, so a slower
+Amiga can catch up while audio and timestamps continue normally. It is a
+presentation policy, not a codec or bitstream change.
+
+The command-line equivalents are `--throughput` and `--no-throughput`.
+Use Skip Frames when a demanding source is falling behind; keep All Frames
+when playback is already smooth or every decoded picture matters. See the
+[AmigaGuide manual](MintVID.guide) for hardware-specific starting points.
 
 ## About MintVID
 

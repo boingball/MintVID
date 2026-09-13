@@ -2,7 +2,7 @@ Short:        Multi-codec video player and streamer
 Author:       Darren Banfi (boingball)
 Uploader:     boingball@gmail.com
 Type:         gfx/show
-Version:      1.2.0
+Version:      1.3.0
 Requires:     68030+; util/libs/AmiSSL-v5-OS3.lha for online features
 Architecture: m68k-amigaos >= 3.0.0
 
@@ -13,7 +13,7 @@ MintVID is a multi-codec video player for accelerated 68k Amigas, from
 It supports native chipset and RTG output, local files, HTTP/HTTPS, HLS,
 IPTV and public YouTube playback.
 
-WHAT'S NEW IN 1.2.0
+WHAT'S NEW IN 1.3.0
 
   - Speeds up H.264 m68k inverse-transform/reconstruction hot loops by
     inlining tiny helpers and removing repeated BSR/RTS overhead.
@@ -31,7 +31,7 @@ WHAT'S NEW IN 1.2.0
     Turbo+ provides continuous audio with keyframe/slideshow video when the
     complete stream remains too demanding.
 
-MintVID 1.2.0 is a performance release. The WMV7/8 and HLS shutdown fixes from
+MintVID 1.3.0 is a release built on the 1.2.x performance work. The WMV7/8 and HLS shutdown fixes from
 1.1.1, plus the TurboGT, Kalms C2P, RTG direct-write, YouTube, RAM-aware
 queueing and audio-rescue work from 1.1.0, remain present.
 
@@ -132,6 +132,42 @@ now does that: leaving some pictures undegraded left the remaining ones being
 deblocked against stale per-macroblock parameters, which was both incorrect
 and slow enough that Fast ran slower than Quality. All modes below Quality
 are substantially faster than in 1.2.0.
+
+VIDEO FRAME POLICY
+
+Both GUI editions offer a Video selector:
+
+  - Video: All Frames (default) keeps every decoded picture, even when it is
+    late. Use it when the source is already keeping up, and for live/HLS
+    playback unless the picture is visibly falling behind.
+  - Video: Skip Frames drops decoded pictures that are already late so a
+    slower Amiga can catch up. Audio, timestamps and decoder selection are
+    unchanged. This is the recommended first change for a stuttering or
+    decode-bound local/heavy video.
+
+The command-line equivalents are --throughput (All Frames) and
+--no-throughput (Skip Frames). A direct network/HLS mrplay invocation defaults
+to throughput mode; a direct local-file invocation does not. GUI sessions pass
+the selected policy explicitly.
+
+RECOMMENDED STARTING POINTS
+
+  68030 ECS/AGA: AGA, lace off, 2x off, modest lightweight codecs. Use Skip
+  Frames only when playback falls behind.
+
+  68040/060 AGA: AGA/HAM, Kalms, lace off, 2x off, TurboGT for H.264. Use
+  Turbo+ for audio-first playback and Skip Frames when decode is late.
+
+  68040/060 RTG: CGX/P96, TurboGT, Fast buffer Auto, and a low-resolution
+  source before increasing quality. PiStorm/Emu68 should use MintVID040.
+
+  Live HLS/IPTV: start with All Frames and a low-resolution variant. For direct
+  mrplay use --live-resync after a live stall; --net-queue=24 is a deeper
+  read-ahead choice when free Fast RAM allows it.
+
+Keep the complete release drawer together. The AmigaGuide manual is
+MintVID.guide beside the binaries; MintVID.guide.info supplies its Workbench
+icon when the file is copied into a drawer.
 
 WHAT IT IS NOT
 
