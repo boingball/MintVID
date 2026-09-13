@@ -332,6 +332,15 @@ and `mrplay`. As with watch-page
 resolution, this deliberately small parser may need maintenance if YouTube
 changes its private page schema.
 
+**Already have a YouTube link?** Paste it directly into the `ytgui` or
+`ytgui-GT` search field and run the search. MintVID recognises normal
+`youtube.com/watch?v=...`, `/live/`, `/shorts/`, `/embed/`, and `youtu.be/...`
+links, including common scheme/mobile prefixes and extra query parameters. A
+recognised URL becomes one selected result ready for **Play**, so there is no
+need to search YouTube again for a video you already found elsewhere. URL
+recognition itself is local; playback still uses MintVID's normal YouTube
+resolver and HTTPS/AmiSSL support.
+
 Selecting a result and pressing **Channel videos** follows its bounded channel
 ID to the public channel `/videos` page and lists that channel's uploads. The
 transport row controls the separate player process: Play first cleanly replaces
