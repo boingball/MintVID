@@ -8,9 +8,9 @@
                               MintVID Guide
                               -------------
 
-@{b}MintVID 1.3.0@{ub} - a codec-agnostic video player for
-accelerated 68k AmigaOS hardware, from 68030-class ECS/AGA systems up
-to PiStorm/RTG machines.
+@{b}MintVID 1.3.0@{ub} - a codec-agnostic video player for accelerated 68k
+AmigaOS hardware, from 68030-class ECS/AGA systems up to PiStorm/RTG
+machines.
 
 This is the on-Amiga companion to the plain-text MintVID.readme. Pick a
 topic below (click, or press Return on a highlighted link):
@@ -35,8 +35,7 @@ topic below (click, or press Return on a highlighted link):
   @{" Support MintVID "     LINK Support}
 
 Use this viewer's own Contents/Browser/Index buttons (or the Amiga key
-shortcuts your AmigaGuide reader shows in its menu) to move around;
-every
+shortcuts your AmigaGuide reader shows in its menu) to move around. Every
 page below also links back here.
 @endnode
 
@@ -81,27 +80,23 @@ usable release for real accelerated Amiga systems.
   - Adds an explicit @{b}Video: All Frames / Video: Skip Frames@{ub}
     selector to both GUI editions. Skip Frames drops pictures that are
     already late so a slower machine can catch up while audio and the
-    media
-    timeline continue normally.
+    media timeline continue normally.
   - Adds a clear recommended-settings guide for 68030 ECS/AGA, 68040/060
     AGA and RTG, PiStorm/Emu68, and live HLS/IPTV playback.
   - Adds dedicated YouTube hashtag searching to both GUI editions.
   - Uses a fixed 74-column help layout with centred page headings for
     easier reading on wide Workbench screens.
-  - Includes the recent MPEG-1/MPEG-2, H.263+, WMV, H.264, AAC, MP2,
-  AC-3,
+  - Includes the recent MPEG-1/MPEG-2, H.263+, WMV, H.264, AAC, MP2, AC-3,
     mono-audio and Fast RAM buffering work from the development cycle.
-  - Ships the AmigaGuide manual with a Workbench icon and keeps it
-  beside
+  - Ships the AmigaGuide manual with a Workbench icon and keeps it beside
     every packaged CPU drawer.
   - Keeps the 68060-safe AAC path, shared accelerated YUV output, H.264
     speed modes, native YouTube playback and IPTV directory support from
     the 1.2.x performance work.
 
 Performance still depends on the exact CPU, source, codec, resolution,
-audio
-and display mode. A supported format is not automatically a real-time
-format.
+audio and display mode. A supported format is not automatically a
+real-time format.
 
 @{" Back to Contents " LINK "MAIN"}
 @endnode
@@ -120,8 +115,7 @@ audio layers around it. MP3/AAC decoding reuses the proven MintAMP/Helix
 code, with audio output through Paula.
 
 The goal is to go beyond MPEG-1 on real accelerated Amiga hardware.
-MintVID provides a broad range of codecs, but codec support does not
-imply
+MintVID provides a broad range of codecs, but codec support does not imply
 real-time playback on every supported CPU. Practical performance depends
 on processor speed, codec complexity, resolution, bitrate and display
 mode:
@@ -130,36 +124,27 @@ mode:
     modest frame sizes. Cinepak is the natural starting point; heavier
     formats may decode correctly without being practical in real time.
   - 68040/060 systems - older codecs such as Cinepak, MJPEG, MPEG-1/2,
-    MPEG-4 Part 2 and WMV7/8 become more practical at modest
-    resolutions,
-    especially with RTG. H.264/AVC remains extremely demanding, but
-    1.2.0
-    brought the lowest-resolution BBC One HLS stream close to real time
-    on a
-    tested real 68060 using AGA/HAM8. Higher resolutions remain beyond
-    normal
-    classic hardware, and results depend on the exact stream and
+    MPEG-4 Part 2 and WMV7/8 become more practical at modest resolutions,
+    especially with RTG. H.264/AVC remains extremely demanding, but 1.2.0
+    brought the lowest-resolution BBC One HLS stream close to real time on
+    a tested real 68060 using AGA/HAM8. Higher resolutions remain beyond
+    normal classic hardware, and results depend on the exact stream and
     configuration.
   - PiStorm/Emu68 (ARM-hosted 68k) - use the MintVID040 build. H.264/AVC
-    (Baseline through High Profile, CABAC and B-frames) becomes much
-    more
+    (Baseline through High Profile, CABAC and B-frames) becomes much more
     practical. On the tested Pi3-based PiStorm 600, low-resolution H.264
     streams below roughly 200p have played well. Faster PiStorm hardware
     should provide more headroom, but exact results depend on the stream
     and configuration.
   - Vampire/Apollo 68080 - not yet validated by the MintVID project. No
     optimised build is officially recommended yet, and the MintVID060
-    build
-    should not be assumed to be correct solely from the CPU name.
+    build should not be assumed to be correct solely from the CPU name.
 
 MintVID uses the same feature set across its 68030, 68040 and 68060
-builds.
-For normal classic systems use MintVID030, MintVID040 or MintVID060 for
-the
-matching CPU. PiStorm/Emu68 uses MintVID040. There is no separate AGA,
-RTG or
-PiStorm feature edition; display mode and practical playback performance
-depend on the hardware underneath it.
+builds. For normal classic systems use MintVID030, MintVID040 or
+MintVID060 for the matching CPU. PiStorm/Emu68 uses MintVID040. There is
+no separate AGA, RTG or PiStorm feature edition; display mode and
+practical playback performance depend on the hardware underneath it.
 
 @{" Back to Contents " LINK "MAIN"}
 @endnode
@@ -172,30 +157,22 @@ depend on the hardware underneath it.
 @{b}Installing MintVID@{ub}
 
 For a normal 68030, 68040 or 68060 system use the MintVID030, MintVID040
-or
-MintVID060 drawer respectively. PiStorm/Emu68 users should use
-MintVID040.
-Vampire/Apollo 68080 has not yet been validated, so there is no official
-optimised-build recommendation for it yet. Copy the chosen drawer to
-your
-Amiga (or a shared PiStorm volume) and keep its contents together.
+or MintVID060 drawer respectively. PiStorm/Emu68 users should use
+MintVID040. Vampire/Apollo 68080 has not yet been validated, so there is
+no official optimised-build recommendation for it yet. Copy the chosen
+drawer to your Amiga (or a shared PiStorm volume) and keep its contents
+together.
 
-Run @{b}MintVID@{ub} on systems with ReAction V44. A standard AmigaOS
-3.0
+Run @{b}MintVID@{ub} on systems with ReAction V44. A standard AmigaOS 3.0
 system without ReAction V44 should instead run @{b}MintVID-GT@{ub}, the
-plain
-GadTools/Intuition equivalent; it opens the matching -GT browsers
+plain GadTools/Intuition equivalent; it opens the matching -GT browsers
 automatically. IPTV and YouTube browsing are reachable from the
-controller's
-menus.
+controller's menus.
 
 Everything else in the drawer (mrplay, iptvgui, ytgui, the GadTools -GT
-set,
-mr_decode) is a support binary MintVID or the -GT controller loads on
-demand.
-Nothing in the release drawer is intended to be split up or copied out
-on its
-own.
+set, mr_decode) is a support binary MintVID or the -GT controller loads on
+demand. Nothing in the release drawer is intended to be split up or copied
+out on its own.
 
 @{b}Requirements@{ub}
 
@@ -214,18 +191,17 @@ own.
 
 @{b}Playing a video@{ub}
 
-Run the controller, choose a movie, and select a display mode: AGA,
-HAM6, HAM8, or CGX. Laced and 2x apply to the three chipset modes; CGX
-playback opens a size-gadget window and scales the video as that window
-is resized. The C2P chooser selects the standard graphics.library path,
-CD32 Akiko hardware, or the Kalms converter for chipset playback (it is
-disabled for CGX). Kalms is the default; incompatible geometry or bitmap
-layouts fall back safely to graphics.library.
+Run the controller, choose a movie, and select a display mode: AGA, HAM6,
+HAM8, or CGX. Laced and 2x apply to the three chipset modes; CGX playback
+opens a size-gadget window and scales the video as that window is resized.
+The C2P chooser selects the standard graphics.library path, CD32 Akiko
+hardware, or the Kalms converter for chipset playback (it is disabled for
+CGX). Kalms is the default; incompatible geometry or bitmap layouts fall
+back safely to graphics.library.
 
 On a HAM6 or HAM8 screen whose height is an exact whole fraction of the
 decoded height (the 640x360 into 640x180 shape a non-laced fit normally
-produces), H.264 is converted straight from YUV to HAM pixel bytes
-rather
+produces), H.264 is converted straight from YUV to HAM pixel bytes rather
 than through a full-resolution RGB24 frame - only the rows the downscale
 keeps are converted, cutting that conversion by about 45%. Other HAM
 geometries keep the established route.
@@ -238,13 +214,9 @@ geometries keep the established route.
   Playlist       opens the playlist window
 
 The playlist window supports Add, Remove, Clear and Play, plus Load M3U
-and
-Save M3U. Entries are shown by filename and can be selected
-independently of
-the main file gadget; playback uses the same display, audio and video
-options
-as the controller.
-
+and Save M3U. Entries are shown by filename and can be selected
+independently of the main file gadget; playback uses the same display,
+audio and video options as the controller.
 
 @{b}H.264 performance modes@{ub}
 
@@ -253,25 +225,20 @@ TurboGT remains the default. Auto resolves to the same policy.
   Quality   full filtering and no deliberate frame skipping
   Balanced  in-loop deblocking disabled; motion compensation stays exact
   Fast      Balanced plus bilinear instead of six-tap interpolation;
-  still
-            keeps every frame
+            still keeps every frame
   Turbo     Fast policy plus B-frame skipping; keeps the P-frame chain
   Turbo+    skips both P- and B-frames, so only keyframes are decoded
-  and
-            shown, keeping that decode short enough to hold audio
-            through it;
-            last-resort keyframe/slideshow mode
+            and shown, keeping that decode short enough to hold audio
+            through it; last-resort keyframe/slideshow mode
   TurboGT   same policy as Turbo, kept as a selectable name
 
 Use Fast when keeping every frame matters more than maximum speed. Turbo
-and
-TurboGT are now the same setting: what used to separate them was
+and TurboGT are now the same setting: what used to separate them was
 disabling deblocking on keyframes as well, and every mode from Balanced
-down
-now does that, because leaving some pictures undegraded corrupted the
+down now does that, because leaving some pictures undegraded corrupted the
 decoder's per-macroblock deblocking state (it made Fast slower than
-Quality).
-All of these modes are substantially faster than they were in 1.2.0.
+Quality). All of these modes are substantially faster than they were in
+1.2.0.
 
 @{b}Fullscreen (RTG/CGX only)@{ub}
 
@@ -285,11 +252,11 @@ command.
 @{b}Seeking@{ub}
 
 Cursor left/right seek 10 seconds at a time for local QuickTime MOV/MP4
-files, landing on the nearest keyframe via the sample index - a real
-seek, not a fast-decode approximation. AVI, MKV, and network/live
-sources don't have a keyframe index yet, so cursor-right stays the
-fast-forward toggle for those instead. Cursor up/down adjust Paula's
-volume, the same 8/64 steps as ytgui's Vol -/Vol + buttons.
+files, landing on the nearest keyframe via the sample index - a real seek,
+not a fast-decode approximation. AVI, MKV, and network/live sources don't
+have a keyframe index yet, so cursor-right stays the fast-forward toggle
+for those instead. Cursor up/down adjust Paula's volume, the same 8/64
+steps as ytgui's Vol -/Vol + buttons.
 
 @{b}Playhead@{ub}
 
@@ -297,18 +264,17 @@ Once playback starts, the controller's Info: field mirrors a live
 H:MM:SS/M:SS playhead in the current stream's own timeline, refreshed
 about once a second, for local files and any stream played through the
 IPTV/YouTube browsers - so a seek shows where it actually landed. On RTG
-(CGX/P96), the same playhead also appears in the video window's own
-title bar, visible even with the controller window elsewhere.
+(CGX/P96), the same playhead also appears in the video window's own title
+bar, visible even with the controller window elsewhere.
 
-@{b}Every GUI@{ub} has a MintVID title-bar menu with
-@{b}Guide...@{ub} (this manual), @{b}About MintVID...@{ub} with the
-project credits and support
-link, and @{b}Quit@{ub} to close that frontend cleanly. The controller's
-file gadget identifies the selected file and now also remembers the last
-drawer a video was picked from, reopening there next time instead of
-always starting fresh. On launch mrplay reports the container type,
-video
-codec/FourCC, dimensions, frame rate and audio format to its console.
+@{b}Every GUI@{ub} has a MintVID title-bar menu with @{b}Guide...@{ub}
+(this manual), @{b}About MintVID...@{ub} with the project credits and
+support link, and @{b}Quit@{ub} to close that frontend cleanly. The
+controller's file gadget identifies the selected file and now also
+remembers the last drawer a video was picked from, reopening there next
+time instead of always starting fresh. On launch mrplay reports the
+container type, video codec/FourCC, dimensions, frame rate and audio
+format to its console.
 
 For video timing choices see
   @{" Video frame policy " LINK FramePolicy}
@@ -329,29 +295,22 @@ For audio output settings (rate, mono, no-audio, Fast RAM buffering) see
 The video selector is available in both the ReAction and GadTools
 controllers:
 
-  @{b}Video: All Frames@{ub}  Keep every decoded picture, even when the
-                         decoder has fallen behind the presentation
-                         clock.
-                         This is the default GUI setting and is the best
-                         starting point when playback is keeping up.
+  @{b}Video: All Frames@{ub}
+      Keep every decoded picture, even when the decoder has fallen behind
+      the presentation clock. This is the default GUI setting and the
+      best starting point when playback is keeping up.
 
-  @{b}Video: Skip Frames@{ub} Drop decoded pictures that are already
-  late,
-                         allowing the scheduler to catch up while the
-                         audio clock and media timeline continue
-                         normally.
-                         This does not change the compressed stream or
-                         make
-                         the decoder cheaper; it is a presentation-time
-                         recovery policy.
+  @{b}Video: Skip Frames@{ub}
+      Drop decoded pictures that are already late, allowing the scheduler
+      to catch up while the audio clock and media timeline continue
+      normally. This does not change the compressed stream or make the
+      decoder cheaper; it is a presentation-time recovery policy.
 
 Use @{b}Skip Frames@{ub} when a slower Amiga is visibly falling behind,
-particularly with H.264, larger pictures, or a demanding display mode.
-It
+particularly with H.264, larger pictures, or a demanding display mode. It
 can make motion less complete, but it is preferable to building an ever
 larger delay when the machine cannot decode and display every picture in
-time. Leave it on @{b}All Frames@{ub} for a source that is already
-smooth,
+time. Leave it on @{b}All Frames@{ub} for a source that is already smooth,
 or when every decoded picture matters more than catching up.
 
 The command-line equivalents are:
@@ -360,15 +319,12 @@ The command-line equivalents are:
   --no-throughput    drop late decoded pictures (Skip Frames)
 
 For most codecs this is a presentation policy: already-decoded late
-pictures
-are discarded. H.264 gains a second, deliberately stronger recovery
-step.
-When Skip Frames remains well behind, MintVID escalates libavc to
-IVD_SKIP_PB, avoiding most P/B-picture decoding until the next IDR. This
-reduces real decoder work rather than merely suppressing RGB output. It
-was
-confirmed with a deliberately overloaded 720p stream under WinUAE, where
-full-rate decoding was not possible.
+pictures are discarded. H.264 gains a second, deliberately stronger
+recovery step. When Skip Frames remains well behind, MintVID escalates
+libavc to IVD_SKIP_PB, avoiding most P/B-picture decoding until the next
+IDR. This reduces real decoder work rather than merely suppressing RGB
+output. It was confirmed with a deliberately overloaded 720p stream under
+WinUAE, where full-rate decoding was not possible.
 
 Audio servicing, timestamps and seeking remain unchanged. A GUI-launched
 session always passes an explicit choice so the controller selection
@@ -386,16 +342,14 @@ remains conservative unless you choose one of the switches explicitly.
                            --------------------
 
 There is no single setting that makes every codec real time. Start with
-the
-CPU-matched release drawer, keep the complete drawer together, and
-change one
-setting at a time. The following are sensible starting points:
+the CPU-matched release drawer, keep the complete drawer together, and
+change one setting at a time. The following are sensible starting points:
 
   @{u}68030 ECS/AGA@{uu}
     Display: AGA, lace off, 2x off
     C2P: Standard/automatic fallback
-    Video: All Frames for light codecs; Skip Frames if playback falls
-    behind
+    Video: All Frames for light codecs;
+           Skip Frames if playback falls behind
     Audio: Normal; use Low or Mono only when the CPU is under pressure
     Media: modest Cinepak, MPEG-1, MJPEG or other lightweight files
 
@@ -419,26 +373,21 @@ setting at a time. The following are sensible starting points:
     H.264: TurboGT, then Fast if full quality is affordable
     Video: All Frames is normally appropriate
     Fast buffer: Auto; increase only when the source and free RAM
-    justify it
+                 justify it
 
   @{u}Live HLS/IPTV@{uu}
     Start with the GUI's All Frames, the default display mode, and the
     source's low-resolution HLS variant.
     Use Skip Frames only when the video is repeatedly falling behind.
     For a direct mrplay command, --live-resync can recover from a live
-    stall;
-    --net-queue=24 is a deeper read-ahead choice when free RAM allows
-    it.
-    HTTPS requires an SSL=1 build; SSLCERTS=1 is recommended for
-    releases.
+      stall; --net-queue=24 provides deeper read-ahead when free RAM
+      allows it.
+    HTTPS requires an SSL=1 build; SSLCERTS=1 is recommended for releases.
 
-Keep lace and 2x off until the basic picture is working. They increase
-the
+Keep lace and 2x off until the basic picture is working. They increase the
 display workload and are not a universal quality improvement. If the
-window
-is smooth but audio breaks up, try Audio: Low, Mono audio, or No audio
-before
-changing several video controls together.
+window is smooth but audio breaks up, try Audio: Low, Mono audio, or No
+audio before changing several video controls together.
 
 @{" Back to Contents " LINK "MAIN"}
 @endnode
@@ -452,15 +401,13 @@ changing several video controls together.
 parsers, playback settings, and status/control protocol:
 
   - @{b}MintVID@{ub}, iptvgui, ytgui use ReAction V44.
-  - @{b}MintVID-GT@{ub}, iptvgui-GT, ytgui-GT use only
-  GadTools/Intuition
+  - @{b}MintVID-GT@{ub}, iptvgui-GT, ytgui-GT use only GadTools/Intuition
     V37, for a standard AmigaOS 3.0 installation. Start MintVID-GT; it
     opens the matching -GT browsers automatically.
 
 Keep one complete GUI set beside mrplay (or put mrplay on the command
-path). Both editions drive the same underlying mrplay process and the
-same options, so behaviour matches between them - only the front end
-differs.
+path). Both editions drive the same underlying mrplay process and the same
+options, so behaviour matches between them - only the front end differs.
 
 @{" Back to Contents " LINK "MAIN"}
 @endnode
@@ -472,10 +419,10 @@ differs.
 
 @{b}Live channel directory@{ub}
 
-Both controllers include an IPTV... launcher for their matching
-directory window. It reads valid cached channels.json and streams.json
-from PROGDIR:Cache/IPTV/ immediately; the default public directory is
-iptv-org (channels.json, streams.json, countries.json, categories.json).
+Both controllers include an IPTV... launcher for their matching directory
+window. It reads valid cached channels.json and streams.json from
+PROGDIR:Cache/IPTV/ immediately; the default public directory is iptv-org
+(channels.json, streams.json, countries.json, categories.json).
 
 MintVID does not host or redistribute television channels: iptv-org is a
 collection of publicly available links, and individual links may be
@@ -485,36 +432,31 @@ Cached JSON is used immediately, refreshed after 24 hours, and replaced
 only after a complete download parses successfully - a failed refresh
 leaves the prior cache intact. Manual HTTP/HTTPS media URLs, M3U8
 playlists, and simple #EXTM3U lists use the normal MintVID URL/player
-pipeline; playback still depends on the existing demuxers and codecs.
-HLS prefers supported low-resolution variants (640 px wide by default)
-and cannot make DRM, login-only, unsupported-codec, or dead streams
-playable.
+pipeline; playback still depends on the existing demuxers and codecs. HLS
+prefers supported low-resolution variants (640 px wide by default) and
+cannot make DRM, login-only, unsupported-codec, or dead streams playable.
 
 Classic 68040/060 H.264 results depend heavily on the exact stream and
-output
-mode. With the 1.2.0 optimisations, the lowest-resolution BBC One HLS
-stream
-has approached real time on a tested real 68060 using AGA/HAM8, while
-higher
-resolutions remain beyond normal classic hardware. PiStorm/Emu68 remains
-the
-practical tier for broader H.264 IPTV playback.
+output mode. With the 1.2.0 optimisations, the lowest-resolution BBC One
+HLS stream has approached real time on a tested real 68060 using AGA/HAM8,
+while higher resolutions remain beyond normal classic hardware.
+PiStorm/Emu68 remains the practical tier for broader H.264 IPTV playback.
 
 Only the selected country's channels are held in RAM; unrelated global
 streams are validated and discarded. Each channel retains up to four
 preferred stream URLs, and the window's Next Stream button advances
-through them without silently looping. Double-clicking a channel plays
-it directly, without a separate Play press.
+through them without silently looping. Double-clicking a channel plays it
+directly, without a separate Play press.
 
 IPTV playback inherits a snapshot of the ReAction controller's display,
-C2P, lace, and 2x selections when IPTV... is pressed; close and reopen
-the window after changing controller settings to pick up new ones. A
+C2P, lace, and 2x selections when IPTV... is pressed; close and reopen the
+window after changing controller settings to pick up new ones. A
 Shell-launched iptvgui uses safe AGA/Standard, lace-off, 2x-off,
 low-bandwidth HLS defaults.
 
 Building with SSL=1 enables the iptv-org directory download over HTTPS;
-without it, the browser stays usable for cached data and manual URLs,
-and a refresh explicitly reports that it needs rebuilding with SSL=1.
+without it, the browser stays usable for cached data and manual URLs, and
+a refresh explicitly reports that it needs rebuilding with SSL=1.
 
 @{" Back to Contents " LINK "MAIN"}
 @endnode
@@ -527,34 +469,30 @@ and a refresh explicitly reports that it needs rebuilding with SSL=1.
 @{b}Native YouTube playback@{ub}
 
 mrplay can resolve a public YouTube Live watch/share URL natively. It
-fetches the watch page with a browser user agent, extracts the signed
-HLS manifest URL, validates it, and hands it to the normal HLS
-variant/segment pipeline. Resolution happens on the Amiga itself, so
-IP-bound signed URLs are not borrowed from a remote service.
+fetches the watch page with a browser user agent, extracts the signed HLS
+manifest URL, validates it, and hands it to the normal HLS variant/segment
+pipeline. Resolution happens on the Amiga itself, so IP-bound signed URLs
+are not borrowed from a remote service.
 
 For ordinary uploads, the resolver also tries YouTube's muxed 360p MP4
 and, where still supplied, muxed 720p MP4 - both contain H.264 video and
 AAC audio together, so MintVID's existing seekable HTTP/MP4 path plays
-them without downloading or merging separate streams. Only a direct
-signed HTTPS Google Video URL is accepted; ciphered URLs and unresolved
-player challenges are rejected. Selecting 720p, 1080p, or Best tries
-720p first and falls back to 360p automatically; Low, 360p, and 480p
-stay on the 360p muxed format. There is no standard muxed 480p or 1080p
-target yet.
+them without downloading or merging separate streams. Only a direct signed
+HTTPS Google Video URL is accepted; ciphered URLs and unresolved player
+challenges are rejected. Selecting 720p, 1080p, or Best tries 720p first
+and falls back to 360p automatically; Low, 360p, and 480p stay on the 360p
+muxed format. There is no standard muxed 480p or 1080p target yet.
 
-On classic 68040/060 machines H.264 remains highly dependent on the
-stream and
-output mode. The lowest-resolution BBC One HLS stream has approached
-real time
-on a tested real 68060 with AGA/HAM8 after the 1.2.0 work, but ordinary
-360p
-uploads and higher resolutions remain beyond normal classic hardware.
-PiStorm/Emu68 is the practical target for the broader YouTube range.
+On classic 68040/060 machines H.264 remains highly dependent on the stream
+and output mode. The lowest-resolution BBC One HLS stream has approached
+real time on a tested real 68060 with AGA/HAM8 after the 1.2.0 work, but
+ordinary 360p uploads and higher resolutions remain beyond normal classic
+hardware. PiStorm/Emu68 is the practical target for the broader YouTube
+range.
 
-This support is intentionally narrow: age/login/region-restricted
-videos, DRM, uploads without a usable muxed format, and YouTube's
-private-schema changes can all produce a clean unsupported error rather
-than a crash.
+This support is intentionally narrow: age/login/region-restricted videos,
+DRM, uploads without a usable muxed format, and YouTube's private-schema
+changes can all produce a clean unsupported error rather than a crash.
 
 @{b}Searching@{ub}
 
@@ -563,17 +501,17 @@ search window. It searches YouTube's public results page without an API
 key, shows the title and channel, and starts the selected result through
 the same native resolver. The Quality button cycles through Low, 360p,
 480p, 720p, 1080p, and unrestricted Best. The search-type selector
-defaults to Live and also offers All, Videos, Shorts, and Hashtags.
-For Hashtags, enter a single tag with or without the leading #; MintVID
-opens YouTube's dedicated hashtag page rather than treating it as an
-ordinary text search. Selecting a result and pressing Channel videos
-follows its channel ID to that channel's public uploads list.
+defaults to Live and also offers All, Videos, Shorts, and Hashtags. For
+Hashtags, enter a single tag with or without the leading #; MintVID opens
+YouTube's dedicated hashtag page rather than treating it as an ordinary
+text search. Selecting a result and pressing Channel videos follows its
+channel ID to that channel's public uploads list.
 
 The transport row controls the separate player process directly: Play
 first cleanly replaces the current video, Pause and Fast toggle their
-modes, Vol -/+ adjusts Paula in steps, Fullscreen toggles the RTG
-window, and Stop exits the player. Double-clicking a result plays it
-directly, without a separate Play press.
+modes, Vol -/+ adjusts Paula in steps, Fullscreen toggles the RTG window,
+and Stop exits the player. Double-clicking a result plays it directly,
+without a separate Play press.
 
 Build with SSL=1 and keep ytgui beside MintVID and mrplay.
 
@@ -606,8 +544,8 @@ Build with SSL=1 and keep ytgui beside MintVID and mrplay.
                 steps down safely if necessary.
 
 MintAMP/Helix decode MP3, AAC-LC and fixed-point AC-3; MPEG-1/2 Layer II
-(MP2) audio decodes through the same pl_mpeg path used for MPEG video.
-PCM is also supported directly.
+(MP2) audio decodes through the same pl_mpeg path used for MPEG video. PCM
+is also supported directly.
 
 @{" Back to Contents " LINK "MAIN"}
 @endnode
@@ -618,10 +556,10 @@ PCM is also supported directly.
                       -----------------------------
 
 Direct AVI/MOV/MP4 URL playback needs a finite, byte-addressable server:
-Content-Length or Content-Range, and byte-range support when the
-container seeks. MPEG-TS also accepts a forward-only chunked response.
-HLS playlists use their own dedicated live/VOD path. Fragmented MP4 is
-not supported yet.
+Content-Length or Content-Range, and byte-range support when the container
+seeks. MPEG-TS also accepts a forward-only chunked response. HLS playlists
+use their own dedicated live/VOD path. Fragmented MP4 is not supported
+yet.
 
 For constrained hardware on live HLS:
 
@@ -681,16 +619,13 @@ HTTP(S)/HLS URLs (including live IPTV playlists and YouTube).
 
 @{b}Video codecs@{ub}: Cinepak, Microsoft Video 1, Microsoft RLE8,
 uncompressed UYVY422, H.263 / H.263+, Motion-JPEG, MPEG-1, MPEG-2 (with
-B-frames), MPEG-4 Part 2 (ISO ASP and Microsoft MP42/DIV2), Windows
-Media
-Video 7 (WMV1), Windows Media Video 8 (WMV2), and H.264/AVC
-Baseline/Main/
+B-frames), MPEG-4 Part 2 (ISO ASP and Microsoft MP42/DIV2), Windows Media
+Video 7 (WMV1), Windows Media Video 8 (WMV2), and H.264/AVC Baseline/Main/
 High Profile.
 
 WMV1's low-bitrate spatial intra/inter prediction mode is deliberately
 rejected rather than approximated. WMV2 IntraX8 (J-frame) coding is also
-not
-supported. Normal tested WMV1/WMV2 AVI I/P streams use the native
+not supported. Normal tested WMV1/WMV2 AVI I/P streams use the native
 decoders.
 
 @{b}Audio to Paula@{ub}: PCM, MP2, MP3, AAC-LC (raw/ADTS/LATM), and
@@ -699,22 +634,17 @@ MintAMP/Helix code.
 
 MintVID's core decoders are regression-tested against ffmpeg using the
 project's test fixtures where applicable. The portable core is also
-cross-built and exercised on a big-endian m68k target under QEMU to
-catch
-endianness and alignment problems that a little-endian x86 host build
-can
+cross-built and exercised on a big-endian m68k target under QEMU to catch
+endianness and alignment problems that a little-endian x86 host build can
 miss.
 
-MintVID uses a modular decoder architecture rather than being tied to
-one
-fixed format, so the supported codec list can continue to grow. It is
-not a
-video editor or encoder: use ffmpeg or similar on a modern machine to
-prepare
-source material, then play the result on the Amiga.
+MintVID uses a modular decoder architecture rather than being tied to one
+fixed format, so the supported codec list can continue to grow. It is not
+a video editor or encoder: use ffmpeg or similar on a modern machine to
+prepare source material, then play the result on the Amiga.
 
 For the detailed per-FourCC breakdown see
-@{" Codec support list " LINK CodecList}.
+@{" Codec support list " LINK CodecList} .
 
 @{" Back to Contents " LINK "MAIN"}
 @endnode
@@ -789,8 +719,7 @@ PROGDIR:-relative, in the same directory they shipped in.
 
 mrplay carries a $STACK:320000 AmigaOS stack cookie because libavc needs
 substantially more stack than the classic Shell default. On systems that
-don't honour stack cookies, run "Stack 320000" before starting the
-player.
+don't honour stack cookies, run "Stack 320000" before starting the player.
 
 @{b}HTTPS/YouTube/IPTV refresh says it needs SSL=1@{ub}
 
@@ -801,13 +730,13 @@ plain HTTP URLs in the meantime.
 @{b}A stream won't play@{ub}
 
 MintVID cannot make DRM, login-only, geo-blocked, or unsupported-codec
-streams playable - that is a property of the source, not a bug to
-report. Direct AVI/MOV/MP4 URLs also need a finite, byte-addressable
-resource: the server must supply Content-Length or Content-Range and
-honour byte ranges when the container seeks.
+streams playable - that is a property of the source, not a bug to report.
+Direct AVI/MOV/MP4 URLs also need a finite, byte-addressable resource: the
+server must supply Content-Length or Content-Range and honour byte ranges
+when the container seeks.
 
 If none of the above explains what you're seeing, see
-@{" Reporting a problem " LINK ReportingProblems}.
+@{" Reporting a problem " LINK ReportingProblems} .
 
 @{" Back to Contents " LINK "MAIN"}
 @endnode
@@ -837,15 +766,14 @@ Please open an issue on the project's GitHub page and include:
 
   4. For a YouTube/IPTV problem: the public video/channel URL or IPTV
      directory entry, since MintVID's YouTube/HLS resolution behaviour
-     is
-     often specific to one video, channel, or region.
+     is often specific to one video, channel, or region.
 
 MintVID's codecs are regression-tested against ffmpeg on the host and
 cross-built for real big-endian m68k under QEMU (see CLAUDE.md in the
-source tree) before anything ships, but the Amiga-specific display,
-audio and GUI layers can only be verified on real hardware or PiStorm -
-so a clear, reproducible report from actual hardware is genuinely the
-fastest path to a fix.
+source tree) before anything ships, but the Amiga-specific display, audio
+and GUI layers can only be verified on real hardware or PiStorm - so a
+clear, reproducible report from actual hardware is genuinely the fastest
+path to a fix.
 
 @{" Back to Contents " LINK "MAIN"}
 @endnode
@@ -869,14 +797,13 @@ once, not just MIT:
     redistributing binaries obliges you to also offer corresponding
     source, per the GPL, even though MintVID's own contribution is MIT.
   - Ittiam libavc (H.264) is Apache-2.0.
-  - MintAMP/Helix is a separately licensed submodule; retain its
-    notices. In particular the Helix AAC decoder path it pulls in is
-    licensed under RealNetworks' RPSL, not GPL.
+  - MintAMP/Helix is a separately licensed submodule; retain its notices.
+    In particular the Helix AAC decoder path it pulls in is licensed under
+    RealNetworks' RPSL, not GPL.
 
 This player was inspired by RiVA 0.54 (Fellner/Toeroek/Richter), the
 fastest 68k MPEG-1 player, previously distributed on Aminet - but is a
-fresh, unrelated codebase and does not include or depend on RiVA's
-source.
+fresh, unrelated codebase and does not include or depend on RiVA's source.
 
 @{" Back to Contents " LINK "MAIN"}
 @endnode
@@ -889,8 +816,8 @@ source.
 MintVID is made by Darren "boingball" Banfi, with a frankly unreasonable
 number of classic-Amiga test runs and LLM-assisted development sessions.
 
-If MintVID is useful - or if YouTube on an Amiga made you laugh - you
-can help keep the hardware testing and development going at:
+If MintVID is useful - or if YouTube on an Amiga made you laugh - you can
+help keep the hardware testing and development going at:
 
   https://buymeacoffee.com/boingball
 
