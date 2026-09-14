@@ -61,6 +61,21 @@ int main(void)
           "build Shorts search URL");
     CHECK(strstr(url, "sp=EgIQCQ%253D%253D") != NULL,
           "Shorts search includes YouTube Shorts filter");
+    CHECK(mr_youtube_search_build_url_mode(
+              url, sizeof(url), "#Amiga", MR_YOUTUBE_SEARCH_HASHTAGS),
+          "build hashtag page URL");
+    CHECK(!strcmp(url, "https://www.youtube.com/hashtag/Amiga"),
+          "hashtag search strips optional leading hash");
+    CHECK(mr_youtube_search_build_url_mode(
+              url, sizeof(url), "Amiga", MR_YOUTUBE_SEARCH_HASHTAGS),
+          "build hashtag URL without leading hash");
+    CHECK(!strcmp(url, "https://www.youtube.com/hashtag/Amiga"),
+          "plain hashtag name accepted");
+    CHECK(!mr_youtube_search_build_url_mode(
+              url, sizeof(url), "Amiga demo", MR_YOUTUBE_SEARCH_HASHTAGS),
+          "hashtag search rejects spaces");
+    CHECK(strstr(mr_youtube_search_last_error(), "without spaces") != NULL,
+          "hashtag-space error is useful");
 
     CHECK(mr_youtube_search_parse(&results, fixture, strlen(fixture), 1),
           "parse live-only fixture");
@@ -109,6 +124,14 @@ int main(void)
               MR_YOUTUBE_SEARCH_ALL),
           "all search accepts Shorts renderers");
     CHECK(results.count == 1, "all search includes Shorts");
+    mr_youtube_search_results_free(&results);
+
+    CHECK(mr_youtube_search_parse_mode(
+              &results, fixture, strlen(fixture),
+              MR_YOUTUBE_SEARCH_HASHTAGS),
+          "parse hashtag-page video renderers");
+    CHECK(results.count == 2,
+          "hashtag mode includes normal video renderers");
     mr_youtube_search_results_free(&results);
 
     CHECK(mr_youtube_search_parse(&results, channel_fixture,

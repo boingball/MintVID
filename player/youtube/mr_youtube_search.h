@@ -27,7 +27,8 @@ typedef enum mr_youtube_search_mode {
     MR_YOUTUBE_SEARCH_ALL = 0,
     MR_YOUTUBE_SEARCH_VIDEOS,
     MR_YOUTUBE_SEARCH_LIVE,
-    MR_YOUTUBE_SEARCH_SHORTS
+    MR_YOUTUBE_SEARCH_SHORTS,
+    MR_YOUTUBE_SEARCH_HASHTAGS
 } mr_youtube_search_mode;
 
 void mr_youtube_search_results_init(mr_youtube_search_results *results);

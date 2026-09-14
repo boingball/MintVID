@@ -120,7 +120,7 @@ on Aminet for that source and its own GPL-2.0/dual GPL-MIT licensing.
 | AVI, QuickTime MOV/MP4, Matroska/MKV and MPEG-TS/M2TS demuxers | ✅ packet-streamed from disk or HTTP(S); no whole-file allocation |
 | HTTP/HTTPS URL input | ✅ redirects, byte-range seeking and 256 KiB rewind cache |
 | Public YouTube URLs | ✅ live HLS plus experimental muxed 360p/720p H.264/AAC playback for compatible uploads |
-| YouTube search | ✅ no-key ReAction and OS 3.0 GadTools browsers; All/Videos/Live/Shorts filters and native playback handoff |
+| YouTube search | ✅ no-key ReAction and OS 3.0 GadTools browsers; All/Videos/Live/Shorts/Hashtags modes and native playback handoff |
 | Cinepak (CVID) decoder | ✅ ffmpeg-validated (AVI + MOV) |
 | Microsoft Video 1 — MSVC/CRAM AVI | ✅ native 8/16-bit RGB24 decoder; compatible WHAM streams accepted |
 | Microsoft RLE8 — palettised AVI | ✅ native palette and delta-frame decoder (RLE4 deferred) |
@@ -331,8 +331,9 @@ native resolver. The **Quality** button cycles through Low, 360p, 480p, 720p,
 1080p, and unrestricted Best. For recorded videos, 720p/1080p/Best try the
 compatible muxed 720p format and fall back to 360p; the other choices use 360p.
 The search-type selector defaults to **Live** and also offers **All**,
-**Videos**, and **Shorts**. Build with `SSL=1` and keep `ytgui` beside `MintVID`
-and `mrplay`. As with watch-page
+**Videos**, **Shorts**, and **Hashtags**. Hashtags mode accepts one tag with or
+without its leading `#` and opens YouTube's dedicated `/hashtag/<tag>` page.
+Build with `SSL=1` and keep `ytgui` beside `MintVID` and `mrplay`. As with watch-page
 resolution, this deliberately small parser may need maintenance if YouTube
 changes its private page schema.
 

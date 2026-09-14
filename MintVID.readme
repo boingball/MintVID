@@ -113,6 +113,10 @@ or paste the link into MintVID instead of trying to find the same item again
 through YouTube search. URL recognition itself is local, but actual YouTube
 playback still needs the normal HTTPS/AmiSSL support.
 
+The YouTube search type also includes Hashtags. Enter one tag with or without
+its leading #; MintVID opens YouTube's dedicated hashtag page and lists its
+normal video and Shorts renderers through the existing results browser.
+
 WMV compatibility notes: WMV1's low-bitrate spatial intra/inter prediction
 mode is not implemented and is rejected rather than approximated. WMV2's
 IntraX8 (J-frame) mode is likewise not supported. Normal tested WMV1/WMV2
