@@ -644,7 +644,7 @@ a video editor or encoder: use ffmpeg or similar on a modern machine to
 prepare source material, then play the result on the Amiga.
 
 For the detailed per-FourCC breakdown see
-@{" Codec support list " LINK CodecList} .
+@{" Codec support list " LINK CodecList}.
 
 @{" Back to Contents " LINK "MAIN"}
 @endnode
@@ -736,7 +736,7 @@ server must supply Content-Length or Content-Range and honour byte ranges
 when the container seeks.
 
 If none of the above explains what you're seeing, see
-@{" Reporting a problem " LINK ReportingProblems} .
+@{" Reporting a problem " LINK ReportingProblems}.
 
 @{" Back to Contents " LINK "MAIN"}
 @endnode
