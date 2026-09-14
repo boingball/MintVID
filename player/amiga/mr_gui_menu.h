@@ -27,8 +27,8 @@ void mr_gui_show_about(struct Window *window, const char *edition);
 /* "MintVID > Guide..." - opens PROGDIR:MintVID.guide (the AmigaGuide manual
  * shipped beside every binary by the release target) the same way every
  * other MintVID GUI launches a support binary (mrplay/iptvgui/ytgui):
- * LoadSeg() + CreateNewProcTags() running the standard AmigaOS "AmigaGuide"
- * command (normally C:AmigaGuide) as its own process, passing the guide's
+ * LoadSeg() + CreateNewProcTags() running the standard AmigaOS
+ * "C:AmigaGuide" command as its own process, passing the guide's
  * path as its argument, rather than calling amigaguide.library directly -
  * see mr_gui_menu.c for why. `menu` is unused but kept so the call site
  * mirrors mr_gui_show_about()'s signature shape. */
