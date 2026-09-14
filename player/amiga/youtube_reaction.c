@@ -631,7 +631,7 @@ static void run_search(Object *query, Object *type_chooser, Object *list,
 {
     static const char *const result_summaries[] = {
         "all video results shown", "long-form videos shown",
-        "live results shown", "Shorts shown"
+        "live results shown", "Shorts shown", "hashtag results shown"
     };
     STRPTR query_text = NULL;
     ULONG selected = MR_YOUTUBE_SEARCH_LIVE;
@@ -642,7 +642,7 @@ static void run_search(Object *query, Object *type_chooser, Object *list,
                         window, nodes, results))
         return;
     GetAttr(CHOOSER_Selected, type_chooser, &selected);
-    if (selected > MR_YOUTUBE_SEARCH_SHORTS)
+    if (selected > MR_YOUTUBE_SEARCH_HASHTAGS)
         selected = MR_YOUTUBE_SEARCH_ALL;
     mode = (mr_youtube_search_mode)selected;
     if (!mr_youtube_search_build_url_mode(
@@ -772,7 +772,8 @@ int main(int argc, char **argv)
     if (!add_search_type(&search_types, "All") ||
         !add_search_type(&search_types, "Videos") ||
         !add_search_type(&search_types, "Live") ||
-        !add_search_type(&search_types, "Shorts"))
+        !add_search_type(&search_types, "Shorts") ||
+        !add_search_type(&search_types, "Hashtags"))
         goto cleanup;
     type_chooser = (Object *)NewObject(
         CHOOSER_GetClass(), NULL, GA_ID, G_SEARCH_TYPE, GA_RelVerify, TRUE,

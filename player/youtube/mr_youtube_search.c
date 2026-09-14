@@ -47,23 +47,51 @@ int mr_youtube_search_build_url_mode(char *out, size_t cap,
                                      const char *query,
                                      mr_youtube_search_mode mode)
 {
-    static const char prefix[] =
+    static const char results_prefix[] =
         "https://www.youtube.com/results?search_query=";
+    static const char hashtag_prefix[] =
+        "https://www.youtube.com/hashtag/";
     static const char hex[] = "0123456789ABCDEF";
-    size_t used, i;
+    const char *prefix;
+    size_t prefix_size, used, i;
 
     if (!out || !cap || !query || !*query) {
         set_error("Enter something to search for.");
         return 0;
     }
-    if (sizeof(prefix) > cap) {
+    if (mode < MR_YOUTUBE_SEARCH_ALL ||
+        mode > MR_YOUTUBE_SEARCH_HASHTAGS) {
+        set_error("Invalid YouTube search type.");
+        return 0;
+    }
+
+    if (mode == MR_YOUTUBE_SEARCH_HASHTAGS) {
+        while (isspace((unsigned char)*query))
+            query++;
+        if (*query == '#')
+            query++;
+        if (!*query) {
+            set_error("Enter a hashtag to search for.");
+            return 0;
+        }
+        prefix = hashtag_prefix;
+    } else {
+        prefix = results_prefix;
+    }
+    prefix_size = strlen(prefix);
+    if (prefix_size + 1 > cap) {
         set_error("Search URL buffer is too small.");
         return 0;
     }
-    memcpy(out, prefix, sizeof(prefix));
-    used = sizeof(prefix) - 1;
+    memcpy(out, prefix, prefix_size + 1);
+    used = prefix_size;
+
     for (i = 0; query[i]; i++) {
         unsigned char c = (unsigned char)query[i];
+        if (mode == MR_YOUTUBE_SEARCH_HASHTAGS && isspace(c)) {
+            set_error("Enter one hashtag without spaces.");
+            return 0;
+        }
         if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
             if (!append_char(out, cap, &used, (char)c))
                 goto too_long;
@@ -76,7 +104,8 @@ int mr_youtube_search_build_url_mode(char *out, size_t cap,
             out[used] = 0;
         }
     }
-    if (mode != MR_YOUTUBE_SEARCH_ALL) {
+    if (mode >= MR_YOUTUBE_SEARCH_VIDEOS &&
+        mode <= MR_YOUTUBE_SEARCH_SHORTS) {
         /* YouTube's current public Type filters. Live is technically a
          * Feature filter, but combines cleanly with the same search page.
          * Values are already escaped for use as the sp query value. */
@@ -86,15 +115,8 @@ int mr_youtube_search_build_url_mode(char *out, size_t cap,
             "&sp=EgJAAQ%253D%253D", /* Live now */
             "&sp=EgIQCQ%253D%253D"  /* Shorts */
         };
-        const char *filter;
-        size_t filter_size;
-        if (mode < MR_YOUTUBE_SEARCH_VIDEOS ||
-            mode > MR_YOUTUBE_SEARCH_SHORTS) {
-            set_error("Invalid YouTube search type.");
-            return 0;
-        }
-        filter = filters[mode];
-        filter_size = strlen(filter) + 1;
+        const char *filter = filters[mode];
+        size_t filter_size = strlen(filter) + 1;
         if (used + filter_size > cap)
             goto too_long;
         memcpy(out + used, filter, filter_size);
@@ -375,7 +397,8 @@ int mr_youtube_search_parse_mode(mr_youtube_search_results *results,
         }
         p = close;
     }
-    if (mode == MR_YOUTUBE_SEARCH_ALL &&
+    if ((mode == MR_YOUTUBE_SEARCH_ALL ||
+         mode == MR_YOUTUBE_SEARCH_HASHTAGS) &&
         results->count < MR_YOUTUBE_SEARCH_MAX_RESULTS)
         parse_shorts(results, document, end);
     if (!results->count) {

@@ -23,6 +23,13 @@
 
 ### Added
 
+- The ReAction and GadTools YouTube browsers now include a Hashtags search
+  type. It accepts one tag with or without a leading `#`, opens YouTube's
+  dedicated `/hashtag/<tag>` page, and lists both normal video and Shorts
+  renderers through the existing bounded result parser.
+- The AmigaGuide manual now uses a fixed 74-column reading width with centred,
+  underlined page headings instead of stretching paragraphs across the viewer
+  window.
 - The 1.3.0 controller pass now has a compact transport strip in both GUI
   editions, volume down/up controls, and a MintAMP-style playlist window.
   Playlists hold up to 128 video paths and support multi-select Add, Remove,

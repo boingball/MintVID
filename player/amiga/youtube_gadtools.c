@@ -80,7 +80,8 @@ static ULONG ds_ticks(const struct DateStamp *ds)
 }
 
 static STRPTR type_labels[] = {(STRPTR)"All", (STRPTR)"Videos",
-                               (STRPTR)"Live", (STRPTR)"Shorts", NULL};
+                               (STRPTR)"Live", (STRPTR)"Shorts",
+                               (STRPTR)"Hashtags", NULL};
 static const char *quality_labels[] = {
     "Quality: Low", "Quality: 360p", "Quality: 480p",
     "Quality: 720p", "Quality: 1080p", "Quality: Best"
@@ -438,7 +439,8 @@ static int load_pasted_url(ytgt *app, const char *query_text)
 static void search(ytgt *app)
 {
     static const char *summary[] = {"all results shown", "videos shown",
-                                    "live results shown", "Shorts shown"};
+                                    "live results shown", "Shorts shown",
+                                    "hashtag results shown"};
     STRPTR query = NULL;
     ULONG mode = value(app, app->type, GTCY_Active);
     char url[1024];
@@ -446,7 +448,7 @@ static void search(ytgt *app)
                      GTST_String, (ULONG)&query, TAG_DONE);
     if (load_pasted_url(app, (const char *)query))
         return;
-    if (mode > MR_YOUTUBE_SEARCH_SHORTS) mode = MR_YOUTUBE_SEARCH_ALL;
+    if (mode > MR_YOUTUBE_SEARCH_HASHTAGS) mode = MR_YOUTUBE_SEARCH_ALL;
     if (!mr_youtube_search_build_url_mode(url, sizeof(url),
                                           query ? (const char *)query : "",
                                           (mr_youtube_search_mode)mode)) {
