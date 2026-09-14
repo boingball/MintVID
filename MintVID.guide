@@ -37,7 +37,7 @@ page below also links back here.
 @endnode
 
 @node TOCPage "Contents"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}MintVID Guide@{ub} - Contents
 
   @{" Overview "            LINK Overview}
@@ -62,7 +62,7 @@ page below also links back here.
 
 
 @node WhatsNew "What's new in 1.3.0"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}MintVID 1.3.0@{ub}
 
 MintVID 1.3.0 turns the recent playback and hardware work into a more
@@ -85,11 +85,11 @@ usable release for real accelerated Amiga systems.
 Performance still depends on the exact CPU, source, codec, resolution, audio
 and display mode. A supported format is not automatically a real-time format.
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@{" Back to Contents " LINK "MAIN"}
 @endnode
 
 @node Overview "Overview"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}What MintVID is@{ub}
 
 MintVID plays video files, YouTube, and IPTV channels directly on the
@@ -128,11 +128,11 @@ matching CPU. PiStorm/Emu68 uses MintVID040. There is no separate AGA, RTG or
 PiStorm feature edition; display mode and practical playback performance
 depend on the hardware underneath it.
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@{" Back to Contents " LINK "MAIN"}
 @endnode
 
 @node Installation "Installation"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}Installing MintVID@{ub}
 
 For a normal 68030, 68040 or 68060 system use the MintVID030, MintVID040 or
@@ -159,11 +159,11 @@ own.
   - AmiSSL v5 + amisslmaster.library for HTTPS, YouTube and online IPTV
     features when the build was compiled with SSL=1.
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@{" Back to Contents " LINK "MAIN"}
 @endnode
 
 @node Controls "Controls"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}Playing a video@{ub}
 
 Run the controller, choose a movie, and select a display mode: AGA,
@@ -255,12 +255,12 @@ complete hardware starting points see @{" Recommended settings " LINK Recommende
 For audio output settings (rate, mono, no-audio, Fast RAM buffering) see
 @{" Audio " LINK Audio}.
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@{" Back to Contents " LINK "MAIN"}
 @endnode
 
 
 @node FramePolicy "Video frame policy"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}Video frame policy@{ub}
 
 The video selector is available in both the ReAction and GadTools
@@ -290,19 +290,26 @@ The command-line equivalents are:
   --throughput       keep late decoded pictures (All Frames)
   --no-throughput    drop late decoded pictures (Skip Frames)
 
-These options affect presentation policy only. Audio servicing, timestamps,
-seeking and decoder selection are unchanged. A GUI-launched session always
-passes an explicit choice so the controller selection overrides mrplay's
-source-specific default. A direct network/HLS mrplay invocation defaults to
-throughput mode; a direct local-file invocation remains conservative unless
-you choose one of the switches explicitly.
+For most codecs this is a presentation policy: already-decoded late pictures
+are discarded. H.264 gains a second, deliberately stronger recovery step.
+When Skip Frames remains well behind, MintVID escalates libavc to
+IVD_SKIP_PB, avoiding most P/B-picture decoding until the next IDR. This
+reduces real decoder work rather than merely suppressing RGB output. It was
+confirmed with a deliberately overloaded 720p stream under WinUAE, where
+full-rate decoding was not possible.
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+Audio servicing, timestamps and seeking remain unchanged. A GUI-launched
+session always passes an explicit choice so the controller selection
+overrides mrplay's source-specific default. A direct network/HLS mrplay
+invocation defaults to throughput mode; a direct local-file invocation
+remains conservative unless you choose one of the switches explicitly.
+
+@{" Back to Contents " LINK "MAIN"}
 @endnode
 
 
 @node Recommended "Recommended settings"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}Recommended settings@{ub}
 
 There is no single setting that makes every codec real time. Start with the
@@ -350,11 +357,11 @@ display workload and are not a universal quality improvement. If the window
 is smooth but audio breaks up, try Audio: Low, Mono audio, or No audio before
 changing several video controls together.
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@{" Back to Contents " LINK "MAIN"}
 @endnode
 
 @node GUIEditions "The GUI editions"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}Two Workbench-friendly GUI sets@{ub} run over the same player,
 parsers, playback settings, and status/control protocol:
 
@@ -368,11 +375,11 @@ path). Both editions drive the same underlying mrplay process and the
 same options, so behaviour matches between them - only the front end
 differs.
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@{" Back to Contents " LINK "MAIN"}
 @endnode
 
 @node IPTVBrowser "IPTV browser"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}Live channel directory@{ub}
 
 Both controllers include an IPTV... launcher for their matching
@@ -415,11 +422,11 @@ Building with SSL=1 enables the iptv-org directory download over HTTPS;
 without it, the browser stays usable for cached data and manual URLs,
 and a refresh explicitly reports that it needs rebuilding with SSL=1.
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@{" Back to Contents " LINK "MAIN"}
 @endnode
 
 @node YouTube "YouTube"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}Native YouTube playback@{ub}
 
 mrplay can resolve a public YouTube Live watch/share URL natively. It
@@ -468,11 +475,11 @@ directly, without a separate Play press.
 
 Build with SSL=1 and keep ytgui beside MintVID and mrplay.
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@{" Back to Contents " LINK "MAIN"}
 @endnode
 
 @node Audio "Audio"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}Audio output settings@{ub}
 
   Audio rate    Normal, or Low to halve Paula's output rate again -
@@ -497,11 +504,11 @@ MintAMP/Helix decode MP3, AAC-LC and fixed-point AC-3; MPEG-1/2 Layer II
 (MP2) audio decodes through the same pl_mpeg path used for MPEG video.
 PCM is also supported directly.
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@{" Back to Contents " LINK "MAIN"}
 @endnode
 
 @node Live "Live streaming and networking"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}Live streaming and networking@{ub}
 
 Direct AVI/MOV/MP4 URL playback needs a finite, byte-addressable server:
@@ -530,11 +537,11 @@ Plain HTTP is always available; HTTPS needs a build with SSL=1
 (amisslmaster.library/AmiSSL v5) - add SSLCERTS=1 for certificate
 verification, the recommended setting for a packaged release build.
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@{" Back to Contents " LINK "MAIN"}
 @endnode
 
 @node CLI "Command line (mrplay)"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}Command line (mrplay)@{ub}
 
 Every GUI is a front end over mrplay, which also runs directly:
@@ -552,11 +559,11 @@ mrplay carries a $STACK:320000 AmigaOS stack cookie because libavc needs
 substantially more stack than the classic Shell default - see
 @{" Troubleshooting " LINK Troubleshooting} if a system ignores it.
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@{" Back to Contents " LINK "MAIN"}
 @endnode
 
 @node Formats "Supported formats"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}Containers@{ub}: AVI, QuickTime MOV/MP4, Matroska/MKV, MPEG-TS/M2TS,
 raw MPEG-1 program streams, raw MJPEG/MPEG-4 Visual streams, and direct
 HTTP(S)/HLS URLs (including live IPTV playlists and YouTube).
@@ -589,11 +596,11 @@ source material, then play the result on the Amiga.
 For the detailed per-FourCC breakdown see
 @{" Codec support list " LINK CodecList}.
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@{" Back to Contents " LINK "MAIN"}
 @endnode
 
 @node CodecList "Codec support list"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}Codec support list@{ub}
 
 Status marks what the decoder accepts and has been validated against
@@ -643,11 +650,11 @@ Codec tags (FourCCs) are matched case-insensitively, so a muxer's own
 capitalisation never matters - AVI's fccHandler is the worst offender in
 practice.
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@{" Back to Contents " LINK "MAIN"}
 @endnode
 
 @node Troubleshooting "Troubleshooting"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}"Could not load iptvgui / ytgui / mrplay"@{ub}
 
 Keep the whole release drawer together - MintVID, MintVID-GT, mrplay,
@@ -678,11 +685,11 @@ honour byte ranges when the container seeks.
 If none of the above explains what you're seeing, see
 @{" Reporting a problem " LINK ReportingProblems}.
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@{" Back to Contents " LINK "MAIN"}
 @endnode
 
 @node ReportingProblems "Reporting a problem"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}Reporting a problem@{ub}
 
 Please open an issue on the project's GitHub page and include:
@@ -714,11 +721,11 @@ audio and GUI layers can only be verified on real hardware or PiStorm -
 so a clear, reproducible report from actual hardware is genuinely the
 fastest path to a fix.
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@{" Back to Contents " LINK "MAIN"}
 @endnode
 
 @node Licensing "Licensing"
-@toc MintVID.guide/MAIN
+@toc MAIN
 @{b}MintVID's own code@{ub} (the portable core, the Amiga display/audio
 layers, and every GUI frontend) is MIT-licensed and available from its
 project repository.
@@ -742,11 +749,11 @@ fastest 68k MPEG-1 player, previously distributed on Aminet - but is a
 fresh, unrelated codebase and does not include or depend on RiVA's
 source.
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@{" Back to Contents " LINK "MAIN"}
 @endnode
 
 @node Support "Support MintVID"
-@toc MintVID.guide/MAIN
+@toc MAIN
 MintVID is made by Darren "boingball" Banfi, with a frankly unreasonable
 number of classic-Amiga test runs and LLM-assisted development sessions.
 
@@ -755,5 +762,5 @@ can help keep the hardware testing and development going at:
 
   https://buymeacoffee.com/boingball
 
-@{" Back to Contents " LINK MintVID.guide/MAIN 0}
+@{" Back to Contents " LINK "MAIN"}
 @endnode
