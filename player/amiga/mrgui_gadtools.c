@@ -574,14 +574,31 @@ free_resources:
 static void gt_playlist_add_files(gt_app *app)
 {
     struct FileRequester *req;
-    req = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
-        ASLFR_TitleText, (ULONG)"Add videos to playlist",
-        ASLFR_DoMultiSelect, TRUE, ASLFR_DoPatterns, TRUE,
-        ASLFR_InitialPattern, (ULONG)MR_VIDEO_FILE_PATTERN, TAG_DONE);
+    char initial_drawer[256];
+    int accepted;
+
+    if (mr_last_dir_load(initial_drawer, sizeof(initial_drawer)))
+        req = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
+            ASLFR_TitleText, (ULONG)"Add videos to playlist",
+            ASLFR_DoMultiSelect, TRUE, ASLFR_DoPatterns, TRUE,
+            ASLFR_InitialPattern, (ULONG)MR_VIDEO_FILE_PATTERN,
+            ASLFR_InitialDrawer, (ULONG)initial_drawer, TAG_DONE);
+    else
+        req = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
+            ASLFR_TitleText, (ULONG)"Add videos to playlist",
+            ASLFR_DoMultiSelect, TRUE, ASLFR_DoPatterns, TRUE,
+            ASLFR_InitialPattern, (ULONG)MR_VIDEO_FILE_PATTERN, TAG_DONE);
     if (!req)
         return;
-    if (AslRequestTags(req, ASLFR_Window, (ULONG)app->plWin,
-                       ASLFR_SleepWindow, TRUE, TAG_DONE)) {
+
+    accepted = AslRequestTags(req, ASLFR_Window, (ULONG)app->plWin,
+                              ASLFR_SleepWindow, TRUE, TAG_DONE);
+    /* fr_Drawer reflects the drawer visible when the requester closes, even
+     * after Cancel. Save it before freeing this one-shot requester so the
+     * next Add starts in the same place. */
+    if (req->fr_Drawer && req->fr_Drawer[0])
+        mr_last_dir_save((const char *)req->fr_Drawer);
+    if (accepted) {
         char path[MR_PLAYLIST_PATH_MAX];
         int i;
         if (req->fr_NumArgs > 0 && req->fr_ArgList) {

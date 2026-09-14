@@ -127,6 +127,7 @@ void mr_gui_open_guide(mr_gui_menu *menu, struct Window *window)
     struct Process *process;
     char guide_path[512];
     char arguments[520];
+    int argument_length;
 
     (void)menu;
 
@@ -152,7 +153,10 @@ void mr_gui_open_guide(mr_gui_menu *menu, struct Window *window)
     }
     UnLock(lock);
 
-    seglist = LoadSeg((CONST_STRPTR)"AmigaGuide");
+    /* LoadSeg() resolves a DOS path literally; it does not perform the
+     * Shell's command-path search. AmigaGuide is installed in C: on a
+     * standard AmigaOS system, so name that path explicitly. */
+    seglist = LoadSeg((CONST_STRPTR)"C:AmigaGuide");
     if (!seglist) {
         guide_error(window,
             "The AmigaGuide command was not found (normally\n"
@@ -162,7 +166,19 @@ void mr_gui_open_guide(mr_gui_menu *menu, struct Window *window)
         return;
     }
 
-    strcpy(arguments, "PROGDIR:MintVID.guide\n");
+    /* The child has its own process-local PROGDIR:, so pass the absolute
+     * path resolved above. Quote it so drawers containing spaces also work. */
+    argument_length = snprintf(arguments, sizeof(arguments), "\"%s\"\n",
+                               guide_path);
+    if (argument_length < 0 ||
+        argument_length >= (int)sizeof(arguments)) {
+        UnLoadSeg(seglist);
+        guide_error(window,
+            "The full path to MintVID.guide is too long.\n"
+            "Open the guide manually from the program drawer.");
+        return;
+    }
+
     process = CreateNewProcTags(
         NP_Seglist, seglist,
         NP_FreeSeglist, TRUE,

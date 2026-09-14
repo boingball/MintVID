@@ -90,6 +90,13 @@
 
 ### Fixed
 
+- The ReAction and GadTools playlist Add requesters now reopen in the last
+  drawer that was visible when they closed, including after Cancel, and share
+  the controller's persistent `ENVARC:MintVID.lastdir` setting.
+- **Guide...** now loads the command explicitly from `C:AmigaGuide`, because
+  `LoadSeg()` does not search the Shell command path. The detached child also
+  receives the already-resolved absolute path to `MintVID.guide`, rather than
+  an invalid process-local `PROGDIR:` path.
 - MPEG-2 video in `.mpg`/MPEG-PS files stopped after the first picture while
   audio continued. At the very small resolutions useful on a classic Amiga,
   one PES packet can contain several complete pictures; the adapter only had
