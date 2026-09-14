@@ -157,7 +157,10 @@ Both GUI editions offer a Video selector:
   - Video: All Frames (default) keeps every decoded picture, even when it is
     late. Use it when the source is already keeping up, and for live/HLS
     playback unless the picture is visibly falling behind.
-  - Video: Skip Frames drops decoded pictures that are already late so a
+  - Video: Skip Frames drops decoded pictures that are already late. For
+    H.264, sustained lateness also engages libavc IVD_SKIP_PB to avoid most
+    P/B-picture decode work until the next IDR; confirmed with an overloaded
+    720p stream under WinUAE, where full-rate decoding was not possible, so a
     slower Amiga can catch up. Audio, timestamps and decoder selection are
     unchanged. This is the recommended first change for a stuttering or
     decode-bound local/heavy video.

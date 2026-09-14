@@ -54,7 +54,11 @@ See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 ## Video frame policy
 
 Both GUI editions expose **Video: All Frames** and **Video: Skip Frames**.
-All Frames is the default and preserves every decoded picture. Skip Frames
+All Frames is the default and preserves every decoded picture. For most
+codecs, Skip Frames discards late decoded output. For H.264, sustained
+lateness also escalates libavc to `IVD_SKIP_PB`, avoiding most P/B-picture
+decode work until the next IDR; this was confirmed with an overloaded 720p
+stream under WinUAE. Skip Frames
 allows the scheduler to drop pictures that are already late, so a slower
 Amiga can catch up while audio and timestamps continue normally. It is a
 presentation policy, not a codec or bitstream change.

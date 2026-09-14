@@ -9,6 +9,7 @@
 #include <proto/gadtools.h>
 #include <proto/intuition.h>
 #include <string.h>
+#include <stdio.h>
 
 struct Library *GadToolsBase;
 
@@ -111,30 +112,21 @@ static void guide_error(struct Window *window, const char *text)
 }
 
 /*
- * Opens PROGDIR:MintVID.guide the same way every other MintVID GUI launches
- * a support binary - see open_iptv_browser()/open_youtube_browser()/
- * start_player() in mrgui.c, the already-proven LoadSeg()+
- * CreateNewProcTags() shape used to start iptvgui/ytgui/mrplay - rather
- * than calling amigaguide.library directly. Runs the standard AmigaOS
- * "AmigaGuide" command (normally C:AmigaGuide, part of a standard 2.1+/
- * 3.0+ installation - present on the command path, not shipped beside
- * MintVID's own binaries) with the guide's PROGDIR:-relative path as its
- * one argument; that command itself does whatever amigaguide.library/
- * Multiview plumbing is needed, using the exact toolchain every AmigaGuide-
- * literate utility (including this project's own MintPRINT) already relies
- * on to display its own help - so it needs no NDK struct this project has
- * no way to check against, unlike the first version of this function.
+ * Opens PROGDIR:MintVID.guide using the standard AmigaOS AmigaGuide command.
+ * The guide is first locked and resolved to an absolute path in this process;
+ * a newly-created process does not inherit this process's PROGDIR: assignment.
+ * The child is otherwise launched with the same proven LoadSeg() and
+ * CreateNewProcTags() pattern used for mrplay/iptvgui/ytgui.
  *
- * The process runs detached (NP_Cli TRUE, no output/error stream wired
- * back) and this function does not wait for it - same fire-and-forget
- * shape as opening a video window and moving on.
+ * The process runs detached and this function does not wait for it.
  */
 void mr_gui_open_guide(mr_gui_menu *menu, struct Window *window)
 {
     BPTR lock;
     BPTR seglist;
     struct Process *process;
-    char arguments[64];
+    char guide_path[512];
+    char arguments[520];
 
     (void)menu;
 
@@ -143,6 +135,19 @@ void mr_gui_open_guide(mr_gui_menu *menu, struct Window *window)
         guide_error(window,
             "MintVID.guide was not found next to this program.\n"
             "Keep it in the same drawer as the MintVID binaries.");
+        return;
+    }
+    /*
+     * PROGDIR: belongs to this process. The AmigaGuide child gets its own
+     * process-local PROGDIR:, so resolve the locked file while ours is still
+     * valid and pass the child a real absolute path. MintPRINT uses the same
+     * rule after its literal PROGDIR: command line failed on real hardware.
+     */
+    if (!NameFromLock(lock, (STRPTR)guide_path, sizeof(guide_path))) {
+        UnLock(lock);
+        guide_error(window,
+            "Could not resolve the full path to MintVID.guide.\n"
+            "Open the guide manually from the program drawer.");
         return;
     }
     UnLock(lock);
