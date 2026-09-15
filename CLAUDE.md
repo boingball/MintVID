@@ -2331,6 +2331,104 @@ to catch (see "Validate against ffmpeg" above) - so the host build already
 fully exercising the same, unchanged `core/mr_h264.c` code path is
 sufficient here, unlike e.g. the 68060 kernel work elsewhere in this file.
 
+## Display-mode default priority and persisted controller settings
+Two related end-of-PR requests: should P96 be preferred over plain RTG
+WritePixel when both are available, and does the software remember what a
+user last set at all?
+
+**The RTG default was picking WritePixel, not P96, and had been since P96
+was added as a chooser entry.** Both `mrgui.c` and `mrgui_gadtools.c`
+compute a `default_mode` index into their own chipset-dependent mode list
+when RTG is detected (`default_screen_is_rtg()`/`screen_is_rtg()`) - but
+the arithmetic pointed at the *second-to-last* added entry
+(`mode_count - 2` in `mrgui.c`; `mrgui_gadtools.c` captured the index
+right after adding WritePixel, before P96 was even appended). Since the
+list is always built AGA/ECS...HAM6/HAM8...WritePixel...P96 in that
+order, both landed on WritePixel, one off from P96 - a plain off-by-one
+in intent, not a hardware-detection bug (RTG detection itself was already
+correct). Given P96's own hardware-overlay-first backend chain (see the
+P96 PIP overlay section above), P96 is now genuinely the fastest option
+when a board grants it, so it should be preferred - fixed by pointing
+`default_mode` at the last-added entry instead (`mode_count - 1` in
+`mrgui.c`; moving the same capture to after P96 is appended in
+`mrgui_gadtools.c`). Priority is now P96 > RTG WritePixel > AGA/HAM,
+falling further back through the existing runtime chain
+(`display_open()`) if a board can't actually open what the GUI selected -
+this only changes which mode the GUI *offers first*, not the safety net
+underneath it.
+
+**No settings were ever remembered - every launch reset to
+`mr_play_options_default()`'s hardcoded values.** The only persistence
+anywhere in the tree before this was `mr_last_dir.h`'s single remembered
+file-browser drawer path; display mode, C2P, H.264 speed, audio
+rate/mono/no-audio, fast buffer, scale/lace and the Skip Frames toggle
+all came back to the same defaults on every relaunch, regardless of what
+was last chosen.
+
+New `amiga/mr_saved_options.h` persists the main controller's own options
+to `ENVARC:MintVID.settings` (survives a reboot, unlike
+`mr_master_options.h`'s deliberately volatile `T:` controller->browser
+snapshot this file sits alongside). Unlike that `T:` snapshot, this file
+is also expected to survive a MintVID *upgrade*, and `mr_play_options`'s
+layout has already changed more than once in this project's history (this
+session's own TurboGT removal included) - a raw binary struct dump alone
+can't tell "written by an older but layout-compatible build" from "written
+by a build whose fields don't line up any more", so a small header (a
+magic value plus the exact `sizeof(mr_play_options)` the writer was built
+with) goes in front of the struct, and any mismatch on load - including a
+short/missing file - is treated as "nothing saved yet" rather than risking
+a partially-overlaid struct. Same crash-safe write-to-tmp-then-rename
+idiom as `mr_last_dir.h`, plus a read-before-write skip when nothing
+actually changed (this file is meant to be written on every option
+change, not just on request).
+
+Wired into both GUIs identically: `read_play_options()`/`read_options()`
+- already the single choke point every option-change/Play/IPTV/YouTube
+call path runs through to assemble a `mr_play_options` from the current
+gadget states - calls `mr_saved_options_save()` once at the end, so
+saving needs no new call sites anywhere. Loading happens once in each
+GUI's window-building function, after every chooser's label list is
+built (so the reverse-lookup helpers below have something to search) and
+before any gadget is created: a new `mode_row()` in each file (alongside
+the pre-existing `c2p_row()`) maps a saved `mr_display_mode` back to a
+row index, but deliberately does not share `c2p_row()`'s "fall back to
+row 0 when not found" behaviour: a C2P value missing from this session's
+list falling back to row 0 (Standard, always available) is a tolerable
+worst case, but the same fallback for display mode would force row 0
+(AGA) over a legitimately-detected P96/WritePixel default, defeating the
+priority fix above. `mode_row()` instead returns -1 when the saved mode
+isn't in this session's list (e.g. saved on an RTG boot, loaded on a
+plain-AGA one), and the caller leaves its own just-computed
+hardware-detected `default_mode` untouched in that case. H.264 performance needs no
+such lookup - its chooser rows are fixed and match the enum ordinals
+directly, same as `read_play_options()`/`read_options()` already assume
+when writing the struct back. Every resolved initial value flows into the
+same `NewObject()`/`add_gadget()` tags (`mrgui.c`) or the same post-open
+`GT_SetGadgetAttrs()`/`GTCY_Active` push (`mrgui_gadtools.c`) the
+hardcoded defaults used before - no new gadget-attribute mechanism, just
+a different source for the value already being set there. A restored
+combination that isn't actually eligible this session (e.g. Copper 2x
+with a display mode that doesn't support it) needs no special handling
+either: `update_mode_controls(..., TRUE)`, already called once right
+after the window opens to correct exactly this class of inconsistency
+for a manual click, runs against whatever the gadgets' initial state
+turns out to be, restored or hardcoded alike.
+
+Deliberately not persisted: HLS/live fields (`hls_low`, `hls_max_width`/
+`hls_max_height`, `live_resync`) - neither controller GUI has a widget for
+any of them, so `read_play_options()`/`read_options()` never set them to
+anything but `mr_play_options_default()`'s own values in the first place;
+saving/restoring the whole struct is a no-op for those fields, not a risk
+of clobbering something the IPTV/YouTube browsers manage separately
+through their own, unrelated `T:` handoff path.
+
+Both `amiga/mrgui.c` and `amiga/mrgui_gadtools.c` can only be reviewed,
+not compiled or run, on this dev host (see "Validate against ffmpeg"
+above); `make check` (host-buildable core, untouched by this change)
+passes unchanged. Needs a real-hardware pass to confirm: the P96-first
+default on an actual RTG boot, and that settings genuinely survive a
+relaunch (and a reboot) in both GUI editions.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.

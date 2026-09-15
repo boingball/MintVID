@@ -24,7 +24,8 @@ Performance scales strongly with CPU, codec, resolution and display mode;
 format support is not a promise of real-time playback on every 68k.
 
 MintVID 1.3.1 adds RTG hardware video overlay support for P96 (Picasso96),
-alongside GUI bug fixes and the retirement of the H.264 TurboGT speed mode.
+a P96-first RTG default and persisted controller settings, alongside GUI
+bug fixes and the retirement of the H.264 TurboGT speed mode.
 
 ![MintVID playing an LGR YouTube video on AmigaOS](player/amiga/art/MintVID-YouTube.png)
 
@@ -44,6 +45,12 @@ alongside GUI bug fixes and the retirement of the H.264 TurboGT speed mode.
   actually update their own label when clicked; the GadTools controller's
   "Copper 2x" Scale label is now visible; the ReAction Scale chooser now
   greys out reliably on RTG (P96) displays.
+- **P96-first RTG default:** both controllers now default to P96 over
+  plain WritePixel when RTG is detected, matching P96's own faster
+  hardware-overlay-first backend.
+- **Remembered settings:** both controllers now save display mode, C2P,
+  H.264 speed, audio options, Scale and the Video frame policy to
+  `ENVARC:MintVID.settings` and restore them on the next launch.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete release notes, including
 the 1.3.0 H.264/AAC/YUV performance work this release builds on.

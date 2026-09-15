@@ -54,6 +54,7 @@
 #include "mr_gui_menu.h"
 #include "mr_last_dir.h"
 #include "mr_player_status.h"
+#include "mr_saved_options.h"
 #include "mr_playlist.h"
 
 MINTVID_DECLARE_VERSION(mintvid_version_tag, "MintVID");
@@ -154,6 +155,19 @@ static ULONG c2p_row(mr_c2p_mode value)
         if (c2p_values[i] == value)
             return (ULONG)i;
     return 0;
+}
+
+/* Unlike c2p_row(), returns -1 rather than a fallback row: a saved display
+ * mode from a previous, differently-equipped session (e.g. RTG on that
+ * launch, plain AGA on this one) should leave the caller's own
+ * hardware-detected default alone, not force row 0. */
+static int mode_row(mr_display_mode value)
+{
+    unsigned i;
+    for (i = 0; i < mode_count; i++)
+        if (mode_values[i] == value)
+            return (int)i;
+    return -1;
 }
 
 static int open_reaction_classes(void)
@@ -379,6 +393,7 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
     /* Video rows are fixed, like Scale: 0=All Frames (throughput on), 1=Skip
      * Frames (throughput off) - see where video_modes is built in main(). */
     options->throughput = selected_video_mode == 0;
+    mr_saved_options_save(options);
 }
 
 static void publish_play_options(mr_master_options_port *master_options,
@@ -1279,6 +1294,11 @@ int main(void)
     int default_mode;
     char initial_drawer[256];
     int have_initial_drawer;
+    mr_play_options saved_options;
+    int have_saved_options;
+    ULONG initial_c2p, initial_h264, initial_laced, initial_scale;
+    ULONG initial_audio_rate, initial_fast_buffer, initial_no_audio;
+    ULONG initial_mono_audio, initial_video_mode;
 
     window_object = NULL;
     timermask = 0;
@@ -1372,7 +1392,11 @@ int main(void)
         (have_rtg && !add_mode_node(&modes, "RTG (WritePixel)", MR_DISPLAY_CGX)) ||
         (have_rtg && !add_mode_node(&modes, "RTG (P96)", MR_DISPLAY_P96)))
         goto cleanup;
-    if (have_rtg) default_mode = (int)mode_count - 2;
+    /* P96 (with its own hardware-overlay-first backend chain - see
+     * amiga/display_p96pip.c) is the fastest choice when available, ahead
+     * of plain WritePixel and AGA/HAM - default to it rather than
+     * WritePixel. */
+    if (have_rtg) default_mode = (int)mode_count - 1;
     if (!add_c2p_node(&c2p_modes, "Standard", MR_C2P_STANDARD) ||
         (mr_akiko_available() &&
          !add_c2p_node(&c2p_modes, "CD32", MR_C2P_AKIKO)) ||
@@ -1424,6 +1448,45 @@ int main(void)
         !add_chooser_node(&video_modes, "Skip Frames"))
         goto cleanup;
 
+    /* Restore the last-saved controller settings (mr_saved_options.h),
+     * falling back to today's hardware-detected defaults field by field
+     * when there's nothing saved yet, or a saved value no longer fits this
+     * session (e.g. a saved display mode that isn't in modes[] this run -
+     * mode_row() reports that with -1 rather than a fallback row, unlike
+     * c2p_row()). update_mode_controls(), called once window_open()
+     * finishes below, already clamps any combination that isn't actually
+     * eligible (Copper 2x needing a qualifying c2p/mode, etc.) - the same
+     * safety net a manual click through these controls relies on. */
+    have_saved_options = mr_saved_options_load(&saved_options);
+    if (have_saved_options) {
+        int saved_mode_row = mode_row(saved_options.display);
+        if (saved_mode_row >= 0)
+            default_mode = saved_mode_row;
+    }
+    initial_c2p = have_saved_options ? c2p_row(saved_options.c2p)
+                                     : c2p_row(MR_C2P_KALMS);
+    initial_h264 = have_saved_options &&
+                   saved_options.h264_performance <= MR_H264_PERF_TURBO_PLUS
+                 ? (ULONG)saved_options.h264_performance
+                 : (ULONG)MR_H264_PERF_TURBO;
+    initial_laced = have_saved_options && saved_options.laced ? TRUE : FALSE;
+    initial_scale = have_saved_options
+                  ? (saved_options.copper_vdouble ? 2 :
+                     saved_options.scale_2x ? 1 : 0)
+                  : 0;
+    initial_audio_rate = have_saved_options &&
+                         saved_options.audio_rate == MR_AUDIO_RATE_LOW ? 1 : 0;
+    initial_fast_buffer = have_saved_options &&
+                          saved_options.fast_buffer <= MR_FAST_BUFFER_16MB
+                        ? (ULONG)saved_options.fast_buffer
+                        : (ULONG)MR_FAST_BUFFER_AUTO;
+    initial_no_audio = have_saved_options && saved_options.no_audio
+                      ? TRUE : FALSE;
+    initial_mono_audio = have_saved_options && saved_options.mono_audio
+                        ? TRUE : FALSE;
+    initial_video_mode = have_saved_options && !saved_options.throughput
+                        ? 1 : 0;
+
     /* Seed the embedded file requester's starting drawer from the last one
      * used, saved via mr_last_dir_save() in update_file_info() below.
      * GETFILE_Drawer is a real ReAction getfile.gadget tag, but - like every
@@ -1463,24 +1526,25 @@ int main(void)
                               GA_ID, G_C2P,
                               GA_RelVerify, TRUE,
                               CHOOSER_Labels, (ULONG)&c2p_modes,
-                              CHOOSER_Selected, c2p_row(MR_C2P_KALMS),
+                              CHOOSER_Selected, initial_c2p,
                               TAG_DONE);
     h264 = (Object *)NewObject(CHOOSER_GetClass(), NULL,
                                GA_ID, G_H264,
                                GA_RelVerify, TRUE,
                                CHOOSER_Labels, (ULONG)&h264_modes,
-                               CHOOSER_Selected, MR_H264_PERF_TURBO,
+                               CHOOSER_Selected, initial_h264,
                                TAG_DONE);
     lace = (Object *)NewObject(CHECKBOX_GetClass(), NULL,
                                GA_ID, G_LACE,
                                GA_Text, (ULONG)"Laced",
                                GA_RelVerify, TRUE,
+                               CHECKBOX_Checked, initial_laced,
                                TAG_DONE);
     scale = (Object *)NewObject(CHOOSER_GetClass(), NULL,
                                 GA_ID, G_SCALE,
                                 GA_RelVerify, TRUE,
                                 CHOOSER_Labels, (ULONG)&scale_modes,
-                                CHOOSER_Selected, 0,
+                                CHOOSER_Selected, initial_scale,
                                 TAG_DONE);
     scale_label = (Object *)NewObject(LABEL_GetClass(), NULL,
                                       LABEL_Text, (ULONG)"Scale",
@@ -1489,29 +1553,31 @@ int main(void)
                                      GA_ID, G_AUDIO_RATE,
                                      GA_RelVerify, TRUE,
                                      CHOOSER_Labels, (ULONG)&audio_rate_modes,
-                                     CHOOSER_Selected, MR_AUDIO_RATE_NORMAL,
+                                     CHOOSER_Selected, initial_audio_rate,
                                      TAG_DONE);
     fast_buffer = (Object *)NewObject(CHOOSER_GetClass(), NULL,
                                       GA_ID, G_FAST_BUFFER,
                                       GA_RelVerify, TRUE,
                                       CHOOSER_Labels, (ULONG)&fast_buffer_modes,
-                                      CHOOSER_Selected, MR_FAST_BUFFER_AUTO,
+                                      CHOOSER_Selected, initial_fast_buffer,
                                       TAG_DONE);
     no_audio = (Object *)NewObject(CHECKBOX_GetClass(), NULL,
                                    GA_ID, G_NO_AUDIO,
                                    GA_Text, (ULONG)"No audio",
                                    GA_RelVerify, TRUE,
+                                   CHECKBOX_Checked, initial_no_audio,
                                    TAG_DONE);
     mono_audio = (Object *)NewObject(CHECKBOX_GetClass(), NULL,
                                      GA_ID, G_MONO_AUDIO,
                                      GA_Text, (ULONG)"Mono audio",
                                      GA_RelVerify, TRUE,
+                                     CHECKBOX_Checked, initial_mono_audio,
                                      TAG_DONE);
     video_mode = (Object *)NewObject(CHOOSER_GetClass(), NULL,
                                      GA_ID, G_VIDEO_MODE,
                                      GA_RelVerify, TRUE,
                                      CHOOSER_Labels, (ULONG)&video_modes,
-                                     CHOOSER_Selected, 0,
+                                     CHOOSER_Selected, initial_video_mode,
                                      TAG_DONE);
     info = (Object *)NewObject(STRING_GetClass(), NULL,
                                GA_ReadOnly, TRUE,

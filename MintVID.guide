@@ -102,6 +102,15 @@ of real GUI bugs:
   - Fixed the GadTools controller's "Copper 2x" Scale label not showing
     (the gadget box was too narrow) and a ReAction Scale-chooser greying
     issue on RTG displays.
+  - @{b}RTG now defaults to P96 over WritePixel.@{ub} Both controllers
+    already picked an RTG display automatically when one was detected, but
+    picked plain WritePixel instead of the faster P96 overlay path - fixed
+    to prefer P96, then WritePixel, then AGA/HAM.
+  - @{b}The controller now remembers your last settings.@{ub} Display
+    mode, C2P, H.264 speed, audio options, Scale and the Video frame
+    policy are saved to @{i}ENVARC:MintVID.settings@{ui} as you change
+    them and restored on the next launch - previously every relaunch
+    reset back to the same defaults.
 
 Performance still depends on the exact CPU, source, codec, resolution,
 audio and display mode. A supported format is not automatically a

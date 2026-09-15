@@ -7,6 +7,7 @@
 #include "mr_master_options.h"
 #include "mr_player_status.h"
 #include "mr_playlist.h"
+#include "mr_saved_options.h"
 
 MINTVID_DECLARE_VERSION(mintvid_gt_version_tag, "MintVID-GT");
 
@@ -148,6 +149,19 @@ static ULONG c2p_row(const gt_app *app, mr_c2p_mode value)
         if (app->c2p_modes[i] == value)
             return (ULONG)i;
     return 0;
+}
+
+/* Unlike c2p_row(), returns -1 rather than a fallback row: a saved display
+ * mode from a previous, differently-equipped session (e.g. RTG on that
+ * launch, plain AGA on this one) should leave the caller's own
+ * hardware-detected default alone, not force row 0. */
+static int mode_row(const gt_app *app, mr_display_mode value)
+{
+    unsigned i;
+    for (i = 0; i < app->mode_count; i++)
+        if (app->modes[i] == value)
+            return (int)i;
+    return -1;
 }
 
 static int screen_is_rtg(struct Screen *screen)
@@ -323,6 +337,7 @@ static void read_options(gt_app *app, mr_play_options *options)
     options->mono_audio = gad_value(app, app->mono_audio, GTCB_Checked) != 0;
     options->throughput =
         gad_value(app, app->video_mode, GTCY_Active) == 0;
+    mr_saved_options_save(options);
 }
 
 static void publish_options(gt_app *app)
@@ -940,6 +955,11 @@ static int build_window(gt_app *app)
     struct Gadget *g;
     struct NewWindow nw;
     int default_mode = 0;
+    mr_play_options saved_options;
+    int have_saved_options;
+    ULONG initial_c2p, initial_h264, initial_laced, initial_scale;
+    ULONG initial_audio_rate, initial_fast_buffer, initial_no_audio;
+    ULONG initial_mono_audio, initial_video_mode;
 
     app->screen = LockPubScreen(NULL);
     if (!app->screen)
@@ -969,9 +989,13 @@ static int build_window(gt_app *app)
     if (screen_is_rtg(app->screen)) {
         app->mode_labels[app->mode_count] = (STRPTR)"Display: RTG (WritePixel)";
         app->modes[app->mode_count++] = MR_DISPLAY_CGX;
-        default_mode = (int)app->mode_count - 1;
         app->mode_labels[app->mode_count] = (STRPTR)"Display: RTG (P96)";
         app->modes[app->mode_count++] = MR_DISPLAY_P96;
+        /* P96 (with its own hardware-overlay-first backend chain - see
+         * amiga/display_p96pip.c) is the fastest choice when available,
+         * ahead of plain WritePixel and AGA/HAM - default to it rather
+         * than WritePixel. */
+        default_mode = (int)app->mode_count - 1;
     }
     app->mode_labels[app->mode_count] = NULL;
 
@@ -989,6 +1013,45 @@ static int build_window(gt_app *app)
     add_c2p_mode(app, (STRPTR)"C2P: Direct", MR_C2P_DIRECT);
 #endif
 
+    /* Restore the last-saved controller settings (mr_saved_options.h),
+     * falling back to today's hardware-detected defaults field by field
+     * when there's nothing saved yet, or a saved value no longer fits this
+     * session (e.g. a saved display mode that isn't in app->modes[] this
+     * run - mode_row() reports that with -1 rather than a fallback row,
+     * unlike c2p_row()). update_mode_controls(), called once the window is
+     * open, already clamps any combination that isn't actually eligible
+     * (Copper 2x needing a qualifying c2p/mode, etc.) - the same safety
+     * net a manual click through these controls relies on. */
+    have_saved_options = mr_saved_options_load(&saved_options);
+    if (have_saved_options) {
+        int saved_mode_row = mode_row(app, saved_options.display);
+        if (saved_mode_row >= 0)
+            default_mode = saved_mode_row;
+    }
+    initial_c2p = have_saved_options ? c2p_row(app, saved_options.c2p)
+                                     : c2p_row(app, MR_C2P_KALMS);
+    initial_h264 = have_saved_options &&
+                   saved_options.h264_performance <= MR_H264_PERF_TURBO_PLUS
+                 ? (ULONG)saved_options.h264_performance
+                 : (ULONG)MR_H264_PERF_TURBO;
+    initial_laced = have_saved_options && saved_options.laced ? TRUE : FALSE;
+    initial_scale = have_saved_options
+                  ? (saved_options.copper_vdouble ? 2 :
+                     saved_options.scale_2x ? 1 : 0)
+                  : 0;
+    initial_audio_rate = have_saved_options &&
+                         saved_options.audio_rate == MR_AUDIO_RATE_LOW ? 1 : 0;
+    initial_fast_buffer = have_saved_options &&
+                          saved_options.fast_buffer <= MR_FAST_BUFFER_16MB
+                        ? (ULONG)saved_options.fast_buffer
+                        : (ULONG)MR_FAST_BUFFER_AUTO;
+    initial_no_audio = have_saved_options && saved_options.no_audio
+                      ? TRUE : FALSE;
+    initial_mono_audio = have_saved_options && saved_options.mono_audio
+                        ? TRUE : FALSE;
+    initial_video_mode = have_saved_options && !saved_options.throughput
+                        ? 1 : 0;
+
     g = app->gadgets;
     app->file = g = add_gadget(app, g, STRING_KIND, G_FILE, 8, 20, 535, 15,
         "", GTST_MaxChars, sizeof(app->path));
@@ -1003,7 +1066,7 @@ static int build_window(gt_app *app)
     app->h264 = g = add_gadget(app, g, CYCLE_KIND, G_H264, 366, 44, 144, 16,
         "", GTCY_Labels, (ULONG)h264_labels);
     app->lace = g = add_gadget(app, g, CHECKBOX_KIND, G_LACE, 516, 45, 68, 14,
-        "Laced", GTCB_Checked, FALSE);
+        "Laced", GTCB_Checked, initial_laced);
 
     /* Secondary audio/source options. */
     app->audio_rate = g = add_gadget(app, g, CYCLE_KIND, G_AUDIO_RATE, 8, 68,
@@ -1011,16 +1074,17 @@ static int build_window(gt_app *app)
     app->fast_buffer = g = add_gadget(app, g, CYCLE_KIND, G_FAST_BUFFER,
         149, 68, 190, 16, "", GTCY_Labels, (ULONG)fast_buffer_labels);
     app->no_audio = g = add_gadget(app, g, CHECKBOX_KIND, G_NO_AUDIO, 345, 69,
-        94, 14, "No audio", GTCB_Checked, FALSE);
+        94, 14, "No audio", GTCB_Checked, initial_no_audio);
     app->mono_audio = g = add_gadget(app, g, CHECKBOX_KIND, G_MONO_AUDIO, 445,
-        69, 110, 14, "Mono audio", GTCB_Checked, FALSE);
+        69, 110, 14, "Mono audio", GTCB_Checked, initial_mono_audio);
     /* Own row: --throughput/--no-throughput (see mr_play_options.h's
      * throughput field and CLAUDE.md's "Live HLS playback stall notes").
      * Index 0 ("All Frames") is both this cycle gadget's default GTCY_Active
-     * and mr_play_options_default()'s throughput=1, so no explicit
-     * GT_SetGadgetAttrs init is needed the way app->mode/c2p/h264 need
-     * below - a freshly created gadget already agrees with the struct
-     * default. read_options() reads it back with GTCY_Active == 0. */
+     * and mr_play_options_default()'s throughput=1 - a freshly created
+     * gadget already agrees with the struct default when there is no saved
+     * setting, same as audio_rate/fast_buffer/scale below; all four get
+     * their real initial GTCY_Active pushed once the window is open,
+     * mirroring how app->mode/c2p/h264 already need to. */
     app->video_mode = g = add_gadget(app, g, CYCLE_KIND, G_VIDEO_MODE, 8, 92,
         180, 16, "", GTCY_Labels, (ULONG)video_labels);
     /* Replaces the old separate 2x checkbox (was on the Mode/Laced row) and
@@ -1080,9 +1144,17 @@ static int build_window(gt_app *app)
         GT_SetGadgetAttrs(app->mode, app->window, NULL,
                          GTCY_Active, default_mode, TAG_DONE);
         GT_SetGadgetAttrs(app->c2p, app->window, NULL,
-                         GTCY_Active, c2p_row(app, MR_C2P_KALMS), TAG_DONE);
+                         GTCY_Active, initial_c2p, TAG_DONE);
         GT_SetGadgetAttrs(app->h264, app->window, NULL,
-                         GTCY_Active, MR_H264_PERF_TURBO, TAG_DONE);
+                         GTCY_Active, initial_h264, TAG_DONE);
+        GT_SetGadgetAttrs(app->scale, app->window, NULL,
+                         GTCY_Active, initial_scale, TAG_DONE);
+        GT_SetGadgetAttrs(app->audio_rate, app->window, NULL,
+                         GTCY_Active, initial_audio_rate, TAG_DONE);
+        GT_SetGadgetAttrs(app->fast_buffer, app->window, NULL,
+                         GTCY_Active, initial_fast_buffer, TAG_DONE);
+        GT_SetGadgetAttrs(app->video_mode, app->window, NULL,
+                         GTCY_Active, initial_video_mode, TAG_DONE);
     }
     return app->window != NULL;
 }

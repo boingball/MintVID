@@ -16,6 +16,13 @@
   older backend's "must start fullscreen" restriction; `--fullscreen`/F
   still switch to fullscreen, retrying the hardware overlay on every
   toggle before falling back to software.
+- New `amiga/mr_saved_options.h`: both controller GUIs now persist
+  display mode, C2P, H.264 speed, audio rate/mono/no-audio, fast buffer,
+  scale/lace and the Skip Frames toggle to `ENVARC:MintVID.settings` on
+  every change, and restore them on the next launch. A magic value plus
+  the exact `mr_play_options` size the writer was built with guards
+  against a mismatched layout after an upgrade - any mismatch, or no
+  file at all, falls back to today's defaults exactly as before.
 
 ### Fixed
 
@@ -32,6 +39,11 @@
   RTG (P96) displays.
 - `make release` was packaging a stale root-level guide icon instead of
   the current one in `player/icons/`.
+- Both controllers already auto-selected an RTG display mode when one
+  was detected, but picked plain WritePixel instead of the faster P96
+  overlay path - a one-off-in-intent index bug in each GUI's own default
+  computation, not a hardware-detection issue. Fixed to prefer P96, then
+  WritePixel, then AGA/HAM.
 
 ### Changed
 
