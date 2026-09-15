@@ -37,25 +37,26 @@ typedef struct mr_display_timing {
  * display_open; default is RTG-first with automatic AGA fallback. */
 void display_set_force_aga(int on);
 
-/* Prefer the P96 direct-lock backend (p96LockBitMap) over the WritePixelArray
- * (CGX) one. Call before display_open(). Only takes effect on a screen whose
- * live BitMap format the P96 backend actually supports (currently 24-bit BGR,
- * RGBFB_B8G8R8 - the common Picasso96 truecolour mode); anything else falls
- * back to CGX automatically, same as CGX itself falls back to AGA. Has no
- * effect if display_set_force_aga() is also on. */
-void display_set_force_p96(int on);
-
-/* Picasso96 "PIP" (Picture-In-Picture) overlay backend: requests
- * P96PIP_Type=PIPT_VideoWindow (real hardware overlay, falling back to
- * PIPT_MemoryWindow if the board/driver refuses) instead of P96's own
- * direct screen-bitmap lock. Implies display_set_force_p96(1) - there is no
- * separate "--p96" flag needed alongside this one. Unlike P96, this does
- * NOT require --fullscreen: the PIP writes into its own dedicated source
- * bitmap rather than the shared screen bitmap, so there is no equivalent of
- * P96's "unclipped direct writes corrupt sibling windows" hazard - see
+/* Prefer P96 (Picasso96API.library) over the WritePixelArray (CGX) backend.
+ * Call before display_open(). display_open() itself tries two P96 backends
+ * under this one flag, in order: the PIP overlay window first (real
+ * hardware acceleration where the board/driver supports it - see
  * amiga/display_p96pip.c's file header for the full design rationale and
- * its current, real-hardware-unverified status. */
-void display_set_p96_overlay(int on);
+ * its current, real-hardware-unverified status), then the older direct
+ * screen-bitmap lock (p96LockBitMap) if the PIP can't open. Only takes
+ * effect on a screen/format either backend actually supports; anything else
+ * falls back to CGX automatically, same as CGX itself falls back to AGA.
+ * The two backends differ on fullscreen: the older direct-lock one refuses
+ * to open windowed at all (unclipped writes would corrupt sibling windows -
+ * see its own file header), while the PIP overlay backend has no such
+ * hazard and opens windowed happily. Both GUIs and mr_play_options.c still
+ * always launch P96 with --fullscreen regardless (P96 has been a
+ * fullscreen-only *option* in the UI since before the PIP backend existed,
+ * and that contract is unchanged) - but a direct `mrplay --p96` invocation
+ * with no --fullscreen, which used to fall through to CGX, now opens
+ * windowed via the overlay backend instead. Has no effect if
+ * display_set_force_aga() is also on. */
+void display_set_force_p96(int on);
 
 /* Planar colour mode: 0 = indexed dither (256 colours on AGA, 32 on
  * OCS/ECS), 6 = HAM6 on any chipset, 8 = HAM8 on AGA. A non-zero HAM depth

@@ -1822,8 +1822,7 @@ Voodoo3/Permedia/BVision-class boards expose - which does colourspace
 conversion and scaling on the card instead of the CPU, the thing most worth
 having on precisely this slow-68k-plus-fast-RTG-board combination.
 
-**`amiga/display_p96pip.c` (`backend_p96pip`, `--p96-overlay` /
-`MR_DISPLAY_P96_OVERLAY` / GUI "RTG (P96 Overlay)") is a new display backend
+**`amiga/display_p96pip.c` (`backend_p96pip`) is a new display backend
 built on Picasso96API.library's "PIP" (Picture-In-Picture) API -
 `p96PIP_OpenTagList()` et al, declared in the vendored
 `amiga/include/libraries/Picasso96.h`/`amiga/include/inline/Picasso96API.h`
@@ -1837,9 +1836,7 @@ chain already uses. Two structural differences from `backend_p96`'s own
 direct screen-bitmap-lock approach, both explained at length in the new
 file's header: it is not fullscreen-only (a PIP owns its own dedicated
 surface, so there is no equivalent of `backend_p96`'s "unclipped writes
-corrupt sibling windows" hazard - `display_set_p96_overlay()` deliberately
-is not added to `mr_build_player_arguments()`'s forced-`--fullscreen` case
-the way plain P96 is), and it does no CPU-side scaling at all (the PIP is
+corrupt sibling windows" hazard), and it does no CPU-side scaling at all (the PIP is
 given the source size once, `P96PIP_Width`/`Height`/`Left`/`Top` describe a
 separate, independently aspect-fitted destination rectangle, and Picasso96
 - potentially the board itself for a real video window - does the resize;
@@ -1897,36 +1894,62 @@ vendored header either, so every `P96PIP_SourceBitMap` fetch checks the
 retrieved pointer itself instead of trusting a guessed sign convention on
 the return value.
 
-`display_open()`'s backend-selection chain (`amiga/display.c`) tries
-`backend_p96pip` first, only when `--p96-overlay` was explicitly passed
-(`display_set_p96_overlay()`, which also implies `display_set_force_p96(1)`
-- there is no separate `--p96` flag needed alongside it), then falls
-through to plain `backend_p96`, `backend_cgx`, `backend_aga` exactly as
-before - `order[]` grew from 3 to 4 slots to fit the new optional entry.
-Unlike `backend_p96`, `backend_p96pip` needs no `cybergraphics.library` at
-all (it never calls a CGX function, only Picasso96API.library ones), so its
-gate is `g_force_p96 && g_p96_overlay && P96Base` with no `CyberGfxBase`
-requirement.
+**Real-hardware confirmation, then a merge.** The reporting user tested this
+on their own Voodoo3 and confirmed overlay mode works ("overlay is good").
+They then asked the natural follow-up: does plain P96 fullscreen (the
+option that existed before any of this) get any of that benefit, or is it
+"just bigger writepixel"? It was the latter - `backend_p96`'s direct
+screen-bitmap lock is a lower-overhead way of doing the same fundamentally
+CPU-bound thing `WritePixelArray` (CGX) does, with the identical
+`mr_scale_resize_rgb24_strip()` CPU scaling cost, just skipping the RTG
+driver's own copy/convert call. Their request, once that was clear: fold
+the overlay backend into what "RTG (P96)" already means, rather than
+keeping it as a separate menu entry someone has to know to pick instead of
+the older option. So `MR_DISPLAY_P96_OVERLAY` (the separate enum value,
+`--p96-overlay` CLI flag, `display_set_p96_overlay()`, and the third
+"RTG (P96 Overlay)" entry in both GUIs' Display choosers) was removed again
+- all of it lived for exactly one PR round-trip before being superseded,
+never shipped as a released option, so this is a straight revert of that
+plumbing rather than a deprecation.
 
-Plumbed through the same places every other display mode already is:
-`mr_play_options.h`'s `mr_display_mode` enum gained `MR_DISPLAY_P96_OVERLAY`;
-`mr_play_options.c`'s name/parse/summary/`append_playback_flags()` functions
-(`"p96-overlay"` CLI name, `--display p96-overlay` for the IPTV/YouTube
-browsers' explicit T:-snapshot form, bare `--p96-overlay` for mrplay's own
-non-explicit argv, "RTG (P96 Overlay)" in the status summary) all extend
-their existing `MR_DISPLAY_CGX`/`MR_DISPLAY_P96` three-way checks to include
-it; `tests/mr_iptv_check.c` pins the new flag/parse/summary round-trip the
-same way the existing P96 case already was pinned, including that (unlike
-P96) it does *not* force `--fullscreen`. Both GUIs (`mrgui.c` ReAction,
-`mrgui_gadtools.c` GadTools) gained a third RTG entry, "RTG (P96 Overlay)",
-in their Display choosers (their `mode_values[]`/`modes[]` fixed-size arrays
-grew from 7 to 8 slots to fit it), and their `update_mode_controls()`
-disable-chipset-options checks were extended from a CGX/P96 two-way check to
-a three-way one so C2P/Lace/Scale grey out for the new mode exactly as they
-already do for CGX/P96. `make check` passes with the updated pinned
-strings; every Amiga-only file here (the new backend and both GUI files)
-can only be reviewed, not compiled or run, on this dev host - the same
-standing limitation as everything else in this section.
+`display_open()`'s backend-selection chain (`amiga/display.c`) now tries
+`backend_p96pip` first whenever P96 mode is selected at all
+(`display_set_force_p96(1)` - the one flag both backends now share), and
+falls back to the older `backend_p96` only if the PIP backend's `open()`
+fails, then `backend_cgx`, then `backend_aga` exactly as before - `order[]`
+stays at 4 slots (unlike before, though, this is no longer "4 backends
+each independently optional", but two backends serving one option plus the
+two unconditional fallbacks). Unlike `backend_p96`, `backend_p96pip` needs
+no `cybergraphics.library` at all (it never calls a CGX function, only
+Picasso96API.library ones), so its own gate is `g_force_p96 && P96Base`
+with no `CyberGfxBase` requirement - `backend_p96`'s gate still needs
+`CyberGfxBase` too. `display_backend_name()` still reports which of the two
+actually opened ("RTG (P96 Overlay)" vs "RTG (P96)"), so a `--time` log can
+tell them apart even though the user only ever picks one "P96" option -
+useful precisely because whether real hardware acceleration engaged for a
+given board is still an open question (see below).
+
+One real behavioural wrinkle from the merge, worth being explicit about:
+`backend_p96` refuses to open at all without `--fullscreen` (unclipped
+writes would corrupt sibling windows - see its own file header), but
+`backend_p96pip` has no such restriction and opens windowed happily. Both
+GUIs and `mr_play_options.c` still always launch P96 with `--fullscreen`
+regardless - selecting "RTG (P96)" from a Display chooser has been a
+fullscreen-only *option* since before the PIP backend existed, and that UI
+contract is unchanged. But a direct `mrplay --p96` invocation with no
+`--fullscreen`, which used to fail P96 entirely and fall through to CGX,
+now opens windowed via the PIP backend instead - a behaviour change only
+for that specific direct-CLI-without-fullscreen case, and arguably a nicer
+one (P96 becomes usable windowed via the CLI where it previously just
+wasn't available at all).
+
+`mr_play_options.h`/`.c`, `tests/mr_iptv_check.c`, and both GUIs' mode
+lists/`update_mode_controls()` all reverted to their plain two-way CGX/P96
+shape (no third enum value or chooser entry to plumb through) - `make
+check` passes with the reverted pinned strings; every Amiga-only file here
+(the backend and both GUI files) can only be reviewed, not compiled or
+run, on this dev host - the same standing limitation as everything else in
+this section.
 
 **Two separate, real-hardware-reported GUI bugs were fixed alongside this,
 unrelated to overlay mode itself, spotted by the same user while looking at
@@ -1946,7 +1969,7 @@ these controls:**
   `C2P:`, `H.264:`, `Audio:`, `Fast buffer:`, `Video:`), which this control
   had been missing since the None/2x/Copper 2x cycle replaced the old
   separate checkboxes. `update_mode_controls()`'s own logic (disable/reset
-  to None on CGX/P96/P96-Overlay, snap Copper back to plain 2x on an
+  to None on CGX/P96, snap Copper back to plain 2x on an
   ineligible C2P/mode) was already correct and untouched - this was purely a
   layout/width fix. Not yet retested on real hardware.
 
@@ -1972,16 +1995,18 @@ these controls:**
   general combined-taglist issue this fix just happened not to also need for
   Lace).
 
-Real-hardware test plan once a build is available: (1) confirm "RTG (P96
-Overlay)" is selectable and opens without falling back to plain P96/CGX/AGA
-in the `--time` log; (2) confirm video actually displays, at both native and
-non-native window sizes, windowed and fullscreen, and after a browser-driven
-resolution change (live HLS); (3) confirm the `--time`/`g_display_want_time`
-log's `p96pip: opened ... overlay` line reports "hardware
-(PIPT_VideoWindow)" rather than falling back to "software
-(PIPT_MemoryWindow)", and whether that measurably helps CPU-bound H.264
-decode the way it did for the reporting user's underlying complaint; (4) the
-two GUI fixes above, each on its own edition.
+**Overlay mode itself is confirmed working on real Voodoo3 hardware** (the
+user's own "overlay is good") - the open/write/resize/close mechanics this
+section's own design-rationale paragraphs above worried about all check out
+in practice. Still open, now that P96 always tries it first: whether the
+`--time`/`g_display_want_time` log's `p96pip: opened ... overlay` line
+actually reports "hardware (PIPT_VideoWindow)" (real board acceleration)
+rather than falling back to "software (PIPT_MemoryWindow)" for this board,
+and whether that distinction measurably affects CPU-bound H.264 decode -
+neither was reported one way or the other alongside the "overlay is good"
+confirmation. The two GUI fixes above (Copper 2x layout, ReAction Scale
+greying) still each need their own real-hardware retest, on their own
+editions.
 
 **A separate real-hardware crash report, GadTools edition: Guru 8100 0005
 (CPU Zero Divide, this codebase's established Guru-number convention - see

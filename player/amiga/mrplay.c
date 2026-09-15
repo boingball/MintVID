@@ -1725,7 +1725,7 @@ int main(int argc, char **argv)
         printf("usage: mrplay [--user-agent <value>] [--referer <value>] "
                "<file.avi|file.mov|file.ts|file.m2ts|"
                "file.mjpeg|file.m4v> "
-               "[--aga] [--ham] [--ham6] [--p96] [--p96-overlay] "
+               "[--aga] [--ham] [--ham6] [--p96] "
                "[--2x] [--lace] [--ecs-fast] [--ecs32] [--copper-vdouble] "
                "[--loop] "
                "[--wpa|--c2p|--riva-c2p|--kalms-c2p|--direct-c2p] "
@@ -1754,7 +1754,6 @@ int main(int argc, char **argv)
             }
             else if (!strcmp(argv[i], "--aga"))  display_set_force_aga(1);
             else if (!strcmp(argv[i], "--p96"))  display_set_force_p96(1);
-            else if (!strcmp(argv[i], "--p96-overlay")) display_set_p96_overlay(1);
             else if (!strcmp(argv[i], "--ham"))  display_set_ham(8);
             else if (!strcmp(argv[i], "--ham6")) display_set_ham(6);
             else if (!strcmp(argv[i], "--2x"))   display_set_scale(2);

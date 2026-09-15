@@ -113,7 +113,6 @@ static const char *display_name(mr_display_mode display)
     case MR_DISPLAY_HAM8: return "ham8";
     case MR_DISPLAY_CGX: return "cgx";
     case MR_DISPLAY_P96: return "p96";
-    case MR_DISPLAY_P96_OVERLAY: return "p96-overlay";
     case MR_DISPLAY_AGA_ECS32: return "ecs32";
     case MR_DISPLAY_AGA_ECS16: return "ecs16";
     default: return "aga";
@@ -140,8 +139,7 @@ static int append_playback_flags(char *out, size_t cap,
     if (explicit) {
         if (!append_option(out, cap, "--display") ||
             !append_option(out, cap, display_name(o->display))) return 0;
-        if (o->display != MR_DISPLAY_CGX && o->display != MR_DISPLAY_P96 &&
-            o->display != MR_DISPLAY_P96_OVERLAY) {
+        if (o->display != MR_DISPLAY_CGX && o->display != MR_DISPLAY_P96) {
             if (!append_option(out, cap, "--c2p") ||
                 !append_option(out, cap, c2p_name(o->c2p)) ||
                 !append_option(out, cap, o->laced ? "--laced" : "--no-laced") ||
@@ -162,10 +160,7 @@ static int append_playback_flags(char *out, size_t cap,
         if (o->display == MR_DISPLAY_AGA_ECS16 &&
             (!append_option(out, cap, "--aga") || !append_option(out, cap, "--ecs-fast"))) return 0;
         if (o->display == MR_DISPLAY_P96 && !append_option(out, cap, "--p96")) return 0;
-        if (o->display == MR_DISPLAY_P96_OVERLAY &&
-            !append_option(out, cap, "--p96-overlay")) return 0;
-        if (o->display != MR_DISPLAY_CGX && o->display != MR_DISPLAY_P96 &&
-            o->display != MR_DISPLAY_P96_OVERLAY) {
+        if (o->display != MR_DISPLAY_CGX && o->display != MR_DISPLAY_P96) {
             const char *flag = o->c2p == MR_C2P_AKIKO ? "--cd32" :
                                o->c2p == MR_C2P_KALMS ? "--kalms-c2p" :
                                o->c2p == MR_C2P_RIVA ? "--riva-c2p" :
@@ -237,17 +232,16 @@ int mr_build_player_arguments(char *out, size_t cap,
     if (!o) { mr_play_options_default(&defaults); o = &defaults; }
     out[0] = 0;
     if (!append_playback_flags(out, cap, o, 0)) return 0;
-    /* P96's direct bitmap-lock backend is fullscreen-only.  GUI callers
-     * select P96 as a display mode but do not have a separate startup
-     * fullscreen option, so enter fullscreen before display_open().  This
-     * lets display_p96 open its private screen instead of rejecting a
-     * windowed P96 launch and falling back to CGX/WritePixelArray.
-     * MR_DISPLAY_P96_OVERLAY deliberately does NOT get the same treatment:
-     * the PIP overlay writes into its own dedicated source bitmap rather
-     * than locking the shared screen bitmap, so it has no equivalent of
-     * MR_DISPLAY_P96's "unclipped direct writes corrupt sibling windows"
-     * hazard - see amiga/display_p96pip.c's file header - and can run
-     * windowed like CGX/AGA. */
+    /* P96 mode is fullscreen-only as a UI contract (unchanged from before
+     * the PIP overlay backend existed - see amiga/display.c's
+     * display_open()): GUI callers select P96 as a display mode but do not
+     * have a separate startup fullscreen option, so enter fullscreen before
+     * display_open(). This still matters even though the PIP overlay
+     * backend itself has no windowed-mode hazard the way the older direct
+     * bitmap-lock backend does (see amiga/display_p96pip.c's file header) -
+     * without --fullscreen, a GUI-launched P96 session could open windowed
+     * via the PIP backend, which is not what selecting "RTG (P96)" from
+     * either GUI's Display chooser is meant to do. */
     if (o->display == MR_DISPLAY_P96 &&
         !append_option(out, cap, "--fullscreen")) return 0;
     if (ua && *ua &&
@@ -296,7 +290,6 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "ham8")) o->display = MR_DISPLAY_HAM8;
             else if (!strcmp(value, "cgx") || !strcmp(value, "rtg")) o->display = MR_DISPLAY_CGX;
             else if (!strcmp(value, "p96")) o->display = MR_DISPLAY_P96;
-            else if (!strcmp(value, "p96-overlay")) o->display = MR_DISPLAY_P96_OVERLAY;
             else if (!strcmp(value, "ecs32")) o->display = MR_DISPLAY_AGA_ECS32;
             else if (!strcmp(value, "ecs16")) o->display = MR_DISPLAY_AGA_ECS16;
             else goto bad;
@@ -410,11 +403,9 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
            o->h264_performance == MR_H264_PERF_TURBO_PLUS ? "Turbo+" :
            o->h264_performance == MR_H264_PERF_TURBO_GT ? "TurboGT" : "Auto";
     audio = audio_policy_text(o);
-    if (o->display == MR_DISPLAY_CGX || o->display == MR_DISPLAY_P96 ||
-        o->display == MR_DISPLAY_P96_OVERLAY)
+    if (o->display == MR_DISPLAY_CGX || o->display == MR_DISPLAY_P96)
         snprintf(out, cap, "Playback: RTG (%s) / %s / H264 %s / Audio %s / Fast buffer %s%s / Video %s",
-                 o->display == MR_DISPLAY_P96 ? "P96" :
-                 o->display == MR_DISPLAY_P96_OVERLAY ? "P96 Overlay" : "WritePixel",
+                 o->display == MR_DISPLAY_P96 ? "P96" : "WritePixel",
                  hls, h264, audio, fast_buffer_text(o),
                  o->live_resync ? " / Live-resync" : "",
                  o->throughput ? "All Frames" : "Skip Frames");

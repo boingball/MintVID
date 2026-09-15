@@ -326,15 +326,6 @@ int main(void) {
                                      NULL, NULL));
     assert(strstr(args, "--p96") && !strstr(args, "--aga") &&
            !strstr(args, "--kalms-c2p"));
-    options.display = MR_DISPLAY_P96_OVERLAY;
-    assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
-                                     NULL, NULL));
-    assert(strstr(args, "--p96-overlay") && !strstr(args, "--aga") &&
-           !strstr(args, "--kalms-c2p"));
-    /* Unlike MR_DISPLAY_P96, the overlay mode is not fullscreen-only (see
-     * mr_build_player_arguments()'s comment on why) - no forced
-     * "--fullscreen" should appear here. */
-    assert(!strstr(args, "--fullscreen"));
     options.display = MR_DISPLAY_CGX;
     options.hls_low = 0;
     options.hls_max_width = 0;
@@ -450,17 +441,6 @@ int main(void) {
       assert(parsed.display == MR_DISPLAY_P96);
       mr_play_options_summary(&parsed, summary, sizeof(summary));
       assert(strstr(summary, "RTG (P96)"));
-    }
-    {
-      char *inherited[] = {"iptvgui", "--display", "p96-overlay"};
-      char summary[160], error[128];
-      mr_play_options parsed;
-      mr_play_options_default(&parsed);
-      assert(mr_play_options_parse(&parsed, 3, inherited, error,
-                                   sizeof(error)));
-      assert(parsed.display == MR_DISPLAY_P96_OVERLAY);
-      mr_play_options_summary(&parsed, summary, sizeof(summary));
-      assert(strstr(summary, "RTG (P96 Overlay)"));
     }
     {
       char *inherited[] = {"iptvgui", "--display", "ecs32"};
