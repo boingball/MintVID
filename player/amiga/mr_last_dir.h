@@ -25,20 +25,29 @@
 
 /* Checks whether `path` currently resolves - WITHOUT ever letting AmigaDOS
  * pop its own "Please insert volume X" system requester to find out.
- * SetProcWindow((APTR)-1) is documented, standard dos.library behaviour
- * (not a guess): it tells DOS to fail a Lock()/Open() on a recognised-but-
- * absent volume silently instead of prompting, for the duration this
- * process's pr_WindowPtr is set to that sentinel; the previous value is
- * captured first and restored immediately after, in case anything else
- * ever relies on it. This exists because a network share (the reported
- * case: "NAS1") is exactly the kind of volume DOS "recognises" (it has a
- * live DosList entry) but may currently be unreachable - Lock() on a path
- * naming it, done the ordinary way, is documented to trigger that same
- * system requester itself, not just ASL's own internal directory listing.
- * Real dos.library/exec.library calls this codebase already links
- * elsewhere - unverified against the real NDK on this dev host like
- * everything else in this file (see CLAUDE.md's "Validate against ffmpeg"
- * section). */
+ * Setting a process's pr_WindowPtr to (APTR)-1 is documented, standard
+ * dos.library behaviour (not a guess): it tells DOS to fail a Lock()/Open()
+ * on a recognised-but-absent volume silently instead of prompting, for as
+ * long as pr_WindowPtr holds that sentinel; the previous value is captured
+ * first and restored immediately after, in case anything else ever relies
+ * on it. This exists because a network share (the reported case: "NAS1")
+ * is exactly the kind of volume DOS "recognises" (it has a live DosList
+ * entry) but may currently be unreachable - Lock() on a path naming it,
+ * done the ordinary way, is documented to trigger that same system
+ * requester itself, not just ASL's own internal directory listing.
+ *
+ * pr_WindowPtr is set directly on the struct rather than through
+ * dos.library's own SetProcWindow() call - a real CI build on the real
+ * `m68k-amigaos-gcc` toolchain (this file cannot be compiled at all on
+ * this dev host - see CLAUDE.md's "Validate against ffmpeg" section)
+ * caught `undefined reference to SetProcWindow` at link time: that
+ * function's jump-table stub isn't present in whatever auto-linked import
+ * library this Bebbo NDK image provides, unlike Lock()/UnLock()/Open()/
+ * FindTask() etc. (already proven to link - FindTask() in particular is
+ * the exact same call `find_player()` elsewhere in both GUIs already uses
+ * successfully). A direct struct field write needs no library stub at all,
+ * sidestepping the question of which dos.library functions this specific
+ * toolchain happens to auto-link. */
 static inline int mr_last_dir_reachable(const char *path)
 {
     struct Process *me;
@@ -49,9 +58,9 @@ static inline int mr_last_dir_reachable(const char *path)
         return 0;
     me = (struct Process *)FindTask(NULL);
     old_window = me->pr_WindowPtr;
-    SetProcWindow((APTR)-1);
+    me->pr_WindowPtr = (APTR)-1;
     lock = Lock((CONST_STRPTR)path, ACCESS_READ);
-    SetProcWindow(old_window);
+    me->pr_WindowPtr = old_window;
     if (!lock)
         return 0;
     UnLock(lock);

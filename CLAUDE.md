@@ -2076,6 +2076,33 @@ not compiled or run, on this dev host; it needs a real-hardware retest
 with NAS1 offline to confirm the requester no longer appears on a bare
 Browse click.
 
+**The `mr_last_dir_reachable()` fix above shipped with a real link failure
+this dev host had no way to catch, caught instead by the repo's own CI
+`build` job on the real `m68k-amigaos-gcc` toolchain: `undefined reference
+to SetProcWindow`.** `<proto/dos.h>` on this Bebbo NDK image doesn't even
+declare the function (GCC's own warning: "implicit declaration of function
+'SetProcWindow'"), and whatever auto-linked import library this toolchain
+provides for dos.library calls doesn't stub it either - unlike `Lock()`/
+`UnLock()`/`Open()`/`FindTask()`, all already proven to link (FindTask() in
+particular is the exact same call `find_player()` elsewhere in both GUIs
+already uses successfully). This is another instance of this file's
+standing "no AmigaOS toolchain on this dev host" gap in its sharpest
+form: `SetProcWindow()`'s documented behaviour is real and correct, but
+whether a *specific toolchain image* actually provides a linkable stub for
+a given dos.library call can only be proven by attempting the real link,
+the same lesson the 68060 MP2 kernels' missing underscore aliases and the
+`__wrap_ih264d_decode_bin` hand-asm-symbol saga both already taught (see
+their own sections above) - each one a different specific mechanism, same
+root gap. Fixed by writing `pr_WindowPtr` directly on the `struct Process`
+(`<dos/dosextens.h>`) instead of calling `SetProcWindow()` at all - a
+struct field write needs no library stub, sidestepping the question of
+which dos.library functions this exact toolchain happens to auto-link,
+rather than hunting for whichever alternate call or header this
+distribution actually wants. The reachability logic itself (Lock()/UnLock()
+bracketed by the sentinel, previous value restored after) is unchanged;
+only the mechanism for setting/restoring `pr_WindowPtr` moved from a
+library call to direct struct access.
+
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4
