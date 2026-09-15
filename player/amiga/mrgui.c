@@ -595,9 +595,24 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
                        GA_Disabled, TRUE,
                        CHECKBOX_Checked, FALSE,
                        TAG_DONE);
+        /* A real-hardware report found Scale not greying out (and not
+         * snapping back to None) when switching to P96 - the two attribute
+         * changes below were previously combined into one SetGadgetAttrs
+         * call, same shape as lace's pair just above. The logic and call
+         * site here are otherwise identical to c2p's/lace's own (already
+         * working) disable path, so source review alone couldn't pin a root
+         * cause; splitting CHOOSER_Selected and GA_Disabled into two
+         * separate calls is the conservative fix - it forces two independent
+         * attribute-update/redraw passes on chooser.class instead of relying
+         * on both tags being applied and rendered correctly from one
+         * combined taglist. Unconfirmed until retested on real hardware,
+         * same standing limitation as every other Amiga-only GUI fix in this
+         * tree (see CLAUDE.md). */
+        SetGadgetAttrs((struct Gadget *)scale, window, NULL,
+                       CHOOSER_Selected, 0,
+                       TAG_DONE);
         SetGadgetAttrs((struct Gadget *)scale, window, NULL,
                        GA_Disabled, TRUE,
-                       CHOOSER_Selected, 0,
                        TAG_DONE);
         return;
     }

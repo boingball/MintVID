@@ -1812,6 +1812,312 @@ limitation) - the real-hardware/WinUAE claim ("does audio stay smooth
 through a keyframe-only freeze instead of stuttering") still needs its own
 retest to confirm.
 
+## P96 PIP overlay display, and two GUI Scale-control bugs
+
+A customer report (68060/66MHz + Mediator + Voodoo3, H.264/AVC 540x360)
+said current playback is slower than 1.2.0 and asked about "the planned
+overlay display" this project's own docs had previously mentioned. That
+phrase points at real graphics-card hardware video overlay - exactly what
+Voodoo3/Permedia/BVision-class boards expose - which does colourspace
+conversion and scaling on the card instead of the CPU, the thing most worth
+having on precisely this slow-68k-plus-fast-RTG-board combination.
+
+**`amiga/display_p96pip.c` (`backend_p96pip`) is a new display backend
+built on Picasso96API.library's "PIP" (Picture-In-Picture) API -
+`p96PIP_OpenTagList()` et al, declared in the vendored
+`amiga/include/libraries/Picasso96.h`/`amiga/include/inline/Picasso96API.h`
+headers `display_p96.c` already depends on.** It requests
+`P96PIP_Type=PIPT_VideoWindow` (a real hardware overlay window on boards
+that support one) first, falling back to `PIPT_MemoryWindow` (the
+always-available software-composited PIP) only if that specific open fails
+- so picking overlay mode never loses playback, only the chance at real
+acceleration, the same fallback discipline `display_open()`'s whole backend
+chain already uses. Two structural differences from `backend_p96`'s own
+direct screen-bitmap-lock approach, both explained at length in the new
+file's header: it is not fullscreen-only (a PIP owns its own dedicated
+surface, so there is no equivalent of `backend_p96`'s "unclipped writes
+corrupt sibling windows" hazard), and it does no CPU-side scaling at all (the PIP is
+given the source size once, `P96PIP_Width`/`Height`/`Left`/`Top` describe a
+separate, independently aspect-fitted destination rectangle, and Picasso96
+- potentially the board itself for a real video window - does the resize;
+`backend_p96`/`backend_cgx` both still pay for `mr_scale_resize_rgb24_strip()`
+on the CPU whenever the window isn't the stream's native size).
+
+**Deliberately not done in this first pass: the PIP's source format is
+`RGBFB_B8G8R8`, reusing the exact BGR24 pixels `backend_p96`'s `show_bgr()`
+already consumes - not one of the YUV `RGBFTYPE`s `Picasso96.h` documents as
+"for use with a hardware window only".** That comment is the strongest hint
+in the vendored headers that real overlay hardware expects YUV, not RGB, so
+whether requesting `PIPT_VideoWindow` with an RGB source actually engages a
+Voodoo3's overlay engine, or Picasso96 quietly falls back to software
+compositing behind an identical-looking API, is unknown without a real
+board to test against. Feeding real packed YUV into a video-window PIP -
+skipping the H.264/MPEG-2 YUV->RGB24 conversion these decoders already pay
+for, the same win `mr_mpeg2_set_yuv_output()` gets for the AGA indexed path
+(see "The RGB24 round-trip is the expensive part" above) - is the natural,
+larger follow-up once this base mechanism is confirmed working on real
+hardware; this first step instead validates the open/write/resize/close
+mechanics end to end using pixel data every other RTG backend already
+proves correct against ffmpeg, and is something the reporting user can
+actually test (unlike a from-scratch YUV overlay path, which would need its
+own correctness pass before it could be trusted on their hardware at all).
+
+Several coordinate-space and lifecycle details needed to be gotten right
+from documentation alone, with no way to compile or run any of it here (no
+AmigaOS toolchain, no Voodoo3/overlay-capable board, and not even a known
+case of WinUAE's own P96/UAEGFX emulation implementing the PIP API at all -
+this is a sharper version of this file's standing "Validate against
+ffmpeg" limitation, since not even the emulator this user has access to is
+known to exercise this specific API): `P96PIP_Relativity` defaults to
+`PIPRel_Width|PIPRel_Height`, which (easy to miss, since `P96PIP_Width`'s
+own doc comment reads "default: inner width of window" as if already
+absolute) means `P96PIP_Width`/`Height` are by default interpreted as an
+unused margin at the window's right/bottom edge, not an absolute size -
+`open_pip()` explicitly clears it to 0 on every open and `SetTags` call.
+Windowed placement needed `WA_InnerWidth`/`WA_InnerHeight` (content size,
+matching `display_p96.c`'s/`display_cgx.c`'s own windowed opens) rather than
+`WA_Width`/`WA_Height` (outer, border-inclusive), with a `sync_content_geometry()`
+helper re-reading the real post-open/post-resize content rectangle from the
+live window every time, mirroring those two files' own `bl`/`bt`/`iw`/`ih`
+tracking; `P96PIP_Left`/`Top` are then set relative to that content origin,
+the same "add `bl`/`bt` to every draw coordinate" convention every other
+backend in this tree already uses - `Picasso96.h` does not actually document
+which coordinate space `P96PIP_Left`/`Top` use, so this is the most
+consistent assumption available, not a confirmed one. `P96PIP_SourceWidth`/
+`Height` are Init-only (no settable equivalent), so a live source-resolution
+change (an HLS stream's SPS changing resolution mid-segment, the same case
+`display_p96.c`'s `p96_show_packed()` already handles for its own
+screen-bitmap path) needs a full PIP close/reopen (`reopen_for_size()`)
+rather than a `SetTags` update. `p96PIP_GetTagList()`'s own return-code
+convention (count processed vs. count failed) isn't documented in the
+vendored header either, so every `P96PIP_SourceBitMap` fetch checks the
+retrieved pointer itself instead of trusting a guessed sign convention on
+the return value.
+
+**Real-hardware confirmation, then a merge.** The reporting user tested this
+on their own Voodoo3 and confirmed overlay mode works ("overlay is good").
+They then asked the natural follow-up: does plain P96 fullscreen (the
+option that existed before any of this) get any of that benefit, or is it
+"just bigger writepixel"? It was the latter - `backend_p96`'s direct
+screen-bitmap lock is a lower-overhead way of doing the same fundamentally
+CPU-bound thing `WritePixelArray` (CGX) does, with the identical
+`mr_scale_resize_rgb24_strip()` CPU scaling cost, just skipping the RTG
+driver's own copy/convert call. Their request, once that was clear: fold
+the overlay backend into what "RTG (P96)" already means, rather than
+keeping it as a separate menu entry someone has to know to pick instead of
+the older option. So `MR_DISPLAY_P96_OVERLAY` (the separate enum value,
+`--p96-overlay` CLI flag, `display_set_p96_overlay()`, and the third
+"RTG (P96 Overlay)" entry in both GUIs' Display choosers) was removed again
+- all of it lived for exactly one PR round-trip before being superseded,
+never shipped as a released option, so this is a straight revert of that
+plumbing rather than a deprecation.
+
+`display_open()`'s backend-selection chain (`amiga/display.c`) now tries
+`backend_p96pip` first whenever P96 mode is selected at all
+(`display_set_force_p96(1)` - the one flag both backends now share), and
+falls back to the older `backend_p96` only if the PIP backend's `open()`
+fails, then `backend_cgx`, then `backend_aga` exactly as before - `order[]`
+stays at 4 slots (unlike before, though, this is no longer "4 backends
+each independently optional", but two backends serving one option plus the
+two unconditional fallbacks). Unlike `backend_p96`, `backend_p96pip` needs
+no `cybergraphics.library` at all (it never calls a CGX function, only
+Picasso96API.library ones), so its own gate is `g_force_p96 && P96Base`
+with no `CyberGfxBase` requirement - `backend_p96`'s gate still needs
+`CyberGfxBase` too. `display_backend_name()` still reports which of the two
+actually opened ("RTG (P96 Overlay)" vs "RTG (P96)"), so a `--time` log can
+tell them apart even though the user only ever picks one "P96" option -
+useful precisely because whether real hardware acceleration engaged for a
+given board is still an open question (see below).
+
+**Correction: the first cut of this merge kept forcing `--fullscreen` for
+P96 in `mr_build_player_arguments()`, carried over unexamined from the old
+contract - the user's own follow-up caught that this defeats the entire
+point.** The real desired flow, exactly as they described it: P96 opens as
+a normal window first (still hardware-accelerated if the board grants a
+PIP video window), and pressing F is what takes it to fullscreen -
+"falling back in software rendering if card can't do it - it shouldn't
+just open full screen o play". `backend_p96` (the older backend) refuses
+to open at all without `--fullscreen` (unclipped writes would corrupt
+sibling windows - see its own file header); `backend_p96pip` has no such
+restriction and opens windowed happily, so forcing fullscreen at launch
+was never actually *required* once the overlay backend existed - it was
+just leftover behaviour from when "RTG (P96)" meant only the old
+direct-lock backend. `mr_build_player_arguments()`'s forced-`--fullscreen`
+case for `MR_DISPLAY_P96` is removed entirely: P96 now opens windowed from
+both GUIs by default, and F (`display_toggle_fullscreen()` ->
+`p96pip_toggle_fullscreen()`) is what takes it fullscreen, trying real
+hardware acceleration (`PIPT_VideoWindow`) again on every toggle and
+falling back to software compositing (`PIPT_MemoryWindow`) only if the
+board refuses - the exact "hardware if the card can do it, software if
+not" contract the user asked for, symmetric between windowed and
+fullscreen. `tests/mr_iptv_check.c` now pins the opposite of what it
+would have pinned a moment earlier: building P96's player arguments must
+NOT contain `--fullscreen`. A side effect worth naming: a direct `mrplay
+--p96` invocation with no `--fullscreen`, which used to fail P96 entirely
+and fall through to CGX (the old backend's own refusal), now opens
+windowed via the PIP backend by default too - consistent with the new
+contract, not a separate case to special-case around.
+
+`mr_play_options.h`/`.c`, `tests/mr_iptv_check.c`, and both GUIs' mode
+lists/`update_mode_controls()` all reverted to their plain two-way CGX/P96
+shape (no third enum value or chooser entry to plumb through) - `make
+check` passes with the reverted pinned strings; every Amiga-only file here
+(the backend and both GUI files) can only be reviewed, not compiled or
+run, on this dev host - the same standing limitation as everything else in
+this section.
+
+**Two separate, real-hardware-reported GUI bugs were fixed alongside this,
+unrelated to overlay mode itself, spotted by the same user while looking at
+these controls:**
+
+- **GadTools "Copper 2x" (the third row of the Scale cycle gadget,
+  `mrgui_gadtools.c`) did not actually show its text - the gadget's box was
+  too narrow.** It was squeezed into 70px of leftover space on the audio
+  options row (`558..628` of a 632px-wide window), sized by estimate against
+  topaz 8pt with no real-hardware check - explicitly flagged as unconfirmed
+  when that layout first shipped (see "AGA copper-assisted vertical
+  doubling notes" above). Fixed by moving the Scale cycle onto its own row
+  next to the Video Mode cycle (`8..188`), where `188..632` was entirely
+  free, and widening it to 180px there - also renamed its three labels from
+  bare "None"/"2x"/"Copper 2x" to "Scale: None"/"Scale: 2x"/"Scale: Copper 2x"
+  for consistency with every other cycle gadget in this window (`Display:`,
+  `C2P:`, `H.264:`, `Audio:`, `Fast buffer:`, `Video:`), which this control
+  had been missing since the None/2x/Copper 2x cycle replaced the old
+  separate checkboxes. `update_mode_controls()`'s own logic (disable/reset
+  to None on CGX/P96, snap Copper back to plain 2x on an
+  ineligible C2P/mode) was already correct and untouched - this was purely a
+  layout/width fix. Not yet retested on real hardware.
+
+- **ReAction's Scale chooser reportedly did not grey out or reset to None
+  when switching to P96.** Source review found `mrgui.c`'s
+  `update_mode_controls()` logically identical to GadTools' own (already
+  working) equivalent - same three-way disabled check, same
+  `SetGadgetAttrs(..., GA_Disabled, TRUE, CHOOSER_Selected, 0, TAG_DONE)`
+  combined call for the disable path - so this could not be root-caused from
+  source alone, the same class of gap this file's "Validate against
+  ffmpeg" section exists to name: a plausible reading of the code is not the
+  same as confirmed correct behaviour on real ReAction/BOOPSI gadget classes,
+  and there is no way to exercise `chooser.class` here to find out which. The
+  conservative fix applied: split that one combined `SetGadgetAttrs` call
+  (`CHOOSER_Selected` and `GA_Disabled` together) into two separate calls,
+  for the Scale gadget's disable path only - forcing two independent
+  attribute-update/redraw passes on the gadget instead of relying on both
+  tags being applied and rendered correctly from one combined taglist. Not
+  yet retested on real hardware; if this does not fix it, the real cause is
+  still unknown and would need a fresh real-hardware trace (e.g. does the
+  Lace checkbox's own combined disable call, right next to Scale's, show the
+  same symptom or not - that would show whether this is Scale-specific or a
+  general combined-taglist issue this fix just happened not to also need for
+  Lace).
+
+**Overlay mode itself is confirmed working on real Voodoo3 hardware** (the
+user's own "overlay is good") - the open/write/resize/close mechanics this
+section's own design-rationale paragraphs above worried about all check out
+in practice. Still open, now that P96 always tries it first: whether the
+`--time`/`g_display_want_time` log's `p96pip: opened ... overlay` line
+actually reports "hardware (PIPT_VideoWindow)" (real board acceleration)
+rather than falling back to "software (PIPT_MemoryWindow)" for this board,
+and whether that distinction measurably affects CPU-bound H.264 decode -
+neither was reported one way or the other alongside the "overlay is good"
+confirmation. The two GUI fixes above (Copper 2x layout, ReAction Scale
+greying) still each need their own real-hardware retest, on their own
+editions.
+
+**A separate real-hardware crash report, GadTools edition: Guru 8100 0005
+(CPU Zero Divide, this codebase's established Guru-number convention - see
+the "AGA copper-assisted vertical doubling notes" section above for the
+other confirmed instance of this exact code), reported while browsing for
+a file: "if it trys to open a folder - assign thats not already there, I
+got the requestor and this happened when I clicked after pressing ignore
+on the NAS1 is not mounted".** Read literally, two different things could
+produce that sequence, and which one actually happened changes what is
+fixable here:
+
+1. **Our own remembered-last-folder seeding** (`amiga/mr_last_dir.h`,
+   `ENVARC:MintVID.lastdir` - see the "In-app help (AmigaGuide) and
+   remembered last folder" section above) hands `ASLFR_InitialDrawer`/
+   `GETFILE_Drawer` a path from a *previous* session without ever checking
+   it is still reachable *now*. `NAS1` reads exactly like a network-share
+   volume AmigaDOS still has a live `DosList` entry for (so it is
+   "recognised", not simply unknown) but that is currently offline - and
+   `Lock()`/`Examine()` on a path naming a recognised-but-absent volume is
+   documented AmigaDOS behaviour to trigger the OS's own "Please insert
+   volume NAS1" system requester itself, independent of anything specific
+   to `asl.library`'s directory listing. If browsing with `NAS1` offline
+   reproduces the requester *the first time Browse is opened* (before
+   navigating anywhere inside the file requester), this is almost
+   certainly it.
+2. **Live navigation inside the already-open ASL/GadTools file requester**
+   into an assign/volume that turns out to be unmounted, unrelated to
+   anything this codebase seeded. That would be `asl.library`'s/
+   `dos.library`'s own internal directory-listing code choking on the
+   unmounted target, entirely outside code this project writes or can
+   patch - the exact same class of "no way to reach this from application
+   source" gap the "Validate against ffmpeg" section's standing limitation
+   already names for chipset-internal behaviour, just for DOS/ASL internals
+   here instead of graphics.library.
+
+**Fixed for case 1**, which is both the more likely reading (the customer's
+own wording opens with "if it trys to open a folder", suggesting the very
+act of opening the browser, not something navigated to afterward) and the
+only one actually reachable from this codebase: `mr_last_dir.h` gained
+`mr_last_dir_reachable()`, and `mr_last_dir_load()` now calls it before
+ever reporting a saved drawer as usable. It checks reachability with
+`SetProcWindow((APTR)-1)` held around a `Lock()`/`UnLock()` pair -
+documented, standard dos.library behaviour (not a guess) for making a
+`Lock()`/`Open()` on a recognised-but-absent volume fail silently instead
+of prompting, restoring the process's previous `pr_WindowPtr` immediately
+after. A saved drawer that fails this check is treated exactly like "no
+saved value" for that call (falls back to opening the requester with no
+initial drawer, the pre-existing behaviour) rather than being deleted from
+`ENVARC:` - a network share going offline intermittently is normal, and the
+remembered drawer is still worth keeping for when it is back. Since both
+GUIs' browse code already goes through this one shared function
+(`mrgui_gadtools.c`'s `browse()`, `mrgui.c`'s `GETFILE_Drawer` seeding),
+fixing it here covers both editions in one place, not just the GadTools
+edition the report came from.
+
+This fix directly prevents the *system requester itself* from being
+triggered by our own seeding, which is the mechanism case 1 describes -
+but it cannot address case 2, and there is currently no way to tell from
+here which one the report actually was. **Still needed from the user to
+close this out**: does the Zero Divide reproduce the *very first* time
+Browse is opened with NAS1 offline (case 1 - this fix should now prevent
+it), or only after navigating further inside an already-open requester
+into a different unmounted assign (case 2 - unrelated to this fix, and
+likely outside anything this codebase can patch at all)? Either way, this
+- like every other Amiga-only change in this file - can only be reviewed,
+not compiled or run, on this dev host; it needs a real-hardware retest
+with NAS1 offline to confirm the requester no longer appears on a bare
+Browse click.
+
+**The `mr_last_dir_reachable()` fix above shipped with a real link failure
+this dev host had no way to catch, caught instead by the repo's own CI
+`build` job on the real `m68k-amigaos-gcc` toolchain: `undefined reference
+to SetProcWindow`.** `<proto/dos.h>` on this Bebbo NDK image doesn't even
+declare the function (GCC's own warning: "implicit declaration of function
+'SetProcWindow'"), and whatever auto-linked import library this toolchain
+provides for dos.library calls doesn't stub it either - unlike `Lock()`/
+`UnLock()`/`Open()`/`FindTask()`, all already proven to link (FindTask() in
+particular is the exact same call `find_player()` elsewhere in both GUIs
+already uses successfully). This is another instance of this file's
+standing "no AmigaOS toolchain on this dev host" gap in its sharpest
+form: `SetProcWindow()`'s documented behaviour is real and correct, but
+whether a *specific toolchain image* actually provides a linkable stub for
+a given dos.library call can only be proven by attempting the real link,
+the same lesson the 68060 MP2 kernels' missing underscore aliases and the
+`__wrap_ih264d_decode_bin` hand-asm-symbol saga both already taught (see
+their own sections above) - each one a different specific mechanism, same
+root gap. Fixed by writing `pr_WindowPtr` directly on the `struct Process`
+(`<dos/dosextens.h>`) instead of calling `SetProcWindow()` at all - a
+struct field write needs no library stub, sidestepping the question of
+which dos.library functions this exact toolchain happens to auto-link,
+rather than hunting for whichever alternate call or header this
+distribution actually wants. The reachability logic itself (Lock()/UnLock()
+bracketed by the sentinel, previous value restored after) is unchanged;
+only the mechanism for setting/restoring `pr_WindowPtr` moved from a
+library call to direct struct access.
+
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4

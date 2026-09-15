@@ -75,7 +75,7 @@ static void close_libs(void)
 
 amiga_display *display_open(int w, int h, const char *title)
 {
-    const display_backend *order[3];
+    const display_backend *order[4];
     int n = 0, i;
 
     IntuitionBase = (struct IntuitionBase *)
@@ -91,10 +91,20 @@ amiga_display *display_open(int w, int h, const char *title)
     if (g_force_p96 && !g_force_aga)
         P96Base = OpenLibrary((CONST_STRPTR)"Picasso96API.library", 0);
 
-    /* P96 is tried first (only when selected and available); backend_p96's
-     * own open() fails cleanly for unsupported screen formats or geometry,
-     * in which case this still falls through to CGX, then AGA - so choosing
-     * P96 never loses working playback, only the chance at the faster path. */
+    /* P96 mode (--p96) tries the PIP overlay backend first - real hardware
+     * acceleration where the board/driver supports it - then falls back to
+     * the older direct screen-bitmap-lock backend (backend_p96) if the PIP
+     * can't open, then CGX, then AGA. This is a plain internal fallback, not
+     * a separate user-facing choice: both backends serve the one "P96" mode
+     * (display_set_force_p96()), so selecting P96 never loses playback,
+     * only the chance at real acceleration, same discipline as the rest of
+     * this chain. display_backend_name() still reports which of the two
+     * actually opened ("RTG (P96 Overlay)" vs "RTG (P96)"), so a --time log
+     * can tell them apart even though the user only ever picks one option.
+     * backend_p96pip doesn't need CyberGfxBase at all (see its own file
+     * header); backend_p96 does. */
+    if (!g_force_aga && g_force_p96 && P96Base)
+        order[n++] = &backend_p96pip;
     if (!g_force_aga && g_force_p96 && CyberGfxBase && P96Base)
         order[n++] = &backend_p96;
     if (!g_force_aga && CyberGfxBase) order[n++] = &backend_cgx;

@@ -326,6 +326,12 @@ int main(void) {
                                      NULL, NULL));
     assert(strstr(args, "--p96") && !strstr(args, "--aga") &&
            !strstr(args, "--kalms-c2p"));
+    /* P96 opens windowed by default now that display_open() tries the PIP
+     * overlay backend first (see amiga/display_p96pip.c) - the older
+     * direct-lock backend's "must start fullscreen" hazard doesn't apply
+     * to it. F is what takes a P96 session to fullscreen at runtime, not
+     * this flag. */
+    assert(!strstr(args, "--fullscreen"));
     options.display = MR_DISPLAY_CGX;
     options.hls_low = 0;
     options.hls_max_width = 0;

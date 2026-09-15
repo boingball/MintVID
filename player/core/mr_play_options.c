@@ -232,13 +232,25 @@ int mr_build_player_arguments(char *out, size_t cap,
     if (!o) { mr_play_options_default(&defaults); o = &defaults; }
     out[0] = 0;
     if (!append_playback_flags(out, cap, o, 0)) return 0;
-    /* P96's direct bitmap-lock backend is fullscreen-only.  GUI callers
-     * select P96 as a display mode but do not have a separate startup
-     * fullscreen option, so enter fullscreen before display_open().  This
-     * lets display_p96 open its private screen instead of rejecting a
-     * windowed P96 launch and falling back to CGX/WritePixelArray. */
-    if (o->display == MR_DISPLAY_P96 &&
-        !append_option(out, cap, "--fullscreen")) return 0;
+    /* P96 mode used to force --fullscreen here, back when "RTG (P96)" meant
+     * only the older direct screen-bitmap-lock backend, which refuses to
+     * open at all unless already fullscreen (unclipped writes would corrupt
+     * sibling windows - see amiga/display_p96.c's file header). Now that
+     * display_open() (amiga/display.c) tries the PIP overlay backend first
+     * for P96 - see amiga/display_p96pip.c's file header - that hazard is
+     * gone: the overlay backend opens perfectly well windowed, with no
+     * corruption risk, so P96 no longer needs to start fullscreen at all.
+     * The real desired flow: P96 opens as a normal window (still using
+     * hardware overlay if the board grants it), and pressing F is what
+     * takes it to fullscreen - amiga/display_p96pip.c's own
+     * p96pip_toggle_fullscreen() tries real hardware acceleration
+     * (PIPT_VideoWindow) again on every toggle, falling back to software
+     * compositing (PIPT_MemoryWindow) only if the board refuses, exactly
+     * mirroring the windowed-open behaviour. Forcing --fullscreen here
+     * would skip straight past that windowed-then-F flow and (for a board
+     * where the PIP backend can't open at all) risk falling through to the
+     * older direct-lock backend instead of the CGX/WritePixelArray
+     * fallback a windowed session would otherwise get. */
     if (ua && *ua &&
         (!append_option(out, cap, "--user-agent") ||
          !append_quoted(out, cap, ua))) return 0;
