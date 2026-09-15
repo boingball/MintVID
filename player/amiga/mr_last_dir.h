@@ -14,17 +14,64 @@
 #define MR_LAST_DIR_H
 
 #include <dos/dos.h>
+#include <dos/dosextens.h>
 #include <exec/types.h>
 #include <proto/dos.h>
+#include <proto/exec.h>
 #include <string.h>
 
 #define MR_LAST_DIR_FILE "ENVARC:MintVID.lastdir"
 #define MR_LAST_DIR_TMP  "ENVARC:MintVID.lastdir.tmp"
 
+/* Checks whether `path` currently resolves - WITHOUT ever letting AmigaDOS
+ * pop its own "Please insert volume X" system requester to find out.
+ * SetProcWindow((APTR)-1) is documented, standard dos.library behaviour
+ * (not a guess): it tells DOS to fail a Lock()/Open() on a recognised-but-
+ * absent volume silently instead of prompting, for the duration this
+ * process's pr_WindowPtr is set to that sentinel; the previous value is
+ * captured first and restored immediately after, in case anything else
+ * ever relies on it. This exists because a network share (the reported
+ * case: "NAS1") is exactly the kind of volume DOS "recognises" (it has a
+ * live DosList entry) but may currently be unreachable - Lock() on a path
+ * naming it, done the ordinary way, is documented to trigger that same
+ * system requester itself, not just ASL's own internal directory listing.
+ * Real dos.library/exec.library calls this codebase already links
+ * elsewhere - unverified against the real NDK on this dev host like
+ * everything else in this file (see CLAUDE.md's "Validate against ffmpeg"
+ * section). */
+static inline int mr_last_dir_reachable(const char *path)
+{
+    struct Process *me;
+    APTR old_window;
+    BPTR lock;
+
+    if (!path || !*path)
+        return 0;
+    me = (struct Process *)FindTask(NULL);
+    old_window = me->pr_WindowPtr;
+    SetProcWindow((APTR)-1);
+    lock = Lock((CONST_STRPTR)path, ACCESS_READ);
+    SetProcWindow(old_window);
+    if (!lock)
+        return 0;
+    UnLock(lock);
+    return 1;
+}
+
 /* Reads the saved drawer path into out (out_size bytes, NUL-terminated,
  * trailing CR/LF stripped). Returns 1 with a non-empty out on success, 0
- * otherwise (no saved value, unreadable, or empty) - out is left untouched
- * on failure so callers can test the return value alone. */
+ * otherwise (no saved value, unreadable, empty, or no longer reachable -
+ * see mr_last_dir_reachable()) - out is left untouched on failure so
+ * callers can test the return value alone.
+ *
+ * A saved path that fails the reachability check is deliberately NOT
+ * deleted from ENVARC: - a network share being intermittently offline is
+ * normal and the remembered drawer is still worth keeping for when it is
+ * back, so this just falls back to "no saved value" for the current call,
+ * the same as if nothing had ever been saved (both call sites - browse()
+ * in mrgui_gadtools.c, GETFILE_InitialDrawer/fr_Drawer seeding in
+ * mrgui.c - already handle that case by opening the requester with no
+ * initial drawer instead). */
 static inline int mr_last_dir_load(char *out, size_t out_size)
 {
     BPTR file;
@@ -44,7 +91,13 @@ static inline int mr_last_dir_load(char *out, size_t out_size)
     for (i = (size_t)got; i > 0 &&
          (out[i - 1] == '\n' || out[i - 1] == '\r'); i--)
         out[i - 1] = 0;
-    return out[0] != 0;
+    if (out[0] == 0)
+        return 0;
+    if (!mr_last_dir_reachable(out)) {
+        out[0] = 0;
+        return 0;
+    }
+    return 1;
 }
 
 /* Saves drawer as the new last-used folder, only if it is non-empty and

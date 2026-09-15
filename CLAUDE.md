@@ -1983,6 +1983,74 @@ log's `p96pip: opened ... overlay` line reports "hardware
 decode the way it did for the reporting user's underlying complaint; (4) the
 two GUI fixes above, each on its own edition.
 
+**A separate real-hardware crash report, GadTools edition: Guru 8100 0005
+(CPU Zero Divide, this codebase's established Guru-number convention - see
+the "AGA copper-assisted vertical doubling notes" section above for the
+other confirmed instance of this exact code), reported while browsing for
+a file: "if it trys to open a folder - assign thats not already there, I
+got the requestor and this happened when I clicked after pressing ignore
+on the NAS1 is not mounted".** Read literally, two different things could
+produce that sequence, and which one actually happened changes what is
+fixable here:
+
+1. **Our own remembered-last-folder seeding** (`amiga/mr_last_dir.h`,
+   `ENVARC:MintVID.lastdir` - see the "In-app help (AmigaGuide) and
+   remembered last folder" section above) hands `ASLFR_InitialDrawer`/
+   `GETFILE_Drawer` a path from a *previous* session without ever checking
+   it is still reachable *now*. `NAS1` reads exactly like a network-share
+   volume AmigaDOS still has a live `DosList` entry for (so it is
+   "recognised", not simply unknown) but that is currently offline - and
+   `Lock()`/`Examine()` on a path naming a recognised-but-absent volume is
+   documented AmigaDOS behaviour to trigger the OS's own "Please insert
+   volume NAS1" system requester itself, independent of anything specific
+   to `asl.library`'s directory listing. If browsing with `NAS1` offline
+   reproduces the requester *the first time Browse is opened* (before
+   navigating anywhere inside the file requester), this is almost
+   certainly it.
+2. **Live navigation inside the already-open ASL/GadTools file requester**
+   into an assign/volume that turns out to be unmounted, unrelated to
+   anything this codebase seeded. That would be `asl.library`'s/
+   `dos.library`'s own internal directory-listing code choking on the
+   unmounted target, entirely outside code this project writes or can
+   patch - the exact same class of "no way to reach this from application
+   source" gap the "Validate against ffmpeg" section's standing limitation
+   already names for chipset-internal behaviour, just for DOS/ASL internals
+   here instead of graphics.library.
+
+**Fixed for case 1**, which is both the more likely reading (the customer's
+own wording opens with "if it trys to open a folder", suggesting the very
+act of opening the browser, not something navigated to afterward) and the
+only one actually reachable from this codebase: `mr_last_dir.h` gained
+`mr_last_dir_reachable()`, and `mr_last_dir_load()` now calls it before
+ever reporting a saved drawer as usable. It checks reachability with
+`SetProcWindow((APTR)-1)` held around a `Lock()`/`UnLock()` pair -
+documented, standard dos.library behaviour (not a guess) for making a
+`Lock()`/`Open()` on a recognised-but-absent volume fail silently instead
+of prompting, restoring the process's previous `pr_WindowPtr` immediately
+after. A saved drawer that fails this check is treated exactly like "no
+saved value" for that call (falls back to opening the requester with no
+initial drawer, the pre-existing behaviour) rather than being deleted from
+`ENVARC:` - a network share going offline intermittently is normal, and the
+remembered drawer is still worth keeping for when it is back. Since both
+GUIs' browse code already goes through this one shared function
+(`mrgui_gadtools.c`'s `browse()`, `mrgui.c`'s `GETFILE_Drawer` seeding),
+fixing it here covers both editions in one place, not just the GadTools
+edition the report came from.
+
+This fix directly prevents the *system requester itself* from being
+triggered by our own seeding, which is the mechanism case 1 describes -
+but it cannot address case 2, and there is currently no way to tell from
+here which one the report actually was. **Still needed from the user to
+close this out**: does the Zero Divide reproduce the *very first* time
+Browse is opened with NAS1 offline (case 1 - this fix should now prevent
+it), or only after navigating further inside an already-open requester
+into a different unmounted assign (case 2 - unrelated to this fix, and
+likely outside anything this codebase can patch at all)? Either way, this
+- like every other Amiga-only change in this file - can only be reviewed,
+not compiled or run, on this dev host; it needs a real-hardware retest
+with NAS1 offline to confirm the requester no longer appears on a bare
+Browse click.
+
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4
