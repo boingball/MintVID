@@ -2212,6 +2212,51 @@ Alternate-Data-Stream/Mark-of-the-Web marker that had been committed
 alongside the real icon file - inert on AmigaOS/Linux but not something
 that belongs in the tree.
 
+## GadTools YouTube quality selector notes
+A user report: the YouTube-GT quality control never actually changes from
+"Quality: Low" when clicked, even though the effect is real - the "Playback
+options" summary line right below it *does* update to reflect the new
+`hls_max_width`/`hls_max_height`, confirming `set_quality()` and
+`app.quality_index` were both cycling correctly. Only the button's own
+on-screen label was stuck.
+
+Root cause: `amiga/youtube_gadtools.c`'s `G_QUALITY` (and `G_LOG`) were
+plain `BUTTON_KIND` gadgets, manually relabelled at runtime via a
+`set_button_text()` helper (`GT_SetGadgetAttrs(..., GTTX_Text, ...)` +
+`RefreshGList()`). That is the *only* place in this entire codebase that
+tries to change a GadTools gadget's displayed text this way - every other
+multi-state or toggle control in every GadTools GUI (`mrgui_gadtools.c`'s
+Display/C2P/H.264/Audio/Fast buffer/Video/Scale cycles, `iptv_gadtools.c`'s
+own `G_DEBUG` Log toggle, and this exact file's own `G_TYPE` search-type
+selector) uses `CYCLE_KIND` with `GTCY_Labels`/`GTCY_Active` instead, which
+gadtools.library redraws internally on click with no manual relabelling
+code at all. That strongly points at manual `BUTTON_KIND` relabelling being
+the actual defect, not the index/options bookkeeping around it (which was
+already proven correct by the summary line).
+
+Fixed by converting both `G_QUALITY` and `G_LOG` to `CYCLE_KIND` (`quality_
+labels[]`/`log_labels[]`, `NULL`-terminated `STRPTR` arrays matching every
+other cycle gadget's own label array shape), seeding `GTCY_Active` to the
+right starting index right after `OpenWindow()` (mirroring `G_TYPE`'s own
+existing `MR_YOUTUBE_SEARCH_LIVE` seed a few lines above it), and replacing
+both click handlers' manual increment-and-relabel with a plain
+`value(&app, gadget, GTCY_Active)` read - the same `value()` helper this
+file's own `search()` already uses for `G_TYPE`, and the same shape
+`iptv_gadtools.c`'s `G_DEBUG` handler uses for its own Log toggle. The
+now-fully-unused `set_button_text()` helper was removed rather than left as
+dead code. `G_LOG` was fixed alongside `G_QUALITY` even though only the
+quality control was reported broken, since it shared the exact same
+`set_button_text()` mechanism and so was presumed equally affected, not
+because it was independently confirmed broken.
+
+This file (`amiga/youtube_gadtools.c`) can only be reviewed, not compiled
+or run, on this dev host (see "Validate against ffmpeg" above) - the root
+cause is inferred from the total absence of any other confirmed-working
+runtime-`BUTTON_KIND`-relabel precedent anywhere else in the codebase, not
+from a reproduced/compiled repro of the bug itself. Needs a real-hardware
+retest to confirm the Quality and Log cycle gadgets both now visibly
+advance on click.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
