@@ -35,8 +35,7 @@ typedef enum mr_h264_speed_mode {
     MR_H264_SPEED_BALANCED,
     MR_H264_SPEED_FAST,
     MR_H264_SPEED_TURBO,
-    MR_H264_SPEED_TURBO_PLUS,
-    MR_H264_SPEED_TURBO_GT
+    MR_H264_SPEED_TURBO_PLUS
 } mr_h264_speed_mode;
 void mr_h264_set_service(mr_decoder *dec, mr_h264_service_fn fn, void *opaque);
 void mr_h264_set_quit(mr_decoder *dec, mr_h264_quit_fn fn, void *opaque);
@@ -74,16 +73,14 @@ int mr_h264_output_pts(mr_decoder *dec, uint64_t *pts_us);
 void mr_h264_set_input_annexb(mr_decoder *dec, int is_annexb);
 /* Select libavc's quality/performance trade-off. Balanced only degrades
  * non-reference pictures; Fast applies cheaper filtering to all non-key
- * pictures. Turbo keeps Fast's degrade policy and asks libavc to skip B
- * pictures. Turbo+ asks it to skip both P and B pictures, so every displayed
- * picture is a keyframe, and - like TurboGT - requests degradation on every
- * decoded picture, including keyframes, which in this libavc revision
- * additionally disables I-frame deblocking; this keeps Turbo+'s one
+ * pictures. Turbo keeps Fast's degrade policy, requests degradation on every
+ * decoded picture (including keyframes - see mr_h264_set_speed_mode()'s own
+ * comment for why a mixed degrade policy is unsafe), and asks libavc to skip
+ * B pictures. Turbo+ asks it to skip both P and B pictures too, so every
+ * displayed picture is a keyframe; that all-picture degradation, which in
+ * this libavc revision also disables I-frame deblocking, keeps Turbo+'s one
  * remaining expensive call (the keyframe decode) short enough that a slow
  * CPU doesn't drain the audio hardware buffer between displayed frames.
- * TurboGT keeps Turbo's B-only skip policy so the P-frame reference chain
- * survives, but requests that same all-picture degradation; faster inter
- * prediction remains restricted to non-reference pictures.
  * Returns non-zero when the decoder accepted both the degrade and frame-skip
  * controls. */
 int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode);
@@ -93,7 +90,7 @@ int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode);
  * reconstruction at all, until the next IDR - or de-escalate back
  * (skip_pb zero) to whatever base skip mode mr_h264_set_speed_mode()'s
  * current performance setting selected (IVD_SKIP_NONE for Quality/
- * Balanced/Fast, IVD_SKIP_B for Turbo/TurboGT, IVD_SKIP_PB for Turbo+ -
+ * Balanced/Fast, IVD_SKIP_B for Turbo, IVD_SKIP_PB for Turbo+ -
  * so de-escalating out of a Turbo+ session is a no-op, not a quality
  * regression). Unlike mr_h264_set_speed_mode(), this touches only the
  * frame-skip control, not degrade/MC-quality settings - intended to be

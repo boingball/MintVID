@@ -1,5 +1,61 @@
 # MintVID changelog
 
+## 1.3.1 - 2026-09-15
+
+### Added
+
+- New `amiga/display_p96pip.c` RTG display backend built on
+  Picasso96API.library's PIP (Picture-In-Picture) API. `display_open()`
+  tries it first whenever P96 mode is selected: it requests a real
+  hardware overlay window (`PIPT_VideoWindow`) on boards that support one
+  - offloading scaling and colourspace conversion to the graphics card -
+  and falls back to a software-composited PIP (`PIPT_MemoryWindow`), then
+  the older direct screen-bitmap-lock P96 backend, if the board refuses.
+  Confirmed working on real Voodoo3 hardware.
+- P96 opens windowed by default now that the PIP backend removes the
+  older backend's "must start fullscreen" restriction; `--fullscreen`/F
+  still switch to fullscreen, retrying the hardware overlay on every
+  toggle before falling back to software.
+- New `amiga/mr_saved_options.h`: both controller GUIs now persist
+  display mode, C2P, H.264 speed, audio rate/mono/no-audio, fast buffer,
+  scale/lace and the Skip Frames toggle to `ENVARC:MintVID.settings` on
+  every change, and restore them on the next launch. A magic value plus
+  the exact `mr_play_options` size the writer was built with guards
+  against a mismatched layout after an upgrade - any mismatch, or no
+  file at all, falls back to today's defaults exactly as before.
+
+### Fixed
+
+- The YouTube-GT (GadTools) browser's Quality and Log controls changed
+  the active setting correctly but never visibly updated their own label
+  - they were plain `BUTTON_KIND` gadgets manually relabelled with
+  `GT_SetGadgetAttrs(GTTX_Text, ...)`, which GadTools doesn't reliably
+  redraw. Converted both to `CYCLE_KIND`, matching every other multi-state
+  control in the codebase.
+- The GadTools controller's "Copper 2x" Scale label wasn't visible - its
+  gadget box was too narrow. Moved the Scale cycle onto its own row and
+  widened it.
+- The ReAction controller's Scale chooser wasn't reliably greying out on
+  RTG (P96) displays.
+- `make release` was packaging a stale root-level guide icon instead of
+  the current one in `player/icons/`.
+- Both controllers already auto-selected an RTG display mode when one
+  was detected, but picked plain WritePixel instead of the faster P96
+  overlay path - a one-off-in-intent index bug in each GUI's own default
+  computation, not a hardware-detection issue. Fixed to prefer P96, then
+  WritePixel, then AGA/HAM.
+
+### Changed
+
+- H.264 **TurboGT** is retired: its policy has been identical to
+  **Turbo**'s since the mixed-degrade deblocking fix in 1.2.x forced
+  every degrading H.264 mode onto the same all-or-nothing filtering
+  policy, so it no longer selected anything different from Turbo. Turbo
+  is now the default and TurboGT's entries are gone from both GUI
+  choosers; `--h264-speed=turbogt`/`turbo-gt` remain accepted on the
+  command line and in saved settings, aliased to Turbo, for anyone with
+  the old name in a script.
+
 ## 1.3.0 - 2026-09-12
 
 ### Performance

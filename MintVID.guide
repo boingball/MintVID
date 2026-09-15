@@ -1,5 +1,5 @@
 @database "MintVID.guide"
-@$VER: MintVID.guide 1.3 (14.9.2026)
+@$VER: MintVID.guide 1.3 (15.9.2026)
 @author "Darren \"boingball\" Banfi"
 @(c) "2026 Darren Banfi"
 @width 74
@@ -8,7 +8,7 @@
                               MintVID Guide
                               -------------
 
-@{b}MintVID 1.3.0@{ub} - a codec-agnostic video player for accelerated 68k
+@{b}MintVID 1.3.1@{ub} - a codec-agnostic video player for accelerated 68k
 AmigaOS hardware, from 68030-class ECS/AGA systems up to PiStorm/RTG
 machines.
 
@@ -16,7 +16,7 @@ This is the on-Amiga companion to the plain-text MintVID.readme. Pick a
 topic below (click, or press Return on a highlighted link):
 
   @{" Overview "            LINK Overview}
-  @{" What's new in 1.3.0 " LINK WhatsNew}
+  @{" What's new in 1.3.1 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" Video frame policy "   LINK FramePolicy}
@@ -47,7 +47,7 @@ page below also links back here.
 Topics:
 
   @{" Overview "            LINK Overview}
-  @{" What's new in 1.3.0 " LINK WhatsNew}
+  @{" What's new in 1.3.1 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" Video frame policy "   LINK FramePolicy}
@@ -67,32 +67,50 @@ Topics:
 @endnode
 
 
-@node WhatsNew "What's new in 1.3.0"
+@node WhatsNew "What's new in 1.3.1"
 @toc MAIN
-                           What's new in 1.3.0
+                           What's new in 1.3.1
                            -------------------
 
-@{b}MintVID 1.3.0@{ub}
+@{b}MintVID 1.3.1@{ub}
 
-MintVID 1.3.0 turns the recent playback and hardware work into a more
-usable release for real accelerated Amiga systems.
+A focused follow-up to 1.3.0, aimed at RTG/Picasso96 systems and a couple
+of real GUI bugs:
 
-  - Adds an explicit @{b}Video: All Frames / Video: Skip Frames@{ub}
-    selector to both GUI editions. Skip Frames drops pictures that are
-    already late so a slower machine can catch up while audio and the
-    media timeline continue normally.
-  - Adds a clear recommended-settings guide for 68030 ECS/AGA, 68040/060
-    AGA and RTG, PiStorm/Emu68, and live HLS/IPTV playback.
-  - Adds dedicated YouTube hashtag searching to both GUI editions.
-  - Uses a fixed 74-column help layout with centred page headings for
-    easier reading on wide Workbench screens.
-  - Includes the recent MPEG-1/MPEG-2, H.263+, WMV, H.264, AAC, MP2, AC-3,
-    mono-audio and Fast RAM buffering work from the development cycle.
-  - Ships the AmigaGuide manual with a Workbench icon and keeps it beside
-    every packaged CPU drawer.
-  - Keeps the 68060-safe AAC path, shared accelerated YUV output, H.264
-    speed modes, native YouTube playback and IPTV directory support from
-    the 1.2.x performance work.
+  - @{b}P96 hardware video overlay.@{ub} On a board with a real video
+    overlay window (Voodoo3/Permedia/BVision class, typically via Mediator
+    or a PCI/Zorro bridge), the RTG (P96) display now tries to use it
+    automatically - offloading scaling and colourspace conversion to the
+    graphics card instead of the CPU. Confirmed working on real Voodoo3
+    hardware. There is nothing separate to select: P96 falls back to the
+    older direct-write path on its own if a board's driver refuses the
+    hardware overlay.
+  - @{b}P96 now opens windowed, not fullscreen, by default.@{ub} Press
+    @{b}F@{ub} to switch to fullscreen, same as CGX - P96 no longer
+    requires @{i}--fullscreen@{ui} just to open at all. Fullscreen still
+    tries the hardware overlay first, falling back to a software-composited
+    window only if the board refuses it.
+  - @{b}Turbo is now the default H.264 speed@{ub} (was TurboGT). TurboGT's
+    policy has been identical to Turbo's since a correctness fix a few
+    releases back made every degrading H.264 mode use the same
+    all-or-nothing filtering policy - see @{" H.264 performance modes "
+    LINK Controls} for what changed. @{i}--h264-speed=turbogt@{ui} still
+    works, aliased to Turbo, for anyone with it in a script.
+  - Fixed the YouTube-GT browser's Quality and Log controls, which
+    changed the active setting correctly but never visibly updated their
+    own on-screen label.
+  - Fixed the GadTools controller's "Copper 2x" Scale label not showing
+    (the gadget box was too narrow) and a ReAction Scale-chooser greying
+    issue on RTG displays.
+  - @{b}RTG now defaults to P96 over WritePixel.@{ub} Both controllers
+    already picked an RTG display automatically when one was detected, but
+    picked plain WritePixel instead of the faster P96 overlay path - fixed
+    to prefer P96, then WritePixel, then AGA/HAM.
+  - @{b}The controller now remembers your last settings.@{ub} Display
+    mode, C2P, H.264 speed, audio options, Scale and the Video frame
+    policy are saved to @{i}ENVARC:MintVID.settings@{ui} as you change
+    them and restored on the next launch - previously every relaunch
+    reset back to the same defaults.
 
 Performance still depends on the exact CPU, source, codec, resolution,
 audio and display mode. A supported format is not automatically a
@@ -220,7 +238,7 @@ audio and video options as the controller.
 
 @{b}H.264 performance modes@{ub}
 
-TurboGT remains the default. Auto resolves to the same policy.
+Turbo remains the default. Auto resolves to the same policy.
 
   Quality   full filtering and no deliberate frame skipping
   Balanced  in-loop deblocking disabled; motion compensation stays exact
@@ -230,15 +248,18 @@ TurboGT remains the default. Auto resolves to the same policy.
   Turbo+    skips both P- and B-frames, so only keyframes are decoded
             and shown, keeping that decode short enough to hold audio
             through it; last-resort keyframe/slideshow mode
-  TurboGT   same policy as Turbo, kept as a selectable name
 
-Use Fast when keeping every frame matters more than maximum speed. Turbo
-and TurboGT are now the same setting: what used to separate them was
-disabling deblocking on keyframes as well, and every mode from Balanced
-down now does that, because leaving some pictures undegraded corrupted the
-decoder's per-macroblock deblocking state (it made Fast slower than
-Quality). All of these modes are substantially faster than they were in
-1.2.0.
+Use Fast when keeping every frame matters more than maximum speed. Every
+mode from Balanced down disables deblocking on keyframes as well as other
+pictures, because leaving some pictures undegraded corrupted the decoder's
+per-macroblock deblocking state (it made Fast slower than Quality). All of
+these modes are substantially faster than they were in 1.2.0.
+
+@{i}TurboGT@{ui} was retired in 1.3.1: it had been identical to Turbo's own
+policy since that all-or-nothing deblocking fix, so it no longer selects
+anything different. @{i}--h264-speed=turbogt@{ui} (and @{i}turbo-gt@{ui})
+still work from the command line or a saved setting, aliased straight to
+Turbo, but neither GUI offers TurboGT as a choice any more.
 
 @{b}Fullscreen (RTG/CGX only)@{ub}
 
@@ -356,21 +377,27 @@ change one setting at a time. The following are sensible starting points:
   @{u}68040 or 68060 with AGA@{uu}
     Display: AGA, HAM6 or HAM8; lace off, 2x off
     C2P: Kalms is the normal starting point
-    H.264: TurboGT first; Turbo+ is the audio-first fallback
+    H.264: Turbo first; Turbo+ is the audio-first fallback
     Video: All Frames when smooth; Skip Frames when decode is late
     Audio: Normal; try Low/Mono for a difficult H.264 stream
 
   @{u}68040 or 68060 with RTG@{uu}
     Display: CGX or P96
     C2P: ignored by RTG
-    H.264: TurboGT first; use a lower-resolution source before degrading
+    H.264: Turbo first; use a lower-resolution source before degrading
     Video: All Frames when the source keeps up; Skip Frames to recover
     Fast buffer: Auto for local files and direct/progressive HTTP media
+    On a board with real hardware video overlay (Voodoo3/Permedia/BVision
+      class - typically via Mediator or a PCI/Zorro bridge), P96 already
+      tries to use it automatically, offloading scaling to the graphics
+      card - confirmed working on real Voodoo3 hardware. It falls back to
+      the older direct-write P96 path on its own if a board doesn't support
+      it, so there is nothing separate to select.
 
   @{u}PiStorm/Emu68@{uu}
     Build: MintVID040
     Display: CGX/P96 where available
-    H.264: TurboGT, then Fast if full quality is affordable
+    H.264: Turbo, then Fast if full quality is affordable
     Video: All Frames is normally appropriate
     Fast buffer: Auto; increase only when the source and free RAM
                  justify it
@@ -600,6 +627,7 @@ Every GUI is a front end over mrplay, which also runs directly:
   mrplay --fast-buffer=8 "DH0:Videos/movie.avi"
   mrplay --net-queue=24 --live-resync \
     "https://example.net/live/master.m3u8"
+  mrplay --p96 "DH0:Videos/movie.avi"
 
 mrplay carries a $STACK:320000 AmigaOS stack cookie because libavc needs
 substantially more stack than the classic Shell default - see

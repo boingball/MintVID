@@ -23,33 +23,37 @@ with native Amiga playback across AGA, HAM and RTG systems.
 Performance scales strongly with CPU, codec, resolution and display mode;
 format support is not a promise of real-time playback on every 68k.
 
-MintVID 1.3.0 adds the final release-facing controls and documentation,
-including the Video: All Frames / Video: Skip Frames policy in both GUI
-editions and a complete recommended-settings guide for classic 68k, RTG,
-PiStorm/Emu68 and live HLS/IPTV use.
+MintVID 1.3.1 adds RTG hardware video overlay support for P96 (Picasso96),
+a P96-first RTG default and persisted controller settings, alongside GUI
+bug fixes and the retirement of the H.264 TurboGT speed mode.
 
 ![MintVID playing an LGR YouTube video on AmigaOS](player/amiga/art/MintVID-YouTube.png)
 
-## What's new in 1.3.0
+## What's new in 1.3.1
 
-- **Faster H.264 on classic m68k:** inverse-transform/reconstruction hot loops
-  inline their tiny per-coefficient helpers, removing large numbers of
-  subroutine calls without changing decoded pixels.
-- **68060-tuned H.264 deblocking:** luma filtering uses a branchless absolute-
-  difference primitive selected only by the 68060 build; the shorter 030/040
-  sequence remains unchanged.
-- **CPU-aware AAC acceleration:** 68030/040 builds use their hardware full-
-  result multiply path, while 68060 reconstructs the same result from hardware
-  partial products instead of trapping into software-emulated register-pair
-  `MULS.L`. The result is bit-exact and is enabled by default.
-- **Shared accelerated YUV output:** H.263, MPEG-2, MPEG-4 Part 2, MP42/DIV2,
-  WMV1 and WMV2 now use MintVID's existing table-driven C converter and m68k
-  assembly path instead of six private multiply-heavy loops.
-- Real-A1200 testing confirmed clean stereo AAC on the 68060 and showed the
-  lowest-resolution BBC One H.264/HLS stream approaching real time in AGA/HAM8;
-  Turbo+ remains a useful audio-first keyframe/slideshow fallback.
+- **P96 hardware video overlay:** on a board with a real hardware overlay
+  window (Voodoo3/Permedia/BVision class), RTG (P96) display now tries to
+  use it automatically, offloading scaling and colourspace conversion to
+  the graphics card - confirmed working on real Voodoo3 hardware. P96 also
+  now opens windowed by default (press F for fullscreen), instead of
+  requiring `--fullscreen` just to open at all.
+- **H.264 TurboGT retired:** its policy has been identical to Turbo's
+  since a correctness fix forced every degrading H.264 mode onto the same
+  all-or-nothing filtering policy. Turbo is now the default;
+  `--h264-speed=turbogt` still works, aliased to Turbo.
+- **GUI fixes:** the YouTube-GT browser's Quality/Log controls now
+  actually update their own label when clicked; the GadTools controller's
+  "Copper 2x" Scale label is now visible; the ReAction Scale chooser now
+  greys out reliably on RTG (P96) displays.
+- **P96-first RTG default:** both controllers now default to P96 over
+  plain WritePixel when RTG is detected, matching P96's own faster
+  hardware-overlay-first backend.
+- **Remembered settings:** both controllers now save display mode, C2P,
+  H.264 speed, audio options, Scale and the Video frame policy to
+  `ENVARC:MintVID.settings` and restore them on the next launch.
 
-See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+See [CHANGELOG.md](CHANGELOG.md) for the complete release notes, including
+the 1.3.0 H.264/AAC/YUV performance work this release builds on.
 
 ## Video frame policy
 

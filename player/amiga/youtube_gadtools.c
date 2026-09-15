@@ -82,10 +82,12 @@ static ULONG ds_ticks(const struct DateStamp *ds)
 static STRPTR type_labels[] = {(STRPTR)"All", (STRPTR)"Videos",
                                (STRPTR)"Live", (STRPTR)"Shorts",
                                (STRPTR)"Hashtags", NULL};
-static const char *quality_labels[] = {
-    "Quality: Low", "Quality: 360p", "Quality: 480p",
-    "Quality: 720p", "Quality: 1080p", "Quality: Best"
+static STRPTR quality_labels[] = {
+    (STRPTR)"Quality: Low", (STRPTR)"Quality: 360p", (STRPTR)"Quality: 480p",
+    (STRPTR)"Quality: 720p", (STRPTR)"Quality: 1080p", (STRPTR)"Quality: Best",
+    NULL
 };
+static STRPTR log_labels[] = {(STRPTR)"Log: Off", (STRPTR)"Log: On", NULL};
 static const struct TextAttr topaz = {(STRPTR)"topaz.font", 8, 0, 0};
 
 static void init_list(struct List *list)
@@ -122,21 +124,6 @@ static void set_text(ytgt *app, struct Gadget *gadget, const char *text)
                          GTTX_Text, (ULONG)(text ? text : ""), TAG_DONE);
     if (app->window && gadget)
         RefreshGList(gadget, app->window, NULL, 1);
-}
-
-/* GadTools BUTTON_KIND gadgets render their label from the internal string
- * GTTX_Text set at creation - Gadget->GadgetText is not what gets drawn, so
- * poking it directly (as this used to do) silently does nothing: the button
- * stays showing its original text no matter what is written there. Only
- * GT_SetGadgetAttrs()/GTTX_Text actually changes what's on screen. */
-static void set_button_text(ytgt *app, struct Gadget *gadget,
-                            const char *text)
-{
-    if (!app->window || !gadget)
-        return;
-    GT_SetGadgetAttrs(gadget, app->window, NULL,
-                      GTTX_Text, (ULONG)text, TAG_DONE);
-    RefreshGList(gadget, app->window, NULL, 1);
 }
 
 static ULONG value(ytgt *app, struct Gadget *gadget, ULONG tag)
@@ -566,11 +553,11 @@ static int window_open(ytgt *app)
     g = add(app,g,BUTTON_KIND,G_VOLUP,352,243,82,17,"Vol +",TAG_IGNORE,0);
     g = add(app,g,BUTTON_KIND,G_FULLSCREEN,438,243,100,17,"Fullscreen",TAG_IGNORE,0);
     g = add(app,g,BUTTON_KIND,G_STOP,542,243,86,17,"Stop",TAG_IGNORE,0);
-    app->quality = g = add(app,g,BUTTON_KIND,G_QUALITY,8,266,150,17,
-        quality_labels[app->quality_index],TAG_IGNORE,0);
+    app->quality = g = add(app,g,CYCLE_KIND,G_QUALITY,8,266,150,17,"",
+        GTCY_Labels,(ULONG)quality_labels);
     g = add(app,g,BUTTON_KIND,G_CHANNEL,162,266,220,17,"Channel videos",TAG_IGNORE,0);
-    app->log = g = add(app,g,BUTTON_KIND,G_LOG,386,266,110,17,
-                       "Log: Off",TAG_IGNORE,0);
+    app->log = g = add(app,g,CYCLE_KIND,G_LOG,386,266,110,17,"",
+                       GTCY_Labels,(ULONG)log_labels);
     g = add(app,g,BUTTON_KIND,G_CLOSE,500,266,128,17,"Close",TAG_IGNORE,0);
     app->summary = g = add(app,g,TEXT_KIND,G_SUMMARY,8,290,620,15,"",
                            GTTX_Text,(ULONG)"Playback options");
@@ -593,6 +580,8 @@ static int window_open(ytgt *app)
     if (app->window) {
         GT_SetGadgetAttrs(app->type,app->window,NULL,GTCY_Active,
                          MR_YOUTUBE_SEARCH_LIVE,TAG_DONE);
+        GT_SetGadgetAttrs(app->quality,app->window,NULL,GTCY_Active,
+                         app->quality_index,TAG_DONE);
         GT_SetGadgetAttrs(app->play,app->window,NULL,GA_Disabled,TRUE,TAG_DONE);
     }
     return app->window != NULL;
@@ -680,9 +669,7 @@ int main(int argc, char **argv)
                 else if (id==G_CHANNEL) channel(&app);
                 else if (id==G_STOP) set_text(&app,app.status,stop_player()?"Playback stopped.":"No video is playing.");
                 else if (id==G_LOG) {
-                    app.debug_log=!app.debug_log;
-                    set_button_text(&app,app.log,
-                                    app.debug_log?"Log: On":"Log: Off");
+                    app.debug_log=value(&app,app.log,GTCY_Active)!=0;
                     set_text(&app,app.status,app.debug_log
                         ?"Timing log ON: next Play writes " MRPLAY_LOG_FILE
                         :"Timing log off.");
@@ -693,9 +680,8 @@ int main(int argc, char **argv)
                 else if (id==G_VOLDOWN) mr_player_control_send(MR_PLAYER_COMMAND_VOLUME_DOWN);
                 else if (id==G_VOLUP) mr_player_control_send(MR_PLAYER_COMMAND_VOLUME_UP);
                 else if (id==G_QUALITY) {
-                    app.quality_index=(app.quality_index+1)%6; set_quality(&app.options,app.quality_index);
-                    set_button_text(&app,app.quality,
-                                    quality_labels[app.quality_index]);
+                    app.quality_index=value(&app,app.quality,GTCY_Active);
+                    set_quality(&app.options,app.quality_index);
                     mr_play_options_summary(&app.options,summary,sizeof(summary)); set_text(&app,app.summary,summary);
                 } else if (id==G_PLAY) {
                     play_selected(&app);

@@ -57,10 +57,10 @@ void mr_play_options_default(mr_play_options *o)
      * a direct "mrplay <url>" invocation keeps its own conservative default of
      * off. Disable with --no-live-resync. */
     o->live_resync = 1;
-    /* TurboGT keeps the P-frame reference chain while applying the strongest
-     * practical libavc degradation policy and skipping B pictures. It now
-     * resolves to the same policy as Turbo - see mr_h264_set_speed_mode(). */
-    o->h264_performance = MR_H264_PERF_TURBO_GT;
+    /* Turbo keeps the P-frame reference chain while applying the strongest
+     * practical libavc degradation policy and skipping B pictures - see
+     * mr_h264_set_speed_mode(). */
+    o->h264_performance = MR_H264_PERF_TURBO;
     o->audio_rate = MR_AUDIO_RATE_NORMAL;
     o->fast_buffer = MR_FAST_BUFFER_AUTO;
     /* On by default for every GUI-launched session (local file or network
@@ -201,9 +201,7 @@ static int append_playback_flags(char *out, size_t cap,
                            o->h264_performance == MR_H264_PERF_TURBO
                          ? "--h264-speed=turbo" :
                            o->h264_performance == MR_H264_PERF_TURBO_PLUS
-                         ? "--h264-speed=turbo+" :
-                           o->h264_performance == MR_H264_PERF_TURBO_GT
-                         ? "--h264-speed=turbogt" : "--h264-speed=fast";
+                         ? "--h264-speed=turbo+" : "--h264-speed=fast";
         if (!append_option(out, cap, mode)) return 0;
     }
     if (o->no_audio) {
@@ -232,13 +230,25 @@ int mr_build_player_arguments(char *out, size_t cap,
     if (!o) { mr_play_options_default(&defaults); o = &defaults; }
     out[0] = 0;
     if (!append_playback_flags(out, cap, o, 0)) return 0;
-    /* P96's direct bitmap-lock backend is fullscreen-only.  GUI callers
-     * select P96 as a display mode but do not have a separate startup
-     * fullscreen option, so enter fullscreen before display_open().  This
-     * lets display_p96 open its private screen instead of rejecting a
-     * windowed P96 launch and falling back to CGX/WritePixelArray. */
-    if (o->display == MR_DISPLAY_P96 &&
-        !append_option(out, cap, "--fullscreen")) return 0;
+    /* P96 mode used to force --fullscreen here, back when "RTG (P96)" meant
+     * only the older direct screen-bitmap-lock backend, which refuses to
+     * open at all unless already fullscreen (unclipped writes would corrupt
+     * sibling windows - see amiga/display_p96.c's file header). Now that
+     * display_open() (amiga/display.c) tries the PIP overlay backend first
+     * for P96 - see amiga/display_p96pip.c's file header - that hazard is
+     * gone: the overlay backend opens perfectly well windowed, with no
+     * corruption risk, so P96 no longer needs to start fullscreen at all.
+     * The real desired flow: P96 opens as a normal window (still using
+     * hardware overlay if the board grants it), and pressing F is what
+     * takes it to fullscreen - amiga/display_p96pip.c's own
+     * p96pip_toggle_fullscreen() tries real hardware acceleration
+     * (PIPT_VideoWindow) again on every toggle, falling back to software
+     * compositing (PIPT_MemoryWindow) only if the board refuses, exactly
+     * mirroring the windowed-open behaviour. Forcing --fullscreen here
+     * would skip straight past that windowed-then-F flow and (for a board
+     * where the PIP backend can't open at all) risk falling through to the
+     * older direct-lock backend instead of the CGX/WritePixelArray
+     * fallback a windowed session would otherwise get. */
     if (ua && *ua &&
         (!append_option(out, cap, "--user-agent") ||
          !append_quoted(out, cap, ua))) return 0;
@@ -316,8 +326,11 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "turbo")) o->h264_performance = MR_H264_PERF_TURBO;
             else if (!strcmp(value, "turbo+") || !strcmp(value, "turbo-plus"))
                 o->h264_performance = MR_H264_PERF_TURBO_PLUS;
+            /* TurboGT is a retired name, kept accepted here for scripts/
+             * saved settings from before it collapsed onto Turbo's own
+             * policy - see CLAUDE.md's H.264 TurboGT retirement notes. */
             else if (!strcmp(value, "turbogt") || !strcmp(value, "turbo-gt"))
-                o->h264_performance = MR_H264_PERF_TURBO_GT;
+                o->h264_performance = MR_H264_PERF_TURBO;
             else goto bad;
         }
         else if (!strncmp(arg, "--audio-rate=", 13)) {
@@ -395,8 +408,7 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
            o->h264_performance == MR_H264_PERF_BALANCED ? "Balanced" :
            o->h264_performance == MR_H264_PERF_FAST ? "Fast" :
            o->h264_performance == MR_H264_PERF_TURBO ? "Turbo" :
-           o->h264_performance == MR_H264_PERF_TURBO_PLUS ? "Turbo+" :
-           o->h264_performance == MR_H264_PERF_TURBO_GT ? "TurboGT" : "Auto";
+           o->h264_performance == MR_H264_PERF_TURBO_PLUS ? "Turbo+" : "Auto";
     audio = audio_policy_text(o);
     if (o->display == MR_DISPLAY_CGX || o->display == MR_DISPLAY_P96)
         snprintf(out, cap, "Playback: RTG (%s) / %s / H264 %s / Audio %s / Fast buffer %s%s / Video %s",

@@ -69,7 +69,7 @@ typedef struct {
     int       skip_output;
     /* The frame-skip mode mr_h264_set_speed_mode() last selected for the
      * current H.264 performance setting (IVD_SKIP_NONE/B/PB - Quality/
-     * Balanced/Fast ask for NONE, Turbo/TurboGT for B, Turbo+ for PB).
+     * Balanced/Fast ask for NONE, Turbo for B, Turbo+ for PB).
      * mr_h264_set_dynamic_skip() escalates away from this to IVD_SKIP_PB
      * and back, so de-escalating restores whatever the chosen performance
      * mode actually asked for rather than always falling back to NONE. */
@@ -1133,29 +1133,6 @@ int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode)
          * side of that trade. */
         mc = MR_MC_QUALITY_BILINEAR;
         skip_mode = IVD_SKIP_PB;
-        in.i4_degrade_type = (1 << 1) | (1 << 3);
-        in.i4_degrade_pics = 4;
-        break;
-    case MR_H264_SPEED_TURBO_GT:
-        /* Retained as a selectable name - the GUI choosers, --h264-speed=
-         * turbogt and saved settings all still resolve - but its policy is
-         * now Turbo's.
-         *
-         * TurboGT used to differ from Turbo by asking for i4_degrade_pics 4
-         * instead of 3, i.e. by disabling deblocking on keyframes too. That
-         * distinction is gone because every degrading mode now asks for 4:
-         * mixing degraded and undegraded pictures is what corrupted the
-         * per-macroblock deblocking state (see the note above), so an
-         * all-or-nothing policy is the only correct one and Turbo already
-         * uses it. The remaining candidate lever, truncating motion vectors
-         * to whole samples, was measured and rejected - 3-4% for 17 dB (see
-         * ih264_mc_degrade.h). Nothing worth having is left between Turbo
-         * and Turbo+'s keyframe slideshow, so TurboGT stops pretending
-         * otherwise rather than shipping a mode that is only nominally
-         * faster. It is now both quicker and much cleaner than the TurboGT
-         * of previous releases. */
-        mc = MR_MC_QUALITY_BILINEAR;
-        skip_mode = IVD_SKIP_B;
         in.i4_degrade_type = (1 << 1) | (1 << 3);
         in.i4_degrade_pics = 4;
         break;

@@ -125,14 +125,16 @@ int main(int argc, char **argv)
             argi += 2;
         } else if (!strncmp(argv[argi], "--h264-speed=", 13)) {
             const char *speed = argv[argi] + 13;
+            /* turbogt/turbo-gt is a retired name, kept accepted here and
+             * aliased to Turbo - see CLAUDE.md's H.264 TurboGT retirement
+             * notes. */
             h264_speed = !strcmp(speed, "quality") ? MR_H264_SPEED_QUALITY :
                          !strcmp(speed, "balanced") ? MR_H264_SPEED_BALANCED :
                          !strcmp(speed, "fast") ? MR_H264_SPEED_FAST :
-                         !strcmp(speed, "turbo") ? MR_H264_SPEED_TURBO :
+                         (!strcmp(speed, "turbo") || !strcmp(speed, "turbogt") ||
+                          !strcmp(speed, "turbo-gt")) ? MR_H264_SPEED_TURBO :
                          (!strcmp(speed, "turbo+") || !strcmp(speed, "turbo-plus"))
-                             ? MR_H264_SPEED_TURBO_PLUS :
-                         (!strcmp(speed, "turbogt") || !strcmp(speed, "turbo-gt"))
-                             ? MR_H264_SPEED_TURBO_GT : -2;
+                             ? MR_H264_SPEED_TURBO_PLUS : -2;
             if (h264_speed < 0) {
                 fprintf(stderr, "invalid H.264 speed mode\n");
                 return 2;
