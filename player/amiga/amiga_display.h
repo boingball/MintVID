@@ -46,15 +46,19 @@ void display_set_force_aga(int on);
  * screen-bitmap lock (p96LockBitMap) if the PIP can't open. Only takes
  * effect on a screen/format either backend actually supports; anything else
  * falls back to CGX automatically, same as CGX itself falls back to AGA.
- * The two backends differ on fullscreen: the older direct-lock one refuses
- * to open windowed at all (unclipped writes would corrupt sibling windows -
- * see its own file header), while the PIP overlay backend has no such
- * hazard and opens windowed happily. Both GUIs and mr_play_options.c still
- * always launch P96 with --fullscreen regardless (P96 has been a
- * fullscreen-only *option* in the UI since before the PIP backend existed,
- * and that contract is unchanged) - but a direct `mrplay --p96` invocation
- * with no --fullscreen, which used to fall through to CGX, now opens
- * windowed via the overlay backend instead. Has no effect if
+ *
+ * P96 opens windowed by default now (neither GUI nor mr_play_options.c
+ * forces --fullscreen for it any more): the PIP overlay backend has none of
+ * the older direct-lock backend's "unclipped writes corrupt sibling
+ * windows" hazard (see that backend's own file header), so there is no
+ * longer a reason to start fullscreen just to get a working P96 session.
+ * Pressing F (display_toggle_fullscreen()) is what takes a P96 session to
+ * fullscreen - amiga/display_p96pip.c's own toggle_fullscreen() tries real
+ * hardware acceleration (PIPT_VideoWindow) again on every toggle, falling
+ * back to software compositing (PIPT_MemoryWindow) only if the board
+ * refuses, exactly mirroring the windowed-open behaviour, so the same
+ * "hardware overlay if the board grants it, software fallback otherwise"
+ * contract holds whether P96 is windowed or fullscreen. Has no effect if
  * display_set_force_aga() is also on. */
 void display_set_force_p96(int on);
 

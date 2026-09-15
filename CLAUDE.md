@@ -1929,19 +1929,34 @@ tell them apart even though the user only ever picks one "P96" option -
 useful precisely because whether real hardware acceleration engaged for a
 given board is still an open question (see below).
 
-One real behavioural wrinkle from the merge, worth being explicit about:
-`backend_p96` refuses to open at all without `--fullscreen` (unclipped
-writes would corrupt sibling windows - see its own file header), but
-`backend_p96pip` has no such restriction and opens windowed happily. Both
-GUIs and `mr_play_options.c` still always launch P96 with `--fullscreen`
-regardless - selecting "RTG (P96)" from a Display chooser has been a
-fullscreen-only *option* since before the PIP backend existed, and that UI
-contract is unchanged. But a direct `mrplay --p96` invocation with no
-`--fullscreen`, which used to fail P96 entirely and fall through to CGX,
-now opens windowed via the PIP backend instead - a behaviour change only
-for that specific direct-CLI-without-fullscreen case, and arguably a nicer
-one (P96 becomes usable windowed via the CLI where it previously just
-wasn't available at all).
+**Correction: the first cut of this merge kept forcing `--fullscreen` for
+P96 in `mr_build_player_arguments()`, carried over unexamined from the old
+contract - the user's own follow-up caught that this defeats the entire
+point.** The real desired flow, exactly as they described it: P96 opens as
+a normal window first (still hardware-accelerated if the board grants a
+PIP video window), and pressing F is what takes it to fullscreen -
+"falling back in software rendering if card can't do it - it shouldn't
+just open full screen o play". `backend_p96` (the older backend) refuses
+to open at all without `--fullscreen` (unclipped writes would corrupt
+sibling windows - see its own file header); `backend_p96pip` has no such
+restriction and opens windowed happily, so forcing fullscreen at launch
+was never actually *required* once the overlay backend existed - it was
+just leftover behaviour from when "RTG (P96)" meant only the old
+direct-lock backend. `mr_build_player_arguments()`'s forced-`--fullscreen`
+case for `MR_DISPLAY_P96` is removed entirely: P96 now opens windowed from
+both GUIs by default, and F (`display_toggle_fullscreen()` ->
+`p96pip_toggle_fullscreen()`) is what takes it fullscreen, trying real
+hardware acceleration (`PIPT_VideoWindow`) again on every toggle and
+falling back to software compositing (`PIPT_MemoryWindow`) only if the
+board refuses - the exact "hardware if the card can do it, software if
+not" contract the user asked for, symmetric between windowed and
+fullscreen. `tests/mr_iptv_check.c` now pins the opposite of what it
+would have pinned a moment earlier: building P96's player arguments must
+NOT contain `--fullscreen`. A side effect worth naming: a direct `mrplay
+--p96` invocation with no `--fullscreen`, which used to fail P96 entirely
+and fall through to CGX (the old backend's own refusal), now opens
+windowed via the PIP backend by default too - consistent with the new
+contract, not a separate case to special-case around.
 
 `mr_play_options.h`/`.c`, `tests/mr_iptv_check.c`, and both GUIs' mode
 lists/`update_mode_controls()` all reverted to their plain two-way CGX/P96
