@@ -2197,6 +2197,21 @@ report didn't come with a fresh log attached - the fix itself is what
 mattered, and it is now real-hardware-confirmed the same way `--throughput`
 mode was confirmed earlier in this file.
 
+## Release packaging notes
+`Makefile.amiga`'s `build_release_cpu` was packaging the guide icon from a
+stale root-level `../MintVID.guide.info` (last touched by the 1.3.0 release
+commit) instead of the current one added later at `player/icons/
+MintVID.guide.info` (the "Icon folder" commit) - the two differ (7182 vs
+6096 bytes), and only the `player/icons/` copy was ever meant to be current,
+matching where every other packaged icon in this target (`amiga/icons/*`)
+already lives relative to `Makefile.amiga`. Fixed by pointing the `release`
+target at `icons/MintVID.guide.info` (relative to `player/`, where
+`Makefile.amiga` runs from) instead of the root-level file. Also removed
+`player/icons/MintVID.guide.info:Zone.Identifier`, a stray Windows NTFS
+Alternate-Data-Stream/Mark-of-the-Web marker that had been committed
+alongside the real icon file - inert on AmigaOS/Linux but not something
+that belongs in the tree.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
