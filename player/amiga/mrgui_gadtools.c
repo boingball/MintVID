@@ -94,7 +94,7 @@ typedef struct gt_app {
 static STRPTR h264_labels[] = {(STRPTR)"H.264: Auto", (STRPTR)"H.264: Quality",
                               (STRPTR)"H.264: Balanced", (STRPTR)"H.264: Fast",
                               (STRPTR)"H.264: Turbo", (STRPTR)"H.264: Turbo+",
-                              (STRPTR)"H.264: TurboGT", NULL};
+                              NULL};
 /* Fixed, unlike mode_labels/c2p_labels - no value-array indirection needed:
  * read_options()/update_mode_controls() both hard-code 0=None, 1=2x,
  * 2=Copper 2x to match this exact order. GadTools cycle gadgets don't
@@ -305,7 +305,7 @@ static void read_options(gt_app *app, mr_play_options *options)
                                                : MR_DISPLAY_AGA;
     options->c2p = c2p < app->c2p_count
                  ? app->c2p_modes[c2p] : MR_C2P_STANDARD;
-    options->h264_performance = h264 <= MR_H264_PERF_TURBO_GT
+    options->h264_performance = h264 <= MR_H264_PERF_TURBO_PLUS
                               ? (mr_h264_performance)h264
                               : MR_H264_PERF_AUTO;
     options->laced = gad_value(app, app->lace, GTCB_Checked) != 0;
@@ -1082,7 +1082,7 @@ static int build_window(gt_app *app)
         GT_SetGadgetAttrs(app->c2p, app->window, NULL,
                          GTCY_Active, c2p_row(app, MR_C2P_KALMS), TAG_DONE);
         GT_SetGadgetAttrs(app->h264, app->window, NULL,
-                         GTCY_Active, MR_H264_PERF_TURBO_GT, TAG_DONE);
+                         GTCY_Active, MR_H264_PERF_TURBO, TAG_DONE);
     }
     return app->window != NULL;
 }

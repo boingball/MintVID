@@ -292,12 +292,13 @@ int main(void) {
     strcpy(launch.url, "https://example.test/live.m3u8?a=1&b=2");
     mr_play_options_default(&options);
     assert(options.c2p == MR_C2P_KALMS);
-    assert(options.h264_performance == MR_H264_PERF_TURBO_GT);
+    assert(options.h264_performance == MR_H264_PERF_TURBO);
     assert(options.fast_buffer == MR_FAST_BUFFER_AUTO);
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
     assert(strstr(args, "--aga --kalms-c2p --hls-low --hls-max-width=640"));
-    assert(strstr(args, "--h264-speed=turbogt"));
+    assert(strstr(args, "--h264-speed=turbo") &&
+           !strstr(args, "--h264-speed=turbogt"));
     assert(strstr(args, "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     options.c2p = MR_C2P_STANDARD;
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
@@ -341,7 +342,7 @@ int main(void) {
                    "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
-    assert(!strcmp(args, "--fast-buffer=auto --h264-speed=turbogt --throughput "
+    assert(!strcmp(args, "--fast-buffer=auto --h264-speed=turbo --throughput "
                          "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     options.h264_performance = MR_H264_PERF_AUTO;
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
@@ -369,7 +370,8 @@ int main(void) {
     assert(mr_build_iptv_arguments(args, sizeof(args), &options));
     assert(strstr(args, "--display aga --c2p kalms --no-laced "
                         "--no-scale-2x --no-copper-vdouble --hls-low"));
-    assert(strstr(args, "--h264-speed=turbogt"));
+    assert(strstr(args, "--h264-speed=turbo") &&
+           !strstr(args, "--h264-speed=turbogt"));
     assert(strstr(args, "--fast-buffer=auto"));
     {
       char *inherited[] = {"iptvgui", "--display", "aga", "--c2p",
@@ -411,17 +413,17 @@ int main(void) {
       mr_play_options_summary(&parsed, summary, sizeof(summary));
       assert(strstr(summary, "H264 Turbo+"));
 
-      parsed.h264_performance = MR_H264_PERF_TURBO_GT;
-      assert(mr_build_player_arguments(first, sizeof(first), &parsed,
-                                       launch.url, NULL, NULL));
-      assert(strstr(first, "--h264-speed=turbogt"));
-      mr_play_options_summary(&parsed, summary, sizeof(summary));
-      assert(strstr(summary, "H264 TurboGT"));
-
       {
         char *turbo_args[] = {"iptvgui", "--h264-speed=turbo"};
         char *turbo_plus_args[] = {"iptvgui", "--h264-speed=turbo+"};
+        /* turbogt/turbo-gt are retired names - TurboGT's policy collapsed
+         * onto Turbo's own once every degrading H.264 mode had to use the
+         * same all-or-nothing degrade policy for correctness (see
+         * CLAUDE.md's H.264 TurboGT retirement notes) - kept parseable
+         * here only as an alias, for scripts/saved settings from before
+         * the retirement. */
         char *turbogt_args[] = {"iptvgui", "--h264-speed=turbogt"};
+        char *turbo_gt_args[] = {"iptvgui", "--h264-speed=turbo-gt"};
         mr_play_options turbo_parsed;
         mr_play_options_default(&turbo_parsed);
         assert(mr_play_options_parse(&turbo_parsed, 2, turbo_args, error,
@@ -434,7 +436,11 @@ int main(void) {
         mr_play_options_default(&turbo_parsed);
         assert(mr_play_options_parse(&turbo_parsed, 2, turbogt_args, error,
                                      sizeof(error)));
-        assert(turbo_parsed.h264_performance == MR_H264_PERF_TURBO_GT);
+        assert(turbo_parsed.h264_performance == MR_H264_PERF_TURBO);
+        mr_play_options_default(&turbo_parsed);
+        assert(mr_play_options_parse(&turbo_parsed, 2, turbo_gt_args, error,
+                                     sizeof(error)));
+        assert(turbo_parsed.h264_performance == MR_H264_PERF_TURBO);
       }
     }
     {

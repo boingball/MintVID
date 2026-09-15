@@ -366,7 +366,7 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
      * keeps row 2 from ever landing here when it wouldn't actually engage. */
     options->scale_2x = selected_scale >= 1;
     options->copper_vdouble = selected_scale == 2;
-    options->h264_performance = selected_h264 <= MR_H264_PERF_TURBO_GT
+    options->h264_performance = selected_h264 <= MR_H264_PERF_TURBO_PLUS
                               ? (mr_h264_performance)selected_h264
                               : MR_H264_PERF_AUTO;
     options->audio_rate = selected_audio_rate == 1
@@ -1395,8 +1395,7 @@ int main(void)
         !add_chooser_node(&h264_modes, "Balanced") ||
         !add_chooser_node(&h264_modes, "Fast") ||
         !add_chooser_node(&h264_modes, "Turbo") ||
-        !add_chooser_node(&h264_modes, "Turbo+") ||
-        !add_chooser_node(&h264_modes, "TurboGT"))
+        !add_chooser_node(&h264_modes, "Turbo+"))
         goto cleanup;
     /* Rows are fixed, unlike mode/c2p - no value-array indirection needed;
      * read_play_options() and update_mode_controls() both hard-code
@@ -1470,7 +1469,7 @@ int main(void)
                                GA_ID, G_H264,
                                GA_RelVerify, TRUE,
                                CHOOSER_Labels, (ULONG)&h264_modes,
-                               CHOOSER_Selected, MR_H264_PERF_TURBO_GT,
+                               CHOOSER_Selected, MR_H264_PERF_TURBO,
                                TAG_DONE);
     lace = (Object *)NewObject(CHECKBOX_GetClass(), NULL,
                                GA_ID, G_LACE,

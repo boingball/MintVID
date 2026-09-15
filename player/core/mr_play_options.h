@@ -56,8 +56,7 @@ typedef enum {
     MR_H264_PERF_BALANCED,
     MR_H264_PERF_FAST,
     MR_H264_PERF_TURBO,
-    MR_H264_PERF_TURBO_PLUS,
-    MR_H264_PERF_TURBO_GT
+    MR_H264_PERF_TURBO_PLUS
 } mr_h264_performance;
 
 /* Paula output rate policy. NORMAL keeps the existing >28kHz halving

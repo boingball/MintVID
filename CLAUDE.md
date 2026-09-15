@@ -2257,6 +2257,80 @@ from a reproduced/compiled repro of the bug itself. Needs a real-hardware
 retest to confirm the Quality and Log cycle gadgets both now visibly
 advance on click.
 
+## H.264 TurboGT retirement
+A user question - "turbo and turbogt are the same thing now, why did that
+happen?" - traced back to `8c7a290` ("Fix mixed-degrade deblocking and
+implement libavc's dead MC degrade bits"). That commit found a real
+correctness bug: libavc's per-macroblock deblocking state (`ps_deblk_pic`)
+persists across pictures, so a *mixed* degrade policy - some pictures
+degraded, some not, which is what `i4_degrade_pics` values 1 and 3 asked
+for - left an undegraded picture deblocked against the previous, degraded
+picture's stale boundary strengths and QPs: wrong output, and Fast actually
+ran ~47% *slower* than Quality because of it. The fix forced every
+degrading H.264 speed mode onto the same all-or-nothing `i4_degrade_pics=4`
+policy. TurboGT's *only* distinction from Turbo, before that fix, was
+exactly `i4_degrade_pics=4` instead of 3 (disabling keyframe deblocking too,
+on top of Turbo's B-skip) - so once every mode had to use 4 for correctness,
+Turbo and TurboGT became bit-for-bit the same policy. A replacement lever
+for TurboGT (truncating motion vectors to whole samples) was measured and
+rejected at the time: 3-4% faster for a 17 dB PSNR loss. TurboGT was kept
+selectable anyway, in the GUIs, `--h264-speed=`, and as the default, purely
+so nothing broke for anyone already using it.
+
+Asked directly whether TurboGT should still exist given it does nothing
+different from Turbo, the user's call: retire it, but keep `--h264-speed=
+turbogt`/`turbo-gt` parseable and aliased to Turbo, since it is a real,
+long-shipped (pre-1.2.0) option someone could have in a script. There is no
+binary/persisted-settings compatibility concern to weigh against that: the
+only place `mr_play_options` is ever written to disk is
+`mr_master_options.h`'s `T:` snapshot, already documented elsewhere in this
+file as deliberately volatile and session-scoped, not something upgraded
+across a rebuild - so the enum values themselves were free to renumber
+(`MR_H264_SPEED_TURBO_GT`/`MR_H264_PERF_TURBO_GT` removed outright, both
+enums' last entries), with only the *text* CLI keyword needing a back-compat
+alias.
+
+Removed: both enum values; `core/mr_h264.c`'s duplicate `TURBO_GT` switch
+case (its policy was identical to `TURBO`'s, so nothing else needed
+changing there); TurboGT's entries from both GUI choosers
+(`mrgui.c`/`mrgui_gadtools.c` - so it can no longer be newly selected) and
+their `<= MR_H264_PERF_TURBO_GT` bounds checks, now `<= MR_H264_PERF_
+TURBO_PLUS`; the default `CHOOSER_Selected`/`GTCY_Active` seed in both GUIs,
+now `MR_H264_PERF_TURBO`; `mrplay.c`'s `effective_h264_speed()` Auto
+resolution and its naming ternary; `--h264-speed=turbogt` from the usage
+string (still accepted, just no longer advertised). Kept, as an explicit
+alias mapped straight to `MR_H264_PERF_TURBO`/`MR_H264_SPEED_TURBO` at the
+parse boundary rather than as a live enum value threaded through the rest
+of the codebase: the `turbogt`/`turbo-gt` string in `core/mr_play_options.c`
+(GUI/IPTV argument parsing), `amiga/mrplay.c` (the CLI parser), and
+`tests/mr_decode.c` (the host test-harness CLI parser, which had its own,
+separate copy of this same parsing). `mr_play_options_default()`'s default
+changed from `MR_H264_PERF_TURBO_GT` to `MR_H264_PERF_TURBO` - identical
+runtime policy, so this is a naming-only change, not a behavior change.
+
+`tests/mr_iptv_check.c` needed the most rework: its dedicated "set
+`h264_performance` to `MR_H264_PERF_TURBO_GT` directly and check the
+`--h264-speed=turbogt`/`\"H264 TurboGT\"` output" block no longer compiles
+(the enum value is gone), so it was replaced with alias-behavior coverage
+instead - parsing both `--h264-speed=turbogt` and `--h264-speed=turbo-gt`
+from argv and asserting the result is `MR_H264_PERF_TURBO`, alongside the
+existing `turbo`/`turbo+` parse-and-resolve cases. Every other pinned string
+that used to expect `turbogt` (the default-options build-arguments cases)
+now expects `turbo`, with an added `!strstr(args, "turbogt")` check so a
+regression back to the old default would fail loudly rather than just
+matching a differently-worded string.
+
+Verified via `make check` end to end (host build, `mr_iptv_check` and
+`mr_h264_mc_degrade_check` rebuilt and rerun individually first to isolate
+them) - all pass, including a manual `mr_decode --h264-speed=turbogt` vs.
+`--h264-speed=turbo` smoke test producing byte-identical decode output.
+Not re-verified under `make check-m68k`: this change is a pure enum-value
+removal and switch-case deletion with no new arithmetic, no new asm, and no
+endianness/alignment surface - the class of change `make check-m68k` exists
+to catch (see "Validate against ffmpeg" above) - so the host build already
+fully exercising the same, unchanged `core/mr_h264.c` code path is
+sufficient here, unlike e.g. the 68060 kernel work elsewhere in this file.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.

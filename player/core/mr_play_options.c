@@ -57,10 +57,10 @@ void mr_play_options_default(mr_play_options *o)
      * a direct "mrplay <url>" invocation keeps its own conservative default of
      * off. Disable with --no-live-resync. */
     o->live_resync = 1;
-    /* TurboGT keeps the P-frame reference chain while applying the strongest
-     * practical libavc degradation policy and skipping B pictures. It now
-     * resolves to the same policy as Turbo - see mr_h264_set_speed_mode(). */
-    o->h264_performance = MR_H264_PERF_TURBO_GT;
+    /* Turbo keeps the P-frame reference chain while applying the strongest
+     * practical libavc degradation policy and skipping B pictures - see
+     * mr_h264_set_speed_mode(). */
+    o->h264_performance = MR_H264_PERF_TURBO;
     o->audio_rate = MR_AUDIO_RATE_NORMAL;
     o->fast_buffer = MR_FAST_BUFFER_AUTO;
     /* On by default for every GUI-launched session (local file or network
@@ -201,9 +201,7 @@ static int append_playback_flags(char *out, size_t cap,
                            o->h264_performance == MR_H264_PERF_TURBO
                          ? "--h264-speed=turbo" :
                            o->h264_performance == MR_H264_PERF_TURBO_PLUS
-                         ? "--h264-speed=turbo+" :
-                           o->h264_performance == MR_H264_PERF_TURBO_GT
-                         ? "--h264-speed=turbogt" : "--h264-speed=fast";
+                         ? "--h264-speed=turbo+" : "--h264-speed=fast";
         if (!append_option(out, cap, mode)) return 0;
     }
     if (o->no_audio) {
@@ -328,8 +326,11 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "turbo")) o->h264_performance = MR_H264_PERF_TURBO;
             else if (!strcmp(value, "turbo+") || !strcmp(value, "turbo-plus"))
                 o->h264_performance = MR_H264_PERF_TURBO_PLUS;
+            /* TurboGT is a retired name, kept accepted here for scripts/
+             * saved settings from before it collapsed onto Turbo's own
+             * policy - see CLAUDE.md's H.264 TurboGT retirement notes. */
             else if (!strcmp(value, "turbogt") || !strcmp(value, "turbo-gt"))
-                o->h264_performance = MR_H264_PERF_TURBO_GT;
+                o->h264_performance = MR_H264_PERF_TURBO;
             else goto bad;
         }
         else if (!strncmp(arg, "--audio-rate=", 13)) {
@@ -407,8 +408,7 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
            o->h264_performance == MR_H264_PERF_BALANCED ? "Balanced" :
            o->h264_performance == MR_H264_PERF_FAST ? "Fast" :
            o->h264_performance == MR_H264_PERF_TURBO ? "Turbo" :
-           o->h264_performance == MR_H264_PERF_TURBO_PLUS ? "Turbo+" :
-           o->h264_performance == MR_H264_PERF_TURBO_GT ? "TurboGT" : "Auto";
+           o->h264_performance == MR_H264_PERF_TURBO_PLUS ? "Turbo+" : "Auto";
     audio = audio_policy_text(o);
     if (o->display == MR_DISPLAY_CGX || o->display == MR_DISPLAY_P96)
         snprintf(out, cap, "Playback: RTG (%s) / %s / H264 %s / Audio %s / Fast buffer %s%s / Video %s",

@@ -1398,18 +1398,14 @@ static mr_h264_speed_mode effective_h264_speed(int requested)
         requested == MR_H264_SPEED_BALANCED ||
         requested == MR_H264_SPEED_FAST ||
         requested == MR_H264_SPEED_TURBO ||
-        requested == MR_H264_SPEED_TURBO_PLUS ||
-        requested == MR_H264_SPEED_TURBO_GT)
+        requested == MR_H264_SPEED_TURBO_PLUS)
         return (mr_h264_speed_mode)requested;
-    /* Auto follows the release's throughput-first default. TurboGT preserves
+    /* Auto follows the release's throughput-first default: Turbo preserves
      * the P-frame reference chain, unlike Turbo+, while skipping B pictures
      * and applying libavc's strongest practical degradation policy to every
-     * decoded picture - which is now also exactly Turbo's policy, TurboGT
-     * being kept as a name rather than a distinct setting (see
-     * mr_h264_set_speed_mode()). Explicit Fast remains available for users
-     * who prefer to keep every frame, and Quality/Balanced remain deliberate
-     * opt-ins. */
-    return MR_H264_SPEED_TURBO_GT;
+     * decoded picture. Explicit Fast remains available for users who prefer
+     * to keep every frame, and Quality/Balanced remain deliberate opt-ins. */
+    return MR_H264_SPEED_TURBO;
 }
 
 static int apply_h264_speed(mr_decoder *dec, int requested, int verbose)
@@ -1418,8 +1414,7 @@ static int apply_h264_speed(mr_decoder *dec, int requested, int verbose)
     const char *name;
     if (!dec || dec->codec != &mr_codec_h264) return 1;
     mode = effective_h264_speed(requested);
-    name = mode == MR_H264_SPEED_TURBO_GT ? "TurboGT (B-skip, bilinear MC)" :
-           mode == MR_H264_SPEED_TURBO_PLUS ? "Turbo+ (PB-skip, keyframes only)" :
+    name = mode == MR_H264_SPEED_TURBO_PLUS ? "Turbo+ (PB-skip, keyframes only)" :
            mode == MR_H264_SPEED_TURBO ? "Turbo (B-skip, bilinear MC)" :
            mode == MR_H264_SPEED_FAST ? "Fast (bilinear MC)" :
            mode == MR_H264_SPEED_BALANCED ? "Balanced" : "Quality";
@@ -1624,7 +1619,7 @@ int main(int argc, char **argv)
     int auto_close_eof = 0; /* finite GUI media should release its window      */
     int audio_unavailable = 0;
     const char *audio_failure = NULL;
-    int h264_speed = -1; /* automatic: TurboGT - see effective_h264_speed() */
+    int h264_speed = -1; /* automatic: Turbo - see effective_h264_speed() */
     int audio_low_rate = 0; /* --audio-rate=low: halve the output rate again */
     int no_audio = 0;       /* --no-audio: skip the decoder/Paula entirely   */
     int audio_mono = 0;     /* --audio-mono: decode one channel, not two     */
@@ -1731,7 +1726,7 @@ int main(int argc, char **argv)
                "[--wpa|--c2p|--riva-c2p|--kalms-c2p|--direct-c2p] "
                "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
                "[--fast-buffer=auto|off|4|8|16] "
-               "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+|turbogt] "
+               "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+] "
                "[--audio-rate=normal|low] [--no-audio] [--audio-mono] "
                "[--time] [--live-diag] [--throughput|--no-throughput]\n");
         return mrplay_exit(5);
@@ -1797,8 +1792,11 @@ int main(int argc, char **argv)
                 else if (!strcmp(mode, "turbo")) h264_speed = MR_H264_SPEED_TURBO;
                 else if (!strcmp(mode, "turbo+") || !strcmp(mode, "turbo-plus"))
                     h264_speed = MR_H264_SPEED_TURBO_PLUS;
+                /* TurboGT is a retired name, kept accepted for scripts/saved
+                 * settings from before it collapsed onto Turbo's own policy -
+                 * see CLAUDE.md's H.264 TurboGT retirement notes. */
                 else if (!strcmp(mode, "turbogt") || !strcmp(mode, "turbo-gt"))
-                    h264_speed = MR_H264_SPEED_TURBO_GT;
+                    h264_speed = MR_H264_SPEED_TURBO;
                 else {
                     printf("invalid H.264 speed mode: %s\n", mode);
                     return mrplay_exit(5);
