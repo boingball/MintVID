@@ -366,6 +366,11 @@ change one setting at a time. The following are sensible starting points:
     H.264: TurboGT first; use a lower-resolution source before degrading
     Video: All Frames when the source keeps up; Skip Frames to recover
     Fast buffer: Auto for local files and direct/progressive HTTP media
+    On a board with real hardware video overlay (Voodoo3/Permedia/BVision
+      class - typically via Mediator or a PCI/Zorro bridge), try
+      "RTG (P96 Overlay)" instead of P96: it can offload scaling to the
+      graphics card. This is new and not yet confirmed on real overlay
+      hardware; fall back to plain P96 if it does not help or misbehaves.
 
   @{u}PiStorm/Emu68@{uu}
     Build: MintVID040
@@ -600,6 +605,7 @@ Every GUI is a front end over mrplay, which also runs directly:
   mrplay --fast-buffer=8 "DH0:Videos/movie.avi"
   mrplay --net-queue=24 --live-resync \
     "https://example.net/live/master.m3u8"
+  mrplay --p96-overlay "DH0:Videos/movie.avi"
 
 mrplay carries a $STACK:320000 AmigaOS stack cookie because libavc needs
 substantially more stack than the classic Shell default - see

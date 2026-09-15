@@ -111,7 +111,7 @@ enum {
 
 /* Chooser rows are chipset-dependent, so never infer a display mode from a
  * hard-coded row number. This map is populated alongside the labels. */
-static mr_display_mode mode_values[7];
+static mr_display_mode mode_values[8];
 static unsigned mode_count;
 static mr_c2p_mode c2p_values[5];
 static unsigned c2p_count;
@@ -546,7 +546,8 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
     GetAttr(CHOOSER_Selected, mode, &selected);
     disable_chipset_options = selected < mode_count &&
                               (mode_values[selected] == MR_DISPLAY_CGX ||
-                               mode_values[selected] == MR_DISPLAY_P96)
+                               mode_values[selected] == MR_DISPLAY_P96 ||
+                               mode_values[selected] == MR_DISPLAY_P96_OVERLAY)
                             ? TRUE : FALSE;
 
     selected_c2p = 0;
@@ -595,9 +596,24 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
                        GA_Disabled, TRUE,
                        CHECKBOX_Checked, FALSE,
                        TAG_DONE);
+        /* A real-hardware report found Scale not greying out (and not
+         * snapping back to None) when switching to P96 - the two attribute
+         * changes below were previously combined into one SetGadgetAttrs
+         * call, same shape as lace's pair just above. The logic and call
+         * site here are otherwise identical to c2p's/lace's own (already
+         * working) disable path, so source review alone couldn't pin a root
+         * cause; splitting CHOOSER_Selected and GA_Disabled into two
+         * separate calls is the conservative fix - it forces two independent
+         * attribute-update/redraw passes on chooser.class instead of relying
+         * on both tags being applied and rendered correctly from one
+         * combined taglist. Unconfirmed until retested on real hardware,
+         * same standing limitation as every other Amiga-only GUI fix in this
+         * tree (see CLAUDE.md). */
+        SetGadgetAttrs((struct Gadget *)scale, window, NULL,
+                       CHOOSER_Selected, 0,
+                       TAG_DONE);
         SetGadgetAttrs((struct Gadget *)scale, window, NULL,
                        GA_Disabled, TRUE,
-                       CHOOSER_Selected, 0,
                        TAG_DONE);
         return;
     }
@@ -1355,9 +1371,11 @@ int main(void)
         (chipset_has_aga() &&
          !add_mode_node(&modes, "HAM8", MR_DISPLAY_HAM8)) ||
         (have_rtg && !add_mode_node(&modes, "RTG (WritePixel)", MR_DISPLAY_CGX)) ||
-        (have_rtg && !add_mode_node(&modes, "RTG (P96)", MR_DISPLAY_P96)))
+        (have_rtg && !add_mode_node(&modes, "RTG (P96)", MR_DISPLAY_P96)) ||
+        (have_rtg && !add_mode_node(&modes, "RTG (P96 Overlay)",
+                                    MR_DISPLAY_P96_OVERLAY)))
         goto cleanup;
-    if (have_rtg) default_mode = (int)mode_count - 2;
+    if (have_rtg) default_mode = (int)mode_count - 3;
     if (!add_c2p_node(&c2p_modes, "Standard", MR_C2P_STANDARD) ||
         (mr_akiko_available() &&
          !add_c2p_node(&c2p_modes, "CD32", MR_C2P_AKIKO)) ||

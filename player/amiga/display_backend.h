@@ -66,6 +66,7 @@ typedef struct {
 
 extern const display_backend backend_cgx;
 extern const display_backend backend_p96;
+extern const display_backend backend_p96pip;
 extern const display_backend backend_aga;
 
 /* AGA backend configuration, set via the public display_set_* calls. */

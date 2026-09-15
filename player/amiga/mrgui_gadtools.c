@@ -78,8 +78,8 @@ typedef struct gt_app {
     struct FileRequester *requester;
     mr_master_options_port *master;
     mr_gui_menu menu;
-    mr_display_mode modes[7];
-    STRPTR mode_labels[8];
+    mr_display_mode modes[8];
+    STRPTR mode_labels[9];
     unsigned mode_count;
     mr_c2p_mode c2p_modes[5];
     STRPTR c2p_labels[6];
@@ -103,8 +103,8 @@ static STRPTR h264_labels[] = {(STRPTR)"H.264: Auto", (STRPTR)"H.264: Quality",
  * when it wouldn't do anything - update_mode_controls() instead snaps the
  * active index back to 1 (2x) when the current c2p/mode doesn't qualify,
  * the same GTCY_Active correction it already does for the c2p cycle. */
-static STRPTR scale_labels[] = {(STRPTR)"None", (STRPTR)"2x",
-                               (STRPTR)"Copper 2x", NULL};
+static STRPTR scale_labels[] = {(STRPTR)"Scale: None", (STRPTR)"Scale: 2x",
+                               (STRPTR)"Scale: Copper 2x", NULL};
 static STRPTR audio_rate_labels[] = {(STRPTR)"Audio: Normal",
                                     (STRPTR)"Audio: Low", NULL};
 /* Fixed, like scale_labels above: 0=All Frames (throughput on, the default -
@@ -337,7 +337,8 @@ static void update_mode_controls(gt_app *app, int output_changed)
     ULONG selected = gad_value(app, app->mode, GTCY_Active);
     ULONG disabled = selected < app->mode_count &&
                      (app->modes[selected] == MR_DISPLAY_CGX ||
-                      app->modes[selected] == MR_DISPLAY_P96);
+                      app->modes[selected] == MR_DISPLAY_P96 ||
+                      app->modes[selected] == MR_DISPLAY_P96_OVERLAY);
     ULONG selected_c2p = gad_value(app, app->c2p, GTCY_Active);
     mr_c2p_mode selected_c2p_mode = selected_c2p < app->c2p_count
                                   ? app->c2p_modes[selected_c2p]
@@ -972,6 +973,8 @@ static int build_window(gt_app *app)
         default_mode = (int)app->mode_count - 1;
         app->mode_labels[app->mode_count] = (STRPTR)"Display: RTG (P96)";
         app->modes[app->mode_count++] = MR_DISPLAY_P96;
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: RTG (P96 Overlay)";
+        app->modes[app->mode_count++] = MR_DISPLAY_P96_OVERLAY;
     }
     app->mode_labels[app->mode_count] = NULL;
 
@@ -1014,16 +1017,6 @@ static int build_window(gt_app *app)
         94, 14, "No audio", GTCB_Checked, FALSE);
     app->mono_audio = g = add_gadget(app, g, CHECKBOX_KIND, G_MONO_AUDIO, 445,
         69, 110, 14, "Mono audio", GTCB_Checked, FALSE);
-    /* Replaces the old separate 2x checkbox (was on the Mode/Laced row) and
-     * Copper checkbox (was right here) with one None/2x/Copper 2x cycle -
-     * update_mode_controls() snaps it back to 2x when the current c2p/mode
-     * doesn't support Copper. Tucked in after Mono audio, where
-     * 632-555=77px was free; "Copper 2x" is the widest label this cycle
-     * gadget ever shows, and this width is an estimate against topaz 8pt -
-     * unconfirmed against real hardware like the rest of this feature. */
-    app->scale = g = add_gadget(app, g, CYCLE_KIND, G_SCALE, 558, 68, 70, 16,
-        "", GTCY_Labels, (ULONG)scale_labels);
-
     /* Own row: --throughput/--no-throughput (see mr_play_options.h's
      * throughput field and CLAUDE.md's "Live HLS playback stall notes").
      * Index 0 ("All Frames") is both this cycle gadget's default GTCY_Active
@@ -1033,6 +1026,16 @@ static int build_window(gt_app *app)
      * default. read_options() reads it back with GTCY_Active == 0. */
     app->video_mode = g = add_gadget(app, g, CYCLE_KIND, G_VIDEO_MODE, 8, 92,
         180, 16, "", GTCY_Labels, (ULONG)video_labels);
+    /* Replaces the old separate 2x checkbox (was on the Mode/Laced row) and
+     * Copper checkbox (was on the audio row) with one None/2x/Copper 2x
+     * cycle - update_mode_controls() snaps it back to 2x when the current
+     * c2p/mode doesn't support Copper. A real-hardware report found the
+     * previous placement (70px on the audio row, squeezed in after Mono
+     * audio) too narrow to actually show "Copper 2x" - moved onto its own
+     * row beside Video Mode, where there is ample free width (196..632),
+     * and widened to fit "Scale: Copper 2x" comfortably. */
+    app->scale = g = add_gadget(app, g, CYCLE_KIND, G_SCALE, 196, 92, 180, 16,
+        "", GTCY_Labels, (ULONG)scale_labels);
 
     /* VLC-style lower strip: media buttons stay flush left, the volume
      * slider follows them, and IPTV/YouTube sit before Playlist in the

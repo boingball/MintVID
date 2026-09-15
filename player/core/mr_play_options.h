@@ -15,6 +15,22 @@ typedef enum {
     MR_DISPLAY_HAM8,
     MR_DISPLAY_CGX,
     MR_DISPLAY_P96,
+    /* Picasso96 "PIP" (Picture-In-Picture) overlay window - p96PIP_OpenTags()
+     * with P96PIP_Type=PIPT_VideoWindow (falling back to PIPT_MemoryWindow if
+     * the board/driver refuses a real hardware video window), writing BGR24
+     * into the PIP's own dedicated source bitmap instead of the shared
+     * screen bitmap MR_DISPLAY_P96 locks directly. Unlike MR_DISPLAY_P96,
+     * this does not require fullscreen: the PIP owns an isolated surface, so
+     * there is no equivalent of the direct-lock backend's "unclipped writes
+     * corrupt sibling windows" hazard - see amiga/display_p96pip.c's file
+     * header. Whether the destination board's overlay hardware actually
+     * engages for an RGB (rather than YUV) source, or Picasso96 silently
+     * falls back to a software-composited window, is unconfirmed without a
+     * real board to test against (the Picasso96.h RGBFTYPE comment marks
+     * only the YUV formats as "for use with a hardware window only", which
+     * this backend deliberately does not use yet - see the file header for
+     * why). */
+    MR_DISPLAY_P96_OVERLAY,
     /* Native planar at reduced depth: same encoder family as MR_DISPLAY_AGA
      * (indexed dither, not HAM), but forced to 5 planes/32 colours or 4
      * planes/16 colours instead of auto-selecting by chipset. Available on

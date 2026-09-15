@@ -21,6 +21,7 @@ struct Library       *P96Base       = NULL;
 
 static int g_force_aga = 0;
 static int g_force_p96 = 0;
+static int g_p96_overlay = 0;
 int g_aga_ham   = 0;   /* shared with the AGA backend */
 int g_aga_scale = 1;
 int g_aga_c2p   = 3;   /* CPU-matched Kalms by default; its runtime checks
@@ -36,6 +37,10 @@ int g_display_fullscreen = 0;
 
 void display_set_force_aga(int on) { g_force_aga = on; }
 void display_set_force_p96(int on) { g_force_p96 = on; }
+void display_set_p96_overlay(int on) {
+    g_p96_overlay = on ? 1 : 0;
+    if (on) g_force_p96 = 1;
+}
 void display_set_ham(int bits) { g_aga_ham = bits; if (bits) g_force_aga = 1; }
 void display_set_scale(int n)  { g_aga_scale = (n == 2) ? 2 : 1; }
 void display_set_c2p(int on)   { g_aga_c2p = on ? 1 : 0; }
@@ -75,7 +80,7 @@ static void close_libs(void)
 
 amiga_display *display_open(int w, int h, const char *title)
 {
-    const display_backend *order[3];
+    const display_backend *order[4];
     int n = 0, i;
 
     IntuitionBase = (struct IntuitionBase *)
@@ -91,7 +96,16 @@ amiga_display *display_open(int w, int h, const char *title)
     if (g_force_p96 && !g_force_aga)
         P96Base = OpenLibrary((CONST_STRPTR)"Picasso96API.library", 0);
 
-    /* P96 is tried first (only when selected and available); backend_p96's
+    /* PIP overlay is tried first when explicitly requested (--p96-overlay,
+     * which also implies g_force_p96 - see display_set_p96_overlay()) -
+     * backend_p96pip's own open() fails cleanly if the PIP API is missing or
+     * refuses (see its file header), falling through to plain P96, then CGX,
+     * then AGA - so choosing overlay mode never loses playback, only the
+     * chance at real hardware acceleration. Unlike backend_p96 it does not
+     * need CyberGfxBase at all (see display_p96pip.c's own header). */
+    if (!g_force_aga && g_force_p96 && g_p96_overlay && P96Base)
+        order[n++] = &backend_p96pip;
+    /* P96 is tried next (only when selected and available); backend_p96's
      * own open() fails cleanly for unsupported screen formats or geometry,
      * in which case this still falls through to CGX, then AGA - so choosing
      * P96 never loses working playback, only the chance at the faster path. */

@@ -1812,6 +1812,177 @@ limitation) - the real-hardware/WinUAE claim ("does audio stay smooth
 through a keyframe-only freeze instead of stuttering") still needs its own
 retest to confirm.
 
+## P96 PIP overlay display, and two GUI Scale-control bugs
+
+A customer report (68060/66MHz + Mediator + Voodoo3, H.264/AVC 540x360)
+said current playback is slower than 1.2.0 and asked about "the planned
+overlay display" this project's own docs had previously mentioned. That
+phrase points at real graphics-card hardware video overlay - exactly what
+Voodoo3/Permedia/BVision-class boards expose - which does colourspace
+conversion and scaling on the card instead of the CPU, the thing most worth
+having on precisely this slow-68k-plus-fast-RTG-board combination.
+
+**`amiga/display_p96pip.c` (`backend_p96pip`, `--p96-overlay` /
+`MR_DISPLAY_P96_OVERLAY` / GUI "RTG (P96 Overlay)") is a new display backend
+built on Picasso96API.library's "PIP" (Picture-In-Picture) API -
+`p96PIP_OpenTagList()` et al, declared in the vendored
+`amiga/include/libraries/Picasso96.h`/`amiga/include/inline/Picasso96API.h`
+headers `display_p96.c` already depends on.** It requests
+`P96PIP_Type=PIPT_VideoWindow` (a real hardware overlay window on boards
+that support one) first, falling back to `PIPT_MemoryWindow` (the
+always-available software-composited PIP) only if that specific open fails
+- so picking overlay mode never loses playback, only the chance at real
+acceleration, the same fallback discipline `display_open()`'s whole backend
+chain already uses. Two structural differences from `backend_p96`'s own
+direct screen-bitmap-lock approach, both explained at length in the new
+file's header: it is not fullscreen-only (a PIP owns its own dedicated
+surface, so there is no equivalent of `backend_p96`'s "unclipped writes
+corrupt sibling windows" hazard - `display_set_p96_overlay()` deliberately
+is not added to `mr_build_player_arguments()`'s forced-`--fullscreen` case
+the way plain P96 is), and it does no CPU-side scaling at all (the PIP is
+given the source size once, `P96PIP_Width`/`Height`/`Left`/`Top` describe a
+separate, independently aspect-fitted destination rectangle, and Picasso96
+- potentially the board itself for a real video window - does the resize;
+`backend_p96`/`backend_cgx` both still pay for `mr_scale_resize_rgb24_strip()`
+on the CPU whenever the window isn't the stream's native size).
+
+**Deliberately not done in this first pass: the PIP's source format is
+`RGBFB_B8G8R8`, reusing the exact BGR24 pixels `backend_p96`'s `show_bgr()`
+already consumes - not one of the YUV `RGBFTYPE`s `Picasso96.h` documents as
+"for use with a hardware window only".** That comment is the strongest hint
+in the vendored headers that real overlay hardware expects YUV, not RGB, so
+whether requesting `PIPT_VideoWindow` with an RGB source actually engages a
+Voodoo3's overlay engine, or Picasso96 quietly falls back to software
+compositing behind an identical-looking API, is unknown without a real
+board to test against. Feeding real packed YUV into a video-window PIP -
+skipping the H.264/MPEG-2 YUV->RGB24 conversion these decoders already pay
+for, the same win `mr_mpeg2_set_yuv_output()` gets for the AGA indexed path
+(see "The RGB24 round-trip is the expensive part" above) - is the natural,
+larger follow-up once this base mechanism is confirmed working on real
+hardware; this first step instead validates the open/write/resize/close
+mechanics end to end using pixel data every other RTG backend already
+proves correct against ffmpeg, and is something the reporting user can
+actually test (unlike a from-scratch YUV overlay path, which would need its
+own correctness pass before it could be trusted on their hardware at all).
+
+Several coordinate-space and lifecycle details needed to be gotten right
+from documentation alone, with no way to compile or run any of it here (no
+AmigaOS toolchain, no Voodoo3/overlay-capable board, and not even a known
+case of WinUAE's own P96/UAEGFX emulation implementing the PIP API at all -
+this is a sharper version of this file's standing "Validate against
+ffmpeg" limitation, since not even the emulator this user has access to is
+known to exercise this specific API): `P96PIP_Relativity` defaults to
+`PIPRel_Width|PIPRel_Height`, which (easy to miss, since `P96PIP_Width`'s
+own doc comment reads "default: inner width of window" as if already
+absolute) means `P96PIP_Width`/`Height` are by default interpreted as an
+unused margin at the window's right/bottom edge, not an absolute size -
+`open_pip()` explicitly clears it to 0 on every open and `SetTags` call.
+Windowed placement needed `WA_InnerWidth`/`WA_InnerHeight` (content size,
+matching `display_p96.c`'s/`display_cgx.c`'s own windowed opens) rather than
+`WA_Width`/`WA_Height` (outer, border-inclusive), with a `sync_content_geometry()`
+helper re-reading the real post-open/post-resize content rectangle from the
+live window every time, mirroring those two files' own `bl`/`bt`/`iw`/`ih`
+tracking; `P96PIP_Left`/`Top` are then set relative to that content origin,
+the same "add `bl`/`bt` to every draw coordinate" convention every other
+backend in this tree already uses - `Picasso96.h` does not actually document
+which coordinate space `P96PIP_Left`/`Top` use, so this is the most
+consistent assumption available, not a confirmed one. `P96PIP_SourceWidth`/
+`Height` are Init-only (no settable equivalent), so a live source-resolution
+change (an HLS stream's SPS changing resolution mid-segment, the same case
+`display_p96.c`'s `p96_show_packed()` already handles for its own
+screen-bitmap path) needs a full PIP close/reopen (`reopen_for_size()`)
+rather than a `SetTags` update. `p96PIP_GetTagList()`'s own return-code
+convention (count processed vs. count failed) isn't documented in the
+vendored header either, so every `P96PIP_SourceBitMap` fetch checks the
+retrieved pointer itself instead of trusting a guessed sign convention on
+the return value.
+
+`display_open()`'s backend-selection chain (`amiga/display.c`) tries
+`backend_p96pip` first, only when `--p96-overlay` was explicitly passed
+(`display_set_p96_overlay()`, which also implies `display_set_force_p96(1)`
+- there is no separate `--p96` flag needed alongside it), then falls
+through to plain `backend_p96`, `backend_cgx`, `backend_aga` exactly as
+before - `order[]` grew from 3 to 4 slots to fit the new optional entry.
+Unlike `backend_p96`, `backend_p96pip` needs no `cybergraphics.library` at
+all (it never calls a CGX function, only Picasso96API.library ones), so its
+gate is `g_force_p96 && g_p96_overlay && P96Base` with no `CyberGfxBase`
+requirement.
+
+Plumbed through the same places every other display mode already is:
+`mr_play_options.h`'s `mr_display_mode` enum gained `MR_DISPLAY_P96_OVERLAY`;
+`mr_play_options.c`'s name/parse/summary/`append_playback_flags()` functions
+(`"p96-overlay"` CLI name, `--display p96-overlay` for the IPTV/YouTube
+browsers' explicit T:-snapshot form, bare `--p96-overlay` for mrplay's own
+non-explicit argv, "RTG (P96 Overlay)" in the status summary) all extend
+their existing `MR_DISPLAY_CGX`/`MR_DISPLAY_P96` three-way checks to include
+it; `tests/mr_iptv_check.c` pins the new flag/parse/summary round-trip the
+same way the existing P96 case already was pinned, including that (unlike
+P96) it does *not* force `--fullscreen`. Both GUIs (`mrgui.c` ReAction,
+`mrgui_gadtools.c` GadTools) gained a third RTG entry, "RTG (P96 Overlay)",
+in their Display choosers (their `mode_values[]`/`modes[]` fixed-size arrays
+grew from 7 to 8 slots to fit it), and their `update_mode_controls()`
+disable-chipset-options checks were extended from a CGX/P96 two-way check to
+a three-way one so C2P/Lace/Scale grey out for the new mode exactly as they
+already do for CGX/P96. `make check` passes with the updated pinned
+strings; every Amiga-only file here (the new backend and both GUI files)
+can only be reviewed, not compiled or run, on this dev host - the same
+standing limitation as everything else in this section.
+
+**Two separate, real-hardware-reported GUI bugs were fixed alongside this,
+unrelated to overlay mode itself, spotted by the same user while looking at
+these controls:**
+
+- **GadTools "Copper 2x" (the third row of the Scale cycle gadget,
+  `mrgui_gadtools.c`) did not actually show its text - the gadget's box was
+  too narrow.** It was squeezed into 70px of leftover space on the audio
+  options row (`558..628` of a 632px-wide window), sized by estimate against
+  topaz 8pt with no real-hardware check - explicitly flagged as unconfirmed
+  when that layout first shipped (see "AGA copper-assisted vertical
+  doubling notes" above). Fixed by moving the Scale cycle onto its own row
+  next to the Video Mode cycle (`8..188`), where `188..632` was entirely
+  free, and widening it to 180px there - also renamed its three labels from
+  bare "None"/"2x"/"Copper 2x" to "Scale: None"/"Scale: 2x"/"Scale: Copper 2x"
+  for consistency with every other cycle gadget in this window (`Display:`,
+  `C2P:`, `H.264:`, `Audio:`, `Fast buffer:`, `Video:`), which this control
+  had been missing since the None/2x/Copper 2x cycle replaced the old
+  separate checkboxes. `update_mode_controls()`'s own logic (disable/reset
+  to None on CGX/P96/P96-Overlay, snap Copper back to plain 2x on an
+  ineligible C2P/mode) was already correct and untouched - this was purely a
+  layout/width fix. Not yet retested on real hardware.
+
+- **ReAction's Scale chooser reportedly did not grey out or reset to None
+  when switching to P96.** Source review found `mrgui.c`'s
+  `update_mode_controls()` logically identical to GadTools' own (already
+  working) equivalent - same three-way disabled check, same
+  `SetGadgetAttrs(..., GA_Disabled, TRUE, CHOOSER_Selected, 0, TAG_DONE)`
+  combined call for the disable path - so this could not be root-caused from
+  source alone, the same class of gap this file's "Validate against
+  ffmpeg" section exists to name: a plausible reading of the code is not the
+  same as confirmed correct behaviour on real ReAction/BOOPSI gadget classes,
+  and there is no way to exercise `chooser.class` here to find out which. The
+  conservative fix applied: split that one combined `SetGadgetAttrs` call
+  (`CHOOSER_Selected` and `GA_Disabled` together) into two separate calls,
+  for the Scale gadget's disable path only - forcing two independent
+  attribute-update/redraw passes on the gadget instead of relying on both
+  tags being applied and rendered correctly from one combined taglist. Not
+  yet retested on real hardware; if this does not fix it, the real cause is
+  still unknown and would need a fresh real-hardware trace (e.g. does the
+  Lace checkbox's own combined disable call, right next to Scale's, show the
+  same symptom or not - that would show whether this is Scale-specific or a
+  general combined-taglist issue this fix just happened not to also need for
+  Lace).
+
+Real-hardware test plan once a build is available: (1) confirm "RTG (P96
+Overlay)" is selectable and opens without falling back to plain P96/CGX/AGA
+in the `--time` log; (2) confirm video actually displays, at both native and
+non-native window sizes, windowed and fullscreen, and after a browser-driven
+resolution change (live HLS); (3) confirm the `--time`/`g_display_want_time`
+log's `p96pip: opened ... overlay` line reports "hardware
+(PIPT_VideoWindow)" rather than falling back to "software
+(PIPT_MemoryWindow)", and whether that measurably helps CPU-bound H.264
+decode the way it did for the reporting user's underlying complaint; (4) the
+two GUI fixes above, each on its own edition.
+
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4

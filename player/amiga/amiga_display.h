@@ -45,6 +45,18 @@ void display_set_force_aga(int on);
  * effect if display_set_force_aga() is also on. */
 void display_set_force_p96(int on);
 
+/* Picasso96 "PIP" (Picture-In-Picture) overlay backend: requests
+ * P96PIP_Type=PIPT_VideoWindow (real hardware overlay, falling back to
+ * PIPT_MemoryWindow if the board/driver refuses) instead of P96's own
+ * direct screen-bitmap lock. Implies display_set_force_p96(1) - there is no
+ * separate "--p96" flag needed alongside this one. Unlike P96, this does
+ * NOT require --fullscreen: the PIP writes into its own dedicated source
+ * bitmap rather than the shared screen bitmap, so there is no equivalent of
+ * P96's "unclipped direct writes corrupt sibling windows" hazard - see
+ * amiga/display_p96pip.c's file header for the full design rationale and
+ * its current, real-hardware-unverified status. */
+void display_set_p96_overlay(int on);
+
 /* Planar colour mode: 0 = indexed dither (256 colours on AGA, 32 on
  * OCS/ECS), 6 = HAM6 on any chipset, 8 = HAM8 on AGA. A non-zero HAM depth
  * forces the native planar backend. */
