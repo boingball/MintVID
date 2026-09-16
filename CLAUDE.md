@@ -2429,6 +2429,77 @@ passes unchanged. Needs a real-hardware pass to confirm: the P96-first
 default on an actual RTG boot, and that settings genuinely survive a
 relaunch (and a reboot) in both GUI editions.
 
+## 720p H.264 decode investigation (WinUAE)
+A user report opening the next round of work: 720p H.264 on WinUAE
+(68040, JIT, "full speed" - no artificial CPU throttling) decodes at a
+consistent ~50% of the throughput needed for real time, both for a local
+file and for YouTube (where it additionally buffers/freezes) - not
+occasional stutter, a steady half-speed ceiling. That the local-file case
+shows the identical ratio rules out anything HLS/live-fetch-specific
+(buffering, live-resync, reconnect) as the cause: this is the core H.264
+decode path itself, on this specific emulated setup.
+
+**"JIT, full speed" changes what's plausible here versus every previous
+68060-hardware performance note in this file.** WinUAE's JIT compiles 68k
+code to native host instructions rather than interpreting it, so raw ALU
+throughput should be very fast unless something forces a fallback to
+interpretation for specific instruction sequences (self-modifying code,
+certain addressing modes, chip-RAM access patterns) - a real, different
+failure mode from "a real 68040/68060 is just slow at this," and one this
+project has no way to confirm or measure directly: there is no WinUAE
+instance on this dev host, and qemu-m68k (an interpreter itself, and
+explicitly documented elsewhere in this file as a poor proxy for
+cache/memory-bound behaviour) cannot stand in for a JIT's own instruction
+coverage either. A suspiciously clean ~2x ratio, rather than a vaguer
+"kind of slow," is also more consistent with something structural than
+with simply needing more raw cycles.
+
+Checked what could be confirmed from source alone before speculating
+further: `Makefile.amiga`'s `CPU=68040` build already compiles with
+`MR_M68K_ASM=1` and the 68040-class hand-tuned kernels
+(`ih264_m68k_interp.S` etc., the same ones `MintVID040` - the documented
+PiStorm/Emu68 recommendation - already uses), so this is not a case of
+the wrong CPU tier or a missing asm path being silently selected for
+68040 specifically.
+
+**Added `M68K_ASM=0` to `Makefile.amiga`** (`make -f Makefile.amiga
+mrplay CPU=68040 M68K_ASM=0`), mirroring the existing `STAGE_PROFILE`/
+`CABAC_PROFILE` opt-in pattern: forces every `#if defined(MR_M68K_ASM)`
+site in `core/`/`vendor/libavc_port/` onto its portable C path instead of
+the hand-tuned `.S` kernel, on an otherwise normal build. This is a
+diagnostic, not a fix - it directly tests the JIT-instruction-coverage
+hypothesis above without needing WinUAE access from this dev host: if a
+WinUAE run with `M68K_ASM=0` decodes at the *same* half-speed ratio, the
+hand-tuned asm isn't the differentiator and the bottleneck is elsewhere
+(CABAC/coefficient parsing, the scheduler, something codec-agnostic); if
+it's reliably slower still, the asm is doing real work here as intended
+and the investigation moves to *which* kernel and why it isn't buying
+enough; if it's actually *faster*, that would directly confirm the asm is
+JIT-hostile on this specific host. Verified the flag itself does what it
+claims: `MR_M68K_ASM` is checked via `#if defined(...)` everywhere (not
+`#if MR_M68K_ASM`), so `-DMR_M68K_ASM=0` would not have disabled anything
+- confirmed with a grep across every call site - which is why
+`M68K_ASM_FLAGS` omits the `-D` entirely rather than defining it to 0,
+verified via `make -f Makefile.amiga -n mrplay CPU=68040
+AMIGA_GCC=/fake/m68k-amigaos-gcc` dry-run output showing `-DMR_M68K_ASM=1`
+present by default and absent under `M68K_ASM=0`. `make check` (host
+build, `MR_M68K_ASM` never defined there either way) passes unchanged -
+this only touches `Makefile.amiga`'s own build-line composition.
+
+The other concrete next step, not yet taken since the user chose to
+describe the symptom rather than gather it first: a
+`STAGE_PROFILE=1 CABAC_PROFILE=1` capture (see the H.264 CABAC notes
+section above) from the actual laggy WinUAE run, which would show
+directly whether the ~2x cost is inside libavc's own reported
+mc=/deblock=/recon=/intra=/bin=/coeff=/mvpred= breakdown (real algorithmic
+cost, further profiling tells you where) or split between that and the
+wall-clock vdecode=/libavc-core= gap (overhead in the wrapper/scheduler
+outside libavc) - exactly the same unresolved "still open" question a
+real-hardware 68060/50 report already raised earlier in this file, now
+recurring on a completely different platform (JIT-emulated 68040), which
+makes it more likely to be a real, codec/scheduler-level cost than
+something specific to one CPU tier's silicon quirks.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
