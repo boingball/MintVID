@@ -3610,6 +3610,116 @@ or simply CPU saturation from full-screen HAM8 encode+C2P+blit at every
 frame, not a trap at all) and the Kalms kernel is cleared. Either result
 is more useful than a guessed patch, and neither needs a rebuild.
 
+## Chasing an actual speedup from the known hot buckets: a real coverage gap closed, no free lunch found
+Direct follow-up to the whole CABAC-profiling chain above, now with a
+mandate to act on it rather than keep measuring: "you know the hot
+buckets, get working." Two things were checked with intent to find a
+concrete fix, in order of expected payoff, given the corrected plain
+`--time` finding above ruled out "it's all profiling overhead" as the
+answer.
+
+**First, and highest-leverage given precedent: does the per-macroblock
+CABAC hot path hide the same class of bug the per-slice divmod fix
+already found and fixed in `boingball/libavc`?** That fix (see
+`vendor/libavc_port/ih264_m68k_divmod.h`, already merged into this
+repo's pinned submodule commit `cb8d7c3` - confirmed via
+`git merge-base HEAD <that-branch>`, it was not sitting unmerged) found
+GCC fusing an ordinary `%`/`/` pair against a runtime divisor into the
+68060's trap-prone extended-dividend `DIVSL.L`/`DIVUL.L` at five
+per-*slice* call sites - real, since a trap into 68060.lib's software
+emulation is drastically more expensive than the instruction it replaces,
+and per-slice still means at least once per frame. The natural next
+question: does the same fusion happen anywhere in the per-*macroblock*
+loop, which runs thousands of times more often per frame than the
+per-slice sites did? `tests/check_m68060_asm.sh`'s own disassembly gate
+had never actually checked - its H.264 `vendor/libavc` coverage was
+scoped to exactly the four already-fixed per-slice symbols, never the
+CABAC per-MB functions this session's whole `mbinfo_us`/`mbparse_us`/
+`intramb_us`/`terminate_us`/`mbtype_us` chain had been measuring as real
+cost on real hardware for weeks.
+
+Built and scanned for real (not just grepped) with the project's own
+`tests/scan_m68060_forbidden.py`, at the real `-mcpu=68060` production
+flags: `ih264d_parse_pmb_cabac`/`ih264d_update_nnz_for_skipmb`/
+`ih264d_parse_inter_slice_data_cabac` (`ih264d_parse_pslice.c`),
+`ih264d_parse_bmb_cabac` (`ih264d_parse_bslice.c`),
+`ih264d_parse_imb_cabac` (`ih264d_parse_islice.c`),
+`ih264d_get_mb_info_cabac_nonmbaff` (`ih264d_mb_utils.c`),
+`ih264d_parse_mb_type_cabac`/`ih264d_parse_mb_type_intra_cabac`
+(`ih264d_parse_mb_header.c`), `ih264d_decode_bin`/`ih264d_decode_bins`/
+`ih264d_decode_terminate` (`ih264d_cabac.c`),
+`ih264d_parse_residual4x4_cabac`/`ih264d_read_coeff4x4_cabac`
+(`ih264d_parse_cabac.c`), and `ih264d_mvpred_nonmbaff`/
+`ih264d_mvpred_nonmbaffB` (`ih264d_mvpred.c`) - every function behind
+every named CABAC-profile bucket in this whole chain, in one pass.
+**Clean.** No extended `MULS.L`/`MULU.L`, no extended-dividend divide, no
+`__muldi3`/`__divdi3`/`__udivdi3` reference anywhere in this set. A real,
+useful negative result, not a shrug: the leading hypothesis for "one more
+big win like the per-slice fix" is ruled out with actual evidence, not
+assumed clean because it looked fine in source (this is precisely the
+distinction the per-slice fix itself proved matters - a source read alone
+would have missed it too).
+
+Wired into `tests/check_m68060_asm.sh` permanently rather than left as a
+one-off manual check - a new build+scan block covering all eight files
+above, documented in the script's own header alongside the existing
+per-slice coverage. This closes a real, previously-undocumented gap in
+this project's own audit methodology (every hand-asm `.S` file has always
+been scanned; the vendored C this session's whole profiling investment
+was measuring never had been) for free going forward - any future libavc
+bump or MintVID-side change to this hot path gets checked automatically,
+the same safety net every other 68060-specific claim in this file already
+relies on. Verified via the full `tests/run_m68k_check.sh` (including
+this expanded gate) passing end to end, unchanged worst-frame MAE on
+every H.264 fixture including the `CABAC_PROFILE=1` build.
+
+**Second: hand-reading the two largest named C-level dispatch buckets
+(`mbtype_us` 11.1%, `mbinfo_us` 7.3%) and the previously-unmeasured
+skip-MB bookkeeping for the kind of waste the weighted-pred fix found -
+a computation happening unconditionally when it is provably almost
+always unnecessary.** `ih264d_parse_mb_type_cabac()`
+(`ih264d_parse_mb_header.c`) is a straight binary-tree decode of the
+`mb_type` syntax element per spec table 9-37 - a handful of
+`ih264d_decode_bin()`/`ih264d_decode_bins()` calls and integer
+arithmetic on their results, nothing computed that isn't immediately used
+to pick the next branch. `ih264d_get_mb_info_cabac_nonmbaff()`
+(`ih264d_mb_utils.c`) is neighbour-availability mask arithmetic and
+struct-pointer bookkeeping - also inherently O(1) per call, nothing
+speculative or redundant. The skip-MB bookkeeping flagged as unmeasured
+several sections above (`ih264d_parse_inter_slice_data_cabac`'s own
+`if(u4_mb_skip)` arm, `ih264d_parse_pslice.c` lines ~918-949) is the same
+shape: a `memset`, two 16-byte context-reset writes, a partition-info
+struct write, and the `ih264d_update_nnz_for_skipmb()` call - real,
+necessary CABAC neighbour-context state for the *next* macroblock's
+decode, not overhead a smarter check could skip. None of the three reads
+like the weighted-pred case, where an expensive path ran on a capability
+bit instead of an actual-need check; there is no equivalent "is this
+really necessary" question with an obviously-usually-false answer sitting
+in any of them.
+
+**Conclusion, stated plainly rather than papered over with a change for
+its own sake: there is no algorithmic free lunch left in this hot path,
+and no hidden 68060 trap either - both real possibilities, both checked
+with actual evidence, both ruled out.** The remaining ~28-42% unattributed
+cost (see the terminate_us/mbtype_us retest's own methodological caveat
+about double-subtraction inflating that estimate) is very likely the
+accumulated real cost of a great many small, individually-necessary
+operations spread across thousands of per-MB calls a frame, not a single
+fixable hotspot - consistent with every named bucket already checking out
+as lean, purposeful C. The one lever this investigation *has* established,
+with real measurement now in hand to justify it (unlike when the CABAC
+notes section first raised and set aside the idea): hand-writing 68k
+assembly for the CABAC per-MB dispatch functions themselves, the same way
+`ih264_m68k_cabac.S` already exists for `ih264d_decode_bin`. That is a
+real, bounded, but substantial undertaking - multiple ~100-300 line
+functions, each needing the same register-scheduling care and bit-exact
+differential fuzzing (`mr_h264_m68k_check`-style) every other hand kernel
+in this tree got - not something to start speculatively inside a
+same-session "get working" ask. Deliberately not begun here; a decision
+for the user to make explicitly, with this section's own honest
+"no shortcut found" as the reason it would be starting from scratch,
+not from a known 2x-in-a-day win the way the per-slice divmod fix was.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.

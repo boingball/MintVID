@@ -60,6 +60,30 @@
 #      tier). Whole-object scanning any of ih264d_parse_pslice.c/
 #      ih264d_sei.c/ih264d_utils.c would flag these on purpose-documented,
 #      not-worth-it findings and make the gate a permanent false alarm.
+#      A second, separate --symbols scan below covers the *per-macroblock*
+#      CABAC hot path this player's own mbinfo_us/mbparse_us/intramb_us/
+#      terminate_us/mbtype_us profiling (CLAUDE.md's whole "A fourth
+#      CABAC-profile bucket after all" chain) measured as real cost on a
+#      real A1200 - the one place the same class of DIVSL.L/DIVUL.L trap
+#      the per-slice fix above found could plausibly still be hiding,
+#      since it was never itself scanned (only OUR asm replacements for
+#      pieces of it were, via check #3): ih264d_parse_pmb_cabac/
+#      ih264d_update_nnz_for_skipmb/ih264d_parse_inter_slice_data_cabac
+#      (ih264d_parse_pslice.c), ih264d_parse_bmb_cabac
+#      (ih264d_parse_bslice.c), ih264d_parse_imb_cabac
+#      (ih264d_parse_islice.c), ih264d_get_mb_info_cabac_nonmbaff
+#      (ih264d_mb_utils.c), ih264d_parse_mb_type_cabac/
+#      ih264d_parse_mb_type_intra_cabac (ih264d_parse_mb_header.c),
+#      ih264d_decode_bin/ih264d_decode_bins/ih264d_decode_terminate
+#      (ih264d_cabac.c - dead code on a real m68k link since every call
+#      site is --wrapped to the hand-asm version, but still built and
+#      scanned here for completeness and because host/68060-fallback
+#      builds do call it), ih264d_parse_residual4x4_cabac/
+#      ih264d_read_coeff4x4_cabac (ih264d_parse_cabac.c), and
+#      ih264d_mvpred_nonmbaff/ih264d_mvpred_nonmbaffB (ih264d_mvpred.c).
+#      Clean on first scan - no hidden trap found here, unlike the
+#      per-slice case - but the gap in coverage was real and is now
+#      closed permanently rather than left as a one-off manual check.
 #   5. AAC: MintAMP's decoders/aac/*.c (excluding sbr*.c, which this
 #      player's build excludes too), built with the real AACASM=1
 #      production flags (-include audio/mr_aac_m68k_config.h). pns.c and
@@ -160,6 +184,16 @@ $M68K_CC $H264_FLAGS -c -o "$BUILD/h264/dec_parse_slice.o" "$LIBAVC_ROOT/decoder
 $M68K_CC $H264_FLAGS -c -o "$BUILD/h264/dec_thread_compute_bs.o" "$LIBAVC_ROOT/decoder/ih264d_thread_compute_bs.c"
 $M68K_CC $H264_FLAGS -c -o "$BUILD/h264/dec_thread_parse_decode.o" "$LIBAVC_ROOT/decoder/ih264d_thread_parse_decode.c"
 
+echo "== building H.264 (vendor/libavc itself, the per-macroblock CABAC hot path) at the real 68060 production flags =="
+$M68K_CC $H264_FLAGS -c -o "$BUILD/h264/dec_parse_pslice.o" "$LIBAVC_ROOT/decoder/ih264d_parse_pslice.c"
+$M68K_CC $H264_FLAGS -c -o "$BUILD/h264/dec_parse_bslice.o" "$LIBAVC_ROOT/decoder/ih264d_parse_bslice.c"
+$M68K_CC $H264_FLAGS -c -o "$BUILD/h264/dec_parse_islice.o" "$LIBAVC_ROOT/decoder/ih264d_parse_islice.c"
+$M68K_CC $H264_FLAGS -c -o "$BUILD/h264/dec_mb_utils.o" "$LIBAVC_ROOT/decoder/ih264d_mb_utils.c"
+$M68K_CC $H264_FLAGS -c -o "$BUILD/h264/dec_parse_mb_header.o" "$LIBAVC_ROOT/decoder/ih264d_parse_mb_header.c"
+$M68K_CC $H264_FLAGS -c -o "$BUILD/h264/dec_cabac.o" "$LIBAVC_ROOT/decoder/ih264d_cabac.c"
+$M68K_CC $H264_FLAGS -c -o "$BUILD/h264/dec_parse_cabac.o" "$LIBAVC_ROOT/decoder/ih264d_parse_cabac.c"
+$M68K_CC $H264_FLAGS -c -o "$BUILD/h264/dec_mvpred.o" "$LIBAVC_ROOT/decoder/ih264d_mvpred.c"
+
 echo "== building AAC (vendor/MintAMP/decoders/aac, AACASM=1 production flags) =="
 MINTAMP_ROOT=vendor/MintAMP
 AAC_FLAGS="-mcpu=68060 -std=gnu89 -O3 -fomit-frame-pointer -DAMIGA_M68K \
@@ -201,6 +235,32 @@ python3 tests/scan_m68060_forbidden.py --symbols \
 python3 tests/scan_m68060_forbidden.py --symbols \
     ih264d_decode_slice_thread \
     "$BUILD/h264/dec_thread_parse_decode.o"
+
+echo "== scanning H.264 (vendor/libavc, per-macroblock CABAC hot path) =="
+python3 tests/scan_m68060_forbidden.py --symbols \
+    ih264d_parse_pmb_cabac,ih264d_update_nnz_for_skipmb,ih264d_parse_inter_slice_data_cabac \
+    "$BUILD/h264/dec_parse_pslice.o"
+python3 tests/scan_m68060_forbidden.py --symbols \
+    ih264d_parse_bmb_cabac \
+    "$BUILD/h264/dec_parse_bslice.o"
+python3 tests/scan_m68060_forbidden.py --symbols \
+    ih264d_parse_imb_cabac \
+    "$BUILD/h264/dec_parse_islice.o"
+python3 tests/scan_m68060_forbidden.py --symbols \
+    ih264d_get_mb_info_cabac_nonmbaff \
+    "$BUILD/h264/dec_mb_utils.o"
+python3 tests/scan_m68060_forbidden.py --symbols \
+    ih264d_parse_mb_type_cabac,ih264d_parse_mb_type_intra_cabac \
+    "$BUILD/h264/dec_parse_mb_header.o"
+python3 tests/scan_m68060_forbidden.py --symbols \
+    ih264d_decode_bin,ih264d_decode_bins,ih264d_decode_terminate \
+    "$BUILD/h264/dec_cabac.o"
+python3 tests/scan_m68060_forbidden.py --symbols \
+    ih264d_parse_residual4x4_cabac,ih264d_read_coeff4x4_cabac \
+    "$BUILD/h264/dec_parse_cabac.o"
+python3 tests/scan_m68060_forbidden.py --symbols \
+    ih264d_mvpred_nonmbaff,ih264d_mvpred_nonmbaffB \
+    "$BUILD/h264/dec_mvpred.o"
 
 echo "== scanning AAC (vendor/MintAMP/decoders/aac, whole objects) =="
 python3 tests/scan_m68060_forbidden.py $AAC_OBJS
