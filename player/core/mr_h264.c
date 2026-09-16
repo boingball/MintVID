@@ -828,6 +828,16 @@ static mr_status h264_decode(mr_decoder *dec,
                 s->timing.coeff_count += cabac.coeff_count;
                 s->timing.mvpred_us += cabac.mvpred_us;
                 s->timing.mvpred_count += cabac.mvpred_count;
+                s->timing.mbinfo_us += cabac.mbinfo_us;
+                s->timing.mbinfo_count += cabac.mbinfo_count;
+                s->timing.mbparse_us += cabac.mbparse_us;
+                s->timing.mbparse_count += cabac.mbparse_count;
+                s->timing.intramb_us += cabac.intramb_us;
+                s->timing.intramb_count += cabac.intramb_count;
+                s->timing.terminate_us += cabac.terminate_us;
+                s->timing.terminate_count += cabac.terminate_count;
+                s->timing.mbtype_us += cabac.mbtype_us;
+                s->timing.mbtype_count += cabac.mbtype_count;
             }
             used = sub_out.s_ivd_video_decode_op_t.u4_num_bytes_consumed;
 

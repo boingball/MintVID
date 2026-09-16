@@ -28,6 +28,10 @@ LIBAVC_PORTSRC = $(LIBAVC_PORT)/ih264d_function_selector_port.c \
                  $(LIBAVC_PORT)/ih264_m68k_cabac_coeff.S \
                  $(LIBAVC_PORT)/ih264_m68k_cabac_coeff8x8.S \
                  $(LIBAVC_PORT)/ih264d_parse_cabac_coeff_port.c \
+                 $(LIBAVC_PORT)/ih264d_mbinfo_wrap_port.c \
+                 $(LIBAVC_PORT)/ih264d_intramb_wrap_port.c \
+                 $(LIBAVC_PORT)/ih264d_terminate_wrap_port.c \
+                 $(LIBAVC_PORT)/ih264d_mbtype_wrap_port.c \
                  $(LIBAVC_PORT)/ih264_m68k_iquant_itrans_recon.S \
                  $(LIBAVC_PORT)/ih264_m68k_intra_pred.S \
                  $(LIBAVC_PORT)/ih264_m68k_bs.S \
@@ -54,3 +58,22 @@ LIBAVC_M68K_LDFLAGS = -Wl,--wrap=ih264d_decode_bin \
                       -Wl,--wrap=ih264d_parse_residual4x4_cabac \
                       -Wl,--wrap=ih264d_read_coeff4x4_cabac \
                       -Wl,--wrap=ih264d_update_qp
+# ih264d_mbinfo_wrap_port.c's __wrap_ih264d_get_mb_info_cabac_nonmbaff,
+# ih264d_intramb_wrap_port.c's __wrap_ih264d_parse_imb_cabac, ih264d_
+# terminate_wrap_port.c's __wrap_ih264d_decode_terminate and ih264d_
+# mbtype_wrap_port.c's __wrap_ih264d_parse_mb_type_cabac only exist under
+# MR_H264_CABAC_PROFILE (unlike every wrap above, which exist
+# unconditionally under MR_M68K_ASM) - all four are pure timing pass-
+# throughs with no asm replacement behind them, so there is nothing to
+# gain from linking any of them into a normal (non-profiling) build, only
+# an unwanted extra call/return layer on a function called on most or all
+# macroblocks. So these --wrap flags are only added when CABAC_PROFILE=1
+# is what actually defined MR_H264_CABAC_PROFILE in the first place (see
+# Makefile.amiga's CABAC_PROFILE_FLAGS) - a normal build links zero bytes
+# of any of these four wrappers.
+ifeq ($(CABAC_PROFILE),1)
+LIBAVC_M68K_LDFLAGS += -Wl,--wrap=ih264d_get_mb_info_cabac_nonmbaff \
+                       -Wl,--wrap=ih264d_parse_imb_cabac \
+                       -Wl,--wrap=ih264d_decode_terminate \
+                       -Wl,--wrap=ih264d_parse_mb_type_cabac
+endif

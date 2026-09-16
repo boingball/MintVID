@@ -544,6 +544,11 @@ typedef struct playback_stats {
     unsigned long h264_intra_max_us;
     uint64_t h264_bin_us, h264_bin_count, h264_coeff_us, h264_coeff_count;
     uint64_t h264_mvpred_us, h264_mvpred_count;
+    uint64_t h264_mbinfo_us, h264_mbinfo_count;
+    uint64_t h264_mbparse_us, h264_mbparse_count;
+    uint64_t h264_intramb_us, h264_intramb_count;
+    uint64_t h264_terminate_us, h264_terminate_count;
+    uint64_t h264_mbtype_us, h264_mbtype_count;
     uint64_t rescue_us;
     unsigned rescue_entries, rescue_packets, rescue_audio_packets;
     unsigned rescue_video_decoded, rescue_video_queued, rescue_video_skipped;
@@ -1253,7 +1258,10 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
          * matter", by comparing it against a rough per-bin instruction-cost
          * estimate. */
         printf("h264 cabac: bin=%lu/%lu us (%lu calls) coeff=%lu/%lu us "
-               "(%lu calls) mvpred=%lu/%lu us (%lu calls)\n",
+               "(%lu calls) mvpred=%lu/%lu us (%lu calls) mbinfo=%lu/%lu us "
+               "(%lu calls) mbparse=%lu/%lu us (%lu calls) intramb=%lu/%lu "
+               "us (%lu calls) terminate=%lu/%lu us (%lu calls) "
+               "mbtype=%lu/%lu us (%lu calls)\n",
                (unsigned long)(st->h264_bin_us / st->decoded),
                st->h264_bin_count
                    ? (unsigned long)(st->h264_bin_us / st->h264_bin_count)
@@ -1268,7 +1276,32 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
                st->h264_mvpred_count
                    ? (unsigned long)(st->h264_mvpred_us / st->h264_mvpred_count)
                    : 0UL,
-               (unsigned long)st->h264_mvpred_count);
+               (unsigned long)st->h264_mvpred_count,
+               (unsigned long)(st->h264_mbinfo_us / st->decoded),
+               st->h264_mbinfo_count
+                   ? (unsigned long)(st->h264_mbinfo_us / st->h264_mbinfo_count)
+                   : 0UL,
+               (unsigned long)st->h264_mbinfo_count,
+               (unsigned long)(st->h264_mbparse_us / st->decoded),
+               st->h264_mbparse_count
+                   ? (unsigned long)(st->h264_mbparse_us / st->h264_mbparse_count)
+                   : 0UL,
+               (unsigned long)st->h264_mbparse_count,
+               (unsigned long)(st->h264_intramb_us / st->decoded),
+               st->h264_intramb_count
+                   ? (unsigned long)(st->h264_intramb_us / st->h264_intramb_count)
+                   : 0UL,
+               (unsigned long)st->h264_intramb_count,
+               (unsigned long)(st->h264_terminate_us / st->decoded),
+               st->h264_terminate_count
+                   ? (unsigned long)(st->h264_terminate_us / st->h264_terminate_count)
+                   : 0UL,
+               (unsigned long)st->h264_terminate_count,
+               (unsigned long)(st->h264_mbtype_us / st->decoded),
+               st->h264_mbtype_count
+                   ? (unsigned long)(st->h264_mbtype_us / st->h264_mbtype_count)
+                   : 0UL,
+               (unsigned long)st->h264_mbtype_count);
 #endif
         if (audio) service_audio_for_display(trace);
     }
@@ -2450,20 +2483,39 @@ int main(int argc, char **argv)
         int budget_frames = frame_bytes ? (int)(budget / frame_bytes) : 0;
         int video_cap = network_source ? VIDEO_QUEUE_NET_DEPTH
                                         : VIDEO_QUEUE_DISK_DEPTH;
-        /* VIDEO_QUEUE_NET_DEPTH above is only a starting default, not a
-         * floor - the budget_frames clamp below can still pull it under 16
-         * on a tight machine (e.g. a large frame size at 720p+). A live HLS
-         * segment fetch can stall for hundreds of ms up to well over a
-         * second (observed on YouTube live - one segment of lookahead is
-         * all the single-TLS-connection design in hls_fetch.c allows), so
-         * 16 frames (~466 ms of cushion at 30fps) is nowhere near enough
-         * headroom on a machine with room to spare, and every stall shows up
-         * as audio-clock drift that compounds until a hard live-resync jump.
-         * Let a healthy RAM budget grow the network queue past that default
-         * instead of requiring an explicit --net-queue for every live
-         * stream; the budget_frames/VIDEO_QUEUE_CAP clamps below still
-         * apply either way. */
-        if (network_source && budget_frames > video_cap)
+        /* VIDEO_QUEUE_NET_DEPTH/VIDEO_QUEUE_DISK_DEPTH above are only
+         * starting defaults, not floors - the budget_frames clamp below can
+         * still pull either under 16 on a tight machine (e.g. a large frame
+         * size at 720p+). A live HLS segment fetch can stall for hundreds of
+         * ms up to well over a second (observed on YouTube live - one
+         * segment of lookahead is all the single-TLS-connection design in
+         * hls_fetch.c allows), so 16 frames (~466 ms of cushion at 30fps) is
+         * nowhere near enough headroom on a machine with room to spare, and
+         * every stall shows up as audio-clock drift that compounds until a
+         * hard live-resync jump.
+         *
+         * A local disk file has no fetch-stall to ride out, but on a real
+         * 68060 a clip whose average decode cost sits right at (or a little
+         * over) one frame period benefits from exactly the same cushion for
+         * a different reason: decode already races ahead to fill the ring
+         * whenever qcount < video_cap (queue_full only gates output, not
+         * decode - see skip_reason_queue_full below), so a bigger ring
+         * banks more of that free head start and rides out per-frame
+         * decode-time variance (an expensive keyframe, a CABAC-heavy P
+         * slice) for longer before falling into the same lockstep
+         * decode-then-present stepping a too-small ring hits immediately.
+         * It cannot fix a clip whose *average* decode cost is steadily
+         * below real time - a bigger buffer only delays that wall, it does
+         * not remove it - but it costs nothing to try, and the RAM is
+         * otherwise idle.
+         *
+         * Let a healthy RAM budget grow the queue past its starting default
+         * for both source kinds instead of requiring an explicit
+         * --net-queue for every live stream (or having no equivalent knob
+         * for disk at all, which is what this file did before) - the
+         * budget_frames/VIDEO_QUEUE_CAP clamps below still apply either
+         * way, so a tight machine is unaffected. */
+        if (budget_frames > video_cap)
             video_cap = budget_frames;
         if (net_queue > 0 && video_cap < net_target) video_cap = net_target;
         if (video_cap < target_depth) video_cap = target_depth;
@@ -3659,6 +3711,16 @@ int main(int argc, char **argv)
                         stats.h264_coeff_count += ht.coeff_count;
                         stats.h264_mvpred_us += ht.mvpred_us;
                         stats.h264_mvpred_count += ht.mvpred_count;
+                        stats.h264_mbinfo_us += ht.mbinfo_us;
+                        stats.h264_mbinfo_count += ht.mbinfo_count;
+                        stats.h264_mbparse_us += ht.mbparse_us;
+                        stats.h264_mbparse_count += ht.mbparse_count;
+                        stats.h264_intramb_us += ht.intramb_us;
+                        stats.h264_intramb_count += ht.intramb_count;
+                        stats.h264_terminate_us += ht.terminate_us;
+                        stats.h264_terminate_count += ht.terminate_count;
+                        stats.h264_mbtype_us += ht.mbtype_us;
+                        stats.h264_mbtype_count += ht.mbtype_count;
                     }
                     if (decode_status == MR_ENOMEM) {
                         printf("h264-decode-oom: packet %lu len=%lu - "

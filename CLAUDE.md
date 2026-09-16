@@ -2429,6 +2429,1398 @@ passes unchanged. Needs a real-hardware pass to confirm: the P96-first
 default on an actual RTG boot, and that settings genuinely survive a
 relaunch (and a reboot) in both GUI editions.
 
+## 720p H.264 decode investigation (WinUAE)
+A user report opening the next round of work: 720p H.264 on WinUAE
+(68040, JIT, "full speed" - no artificial CPU throttling) decodes at a
+consistent ~50% of the throughput needed for real time, both for a local
+file and for YouTube (where it additionally buffers/freezes) - not
+occasional stutter, a steady half-speed ceiling. That the local-file case
+shows the identical ratio rules out anything HLS/live-fetch-specific
+(buffering, live-resync, reconnect) as the cause: this is the core H.264
+decode path itself, on this specific emulated setup.
+
+**"JIT, full speed" changes what's plausible here versus every previous
+68060-hardware performance note in this file.** WinUAE's JIT compiles 68k
+code to native host instructions rather than interpreting it, so raw ALU
+throughput should be very fast unless something forces a fallback to
+interpretation for specific instruction sequences (self-modifying code,
+certain addressing modes, chip-RAM access patterns) - a real, different
+failure mode from "a real 68040/68060 is just slow at this," and one this
+project has no way to confirm or measure directly: there is no WinUAE
+instance on this dev host, and qemu-m68k (an interpreter itself, and
+explicitly documented elsewhere in this file as a poor proxy for
+cache/memory-bound behaviour) cannot stand in for a JIT's own instruction
+coverage either. A suspiciously clean ~2x ratio, rather than a vaguer
+"kind of slow," is also more consistent with something structural than
+with simply needing more raw cycles.
+
+Checked what could be confirmed from source alone before speculating
+further: `Makefile.amiga`'s `CPU=68040` build already compiles with
+`MR_M68K_ASM=1` and the 68040-class hand-tuned kernels
+(`ih264_m68k_interp.S` etc., the same ones `MintVID040` - the documented
+PiStorm/Emu68 recommendation - already uses), so this is not a case of
+the wrong CPU tier or a missing asm path being silently selected for
+68040 specifically.
+
+**Added `M68K_ASM=0` to `Makefile.amiga`** (`make -f Makefile.amiga
+mrplay CPU=68040 M68K_ASM=0`), mirroring the existing `STAGE_PROFILE`/
+`CABAC_PROFILE` opt-in pattern: forces every `#if defined(MR_M68K_ASM)`
+site in `core/`/`vendor/libavc_port/` onto its portable C path instead of
+the hand-tuned `.S` kernel, on an otherwise normal build. This is a
+diagnostic, not a fix - it directly tests the JIT-instruction-coverage
+hypothesis above without needing WinUAE access from this dev host: if a
+WinUAE run with `M68K_ASM=0` decodes at the *same* half-speed ratio, the
+hand-tuned asm isn't the differentiator and the bottleneck is elsewhere
+(CABAC/coefficient parsing, the scheduler, something codec-agnostic); if
+it's reliably slower still, the asm is doing real work here as intended
+and the investigation moves to *which* kernel and why it isn't buying
+enough; if it's actually *faster*, that would directly confirm the asm is
+JIT-hostile on this specific host. Verified the flag itself does what it
+claims: `MR_M68K_ASM` is checked via `#if defined(...)` everywhere (not
+`#if MR_M68K_ASM`), so `-DMR_M68K_ASM=0` would not have disabled anything
+- confirmed with a grep across every call site - which is why
+`M68K_ASM_FLAGS` omits the `-D` entirely rather than defining it to 0,
+verified via `make -f Makefile.amiga -n mrplay CPU=68040
+AMIGA_GCC=/fake/m68k-amigaos-gcc` dry-run output showing `-DMR_M68K_ASM=1`
+present by default and absent under `M68K_ASM=0`. `make check` (host
+build, `MR_M68K_ASM` never defined there either way) passes unchanged -
+this only touches `Makefile.amiga`'s own build-line composition.
+
+The other concrete next step, not yet taken since the user chose to
+describe the symptom rather than gather it first: a
+`STAGE_PROFILE=1 CABAC_PROFILE=1` capture (see the H.264 CABAC notes
+section above) from the actual laggy WinUAE run, which would show
+directly whether the ~2x cost is inside libavc's own reported
+mc=/deblock=/recon=/intra=/bin=/coeff=/mvpred= breakdown (real algorithmic
+cost, further profiling tells you where) or split between that and the
+wall-clock vdecode=/libavc-core= gap (overhead in the wrapper/scheduler
+outside libavc) - exactly the same unresolved "still open" question a
+real-hardware 68060/50 report already raised earlier in this file, now
+recurring on a completely different platform (JIT-emulated 68040), which
+makes it more likely to be a real, codec/scheduler-level cost than
+something specific to one CPU tier's silicon quirks.
+
+## 720p H.264 decode: a real per-macroblock cost, not a decoder-scaling bug
+Follow-up to the WinUAE 720p investigation above. The user's own steer once
+the JIT/asm-hostility angle was on the table: don't chase whether WinUAE's
+JIT accelerates the hand-tuned `.S` kernels well - "if WinUAE can't run our
+ASM good, that's their issue" - instead look for a real, decoder-internal
+cause. The `M68K_ASM=0` `Makefile.amiga` diagnostic from that earlier
+section was reverted outright (the JIT-hostility question it existed to
+answer was explicitly deprioritized, not investigated further) - CFLAGS is
+back to a hardcoded `-DMR_M68K_ASM=1` with no build-time toggle.
+
+**Two measurement pitfalls surfaced before any real finding, both worth
+recording since they'd otherwise mislead a future profiling pass on this
+codebase specifically.**
+
+First: `tests/mr_decode.c`'s `--time` output is only representative of real
+playback when paired with `--h264-yuv`. Without it, every profiled frame
+pays `emit_rgb()`'s RGB24 conversion (`mr_yuv420_to_rgb24()` alone was 36%
+of total instructions in an early host callgrind capture) - but
+`amiga/mrplay.c` already routes essentially every real H.264 display path
+(RTG CGX/P96, and the AGA RGB fallback) through `mr_h264_set_yuv_output()`
+instead, exactly as this file's own "RGB24 round-trip is the expensive
+part" note already established for MPEG-2. The test harness's default output
+mode and real playback's actual output mode had quietly diverged; `--h264-yuv`
+is the flag that puts them back in step, and any future host-side H.264
+profiling on this codebase needs it or the numbers describe a cost nothing
+in `mrplay.c` actually pays.
+
+Second: the existing `STAGE_PROFILE`/`CABAC_PROFILE` clock()-based
+per-primitive breakdown (mc/deblock/recon/intra, bin/coeff/mvpred) is not
+trustworthy under qemu-m68k once macroblock count gets large. At 720p
+(3600 MB/frame, vs. the existing fixture's 48 MB/frame), the reported
+`mc_us + deblock_us + recon_us + intra_us` summed to roughly *13x* the
+enclosing `core_us` span they are nested inside of - physically impossible
+for a real measurement, since core_us wraps the exact call that contains
+all of the others. Removing `CABAC_PROFILE` (dropping ~483,000 clock()
+calls/decode) barely moved the numbers, ruling out CABAC's own call volume
+as the cause. The real explanation: each `clock()` call is a real syscall
+qemu-user has to trap, and that trap cost is roughly constant per call -
+paid twice for the single core_us span, but paid once per MB-level
+primitive call for the nested timers, so at 3600 MB/frame the nested sum is
+dominated by profiling overhead, not real work. Comparing wall time with
+instrumentation on vs. off confirmed this isn't free (76% more wall time,
+mostly `sys` time) even though the *shape* of the distortion (13x) is far
+worse than the wall-time-overhead ratio (1.75x) would suggest on its own.
+Conclusion: this instrumentation is fine for small fixtures (the existing
+128x96 clip) but unusable for judging *relative stage cost* at 720p-class
+macroblock counts; a host callgrind profile (instruction-count based, no
+per-call syscall trap) is the right tool instead, matching exactly how this
+file's own H.264 CABAC notes section already characterized the CABAC/MV-
+prediction split via "a real-hardware trace and a host callgrind profile."
+
+**With both pitfalls avoided, two real, load-bearing findings came out of
+qemu-m68k wall-clock timing and host callgrind profiling of a generated
+1280x720 clip (ad hoc, not checked in - same "not committed" precedent as
+the earlier `mr_h264_set_dynamic_skip()` host probes in this file):**
+
+1. **No algorithmic complexity blow-up.** Real (non-instrumented) qemu-m68k
+   wall time across four resolutions (320x240 through 1280x720, same
+   encode settings) fits a clean `total_us ≈ 3.18ms fixed + 15.8us/MB`
+   linear model (predicted vs. actual differ by well under 1ms across all
+   four points) - macroblock count, not pixel count non-linearly, is what
+   decode cost tracks, exactly as a per-macroblock pipeline should scale.
+   Per-MB cost actually *drops slightly* at 720p vs. the tiny existing
+   fixture (fixed per-frame overhead amortizing over more MBs), the
+   opposite of what a superlinear "decoder limitation" would look like.
+   This directly answers "are we hitting a limitation of the decoder" in
+   the complexity sense: no.
+
+2. **A real, previously undocumented inefficiency: explicit weighted
+   prediction is dispatched from the PPS capability bit, not from whether
+   the slice's actual signalled weights are non-default.**
+   `ih264d_inter_pred.c` sets `u1_wght_pred_type` for P/SP slices straight
+   from `ps_cur_pps->u1_wted_pred_flag`, and for B slices from
+   `u1_wted_bipred_idc` - both are per-PPS/per-slice-type capability
+   flags, set once by the encoder for the whole stream, saying "this
+   stream *may* signal explicit per-reference weights," not "this
+   particular slice's weights are actually non-default." A host callgrind
+   profile of the generated 720p clip (`--h264-yuv`, matching real
+   playback - see above) showed `ih264_weighted_pred_luma`/`_chroma`
+   consuming **~31% of total decode instructions even with zero B-frames**
+   - yet x264's own encoder log for that exact clip reported
+   `Weighted P-Frames: Y:0.0% UV:0.0%`: the encoder never used a non-
+   default weight, but every P-slice inter macroblock still paid the
+   expensive explicit-weight multiply/round/clip path regardless, because
+   `weighted_pred_flag=1` is x264's own default for High-profile P-slices
+   (`weightp=2`, "smart" analysis) independent of whether any block ends
+   up using a non-trivial weight. High profile is the most common H.264
+   profile in real broadcast/streaming encodes, so this is very unlikely
+   to be specific to the synthetic test clip.
+
+   **Fixed in the `vendor/libavc` fork** (`boingball/libavc`, branch
+   `claude/weighted-pred-trivial-skip`, commit `cb8d7c3` - kept off
+   `main` deliberately: `main` had independently diverged with a large,
+   unrelated upstream ARM/encoder/mem_fns sync in the time between
+   branching and finishing this fix, and merging into it would have
+   pulled in changes never validated against this project's own patches
+   - the parent repo's submodule gitlink points straight at the fix
+   commit instead of at `main`, which is a normal, fully-supported way to
+   pin a submodule). `ih264d_parse_pred_weight_table()` (the function that
+   implements `pred_weight_table()` of spec section 7.3.3.2, called
+   exactly when `weighted_pred_flag`/`weighted_bipred_idc==1` requires it)
+   now computes, once per slice, whether every parsed luma/chroma
+   weight/offset across every active reference in every list equals the
+   implicit default (`weight == 1<<log2_denom`, `offset == 0` - the same
+   packed representation the parser already uses for both the explicit and
+   implicit-default cases, so one integer comparison per reference covers
+   both) and stores the result as a new `dec_slice_params_t` field,
+   `u1_wts_ofst_trivial`. `ih264d_inter_pred.c`'s dispatch downgrades
+   `u1_wght_pred_type` to 0 (the cheap default/unweighted path, which
+   already exists and is already used for the genuinely-unweighted case)
+   whenever that flag is set - for P/SP slices unconditionally, and for B
+   slices only when `weighted_bipred_idc==1` (explicit). Implicit weighted
+   bi-prediction (`idc==2`) is deliberately untouched: those weights are
+   derived per-MB from POC distance, never come through
+   `pred_weight_table()` at all, and can be genuinely non-trivial frame to
+   frame - `u1_wts_ofst_trivial` doesn't apply to it and the existing
+   `idc==2` handling is unchanged. The flag can never cause an incorrect
+   downgrade from a stale previous value: `pred_weight_table()` is
+   unconditionally re-parsed (and the flag freshly recomputed) on every
+   single slice where the PPS/idc condition would otherwise set a nonzero
+   `u1_wght_pred_type` in the first place, so by the time the flag is ever
+   consulted it always reflects the current slice.
+
+   Verified bit-exact three ways before trusting it: `make check` (host,
+   full ffmpeg-oracle suite, unchanged worst-frame MAE on every existing
+   H.264 fixture) and `make check-m68k` (real m68k/big-endian under qemu,
+   both the plain and `MR_H264_CABAC_PROFILE=1` builds, unchanged
+   worst-frame MAE) both pass; a direct before/after stash-and-rebuild
+   comparison decoded the generated 720p clip to PPM with the fix
+   reverted and re-applied and diffed the two output directories
+   byte-for-byte - identical. The actual win: a re-profile of the fixed
+   decoder shows `ih264_weighted_pred_luma`/`_chroma` gone entirely from
+   the callgrind top-functions list, **31% fewer total instructions** on
+   the no-B-frame 720p clip and **12% fewer** on the B-frame one (whose
+   dominant weighted-bipred cost there is the untouched `idc==2` implicit
+   case, not the explicit one this fix addresses).
+
+   Not yet confirmed: the real-hardware/WinUAE speedup this predicts.
+   Every number above is host-instruction-count or qemu-m68k wall-clock,
+   proving the fix is correct and that it removes real, measured work -
+   not a 68040/68060 timing claim, per this file's standing qemu-vs-
+   hardware caveat. The original WinUAE "50% of real-time decoding power"
+   report used YouTube Live content, whose actual encoder settings
+   (profile, `weightp`) are unknown from here; if that stream's PPS
+   doesn't set `weighted_pred_flag`/`weighted_bipred_idc==1` at all, this
+   fix buys it nothing, though High profile with default `weightp`
+   settings (as used here) is a common enough encoder default that it is
+   a reasonable first thing to have fixed.
+
+## Local-disk video queue growth (real A1200/68060 report)
+A real-hardware report on the 720p work above's branch, on a genuinely
+different clip than the 720p one: a local H.264 mp4 on an A1200 68060/50
+plays perfectly for the first ~10 frames (a different clip: ~3 seconds),
+then settles into a visible "decode, present, decode, present" stepping
+pattern that never recovers. The user's own read of it, and the right one:
+this is exactly the shape a too-small decode-ahead buffer produces once it
+drains, not a hard freeze or a network symptom (this is a local file, no
+fetch involved at all).
+
+`amiga/mrplay.c` already has the mechanism this needed - it just wasn't
+applied evenly. `video_cap` (the modulus of the `queued_video vq[]` ring -
+see the file's own top-of-file comment block) starts at a small default
+per source kind (`VIDEO_QUEUE_NET_DEPTH`/`VIDEO_QUEUE_DISK_DEPTH`, both 16)
+and decode already races ahead to fill it whenever `qcount < video_cap`
+(`queue_full = qcount >= video_cap` only gates *output* - see
+`skip_reason_queue_full` - it does not pause decode itself), so the ring
+banks a free head start before playback visibly needs it and keeps
+refilling in the background afterward. But the RAM-budget growth logic
+that lets that ring grow past its 16-frame default when the machine has
+room to spare (`budget_frames`, derived from `AvailMem(MEMF_ANY)` minus a
+floor, clamped to `VIDEO_QUEUE_CAP`=48) was gated `if (network_source &&
+...)` - added for a real, different problem (live HLS segment fetch
+stalls, see the Live HLS notes above) but never extended to local disk
+files, which stayed hardcoded at 16 forever regardless of free Fast RAM.
+16 frames is well under a second of cushion at any real frame rate - a
+plausible match for "perfect for a few seconds, then permanent stutter"
+once a clip's average per-frame decode cost sits at or a little past one
+frame period on a real 68060/50 and that thin cushion drains.
+
+Fixed by dropping the `network_source &&` gate - the same `budget_frames`/
+`VIDEO_QUEUE_CAP` growth now applies to disk sources too, with the same
+safety clamps already in place (a RAM-tight machine still gets clamped
+back down; `video_cap` still cannot exceed the fixed 48-slot `vq[]` array).
+This is a pure sizing change - the ring's actual fill/drain/present logic,
+`target_depth` (still 3 for local files, governing only when playback
+*starts*, not how much can bank ahead of it), and every skip/throughput
+decision elsewhere in the file are all untouched. Per-slot RGB/indexed/
+YUV buffers are allocated lazily per slot index the first time the ring
+actually reaches it (`realloc` in the handful of `q->rgb = ...` sites),
+not up front for all 48 array slots, so this costs no memory on a stream
+that never needs the extra depth - it only grows RAM use on a machine that
+both has the room (`budget_frames`) and a clip that actually drains the
+ring that far.
+
+**This cannot fix a clip whose *average* decode cost is steadily below
+real time - only variance and a one-time startup shortfall.** A ring
+buffer trades time, not work: it banks a surplus while decode is briefly
+ahead of the display clock and spends it back during a briefly-behind
+stretch, but if the *long-run average* decode rate never catches back up
+to real time, the surplus can only shrink, never regrow, so any fixed
+buffer size just delays the point where the same steady stutter resumes,
+never removes it. Worth confirming which case this clip is with a
+`--time` trace (the existing `video-queue: cap=... cushion=...` printf,
+already `want_time`-gated, now reports the grown number) rather than
+assuming - if the stutter recurs at a proportionally later point rather
+than going away, that is itself the evidence this is the steady-average
+case, not the variance case, and the real fix is decode-side (per-frame
+profiling, as the 720p section above already does for a different
+symptom), not more buffer.
+
+**A true "decode the whole file ahead, like MintAMP's own decode-then-play
+audio mode" was raised and is not feasible for video on this hardware -
+the RAM math rules it out outright, not a design taste call.** MintAMP's
+audio equivalent works because PCM is tiny (16-bit 44.1kHz stereo is
+~172 KiB/s, so a whole 4-minute track is ~41 MB - a real, affordable
+prebuffer). A decoded *video* frame is the queue's own `frame_bytes` -
+width*height for the AGA indexed path, ~1.5x that for YUV420-indexed,
+3x that for RGB24/RTG - and a 4-minute 360p (640x360) clip at a real H.264
+frame rate is thousands of frames: at 25fps (6000 frames) that is roughly
+1.3 GB indexed, 1.9 GB YUV420-indexed, or 3.9 GB RGB24, held as raw pixels
+simultaneously; even at this project's own lower 12fps test-clip rate
+(2880 frames) that is still ~630 MB / ~950 MB / ~1.85 GB respectively -
+one to several orders of magnitude past any real A1200's Fast RAM, expanded
+or not. The now-larger *rolling* buffer above is the actually-tractable
+version of the same instinct: it banks tens of frames (a few seconds,
+bounded by real free RAM via the same `budget_frames` math this section's
+fix reuses) rather than the whole file, needs no "please wait, decoding"
+startup phase or status-bar notification before the window opens (playback
+already starts as soon as `qcount > 0` - the very first decoded frame -
+and the ring keeps filling in the background from there, exactly as it
+already did before this change, just deeper), and costs proportionally
+bounded RAM instead of gigabytes.
+
+Not yet retested on real hardware - `amiga/mrplay.c` is Amiga-only and can
+only be reviewed on this dev host (see "Validate against ffmpeg" above);
+`make check`/`make check-m68k` are unaffected (neither touches this file).
+Needs the same clip that showed the original report, watching whether the
+smooth opening stretch measurably lengthens (confirms the ring is now
+banking more, whatever the eventual verdict on steady-vs-variance above)
+and whether `--time`'s `video-queue: cap=...` line now reports a
+meaningfully larger `cap=` than 16 on this machine's actual free RAM.
+
+## Default CPU=68060 mrplay build never actually linked MintAMP's polyphase asm
+A real toolchain hit on the first actual attempt to link `mrplay` for
+CPU=68060 with the default `ASM60_GROUPS`, while gathering an
+`STAGE_PROFILE=1 CABAC_PROFILE=1` trace for the 720p/Turbo investigation
+above: `undefined reference to AmigaM68KPolyphaseMonoFast`/
+`MonoFastPolyphaseStride4_Amiga_m68k`/dozens more, all from
+`build/vendor/MintAMP/real/polyphase.o` at the final link.
+
+Root cause, found by reading `Makefile.amiga`'s own `ASM60_GROUPS` table
+rather than guessing: `ASM60_FLAGS_poly060`/`ASM60_FLAGS_lowrate060` both
+set `-DAMIGA_M68K_POLYPHASE_68060`, which makes MintAMP's `real/polyphase.c`
+call straight into the hand-asm symbols `real/amiga_m68k_polyphase.S`
+defines - the exact same `.S` file the separate `asm_polyphase` group's own
+`ASM60_SRC_asm_polyphase` entry already points at. But `poly060`/
+`lowrate060` never had a matching `ASM60_SRC_poly060`/`ASM60_SRC_lowrate060`
+entry, so `MINTAMP_ASM_SOURCES` (built only from the groups actually present
+in `ASM60_GROUPS`) never pulled that file in for the *default*
+`ASM60_GROUPS ?= lowrate060 huffman midside planars8`. The C dispatch code
+that calls those symbols was correctly compiled in and reachable - the
+symbols it calls just never existed in the link. `huffman`/`midside`
+(also in the default set) don't need a source-list entry at all - they're
+inline asm inside plain `.c` files already on the normal source list, not a
+separate `.S` - so the gap was specific to the polyphase-family groups, and
+only the one group (`asm_polyphase`) that happens not to be in the default
+selection was ever correctly wired.
+
+This means every default-flags `CPU=68060 mrplay`/`mrplay` release build
+was always going to fail this exact link, on any real `m68k-amigaos-gcc`
+toolchain - it simply hadn't been attempted on one until now. Exactly the
+class of gap this file's "Validate against ffmpeg" section exists to name:
+`make -f Makefile.amiga -n mrplay CPU=68060 AMIGA_GCC=/fake/...` dry-runs
+elsewhere in this file's history checked *which flags* land on the compile
+line, but nothing before this had checked whether the *source file list*
+computed from `ASM60_GROUPS` was actually complete - qemu/ELF can't catch
+this either, since it's a link-time source-selection gap in this Makefile,
+not an instruction-safety or bit-exactness question `check-m68k` covers.
+
+Fixed by adding the two missing entries (`ASM60_SRC_poly060`/
+`ASM60_SRC_lowrate060 := $(MINTAMP_ROOT)/real/amiga_m68k_polyphase.S`,
+mirroring `ASM60_SRC_asm_polyphase`'s existing line). Verified with a
+before/after dry-run diff (`make -f Makefile.amiga -n mrplay CPU=68060
+AMIGA_GCC=/fake/m68k-amigaos-gcc`, grepping for `amiga_m68k_polyphase.S` on
+the resulting compile/link line): 0 occurrences before this fix, 1 after,
+for the exact default `ASM60_GROUPS` a plain `CPU=68060` build uses;
+`CPU=68030` (the separate `MINTAMP_ASM_SOURCES_FULL030` path, untouched by
+this table at all) still shows 1 either way, confirming the fix is scoped
+to the 68060 branch and changes nothing for 68030/040. Not yet confirmed
+by an actual completed real link - the user is rebuilding with this fix on
+their own `m68k-amigaos-gcc 13.2.0` toolchain now.
+
+## Real-hardware STAGE_PROFILE/CABAC_PROFILE capture: YouTube 360p, Turbo, A1200 68060/50
+The first real payoff from the `ASM60_SRC_poly060`/`lowrate060` link fix
+above: a GadTools "Log: on" capture (`RAM:MintVID.log`, `mrplay` rebuilt
+`CPU=68060 STAGE_PROFILE=1 CABAC_PROFILE=1`) of a real YouTube 360p
+(640x360, progressive MP4, H.264/AAC) session, Turbo performance mode,
+92 real decoded frames over the capture. This is the actual real-hardware
+data the "still open" wall-clock-vs-libavc-core question (raised twice
+earlier in this file - the 68060/50 live-TS 256x144 case, and the WinUAE
+720p case) had been waiting on.
+
+**Finding 1: the wall-clock-vs-libavc-core gap from the earlier live-TS
+report does not reproduce here - `core` now tracks `vdecode` almost
+exactly.** Across every sampled report in the capture, `libavc-core`'s own
+self-reported average is 98-99% of `vdecode`'s wall-clock average (e.g.
+one representative sample: `vdecode=968.41 ms`, `libavc-core=956.333 ms`;
+another: `vdecode=1165.56 ms`, `core=1152.5 ms`) - `input`/`rgb-output`
+are both ~0. So for this stream/path, essentially all of the wall-clock
+decode time really is inside libavc's own reported cost, not lost in the
+wrapper/scheduler around it the way the earlier 5-10x-gap live-TS report
+showed. That mystery either doesn't apply to this progressive-MP4 path or
+was specific to that other stream's demux/reassembly shape - it is not a
+general property of this target.
+
+**Finding 2: within libavc's own reported cost, the single largest bucket
+is the one that has never been directly measured - the un-instrumented
+macroblock-header/syntax-element parsing dispatch the H.264 CABAC notes
+section above already named (`pf_parse_inter_mb`, the same-file function-
+pointer-assignment case `--wrap` cannot intercept) - and it is not a small
+remainder, it is roughly half of total decode time.** Computing
+`core - (mc+deblock+recon+intra) - (bin+coeff+mvpred)` from several
+representative samples: 956.3-(119.3+0+111.7+39.0)-(82.0+52.0+26.7) =
+525.7 ms (55% of core); 1152.5-(199.0+0+118.0+32.0)-(81.5+72.0+34.0) =
+616.0 ms (53%); 1057.5-(185.0+0+103.5+50.5)-(81.0+50.5+31.0) = 556.0 ms
+(53%) - consistently 52-55% across the capture, bigger than mc+deblock+
+recon+intra combined (~27-30% of core) and bigger than bin+coeff+mvpred
+combined (~15-18%). `deblock` reads exactly 0 us in every single report -
+direct confirmation that Turbo's all-or-nothing `i4_degrade_pics=4` policy
+(see the H.264 TurboGT retirement section above) really is disabling
+deblocking for every frame on this real target, not just in theory.
+
+**Caveat that has to be stated before either finding above gets used to
+justify real work: this capture pays for both `MR_H264_STAGE_PROFILE` and
+`MR_H264_CABAC_PROFILE` at once, and the CABAC wrapper overhead question
+earlier in this file is not hypothetical - it is exactly what
+`bin_count`/`coeff_count`/`mvpred_count` here show paying for, at real
+volume.** `bin_count` alone runs 3,450-8,196 calls *per single decoded
+frame* in this capture (coeff_count 1,400-3,700, mvpred_count 350-2,600) -
+each a `clock()`-bracketed call under `MR_H264_CABAC_PROFILE`, and mc/
+deblock/recon/intra are separately wrapped under `MR_H264_STAGE_PROFILE`.
+None of that instrumentation cost is free on real hardware, even without
+qemu's syscall-trap-specific inflation (see the qemu-vs-hardware note at
+the top of this file) - a `ReadEClock()`-class timer read still costs real
+cycles, tens of thousands of times per frame. So the *proportions* above
+(core tracks vdecode; the syntax-dispatch remainder dominates within core)
+are trustworthy, structural findings, but the *absolute* numbers in this
+capture - `vdecode` averaging ~1000-1200 ms/frame, `decoded=0.45-0.70 fps`
+throughout the session, the final `timing/92 frames: decode=101817 ms`
+summary (1106.7 ms/frame average, cross-checking the per-report samples
+closely) - almost certainly overstate how slow the real, non-instrumented
+production `mrplay` is on this same clip. Whether that gap is small or
+large is itself unmeasured here; a plain `--time`-only capture (no
+`STAGE_PROFILE`/`CABAC_PROFILE`) on the identical clip/settings is the
+natural next real-hardware data point, to separate "how slow is decode"
+from "where does decode time go" instead of conflating them in one
+capture.
+
+Not yet acted on: the syntax-dispatch bucket dominating decode time on
+real hardware is new information the H.264 CABAC notes section's own
+closing line ("[reimplementing the dispatcher] is not justified just to
+add a diagnostic counter") was written without - now that it is
+structurally the largest cost, not a small unattributed remainder,
+whether it is worth reaching for direct measurement (or a real
+optimisation) is an open question for the next round of this
+investigation, not decided here.
+
+## A fourth CABAC-profile bucket after all: per-MB neighbour-info setup (`mbinfo_us`)
+Direct follow-up to the ~52-55% unattributed remainder found in the real
+A1200 capture above. The CABAC notes section's own "no fourth macroblock
+parsing bucket" reasoning is about one specific function pointer,
+`pf_parse_inter_mb` (the mb_type/cbp/ref_idx/mvd/intra-mode/mb_qp_delta
+syntax dispatch, assigned to `ih264d_parse_pmb_cabac()`/
+`ih264d_parse_bmb_cabac()` in the *same* file that defines them, which is
+exactly why `--wrap` cannot intercept it) - not a blanket claim that every
+remaining per-MB function pointer is equally unreachable. Reading
+`ih264d_parse_pslice.c`'s main per-MB loop
+(`ih264d_parse_pslice_data_cabac()`) turned up a second, structurally
+different function pointer sitting right next to it:
+`dec_struct_t::pf_get_mb_info`, called once for *every* macroblock in a
+slice - skip or not, unlike `pf_parse_inter_mb` which only runs for
+non-skip MBs - to compute neighbour availability and CABAC context
+pointers before the syntax dispatch even begins (`ih264d_get_mb_info_
+cabac_nonmbaff()` in `ih264d_mb_utils.c`).
+
+The key difference from `pf_parse_inter_mb`: `pf_get_mb_info` is
+*assigned* in `ih264d_parse_pslice.c`/`_islice.c`/`_bslice.c`, but
+*defined* in the separate `ih264d_mb_utils.c` - a genuine cross-object
+relocation, the same shape that already lets `--wrap` work for
+`ih264d_decode_bin`/`ih264d_mvpred_nonmbaff`/
+`ih264d_parse_residual4x4_cabac`, not the same-file case `pf_parse_
+inter_mb` fails on. Confirmed by grep before touching anything, not
+assumed from the general pattern. Only the non-MBAFF CABAC variant is
+wrapped (`ih264d_get_mb_info_cabac_nonmbaff`) - this project has no MBAFF
+test content and no CAVLC fixture, mirroring `ih264d_mvpred_dispatch_
+port.c`'s own precedent for leaving MBAFF alone.
+
+`vendor/libavc_port/ih264d_mbinfo_wrap_port.c` is new, and deliberately
+the simplest possible wrap in this whole family: a pure timing pass-
+through via GNU ld's `__real_ih264d_get_mb_info_cabac_nonmbaff` symbol
+(automatically defined for any `--wrap=X` target), not a reimplementation.
+Every other `--wrap` site in this port exists to swap in an m68k asm
+primitive and picked up timing as a side benefit; this one has no asm
+behind it at all - there is nothing to gain from wrapping `pf_get_mb_info`
+outside of measuring it, so `libavc.mk`'s `LIBAVC_M68K_LDFLAGS` only adds
+`-Wl,--wrap=ih264d_get_mb_info_cabac_nonmbaff` when `CABAC_PROFILE=1` is
+what defined `MR_H264_CABAC_PROFILE` in the first place, unlike the
+always-on wraps for bin/mvpred/coeff/update_qp. A normal playback build
+never links this symbol at all - zero cost, not even an extra call/return,
+matching this file's own repeated caution (the reverted `__wrap_
+ih264d_decode_bin` C-trampoline saga) about not paying for an unwanted
+call layer in production. Verified with a before/after `Makefile.amiga -n`
+dry-run diff: the `--wrap` flag is present exactly once under
+`CABAC_PROFILE=1` and absent entirely by default.
+
+New `mbinfo_us`/`mbinfo_count` bucket wired through the same path as
+bin/coeff/mvpred: `ih264d_cabac_profile.h`/`.c` (fourth accumulator),
+`core/mr_h264.h`/`.c` (`mr_h264_timing`, accumulated in the same
+`s->timing_enabled` block as the other three), `amiga/mrplay.c`
+(`playback_stats.h264_mbinfo_us/count`, accumulated alongside the other
+three, added to the `"h264 cabac:"` printf line). One small, honestly
+documented overlap (see `ih264d_cabac_profile.h`'s updated header): when
+the current MB is a P/B-skip run, `ih264d_get_mb_info_cabac_nonmbaff()`
+decodes the one `mb_skip_flag` CABAC bin inline - already counted under
+`bin_us` too - so `mbinfo_us` is not perfectly disjoint from `bin_us` the
+way bin/coeff/mvpred are from each other and from it. One bin's cost is
+negligible next to the rest of the function, so this does not meaningfully
+inflate the reported total, but it is a real, small double-count worth
+stating rather than silently claiming perfect additivity.
+
+No new bit-exactness test was written, because there is nothing new to
+prove bit-exact: the wrap changes no behaviour by construction (a pass-
+through to the real, unmodified vendored function, not a rewrite).
+Correctness of the *wiring* - the wrap fires, with the real function's
+return value and every side effect on `ps_dec`/`ps_cur_mb_info` intact -
+is exactly what the existing `mr_decode_cabac_profile.m68k` conformance
+run already proves: `tests/run_m68k_check.sh` now also links
+`-Wl,--wrap=ih264d_get_mb_info_cabac_nonmbaff` into that one build
+(`vendor/libavc_port/ih264d_mbinfo_wrap_port.c` added to its `LIBAVC_SRC`
+list too), and the H.264 High Profile fixture decoded through it at
+worst-frame MAE=0.705 - identical to the same clip decoded through the
+default (non-profiling) build with no `--wrap` on this symbol at all.
+`make check` (host, where `MR_H264_CABAC_PROFILE` is never defined and
+the new file compiles to an empty translation unit, same as every other
+port file guarded this way) passes unchanged. `tests/check_m68060_asm.sh`
+also builds and scans this file alongside the rest of `vendor/libavc_port`
+at real production flags (where it is empty and contributes nothing to
+scan, since `CABAC_PROFILE` is off there) - added for consistency with
+every other port file in that list, not because it currently has anything
+to check.
+
+Not yet done: an actual real-hardware `CABAC_PROFILE=1 STAGE_PROFILE=1`
+retest with this new bucket, to see how large `mbinfo_us` actually is
+against the ~52-55% remainder the previous A1200 capture measured before
+this bucket existed - the whole point of adding it. If `mbinfo_us` turns
+out to explain most of that remainder, `ih264d_get_mb_info_cabac_
+nonmbaff()`'s own ~90-line body (read in full while tracing this - see
+`ih264d_mb_utils.c`) is portable C with no obvious wasted work at a glance
+(neighbour-mask arithmetic, a few pointer/struct-field writes, one
+conditional CABAC bin for skip runs) - a real optimisation there, if one
+exists, is a separate follow-up from this measurement change, not
+something to guess at without the retest's numbers in hand.
+
+## mbinfo_us retest: real but modest - the syntax dispatch is still the dominant unmeasured cost
+The real-hardware retest the previous section asked for: a fresh
+`CPU=68060 STAGE_PROFILE=1 CABAC_PROFILE=1` GadTools Log capture, same
+setup as before (YouTube 360p progressive MP4, Turbo, A1200 68060/50,
+this time 114 decoded frames / 54 paired `h264 stages:`+`h264 cabac:`
+reports - a larger sample than the earlier 3-sample-by-hand estimate).
+Parsed and averaged all 54 reports (not eyeballed) as a fraction of
+`libavc-core`:
+
+| bucket | avg % of core | range |
+|---|---|---|
+| mc | 13.8% | 0.6-21.2% |
+| recon | 11.2% | 6.5-23.8% |
+| intra | 3.9% | 0.3-12.7% |
+| deblock | 0.0% | (Turbo disables it - unchanged from before) |
+| bin | 7.2% | 3.3-8.7% |
+| coeff | 5.4% | 4.3-7.8% |
+| mvpred | 2.4% | 0.1-4.1% |
+| **mbinfo** | **8.2%** | **4.1-9.7%** |
+| **remainder** | **47.8%** | **44.3-51.4%** |
+
+`mbinfo_us` is real - a consistent ~8% of total decode time, comparable in
+size to `bin_us` and bigger than `mvpred_us` - so `pf_get_mb_info` was
+genuinely worth measuring, not a rounding error. But it does not explain
+the earlier ~52-55% remainder the way the "if `mbinfo_us` turns out to
+explain most of that remainder" note above was hedging: carving ~8 points
+out of that ~55% (the same reports, same clip, same performance mode)
+leaves the remainder at ~48% - `55 - 8 ≈ 48`, exactly consistent with
+`mbinfo_us` being newly-separated-out from what used to be lumped into the
+remainder, not with it having been most of that remainder. `pf_parse_
+inter_mb` - the mb_type/cbp/ref_idx/mvd/intra-mode/mb_qp_delta syntax
+dispatch itself, still the one genuinely unwrap-able function pointer in
+this whole chain (same-file assignment, see the CABAC notes section above)
+- remains the single largest cost in H.264 decode on this real target by a
+wide margin: bigger than mc+recon+intra combined (~29%), bigger than
+bin+coeff+mvpred+mbinfo combined (~23%), and roughly double the next
+largest named bucket (`mc` at 13.8%).
+
+This closes out the "if mbinfo turns out to explain most of that
+remainder" branch from the previous section with a real answer (no, not
+most of it) rather than leaving it open, and reconfirms - now with actual
+per-bucket real-hardware proportions instead of a single unattributed
+number - the CABAC notes section's own conclusion that reaching for direct
+measurement of `pf_parse_inter_mb` itself (which needs reimplementing the
+~200-line dispatcher, the same shape of fix already applied for `--wrap`-
+reachable functions like `ih264d_mvpred_dispatch_port.c`) is the only way
+to attribute the remaining ~48% further, not something derivable from
+wrapping more adjacent function pointers - `pf_get_mb_info` was the one
+other genuinely wrap-able per-MB pointer in the whole call graph, and it
+has now been tried.
+
+Also visible in this capture, unrelated to the mbinfo question but worth
+recording: `decoded`/`presented` stayed at 0.5-0.9 fps throughout (target
+25 fps) and `hw-starvations` climbed to 143 by the session's end (114
+frames, `timing/114 frames: decode=132208 ms` - 1160 ms/frame average) -
+this specific test run was plain Turbo with no Skip Frames/dynamic-skip
+and no `--throughput` override visible in the log, so it is not a
+regression report, just confirmation that a 360p YouTube stream is still
+nowhere near real-time on this target under Turbo alone, consistent with
+every other 360p/A1200 capture already on record in this file.
+
+## Reaching pf_parse_inter_mb after all: a struct-field swap, not `--wrap`
+Direct follow-up to "the syntax dispatch is still the dominant unmeasured
+cost" above - the user's own call once that was clear: reimplement
+`ih264d_parse_pmb_cabac()`/`ih264d_parse_bmb_cabac()` and go after the
+real number, not just the derived one.
+
+`--wrap` was re-confirmed a dead end before trying anything else, this
+time by actually enumerating every reference to both symbols across the
+whole vendored tree (`grep -rn`), not just re-trusting the earlier finding
+by assumption: both functions are declared in `ih264d_parse_islice.h` and
+referenced from `vendor/libavc/decoder/mvc/`/`svc/` (unused - `LIBAVC_
+DECODER`'s wildcard is non-recursive, those subdirectories are never
+compiled here), but every reference in the *actual* compiled source is
+exactly the same-file shape already established: defined and assigned to
+`ps_dec->pf_parse_inter_mb` both inside `ih264d_parse_pslice.c` (for
+`ih264d_parse_pmb_cabac`) and both inside `ih264d_parse_bslice.c` (for
+`ih264d_parse_bmb_cabac`). A tempting-looking escape hatch was checked and
+rejected: `ih264d_parse_inter_slice_data_cabac` (the per-MB loop function
+one level up, which is what actually calls `pf_parse_inter_mb`) *is*
+referenced cross-file - defined in `ih264d_parse_pslice.c` but also
+assigned to `ps_dec->pf_parse_inter_slice` from `ih264d_parse_bslice.c` -
+but P slices assign it from *within* `ih264d_parse_pslice.c` itself (same
+file, same dead end), and P slices are the dominant, non-skipped cost
+under Turbo (B is skip-decoded - see the H.264 CABAC notes section), so
+even a successful wrap there would have measured nothing for the case that
+actually matters.
+
+A force-included preprocessor rename (`vendor/libavc_port/compat.h`
+already does exactly this for one libc symbol - `#define strnlen
+mr_libavc_strnlen` - applied via `-include compat.h` on every `LIBAVC_SRC`
+file) was considered and rejected too, for a sharper reason than "seems
+risky": it cannot work *in principle* for this specific case. A `#define
+ih264d_parse_pmb_cabac ih264d_parse_pmb_cabac_vendored` would rename
+*every* textual occurrence of that identifier in the whole translation
+unit uniformly - both the definition *and* the same-file assignment that
+was supposed to keep pointing at "the real one" so our replacement could
+take over the public name. There is no way to select "rename only the
+definition, leave that one other reference alone" via a macro that's
+already active for the entire file by the time either line is
+preprocessed, without editing `ih264d_parse_pslice.c` itself to `#undef`
+between them - forbidden, and pointless anyway since the same problem
+would recur for `ih264d_parse_bmb_cabac` in `ih264d_parse_bslice.c`.
+
+**The mechanism that actually works reaches in from outside the same-file
+relocation problem entirely, using infrastructure already built for
+`mbinfo_us`.** `__wrap_ih264d_get_mb_info_cabac_nonmbaff()` (`ih264d_
+mbinfo_wrap_port.c`) already runs, with a live `dec_struct_t*`, on *every*
+macroblock - skip or not - strictly *before* that same macroblock's
+`ps_dec->pf_parse_inter_mb` is looked up and called (confirmed by reading
+the per-MB loop in `ih264d_parse_pslice_data_cabac()`: `pf_get_mb_info()`
+runs first each iteration, `pf_parse_inter_mb()` - for non-skip MBs only -
+after). So instead of trying to intercept libavc's own address-of
+assignment, the mbinfo wrapper now *also* does a plain C struct-field
+swap, one step later: capture whatever real function `ps_dec->pf_parse_
+inter_mb` currently holds (freshly reassigned by every slice's own header
+parse - P slices get `ih264d_parse_pmb_cabac`, B get `ih264d_parse_bmb_
+cabac`) into a static, then overwrite the field with a local timing
+wrapper. No linker trick, no relocation, no vendored-file edit - just a
+normal write to a struct field the vendored code itself exposes and
+reassigns. The very next call through that field - this MB or a later one
+in the same slice - runs the wrapper, times the call through to whatever
+was captured, and is otherwise fully transparent.
+
+Idempotent by construction: the swap only fires when `ps_dec->pf_parse_
+inter_mb != mr_wrap_parse_inter_mb` - true exactly once per slice boundary
+(a fresh real P/B assignment), false for every other MB in that same
+slice (the field already holds the wrapper, so nothing is rewritten,
+and there is no risk of the wrapper capturing *itself* and recursing).
+Handles P/B intermixing and any number of slices per picture for free,
+since each slice's own header parse naturally re-triggers the capture on
+the very next macroblock. Only the non-MBAFF CABAC path is covered -
+same "no MBAFF/CAVLC test content, no verified primitive to compare
+against" precedent `ih264d_mvpred_dispatch_port.c` already set - so a
+non-CABAC or MBAFF slice's `pf_parse_inter_mb` runs completely unwrapped
+and unmeasured, never incorrectly.
+
+New `mbparse_us`/`mbparse_count` bucket (`ih264d_cabac_profile.h`/`.c`,
+`core/mr_h264.h`/`.c`, `amiga/mrplay.c`'s `"h264 cabac:"` line) is
+deliberately documented as *not* a clean fifth additive bucket the way
+bin/coeff/mvpred/mbinfo are: `pf_parse_inter_mb` itself calls `ih264d_
+decode_bin()` (bin_us), `ih264d_parse_residual4x4_cabac()` (coeff_us) and
+the mv-predictor dispatch (mvpred_us), so `mbparse_us` necessarily
+contains all three, on top of whatever previously-unmeasured C-level glue
+exists between them (the partition loops, sub_mb_type/ref_idx/CBP/
+transform8x8-flag/mb_qp_delta bookkeeping `ih264d_parse_pmb_cabac()`'s own
+body is full of - see the H.264 CABAC notes section's summary of that
+function). That overlap is the entire point, not a flaw: `mbparse_us`,
+summed over a frame, is a *direct* wall-clock measurement of the same
+quantity `core_us - mc - deblock - recon - intra - bin - coeff - mvpred -
+mbinfo` has only ever been able to *derive* by subtraction. A real
+hardware capture with this wired in can finally settle whether that ~48%
+remainder genuinely *is* `pf_parse_inter_mb` (`mbparse_us` tracks it
+closely) or there is further, still-unattributed cost beyond it
+(`mbparse_us` reads meaningfully smaller).
+
+No new bit-exactness test, for the same reason `mbinfo_us` needed none:
+the swap changes no decode behaviour by construction - it is a captured
+function pointer called through unchanged, not a reimplementation of the
+parsing logic itself, so there is nothing new to prove bit-exact. What
+*is* worth verifying is that the wiring doesn't break anything, and it
+doesn't: `make check` (host, `MR_H264_CABAC_PROFILE` never defined there)
+passes unchanged, and `tests/run_m68k_check.sh`'s existing `mr_decode_
+cabac_profile.m68k` build (the one CABAC_PROFILE=1 build in that suite)
+decodes the H.264 High Profile fixture through the *entire* mbinfo+
+mbparse machinery active at once and matches the same worst-frame MAE as
+every other build - the swap logic runs on real m68k/big-endian for every
+single macroblock of a real multi-slice-capable decode and changes
+nothing about the output.
+
+Real "glory" - a concrete fix inside `ih264d_parse_pmb_cabac()`/`ih264d_
+parse_bmb_cabac()`, or confirmation that the whole ~48% really is that one
+function and nothing more - still needs a real-hardware `CABAC_PROFILE=1
+STAGE_PROFILE=1` capture with `mbparse_us` in it, the same way `mbinfo_us`
+itself needed one before its actual size was known. Until that capture
+exists, reimplementing the two dispatchers wholesale (the only way to
+change what they *do*, rather than just measure them) stays exactly as
+unjustified as the CABAC notes section always said it was for a diagnostic
+alone - now with a direct number to decide it by, once that capture lands,
+rather than a subtraction-derived guess.
+
+## mbparse_us retest: the hypothesis was wrong - pf_parse_inter_mb is not the remainder
+The real-hardware retest the previous section asked for landed
+(`CPU=68060 STAGE_PROFILE=1 CABAC_PROFILE=1`, YouTube 360p progressive
+MP4, Turbo, A1200 68060/50, 60 decoded frames / 28 paired `h264 stages:`+
+`h264 cabac:` reports). Parsed and summed all 28 reports (both per-report-
+averaged and totals-weighted, which agreed within 0.2 points):
+
+| bucket | avg % of core |
+|---|---|
+| mc | 10.2% |
+| recon | 13.2% |
+| intra | 4.8% |
+| bin | 7.3% |
+| coeff | 5.4% |
+| mvpred | 1.8% |
+| mbinfo | 8.2% |
+| **mbparse** | **6.2%** (0.2-10.7% range) |
+| remainder before mbparse | 49.0% |
+| **remainder after subtracting mbparse** | **~43%** |
+
+`mbparse_us` came back real but *small* - only ~6% of core_us, and it
+accounts for just ~12% of the ~49% remainder that motivated building it
+(`sum(mbparse)/sum(remainder)` across the whole capture = 12.2%, matching
+the per-report average of 12.6% closely). This directly contradicts the
+working hypothesis stated in the previous section and in `ih264d_mbinfo_
+wrap_port.c`'s own header: `pf_parse_inter_mb` is *not* the dominant
+unattributed cost. After adding a real, direct measurement of it, ~43% of
+total decode time is *still* completely unattributed - barely smaller than
+before mbparse_us existed.
+
+**Why `mbparse_us` reads this small has a concrete, source-grounded
+explanation, not just "the measurement must be wrong": `mbparse_count` is
+consistently a small fraction of `mbinfo_count`.** `mbinfo_count` (5520,
+2760, 1840, ... per frame) counts *every* macroblock via `pf_get_mb_info`,
+skip or not, intra or not. `mbparse_count` (345, 361, 507, 847, ...)
+counts only calls that actually reach `pf_parse_inter_mb` - which, per the
+per-MB loop read while building the mbinfo swap (`ih264d_parse_pslice.c`'s
+`while(!u1_slice_end)` loop), is gated behind *two* conditions: not a skip
+MB, *and* `u1_mb_type < u1_mb_threshold` (P/B-inter, not intra - an intra
+MB embedded in a P/B slice is dispatched elsewhere entirely, never through
+`pf_parse_inter_mb`). Averaged across the capture, `mbparse_count/
+mbinfo_count` = 35.1% (range 1.2-54.5%) - meaning on average **65% of
+macroblocks in this real content are either skip or intra-coded**,
+bypassing `pf_parse_inter_mb` completely. For a fairly static YouTube
+360p talking-head-style clip that is entirely plausible (skip runs are the
+cheapest thing an H.264 encoder can emit for unchanged background), and it
+means the earlier ~48-55% remainder was never really "the cost of parsing
+inter macroblocks" - most macroblocks in this stream aren't going through
+that path at all.
+
+**The real, still-unmeasured cost is most likely the per-MB loop's own
+skip-path and intra-dispatch handling - neither of which any bucket built
+so far touches.** Two concrete, previously-unconsidered candidates, both
+visible in the same per-MB loop already read while building `pf_get_mb_
+info`/`pf_parse_inter_mb`'s wraps:
+- **Skip-MB bookkeeping**: for every skip MB (the majority here), the loop
+  itself does a `memset(ps_dec->ps_curr_ctxt_mb_info, 0, ...)`, sets
+  `pu1_left_mv_ctxt_inc`/`pi1_left_ref_idx_ctxt_inc`/`pu1_left_yuv_dc_csbp`
+  to zero, writes `ps_part_info` (direct/skip partition bookkeeping), and
+  calls `ih264d_update_nnz_for_skipmb()` - none of this runs inside
+  `pf_get_mb_info` (already measured) or `pf_parse_inter_mb` (now
+  measured, but never called for a skip MB at all) - it is loop-body C
+  code with no function-pointer indirection of its own to hook.
+- **Intra-MB dispatch inside P/B slices**: `ih264d_parse_mb_type_cabac()`
+  (called for every non-skip MB, its own bin-decode cost already inside
+  `bin_us`, but its C-level dispatch is not) decides intra vs. inter, and
+  an intra result is parsed through whatever the intra equivalent of
+  `pf_parse_inter_mb` is - not `pf_parse_inter_mb` itself, so `mbparse_us`
+  never sees it, and it has not been identified or measured at all yet.
+
+Neither of these has a clean, already-proven interception point the way
+`pf_get_mb_info`/`pf_parse_inter_mb` did - they would need their own
+investigation (does the intra path go through another dec_struct_t
+function pointer that happens to be cross-file? is skip-MB bookkeeping
+worth a dedicated `clock()` bracket around the `if(u4_mb_skip){...}` arm
+specifically, which - unlike the two function-pointer cases so far - has
+no vendored function boundary to hook at all, only a block of inline
+loop-body code) before assuming either is buildable the same way mbinfo/
+mbparse were. Not attempted in this round; this section exists to correct
+the record, not to guess at the next fix without checking source first the
+way every other addition in this chain did.
+
+Verification for this round is identical to the mbinfo/mbparse rounds
+before it - no new code was written, this is a documentation-only update
+recording a real-hardware measurement result. The capture itself
+(`RAM:MintVID.log`, GadTools "Log: on") is the same build already pushed
+and verified (`e8194eb`) - nothing to rebuild or re-verify.
+
+## intramb_us: the other half of the skip-or-intra gap, and it's a plain --wrap this time
+Direct follow-up to the mbparse_us correction above - the user's own call:
+keep chasing. Of the two candidates named there (per-MB-loop skip-path
+bookkeeping, intra-MB dispatch), intra-MB dispatch turned out to have a
+real, clean interception point, found by reading the same per-MB loop the
+mbinfo/mbparse work already lives in one more time: `ih264d_parse_
+pslice.c`'s shared per-MB loop (`ih264d_parse_inter_slice_data_cabac()`,
+used by both P and B slices - see the mbparse_us section above for why it
+is "shared") has an `else` branch alongside its `pf_parse_inter_mb` call,
+for exactly the `u1_mb_type >= u1_mb_threshold` (intra) case:
+`ret = ih264d_parse_imb_cabac(ps_dec, ps_cur_mb_info, ...)` - a *plain
+direct function call*, not a function-pointer assignment at all.
+
+Checked before assuming it would be wrap-able, the same discipline as
+every other addition in this chain: `ih264d_parse_imb_cabac()` is
+*defined* in `ih264d_parse_islice.c`, a completely different file from
+where this call site lives (`ih264d_parse_pslice.c`) - an ordinary
+cross-object relocation, the textbook `--wrap` case (the same shape that
+already lets bin/coeff/mvpred/mbinfo work, not the same-file case
+`pf_parse_inter_mb` itself fails on). No struct-field-swap trick needed
+this time - a plain `-Wl,--wrap=ih264d_parse_imb_cabac` reaches it
+directly. The one gap: `ih264d_parse_islice.c`'s *own* per-MB loop (a
+whole I slice/I frame) calls `ih264d_parse_imb_cabac()` from within the
+same file that defines it - the identical same-file dead end
+`pf_parse_inter_mb` hits, left unwrapped deliberately. I frames are a
+small minority of pictures (one per GOP); the P/B-embedded case this wrap
+*does* reach is exactly where the mbparse_us retest's "~65% of
+macroblocks are skip or intra" finding lives.
+
+New `vendor/libavc_port/ih264d_intramb_wrap_port.c` is the intra sibling
+of `ih264d_mbinfo_wrap_port.c` - same pure timing pass-through via GNU
+ld's `__real_ih264d_parse_imb_cabac` symbol, same `CABAC_PROFILE=1`-only
+`--wrap` flag (`libavc.mk`), same zero cost in a normal build, no
+reimplementation so no new bit-exactness claim to prove. New `intramb_us`/
+`intramb_count` bucket wired through the identical path as mbinfo/mbparse
+(`ih264d_cabac_profile.h`/`.c`, `core/mr_h264.h`/`.c`, `amiga/mrplay.c`'s
+`"h264 cabac:"` line) - documented with the same non-disjoint-bucket
+caveat as `mbparse_us`: `ih264d_parse_imb_cabac()` itself calls
+`ih264d_decode_bin()` (`bin_us`) and `ih264d_parse_residual4x4_cabac()`
+(`coeff_us`), so `intramb_us` necessarily overlaps both, on top of
+whatever previously-unmeasured intra-mode-signalling/CBP/mb_qp_delta glue
+is in its own body.
+
+Verified via `tests/run_m68k_check.sh`: `mr_decode_cabac_profile.m68k`
+now runs the mbinfo/mbparse struct-field-swap *and* the new intramb
+`--wrap` together on every macroblock of a real decode, and still decodes
+the H.264 High Profile fixture at worst-frame MAE=0.705 - unchanged from
+every other build. The full m68k/big-endian conformance suite, including
+the 68060 disassembly scan (which now also builds and scans `ih264d_
+intramb_wrap_port.c`, empty at production flags same as `ih264d_mbinfo_
+wrap_port.c`), passes clean.
+
+Not yet known: how much of the remaining ~43% unattributed cost (the
+figure left over after the mbparse_us retest) `intramb_us` actually
+explains. Needs the same thing every bucket in this chain has needed
+before its real size was known: a real A1200 `CABAC_PROFILE=1
+STAGE_PROFILE=1` capture with `intramb_us` in the log. Given the
+mbparse_us retest's own finding (mbparse_count only 35% of mbinfo_count,
+i.e. ~65% skip-or-intra) and mbinfo_count/mbparse_count's own per-report
+numbers, a rough expectation can be formed once a capture lands: if
+`intramb_count` comes back close to `mbinfo_count - mbparse_count`, that
+confirms most of the "skip or intra" 65% was actually intra (not skip),
+and `intramb_us` should explain a correspondingly large share of the
+remainder - if it comes back much smaller than that difference, most of
+those macroblocks were genuinely skip, and the still-unmeasured skip-path
+per-MB-loop bookkeeping (memset/`ih264d_update_nnz_for_skipmb()`, no
+function boundary to hook - see the mbparse_us correction's own note)
+becomes the leading remaining suspect. Not guessed at further here without
+that data.
+
+## intramb_us retest, and terminate_us/mbtype_us: two more clean --wrap targets, still ~36% left over
+The real-hardware retest the previous section asked for landed (57 paired
+`h264 stages:`+`h264 cabac:` reports, `timing/117 frames: decode=139306 ms`,
+same A1200 68060/50 / YouTube 360p / Turbo setup as every capture in this
+chain). Sum-weighted across all 57 reports:
+
+| bucket | % of core |
+|---|---|
+| mbparse | 8.2% |
+| intramb | 5.0% |
+| remainder before mbparse+intramb | 49.5% |
+| **remainder after subtracting both** | **36.2%** |
+
+`intramb_us` answers the question the previous section left open, and the
+answer is "mostly skip, not mostly intra": `intramb_count` averaged only
+42.2% of the `mbinfo_count - mbparse_count` "skip-or-intra" gap (range
+0-90.9%), not the "close to 100%" that would confirm intra dominates. So
+per that section's own decision rule, the still-unmeasured skip-path
+per-MB-loop bookkeeping (`memset`, `ih264d_update_nnz_for_skipmb()` - no
+function-pointer or cross-file-call boundary to hook, unlike every bucket
+built so far) is a real candidate for (part of) the remaining ~36%, not
+ruled out the way it would have been had intramb_us come back large.
+
+**Two more genuinely wrap-able per-MB costs, found by re-reading the same
+shared per-MB loop (`ih264d_parse_inter_slice_data_cabac()` in
+`ih264d_parse_pslice.c`) once more with the ~36% remainder as the target:**
+
+- **`ih264d_decode_terminate()`** (defined in `ih264d_cabac.c`) - the
+  CABAC "termination" bin (spec 9.3.3.2.2.3): `end_of_slice_flag`, decoded
+  once per macroblock **regardless of skip/inter/intra** at the end of the
+  shared per-MB loop, plus the I16x16-vs-I_PCM bin inside
+  `ih264d_parse_mb_type_intra_cabac()` (`ih264d_parse_mb_header.c`). Read
+  its body before assuming it was worth measuring: pure inline arithmetic
+  (CLZ, range update, conditional renorm) with no other function calls at
+  all - not a thin wrapper around `ih264d_decode_bin()`, so `terminate_us`
+  is not folded into `bin_us` already. All three real call sites
+  (`ih264d_parse_pslice.c`, `ih264d_parse_islice.c`,
+  `ih264d_parse_mb_header.c`) are in different files from the one that
+  defines it - an ordinary cross-object relocation, the same `--wrap`
+  shape as mbinfo/intramb, not the same-file dead end `pf_parse_inter_mb`
+  hits. Because it runs on every macroblock unconditionally, this is the
+  one bucket in the whole chain besides `mbinfo_us` that reaches the full
+  population, not just a subset - and it is fully disjoint from every
+  other bucket (bin/coeff/mvpred/mbinfo/mbparse/intramb), a real additive
+  measurement, not another overlapping one.
+
+- **`ih264d_parse_mb_type_cabac()`** (defined in `ih264d_parse_mb_header.c`,
+  called from `ih264d_parse_pslice.c`) - the `mb_type` syntax-element
+  dispatch for every **non-skip** P/B macroblock (inter and intra alike),
+  run strictly before that macroblock's `pf_parse_inter_mb`/
+  `ih264d_parse_imb_cabac` dispatch. Same cross-object shape, checked the
+  same way, plain `--wrap` target. Its body calls only
+  `ih264d_decode_bin()`/`ih264d_decode_bins()` (confirmed by reading it) -
+  never `ih264d_decode_terminate()` - so `mbtype_us` overlaps `bin_us` the
+  same way `mbparse_us`/`intramb_us` do, but is disjoint from
+  `terminate_us`.
+
+Both are pure `--wrap` timing pass-throughs
+(`vendor/libavc_port/ih264d_terminate_wrap_port.c`,
+`ih264d_mbtype_wrap_port.c`), gated identically to mbinfo/intramb: the
+`-Wl,--wrap=` flags for both only exist under `CABAC_PROFILE=1`
+(`libavc.mk`), so a normal build links zero bytes of either. Wired through
+the same accumulator/plumbing path every prior bucket used
+(`ih264d_cabac_profile.h`/`.c` now track eight buckets; `core/mr_h264.h`/
+`.c`; `amiga/mrplay.c`'s `"h264 cabac:"` printf line; both m68k test
+scripts' `LIBAVC_SRC` lists and `--wrap` link flags).
+
+Verified via `tests/run_m68k_check.sh`: `mr_decode_cabac_profile.m68k` now
+runs all four `CABAC_PROFILE`-only wraps (mbinfo struct-field-swap,
+mbparse struct-field-swap, intramb `--wrap`, terminate `--wrap`, mbtype
+`--wrap` - five mechanisms across four distinct measured functions, since
+mbinfo's wrap also does the mbparse swap) together on every macroblock of
+a real decode, and still decodes the H.264 High Profile fixture at
+worst-frame MAE=0.705 - unchanged from every other build in this whole
+chain. The full m68k/big-endian conformance suite, including the 68060
+disassembly scan (which now also builds and scans
+`ih264d_terminate_wrap_port.c`/`ih264d_mbtype_wrap_port.c`, both empty at
+production flags same as their mbinfo/intramb siblings), reports
+`m68k/big-endian check: OK` end to end. `make check` (host,
+`MR_H264_CABAC_PROFILE` never defined there) passes unchanged.
+
+Not yet known: how much of the ~36% remaining unattributed cost
+`terminate_us`/`mbtype_us` actually explain, and - since `terminate_us`
+reaches every macroblock the same way `mbinfo_us` does - whether the
+skip-path bookkeeping suspect named above is still needed once it's
+measured. Needs the same thing every bucket in this chain has needed
+before its real size was known: a real A1200 `CABAC_PROFILE=1
+STAGE_PROFILE=1` capture with `terminate=`/`mbtype=` in the log. The
+user has offered to send another one from their own A1200 as needed.
+
+## terminate_us/mbtype_us retest: remainder down to ~28%, but the arithmetic itself needs a caveat now
+The real-hardware retest landed (31 paired `h264 stages:`+`h264 cabac:`
+reports, `timing/62 frames: decode=81449 ms`, same A1200 68060/50 /
+YouTube 360p / Turbo setup, this capture's clip a different session than
+the one behind the ~36% figure above). Sum-weighted across all 31 reports:
+
+| bucket | % of core |
+|---|---|
+| mc | 9.1% |
+| recon | 11.6% |
+| intra | 4.5% |
+| bin | 6.2% |
+| coeff | 4.9% |
+| mvpred | 1.6% |
+| mbinfo | 7.3% |
+| mbparse | 5.6% |
+| intramb | 6.8% |
+| **terminate** | **2.9%** |
+| **mbtype** | **11.1%** |
+| remainder before terminate+mbtype | 42.4% |
+| **remainder after subtracting both** | **28.4%** |
+
+Both new buckets are real. `mbtype_us` is not a small addition - at
+11.1% of core it is the single largest bucket added in this entire
+chain besides `mc`/`recon` themselves, bigger than `mbinfo_us` and
+nearly double `mbparse_us`. `terminate_us` is small (2.9%), as expected
+for a bucket whose own body is a handful of CLZ/compare/renorm
+instructions with no other function calls.
+
+**`terminate_count` (83,443) exceeds `mbinfo_count` (60,720) - a ratio of
+137%, worth explaining rather than treating as a red flag.** `mbinfo_us`
+and `terminate_us` were both documented as "reaches every macroblock,"
+but not through the same set of call sites: `mbinfo`'s wrap only covers
+the shared P/B per-MB loop's `pf_get_mb_info` (see the mbinfo_us
+section above), while `terminate_us` wraps `ih264d_decode_terminate()`
+directly and is reached from three places - the shared P/B loop's own
+end-of-slice check (the population `mbinfo_us` also covers), the
+*separate* I-slice per-MB loop in `ih264d_parse_islice.c` (macroblocks
+`mbinfo_us`'s wrap never sees, since that loop doesn't go through
+`pf_get_mb_info` the same way), and the extra I16x16-vs-I_PCM bin inside
+`ih264d_parse_mb_type_intra_cabac()` for every intra macroblock. The
+excess over 100% is exactly those two additional sources, not double
+counting within a single call site.
+
+**A methodological point worth stating plainly now that a genuinely large
+bucket (`mbtype_us`) overlaps `bin_us`: the "remainder = core minus every
+named bucket" arithmetic this whole chain has used since the CABAC notes
+section is not a strict partition, and it gets *less* accurate, not more,
+as overlapping buckets pile up.** `mbparse_us`, `intramb_us` and
+`mbtype_us` each wrap a function whose own wall-clock time already
+includes calls into `ih264d_decode_bin()` (counted again, separately,
+under `bin_us`) and - for mbparse/intramb - `ih264d_parse_residual4x4_
+cabac()`/mv-prediction (`coeff_us`/`mvpred_us`). Subtracting all of
+`bin_us`+`coeff_us`+`mvpred_us`+`mbparse_us`+`intramb_us`+`mbtype_us`
+from `core` therefore subtracts the shared, nested portion more than
+once - the "remainder" figure is a real, useful *directional* signal
+(it has correctly tracked every genuinely new measurement finding real
+cost in this chain so far, mbtype_us included), but as an absolute
+number it is now more likely to **understate** the true still-unattributed
+cost than to overstate it, precisely because more of what gets subtracted
+is double-counted overlap rather than newly-measured, actually-disjoint
+work. This was already true, in smaller degree, from the moment
+`mbparse_us` was added; it is worth calling out now because `mbtype_us`'s
+11.1% is large enough that the effect is no longer negligible. A properly
+disjoint accounting would need *exclusive* (self) time for each wrapped
+function - time spent in the function's own body minus time spent in any
+nested wrapped call - which none of the `clock()`-bracketed wraps in this
+chain currently attempt; that is a real methodology upgrade to consider
+before adding further overlapping buckets, not something to guess at
+without deciding whether it is worth the added instrumentation
+complexity.
+
+This capture's own skip/intra split, for reference: `mbparse_count +
+intramb_count` = 44,494 of `mbinfo_count`'s 60,720 (73.3% non-skip) -
+notably different from the ~35% non-skip (65% skip-or-intra) the earlier
+`mbparse_us` retest measured. Both numbers are real; they describe
+different sessions/clips, and this is a reminder that the skip/intra
+mix is content-dependent, not a fixed property of "YouTube 360p Turbo on
+this hardware" to expect a single number for.
+
+No code changed this round - this is a documentation-only update
+recording a real-hardware measurement result, the same as the
+mbparse_us-retest section above. `make check`/`make check-m68k` are
+unaffected. The leading still-open question is unchanged in kind from
+before this retest, only smaller in size: the skip-path per-MB-loop
+bookkeeping (`memset`, `ih264d_update_nnz_for_skipmb()`) remains
+completely unmeasured (it has no function-pointer or cross-file-call
+boundary `--wrap` or a struct-field swap can reach), and - per the
+methodological point above - the true remainder it would need to explain
+is arguably still closer to the ~42% pre-terminate/mbtype figure than the
+~28% post figure, since a meaningful share of that drop is overlap
+double-subtraction rather than newly-attributed disjoint cost.
+
+## Plain --time capture: instrumentation really was costing ~3x, confirmed near-cleanly
+The user's own closing capture for this investigation round: a plain
+`--time` run (no `STAGE_PROFILE`/`CABAC_PROFILE`) on the same A1200
+68060/50, YouTube 360p, containing two back-to-back sessions in one log.
+The first (`H.264 performance: Turbo+`, PB-skip/keyframes-only) was a
+throwaway - one frame only (`timing/1 frames: decode=872 ms`) before the
+user restarted with the intended settings. **The real capture is the
+second session**, explicitly re-printing `H.264 performance: Turbo
+(B-skip, bilinear MC)` before playback - the identical performance mode
+every `CABAC_PROFILE`/`STAGE_PROFILE` capture in the sections above used.
+`timing/74 frames: decode=29725 ms` - 401.7 ms/frame average (387.4 ms
+sum-weighted across the 19 `rtg timing` lines from this session), against
+the ~1100-1360 ms/frame seen throughout the CABAC/STAGE-instrumented
+captures at the same Turbo mode. A first pass at this write-up mistakenly
+averaged in the one-frame Turbo+ session and mis-stated the performance
+mode for the whole capture - corrected here, since the real 74-frame
+block was Turbo all along.
+
+The one setting that does still differ is C2P backend: `c2p=wpa`
+(Standard/portable) here versus `c2p=kalms-040` in every prior profiled
+capture. That is not a meaningful confound for this comparison - C2P
+converts already-decoded pixels for display and is entirely downstream
+of `vdecode`/`libavc-core`, the figures both this number and every
+profiled one are built from; nothing about which C2P kernel is running
+changes what libavc itself does. So, mode held constant and the one
+remaining difference being causally irrelevant to the measured quantity,
+this is a genuinely clean confirmation: **real production H.264 decode
+on this content is roughly 2.7-3.4x faster than every CABAC_PROFILE/
+STAGE_PROFILE number in this file's own investigation chain reported** -
+the instrumentation-tax warning made when the first such capture landed
+("almost certainly overstate how slow the real, non-instrumented
+production `mrplay` is") was not just directionally right but
+substantially so.
+
+This does not retroactively invalidate the *proportions* measured inside
+those captures (mc/recon/bin/coeff/mbinfo/mbparse/intramb/terminate/
+mbtype's relative shares of `core_us`, and the remaining unattributed
+~28-42%) - those are ratios internal to one instrumented run and stay
+valid for what they showed about relative cost. It does mean the
+*absolute* millisecond figures quoted alongside them throughout this
+whole chain were never a good proxy for real playback smoothness on
+their own, and any future real-hardware capture aimed at "how slow is
+this stream really" should default to a plain `--time` run first, per
+this section, rather than reaching for `CABAC_PROFILE`/`STAGE_PROFILE`
+out of habit.
+
+No code was changed for this capture - it is a measurement result,
+recorded here rather than acted on.
+
+## HAM8 + Kalms mouse-lag report: investigated from source, closed by the user independently
+**Resolved - the user identified the actual cause themselves, separately
+from this investigation.** Everything below is what this session checked
+before that happened (all real, none of it wrong, just superseded as the
+active lead) - kept as a record of what was ruled out at the source
+level, not as an open thread needing further data.
+A separate real-hardware report from the same session: HAM8 with Kalms
+C2P shows mouse-pointer lag during playback, which the user's own
+Amiga-experience read as a likely sign of hitting `68060.lib`'s
+unimplemented-instruction emulation (a real, well-known 68060 symptom -
+see this file's own extensive `plm_audio_smul64_060`/`mr_u64_div_u16`
+family of fixes for the general mechanism). Investigated as far as this
+dev host allows, and explicitly **not** turned into a code change, because
+nothing found rises to this file's own bar for trusting a fix.
+
+Checked and ruled out at the *source* level: the four Kalms kernels
+actually wired into `Makefile.amiga`'s `KALMS_OBJ`
+(`c2p1x1_8_c5_040.s`, `c2p1x1_8_c5_bm_040.s`, `c2p2x2_8_c5_bm.s`,
+`c2p1x1_6_c5_bm_040.s` - the ones a HAM8 session under Kalms actually
+runs, since `aga_open()`'s `kalms_kind` selection is keyed on plane
+`depth` alone, and HAM8's 8 real bitplanes select the same kernel a
+plain 256-colour session would; this is architecturally expected, not a
+gap - 8-plane C2P transposition doesn't care what the 8-bit chunky value
+means, only how many bitplanes it fans out to, which is exactly why HAM6
+gets its own dedicated `KALMS_1X1_6` kernel while HAM8 correctly shares
+the 8-plane ones) contain no extended `MULS.L`/`MULU.L`, no `DIVS.L`/
+`DIVU.L` at all, and no `TAS`/`MOVEP`/`CAS2`/`CHK2` - only `mulu.w`
+(2-operand, hardware since the 68000, the same safe form this project's
+own MP2/68060 kernels already rely on). The classic trap mechanism this
+file documents at length elsewhere doesn't show up in these kernels'
+source. `vendor/kalms-c2p/ham8/*.s` (a different, unused set of files
+with "h8" in the name) turned out to be a red herring - reading their
+actual operation, they are an RGB→HAM8 *encoder*, not a C2P kernel, and
+are referenced by nothing in `Makefile.amiga` at all; this project's own
+portable-C `mr_ham_encode()` does that job instead.
+
+**A source grep is not the level of proof this file normally insists on,
+though, and getting further needs real work this dev host cannot
+finish in one pass.** No Kalms kernel of any kind has ever been run
+through `tests/check_m68060_asm.sh`'s real disassembly scan - a genuine,
+previously-undocumented coverage gap, unlike every project-authored `.S`
+file in `core/`/`vendor/libavc_port/`. Attempting to close it directly:
+`m68k-linux-gnu-as` refuses these files outright - they use Amiga-
+assembler syntax (`;` line comments, `section code,code`, colon-less
+`XDEF`-exported labels) GNU as does not understand. A first mechanical
+translation pass (strip `;` comments, `section` → `.text`, `XDEF` →
+`.globl`) got further but still failed on ordinary instructions like
+`swap d4` and `movem.l d2-d7/a2-a6,-(sp)` with "operands mismatch" -
+GNU as's default m68k dialect in this cross toolchain evidently
+disagrees with something more structural than comments (colon-less
+label syntax is the leading suspect, since PhxAss/vasm-style assemblers
+accept a bare label at column 0 where GNU as wants `label:`, and a
+misparsed label can desynchronise everything that follows it on the same
+statement). Turning this into a fully working GNU-as translation - and
+then a real disassembly answer via the existing `scan_m68060_forbidden.py`
+- is real, bounded engineering work, just not work this pass finished;
+it was not pushed further once it became clear "confirm or deny the
+68060.lib theory" needed a genuine syntax port, not a quick fix.
+
+**No fix was made for this report**, on purpose: every candidate this
+session considered (excluding Kalms from HAM8 the way the AGA copper-
+vdouble section's own prose already claims happens, when the code
+actually doesn't do that) would be a guess dressed up as a fix, exactly
+the thing this file's own discipline throughout the H.264 CABAC
+investigation above refuses to do without a number in hand first. What
+*is* useful right now, needing no code change and no more of the user's
+time than one side-by-side comparison: play the same clip as HAM8 with
+Kalms C2P, then again as HAM8 with `--c2p`/"Portable" (Standard), same
+resolution and scale. If the lag tracks Kalms specifically (present with
+Kalms, gone with Standard), that is real, actionable evidence pointing
+back at the Kalms kernel; if HAM8 lags similarly either way, the cause is
+upstream of C2P entirely (most likely `mr_ham_encode()`'s own dither cost,
+or simply CPU saturation from full-screen HAM8 encode+C2P+blit at every
+frame, not a trap at all) and the Kalms kernel is cleared. Either result
+is more useful than a guessed patch, and neither needs a rebuild.
+
+## Chasing an actual speedup from the known hot buckets: a real coverage gap closed, no free lunch found
+Direct follow-up to the whole CABAC-profiling chain above, now with a
+mandate to act on it rather than keep measuring: "you know the hot
+buckets, get working." Two things were checked with intent to find a
+concrete fix, in order of expected payoff, given the corrected plain
+`--time` finding above ruled out "it's all profiling overhead" as the
+answer.
+
+**First, and highest-leverage given precedent: does the per-macroblock
+CABAC hot path hide the same class of bug the per-slice divmod fix
+already found and fixed in `boingball/libavc`?** That fix (see
+`vendor/libavc_port/ih264_m68k_divmod.h`, already merged into this
+repo's pinned submodule commit `cb8d7c3` - confirmed via
+`git merge-base HEAD <that-branch>`, it was not sitting unmerged) found
+GCC fusing an ordinary `%`/`/` pair against a runtime divisor into the
+68060's trap-prone extended-dividend `DIVSL.L`/`DIVUL.L` at five
+per-*slice* call sites - real, since a trap into 68060.lib's software
+emulation is drastically more expensive than the instruction it replaces,
+and per-slice still means at least once per frame. The natural next
+question: does the same fusion happen anywhere in the per-*macroblock*
+loop, which runs thousands of times more often per frame than the
+per-slice sites did? `tests/check_m68060_asm.sh`'s own disassembly gate
+had never actually checked - its H.264 `vendor/libavc` coverage was
+scoped to exactly the four already-fixed per-slice symbols, never the
+CABAC per-MB functions this session's whole `mbinfo_us`/`mbparse_us`/
+`intramb_us`/`terminate_us`/`mbtype_us` chain had been measuring as real
+cost on real hardware for weeks.
+
+Built and scanned for real (not just grepped) with the project's own
+`tests/scan_m68060_forbidden.py`, at the real `-mcpu=68060` production
+flags: `ih264d_parse_pmb_cabac`/`ih264d_update_nnz_for_skipmb`/
+`ih264d_parse_inter_slice_data_cabac` (`ih264d_parse_pslice.c`),
+`ih264d_parse_bmb_cabac` (`ih264d_parse_bslice.c`),
+`ih264d_parse_imb_cabac` (`ih264d_parse_islice.c`),
+`ih264d_get_mb_info_cabac_nonmbaff` (`ih264d_mb_utils.c`),
+`ih264d_parse_mb_type_cabac`/`ih264d_parse_mb_type_intra_cabac`
+(`ih264d_parse_mb_header.c`), `ih264d_decode_bin`/`ih264d_decode_bins`/
+`ih264d_decode_terminate` (`ih264d_cabac.c`),
+`ih264d_parse_residual4x4_cabac`/`ih264d_read_coeff4x4_cabac`
+(`ih264d_parse_cabac.c`), and `ih264d_mvpred_nonmbaff`/
+`ih264d_mvpred_nonmbaffB` (`ih264d_mvpred.c`) - every function behind
+every named CABAC-profile bucket in this whole chain, in one pass.
+**Clean.** No extended `MULS.L`/`MULU.L`, no extended-dividend divide, no
+`__muldi3`/`__divdi3`/`__udivdi3` reference anywhere in this set. A real,
+useful negative result, not a shrug: the leading hypothesis for "one more
+big win like the per-slice fix" is ruled out with actual evidence, not
+assumed clean because it looked fine in source (this is precisely the
+distinction the per-slice fix itself proved matters - a source read alone
+would have missed it too).
+
+Wired into `tests/check_m68060_asm.sh` permanently rather than left as a
+one-off manual check - a new build+scan block covering all eight files
+above, documented in the script's own header alongside the existing
+per-slice coverage. This closes a real, previously-undocumented gap in
+this project's own audit methodology (every hand-asm `.S` file has always
+been scanned; the vendored C this session's whole profiling investment
+was measuring never had been) for free going forward - any future libavc
+bump or MintVID-side change to this hot path gets checked automatically,
+the same safety net every other 68060-specific claim in this file already
+relies on. Verified via the full `tests/run_m68k_check.sh` (including
+this expanded gate) passing end to end, unchanged worst-frame MAE on
+every H.264 fixture including the `CABAC_PROFILE=1` build.
+
+**Second: hand-reading the two largest named C-level dispatch buckets
+(`mbtype_us` 11.1%, `mbinfo_us` 7.3%) and the previously-unmeasured
+skip-MB bookkeeping for the kind of waste the weighted-pred fix found -
+a computation happening unconditionally when it is provably almost
+always unnecessary.** `ih264d_parse_mb_type_cabac()`
+(`ih264d_parse_mb_header.c`) is a straight binary-tree decode of the
+`mb_type` syntax element per spec table 9-37 - a handful of
+`ih264d_decode_bin()`/`ih264d_decode_bins()` calls and integer
+arithmetic on their results, nothing computed that isn't immediately used
+to pick the next branch. `ih264d_get_mb_info_cabac_nonmbaff()`
+(`ih264d_mb_utils.c`) is neighbour-availability mask arithmetic and
+struct-pointer bookkeeping - also inherently O(1) per call, nothing
+speculative or redundant. The skip-MB bookkeeping flagged as unmeasured
+several sections above (`ih264d_parse_inter_slice_data_cabac`'s own
+`if(u4_mb_skip)` arm, `ih264d_parse_pslice.c` lines ~918-949) is the same
+shape: a `memset`, two 16-byte context-reset writes, a partition-info
+struct write, and the `ih264d_update_nnz_for_skipmb()` call - real,
+necessary CABAC neighbour-context state for the *next* macroblock's
+decode, not overhead a smarter check could skip. None of the three reads
+like the weighted-pred case, where an expensive path ran on a capability
+bit instead of an actual-need check; there is no equivalent "is this
+really necessary" question with an obviously-usually-false answer sitting
+in any of them.
+
+**Conclusion, stated plainly rather than papered over with a change for
+its own sake: there is no algorithmic free lunch left in this hot path,
+and no hidden 68060 trap either - both real possibilities, both checked
+with actual evidence, both ruled out.** The remaining ~28-42% unattributed
+cost (see the terminate_us/mbtype_us retest's own methodological caveat
+about double-subtraction inflating that estimate) is very likely the
+accumulated real cost of a great many small, individually-necessary
+operations spread across thousands of per-MB calls a frame, not a single
+fixable hotspot - consistent with every named bucket already checking out
+as lean, purposeful C. The one lever this investigation *has* established,
+with real measurement now in hand to justify it (unlike when the CABAC
+notes section first raised and set aside the idea): hand-writing 68k
+assembly for the CABAC per-MB dispatch functions themselves, the same way
+`ih264_m68k_cabac.S` already exists for `ih264d_decode_bin`. That is a
+real, bounded, but substantial undertaking - multiple ~100-300 line
+functions, each needing the same register-scheduling care and bit-exact
+differential fuzzing (`mr_h264_m68k_check`-style) every other hand kernel
+in this tree got - not something to start speculatively inside a
+same-session "get working" ask. Deliberately not begun here; a decision
+for the user to make explicitly, with this section's own honest
+"no shortcut found" as the reason it would be starting from scratch,
+not from a known 2x-in-a-day win the way the per-slice divmod fix was.
+
+## Tried and reverted: calling mr_ih264d_decode_bin_m68k directly from ih264d_parse_mb_type_cabac()
+Direct follow-up, on explicit instruction to stop investigating and ship
+something: implement and benchmark one concrete optimisation of
+`ih264d_parse_mb_type_cabac()` against the same test clip, keep the
+original available for comparison, revert and explain if it doesn't help.
+
+**The change**: all 13 single-bin `ih264d_decode_bin()` call sites inside
+`ih264d_parse_mb_type_cabac()` (SI/P/B branches; the 2 multi-bin
+`ih264d_decode_bins()` calls in the deep B-slice branches were left alone
+- no direct asm primitive exists for those) were redirected to call
+`mr_ih264d_decode_bin_m68k()` - the existing, already-verified hand-asm
+CABAC bin decoder `ih264_m68k_cabac.S` provides - directly, instead of
+through the vendored `ih264d_decode_bin()` symbol. On a real m68k link
+that symbol resolves via `--wrap` to `__wrap_ih264d_decode_bin()`
+(`ih264d_cabac_wrap.c`), a C function whose entire body is
+`return mr_ih264d_decode_bin_m68k(...)`. That file's own header
+documents this as "a second full call/return layer... paid on every
+single decoded bin" and records that removing it *globally* (exporting
+`__wrap_ih264d_decode_bin` straight from the `.S` file, no C code) broke
+the real AmigaOS link and was reverted for that reason. This was a
+narrower, different mechanism: change what ONE caller calls, never
+touching `--wrap` or the trampoline itself - a new self-contained header,
+`vendor/libavc_port/ih264_m68k_mbtype_bin.h` (`MR_M68K_ASM` calls the
+primitive directly; the portable fallback calls `ih264d_decode_bin()`
+unchanged), included from a one-line change to `vendor/libavc`'s
+`ih264d_parse_mb_header.c` (on a new branch,
+`claude/mbtype-cabac-direct-asm-call`, off the currently-pinned `cb8d7c3`).
+
+**Correctness, checked before any timing number was trusted**: host
+`make check` (portable fallback path, unaffected either way) passed
+unchanged. Two full m68k builds - one with the change, one built from a
+`git stash`-restored original source, both at the exact same production
+flags `tests/run_m68k_check.sh` uses - decoded `test_h264_high.mp4` (and
+`test_h264_aac.ts`/`test_h264_ac3.ts`/`test_h264_aac.mkv`, different
+container/mux shapes over the same content) to **byte-for-byte identical
+PPM output** and identical worst-frame MAE (0.705) against `ref_h264_high`.
+Expected, not a surprise: the change calls the exact same
+already-bit-exact-verified primitive `__wrap_ih264d_decode_bin` itself
+already called, just one call-frame closer - no new arithmetic, nothing
+to newly prove bit-exact, only the wiring to get right.
+
+**The actual finding, from disassembling `ih264d_parse_mb_type_cabac`
+in both builds before trusting a timing number at all**: `__wrap_
+ih264d_decode_bin` compiles, at this toolchain's `-O2`, to a **single
+`bral` (branch-always-long) instruction straight to
+`mr_ih264d_decode_bin_m68k`** - GCC's own sibling/tail-call optimisation
+recognising `return f(args);` with identical argument shapes needs no
+call frame at all. `objdump --disassemble=ih264d_parse_mb_type_cabac` on
+both builds came back **byte-identical instruction counts (219
+instructions, 18 jsr/bsr sites in each)** - the only difference anywhere
+in the function is which symbol the one `jsr` that hits `SI_SLICE`'s b0
+call targets (`__wrap_ih264d_decode_bin` vs `mr_ih264d_decode_bin_m68k`
+directly); every other call site already compiles to an indirect
+`jsr %a4@` through a register GCC loads once and reuses, identical in
+both builds. So the "second full call/return layer" this file's own
+`ih264d_cabac_wrap.c`/`ih264_m68k_cabac.S` headers describe **already
+does not exist in the compiled code at this optimisation level** - it is
+one `bral` (a handful of cycles at most, not a stack frame, argument
+reload, or `rts`) per bin, not a real function call. There was
+essentially nothing left to remove.
+
+**Benchmark, run only after that finding explained why to expect little**:
+7 qemu-m68k wall-clock runs each of `test_h264_high.mp4 --check`,
+identical `-m68030` build flags both sides. Baseline mean 0.11906 s
+(stdev 0.00086); with the change, mean 0.11960 s (stdev 0.00269) - a
+nominal **+0.46% slower**, but the "with the change" run's own variance
+is more than 3x the baseline's, so this reads as pure scheduling/qemu
+noise, not a real regression, consistent with the disassembly showing
+no instruction-count difference to produce one either way.
+
+**Reverted, per the standing instruction to revert and explain rather
+than ship a change that doesn't help**: `vendor/libavc`'s working tree
+restored to the exact pinned `cb8d7c3` (`git checkout --`, branch
+deleted), the new header removed, nothing left in either tree. Explained
+above, not just asserted: the mechanism this change targeted (a real,
+documented, and previously load-bearing concern elsewhere in this file -
+see the CABAC notes section's own account of the *global* wrap-removal
+attempt) turned out to already be closed by the compiler at this
+optimisation level for *this* specific trivial-tail-call shape, which
+the earlier, larger attempt's real AmigaOS link failure never actually
+disproved or confirmed either way (that attempt failed to *link*, not
+because the removed layer turned out to be free). One genuine residual
+uncertainty, stated plainly rather than glossed over: this was verified
+against `m68k-linux-gnu-gcc` at `-O2`, not the real `m68k-amigaos-gcc`
+toolchain (still unavailable on this dev host) - GCC's sibling-call
+optimisation is standard and has applied to this exact code shape across
+many GCC generations, so there is no specific reason to expect Bebbo's
+toolchain to differ, but "no specific reason to expect otherwise" is not
+the same standard of proof this file holds every other 68060-specific
+claim to, and is recorded as a gap rather than papered over as certainty.
+
+The practical upshot for anyone revisiting "make mbtype_us faster" next:
+the call-overhead angle this section chased is a dead end, checked and
+closed with real evidence, not left as an assumption. The only lever
+that remains real, per the section above this one, is a genuine hand-asm
+reimplementation of the CABAC binarisation logic itself (not just
+redirecting which primitive gets called) - a substantially larger
+undertaking than what this section attempted, with its own differential
+fuzz-testing needs, not something to reach for again without deciding
+that undertaking is worth it explicitly.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.

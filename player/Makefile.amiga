@@ -221,6 +221,22 @@ ASM60_FLAGS_full030             := $(MINTAMP_ASM_CPPFLAGS_FULL030)
 
 ASM60_SRC_planars8      := $(MINTAMP_ROOT)/amiga_m68k_planars8.S
 ASM60_SRC_asm_polyphase := $(MINTAMP_ROOT)/real/amiga_m68k_polyphase.S
+# poly060/lowrate060 both set -DAMIGA_M68K_POLYPHASE_68060 (ASM60_FLAGS_
+# poly060/lowrate060 above), which makes real/polyphase.c call straight
+# into the asm symbols amiga_m68k_polyphase.S defines - the same .S file
+# asm_polyphase's own ASM60_SRC entry above already points at. Without an
+# ASM60_SRC_poly060/lowrate060 entry too, MINTAMP_ASM_SOURCES (built only
+# from the groups actually present in ASM60_GROUPS) never pulls that file
+# in for a default `ASM60_GROUPS ?= lowrate060 huffman midside planars8`
+# build - the C dispatch code is compiled in and reachable, but its own
+# asm implementation never gets linked: "undefined reference to
+# AmigaM68KPolyphaseMonoFast"/`MonoFastPolyphaseStride4_Amiga_m68k`/etc.
+# from build/vendor/MintAMP/real/polyphase.o at the final `mrplay` link,
+# on every default-group CPU=68060 build. Real m68k-amigaos-gcc link
+# failure - qemu/ELF can't catch this (it's a link-time source-list gap,
+# not an instruction-safety or bit-exactness question).
+ASM60_SRC_poly060       := $(MINTAMP_ROOT)/real/amiga_m68k_polyphase.S
+ASM60_SRC_lowrate060    := $(MINTAMP_ROOT)/real/amiga_m68k_polyphase.S
 ASM60_SRC_full030       := $(MINTAMP_ASM_SOURCES_FULL030)
 
 ASM60_KNOWN := huffman dequant imdct fdct32 antialias midside intensity \
@@ -408,14 +424,17 @@ STAGE_PROFILE_FLAGS =
 ifeq ($(STAGE_PROFILE),1)
 STAGE_PROFILE_FLAGS = -DMR_H264_STAGE_PROFILE=1
 endif
-# CABAC_PROFILE=1 opts into the CABAC bin/coefficient/MV-prediction timing
-# breakdown (mrplay.c's "h264 cabac:" line, independent of STAGE_PROFILE
-# above) - see vendor/libavc_port/ih264d_cabac_profile.h. Off by default for
-# the same reason: real per-call clock() overhead, and it also swaps out
-# ih264_m68k_cabac.S's zero-overhead direct __wrap_ih264d_decode_bin export
-# for ih264d_cabac_wrap.c's timed C trampoline, so a profiling build is
-# deliberately not the fastest build. Use for a one-off profiling build:
-# `make -f Makefile.amiga mrplay CABAC_PROFILE=1`.
+# CABAC_PROFILE=1 opts into the CABAC bin/coefficient/MV-prediction/mbinfo
+# timing breakdown (mrplay.c's "h264 cabac:" line, independent of
+# STAGE_PROFILE above) - see vendor/libavc_port/ih264d_cabac_profile.h. Off
+# by default for the same reason: real per-call clock() overhead, and it
+# also swaps out ih264_m68k_cabac.S's zero-overhead direct
+# __wrap_ih264d_decode_bin export for ih264d_cabac_wrap.c's timed C
+# trampoline, and additionally links in ih264d_mbinfo_wrap_port.c's
+# __wrap_ih264d_get_mb_info_cabac_nonmbaff (see libavc.mk's CABAC_PROFILE
+# check on LIBAVC_M68K_LDFLAGS) - not linked at all otherwise - so a
+# profiling build is deliberately not the fastest build. Use for a one-off
+# profiling build: `make -f Makefile.amiga mrplay CABAC_PROFILE=1`.
 CABAC_PROFILE_FLAGS =
 ifeq ($(CABAC_PROFILE),1)
 CABAC_PROFILE_FLAGS = -DMR_H264_CABAC_PROFILE=1
