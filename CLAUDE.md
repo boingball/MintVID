@@ -2867,6 +2867,102 @@ whether it is worth reaching for direct measurement (or a real
 optimisation) is an open question for the next round of this
 investigation, not decided here.
 
+## A fourth CABAC-profile bucket after all: per-MB neighbour-info setup (`mbinfo_us`)
+Direct follow-up to the ~52-55% unattributed remainder found in the real
+A1200 capture above. The CABAC notes section's own "no fourth macroblock
+parsing bucket" reasoning is about one specific function pointer,
+`pf_parse_inter_mb` (the mb_type/cbp/ref_idx/mvd/intra-mode/mb_qp_delta
+syntax dispatch, assigned to `ih264d_parse_pmb_cabac()`/
+`ih264d_parse_bmb_cabac()` in the *same* file that defines them, which is
+exactly why `--wrap` cannot intercept it) - not a blanket claim that every
+remaining per-MB function pointer is equally unreachable. Reading
+`ih264d_parse_pslice.c`'s main per-MB loop
+(`ih264d_parse_pslice_data_cabac()`) turned up a second, structurally
+different function pointer sitting right next to it:
+`dec_struct_t::pf_get_mb_info`, called once for *every* macroblock in a
+slice - skip or not, unlike `pf_parse_inter_mb` which only runs for
+non-skip MBs - to compute neighbour availability and CABAC context
+pointers before the syntax dispatch even begins (`ih264d_get_mb_info_
+cabac_nonmbaff()` in `ih264d_mb_utils.c`).
+
+The key difference from `pf_parse_inter_mb`: `pf_get_mb_info` is
+*assigned* in `ih264d_parse_pslice.c`/`_islice.c`/`_bslice.c`, but
+*defined* in the separate `ih264d_mb_utils.c` - a genuine cross-object
+relocation, the same shape that already lets `--wrap` work for
+`ih264d_decode_bin`/`ih264d_mvpred_nonmbaff`/
+`ih264d_parse_residual4x4_cabac`, not the same-file case `pf_parse_
+inter_mb` fails on. Confirmed by grep before touching anything, not
+assumed from the general pattern. Only the non-MBAFF CABAC variant is
+wrapped (`ih264d_get_mb_info_cabac_nonmbaff`) - this project has no MBAFF
+test content and no CAVLC fixture, mirroring `ih264d_mvpred_dispatch_
+port.c`'s own precedent for leaving MBAFF alone.
+
+`vendor/libavc_port/ih264d_mbinfo_wrap_port.c` is new, and deliberately
+the simplest possible wrap in this whole family: a pure timing pass-
+through via GNU ld's `__real_ih264d_get_mb_info_cabac_nonmbaff` symbol
+(automatically defined for any `--wrap=X` target), not a reimplementation.
+Every other `--wrap` site in this port exists to swap in an m68k asm
+primitive and picked up timing as a side benefit; this one has no asm
+behind it at all - there is nothing to gain from wrapping `pf_get_mb_info`
+outside of measuring it, so `libavc.mk`'s `LIBAVC_M68K_LDFLAGS` only adds
+`-Wl,--wrap=ih264d_get_mb_info_cabac_nonmbaff` when `CABAC_PROFILE=1` is
+what defined `MR_H264_CABAC_PROFILE` in the first place, unlike the
+always-on wraps for bin/mvpred/coeff/update_qp. A normal playback build
+never links this symbol at all - zero cost, not even an extra call/return,
+matching this file's own repeated caution (the reverted `__wrap_
+ih264d_decode_bin` C-trampoline saga) about not paying for an unwanted
+call layer in production. Verified with a before/after `Makefile.amiga -n`
+dry-run diff: the `--wrap` flag is present exactly once under
+`CABAC_PROFILE=1` and absent entirely by default.
+
+New `mbinfo_us`/`mbinfo_count` bucket wired through the same path as
+bin/coeff/mvpred: `ih264d_cabac_profile.h`/`.c` (fourth accumulator),
+`core/mr_h264.h`/`.c` (`mr_h264_timing`, accumulated in the same
+`s->timing_enabled` block as the other three), `amiga/mrplay.c`
+(`playback_stats.h264_mbinfo_us/count`, accumulated alongside the other
+three, added to the `"h264 cabac:"` printf line). One small, honestly
+documented overlap (see `ih264d_cabac_profile.h`'s updated header): when
+the current MB is a P/B-skip run, `ih264d_get_mb_info_cabac_nonmbaff()`
+decodes the one `mb_skip_flag` CABAC bin inline - already counted under
+`bin_us` too - so `mbinfo_us` is not perfectly disjoint from `bin_us` the
+way bin/coeff/mvpred are from each other and from it. One bin's cost is
+negligible next to the rest of the function, so this does not meaningfully
+inflate the reported total, but it is a real, small double-count worth
+stating rather than silently claiming perfect additivity.
+
+No new bit-exactness test was written, because there is nothing new to
+prove bit-exact: the wrap changes no behaviour by construction (a pass-
+through to the real, unmodified vendored function, not a rewrite).
+Correctness of the *wiring* - the wrap fires, with the real function's
+return value and every side effect on `ps_dec`/`ps_cur_mb_info` intact -
+is exactly what the existing `mr_decode_cabac_profile.m68k` conformance
+run already proves: `tests/run_m68k_check.sh` now also links
+`-Wl,--wrap=ih264d_get_mb_info_cabac_nonmbaff` into that one build
+(`vendor/libavc_port/ih264d_mbinfo_wrap_port.c` added to its `LIBAVC_SRC`
+list too), and the H.264 High Profile fixture decoded through it at
+worst-frame MAE=0.705 - identical to the same clip decoded through the
+default (non-profiling) build with no `--wrap` on this symbol at all.
+`make check` (host, where `MR_H264_CABAC_PROFILE` is never defined and
+the new file compiles to an empty translation unit, same as every other
+port file guarded this way) passes unchanged. `tests/check_m68060_asm.sh`
+also builds and scans this file alongside the rest of `vendor/libavc_port`
+at real production flags (where it is empty and contributes nothing to
+scan, since `CABAC_PROFILE` is off there) - added for consistency with
+every other port file in that list, not because it currently has anything
+to check.
+
+Not yet done: an actual real-hardware `CABAC_PROFILE=1 STAGE_PROFILE=1`
+retest with this new bucket, to see how large `mbinfo_us` actually is
+against the ~52-55% remainder the previous A1200 capture measured before
+this bucket existed - the whole point of adding it. If `mbinfo_us` turns
+out to explain most of that remainder, `ih264d_get_mb_info_cabac_
+nonmbaff()`'s own ~90-line body (read in full while tracing this - see
+`ih264d_mb_utils.c`) is portable C with no obvious wasted work at a glance
+(neighbour-mask arithmetic, a few pointer/struct-field writes, one
+conditional CABAC bin for skip runs) - a real optimisation there, if one
+exists, is a separate follow-up from this measurement change, not
+something to guess at without the retest's numbers in hand.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.

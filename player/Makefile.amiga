@@ -424,14 +424,17 @@ STAGE_PROFILE_FLAGS =
 ifeq ($(STAGE_PROFILE),1)
 STAGE_PROFILE_FLAGS = -DMR_H264_STAGE_PROFILE=1
 endif
-# CABAC_PROFILE=1 opts into the CABAC bin/coefficient/MV-prediction timing
-# breakdown (mrplay.c's "h264 cabac:" line, independent of STAGE_PROFILE
-# above) - see vendor/libavc_port/ih264d_cabac_profile.h. Off by default for
-# the same reason: real per-call clock() overhead, and it also swaps out
-# ih264_m68k_cabac.S's zero-overhead direct __wrap_ih264d_decode_bin export
-# for ih264d_cabac_wrap.c's timed C trampoline, so a profiling build is
-# deliberately not the fastest build. Use for a one-off profiling build:
-# `make -f Makefile.amiga mrplay CABAC_PROFILE=1`.
+# CABAC_PROFILE=1 opts into the CABAC bin/coefficient/MV-prediction/mbinfo
+# timing breakdown (mrplay.c's "h264 cabac:" line, independent of
+# STAGE_PROFILE above) - see vendor/libavc_port/ih264d_cabac_profile.h. Off
+# by default for the same reason: real per-call clock() overhead, and it
+# also swaps out ih264_m68k_cabac.S's zero-overhead direct
+# __wrap_ih264d_decode_bin export for ih264d_cabac_wrap.c's timed C
+# trampoline, and additionally links in ih264d_mbinfo_wrap_port.c's
+# __wrap_ih264d_get_mb_info_cabac_nonmbaff (see libavc.mk's CABAC_PROFILE
+# check on LIBAVC_M68K_LDFLAGS) - not linked at all otherwise - so a
+# profiling build is deliberately not the fastest build. Use for a one-off
+# profiling build: `make -f Makefile.amiga mrplay CABAC_PROFILE=1`.
 CABAC_PROFILE_FLAGS =
 ifeq ($(CABAC_PROFILE),1)
 CABAC_PROFILE_FLAGS = -DMR_H264_CABAC_PROFILE=1

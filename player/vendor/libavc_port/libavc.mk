@@ -28,6 +28,7 @@ LIBAVC_PORTSRC = $(LIBAVC_PORT)/ih264d_function_selector_port.c \
                  $(LIBAVC_PORT)/ih264_m68k_cabac_coeff.S \
                  $(LIBAVC_PORT)/ih264_m68k_cabac_coeff8x8.S \
                  $(LIBAVC_PORT)/ih264d_parse_cabac_coeff_port.c \
+                 $(LIBAVC_PORT)/ih264d_mbinfo_wrap_port.c \
                  $(LIBAVC_PORT)/ih264_m68k_iquant_itrans_recon.S \
                  $(LIBAVC_PORT)/ih264_m68k_intra_pred.S \
                  $(LIBAVC_PORT)/ih264_m68k_bs.S \
@@ -54,3 +55,15 @@ LIBAVC_M68K_LDFLAGS = -Wl,--wrap=ih264d_decode_bin \
                       -Wl,--wrap=ih264d_parse_residual4x4_cabac \
                       -Wl,--wrap=ih264d_read_coeff4x4_cabac \
                       -Wl,--wrap=ih264d_update_qp
+# ih264d_mbinfo_wrap_port.c's __wrap_ih264d_get_mb_info_cabac_nonmbaff only
+# exists under MR_H264_CABAC_PROFILE (unlike every wrap above, which exist
+# unconditionally under MR_M68K_ASM) - it is a pure timing pass-through
+# with no asm replacement behind it, so there is nothing to gain from
+# linking it into a normal (non-profiling) build, only an unwanted extra
+# call/return layer on a function called once per macroblock. So this one
+# --wrap flag is only added when CABAC_PROFILE=1 is what actually defined
+# MR_H264_CABAC_PROFILE in the first place (see Makefile.amiga's
+# CABAC_PROFILE_FLAGS) - a normal build links zero bytes of this wrapper.
+ifeq ($(CABAC_PROFILE),1)
+LIBAVC_M68K_LDFLAGS += -Wl,--wrap=ih264d_get_mb_info_cabac_nonmbaff
+endif

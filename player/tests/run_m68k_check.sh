@@ -145,6 +145,7 @@ LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
     vendor/libavc_port/ih264_m68k_cabac_coeff.S \
     vendor/libavc_port/ih264_m68k_cabac_coeff8x8.S \
     vendor/libavc_port/ih264d_parse_cabac_coeff_port.c \
+    vendor/libavc_port/ih264d_mbinfo_wrap_port.c \
     vendor/libavc_port/ih264_m68k_iquant_itrans_recon.S \
     vendor/libavc_port/ih264_m68k_intra_pred.S \
     vendor/libavc_port/ih264_m68k_bs.S \
@@ -178,16 +179,17 @@ $CC -o "$BUILD/mr_decode.m68k" tests/mr_decode.c $CORE $LIBAVC_SRC \
 
 echo "== building mr_decode_cabac_profile.m68k (MR_H264_CABAC_PROFILE=1) =="
 # Same link, $CC_CABAC_PROFILE instead of $CC - proves the diagnostic bin/
-# coeff/mvpred timing build (ih264d_cabac_wrap.c's C trampoline,
-# ih264d_parse_cabac_coeff_port.c's and ih264d_mvpred_dispatch_port.c's
-# timing trampolines) compiles, links and decodes correctly, not just that
-# it happens to compile on the host. Not run through the full conformance
-# suite - one H.264 clip below is enough to prove the wrap sites fire
-# without corrupting decode; every other m68k build/test in this script
-# deliberately keeps using $CC/$CC_060 (no CABAC_PROFILE) so the real
-# production path - ih264_m68k_cabac.S's direct __wrap_ih264d_decode_bin
-# export, no C trampoline at all - is what actually gets exercised by
-# default.
+# coeff/mvpred/mbinfo timing build (ih264d_cabac_wrap.c's C trampoline,
+# ih264d_parse_cabac_coeff_port.c's, ih264d_mvpred_dispatch_port.c's and
+# ih264d_mbinfo_wrap_port.c's timing trampolines) compiles, links and
+# decodes correctly, not just that it happens to compile on the host. Not
+# run through the full conformance suite - one H.264 clip below is enough
+# to prove the wrap sites fire without corrupting decode; every other m68k
+# build/test in this script deliberately keeps using $CC/$CC_060 (no
+# CABAC_PROFILE) so the real production path - ih264_m68k_cabac.S's direct
+# __wrap_ih264d_decode_bin export, no C trampoline at all, and no
+# __wrap_ih264d_get_mb_info_cabac_nonmbaff linked in at all - is what
+# actually gets exercised by default.
 $CC_CABAC_PROFILE -o "$BUILD/mr_decode_cabac_profile.m68k" tests/mr_decode.c \
     $CORE $LIBAVC_SRC \
     -Wl,--wrap=ih264d_decode_bin \
@@ -195,7 +197,8 @@ $CC_CABAC_PROFILE -o "$BUILD/mr_decode_cabac_profile.m68k" tests/mr_decode.c \
     -Wl,--wrap=ih264d_mvpred_nonmbaffB \
     -Wl,--wrap=ih264d_parse_residual4x4_cabac \
     -Wl,--wrap=ih264d_read_coeff4x4_cabac \
-    -Wl,--wrap=ih264d_update_qp
+    -Wl,--wrap=ih264d_update_qp \
+    -Wl,--wrap=ih264d_get_mb_info_cabac_nonmbaff
 
 # AC-3 on a real big-endian target. The decoder's IMDCT runs through MintAMP's
 # vendored Rockbox FFT, whose MULT32 takes the high half of a 64-bit product

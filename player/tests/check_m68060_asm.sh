@@ -144,6 +144,7 @@ for f in $LIBAVC_PORT/ih264_m68k_interp.S $LIBAVC_PORT/ih264_m68k_deblk.S \
          $LIBAVC_PORT/ih264d_stage_profile.c $LIBAVC_PORT/ih264d_cabac_wrap.c \
          $LIBAVC_PORT/ih264d_mvpred_dispatch_port.c \
          $LIBAVC_PORT/ih264d_parse_cabac_coeff_port.c \
+         $LIBAVC_PORT/ih264d_mbinfo_wrap_port.c \
          $LIBAVC_PORT/ih264d_update_qp_wrap.c \
          $LIBAVC_PORT/ithread_port.c $LIBAVC_PORT/compat.c; do
     base=$(basename "$f"); base=${base%.*}

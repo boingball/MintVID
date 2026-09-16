@@ -22,13 +22,16 @@ typedef struct mr_h264_timing {
     unsigned long mc_us, deblock_us, recon_us, intra_us;
     /* Further sub-stages under MR_H264_CABAC_PROFILE
      * (vendor/libavc_port/ih264d_cabac_profile.h): CABAC bin decode,
-     * residual coefficient parsing, and MV prediction - see that header for
-     * why these three, and not a fourth "macroblock parsing" bucket, are as
-     * far as this breakdown goes. core_us minus all seven of mc/deblock/
-     * recon/intra/bin/coeff/mvpred is what remains unattributed - mostly
-     * macroblock-header syntax dispatch and per-MB bookkeeping. */
+     * residual coefficient parsing, MV prediction, and per-MB neighbour-
+     * availability/context setup - see that header for why these four, and
+     * not the mb_type/cbp/ref_idx/mvd/intra-mode/mb_qp_delta syntax
+     * dispatch itself, are as far as this breakdown goes. core_us minus
+     * all eight of mc/deblock/recon/intra/bin/coeff/mvpred/mbinfo is what
+     * remains unattributed - mostly that syntax-element dispatch and
+     * whatever per-MB bookkeeping mbinfo_us doesn't already cover. */
     unsigned long bin_us, bin_count, coeff_us, coeff_count;
     unsigned long mvpred_us, mvpred_count;
+    unsigned long mbinfo_us, mbinfo_count;
 } mr_h264_timing;
 typedef enum mr_h264_speed_mode {
     MR_H264_SPEED_QUALITY = 0,
