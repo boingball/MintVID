@@ -2963,6 +2963,67 @@ conditional CABAC bin for skip runs) - a real optimisation there, if one
 exists, is a separate follow-up from this measurement change, not
 something to guess at without the retest's numbers in hand.
 
+## mbinfo_us retest: real but modest - the syntax dispatch is still the dominant unmeasured cost
+The real-hardware retest the previous section asked for: a fresh
+`CPU=68060 STAGE_PROFILE=1 CABAC_PROFILE=1` GadTools Log capture, same
+setup as before (YouTube 360p progressive MP4, Turbo, A1200 68060/50,
+this time 114 decoded frames / 54 paired `h264 stages:`+`h264 cabac:`
+reports - a larger sample than the earlier 3-sample-by-hand estimate).
+Parsed and averaged all 54 reports (not eyeballed) as a fraction of
+`libavc-core`:
+
+| bucket | avg % of core | range |
+|---|---|---|
+| mc | 13.8% | 0.6-21.2% |
+| recon | 11.2% | 6.5-23.8% |
+| intra | 3.9% | 0.3-12.7% |
+| deblock | 0.0% | (Turbo disables it - unchanged from before) |
+| bin | 7.2% | 3.3-8.7% |
+| coeff | 5.4% | 4.3-7.8% |
+| mvpred | 2.4% | 0.1-4.1% |
+| **mbinfo** | **8.2%** | **4.1-9.7%** |
+| **remainder** | **47.8%** | **44.3-51.4%** |
+
+`mbinfo_us` is real - a consistent ~8% of total decode time, comparable in
+size to `bin_us` and bigger than `mvpred_us` - so `pf_get_mb_info` was
+genuinely worth measuring, not a rounding error. But it does not explain
+the earlier ~52-55% remainder the way the "if `mbinfo_us` turns out to
+explain most of that remainder" note above was hedging: carving ~8 points
+out of that ~55% (the same reports, same clip, same performance mode)
+leaves the remainder at ~48% - `55 - 8 ≈ 48`, exactly consistent with
+`mbinfo_us` being newly-separated-out from what used to be lumped into the
+remainder, not with it having been most of that remainder. `pf_parse_
+inter_mb` - the mb_type/cbp/ref_idx/mvd/intra-mode/mb_qp_delta syntax
+dispatch itself, still the one genuinely unwrap-able function pointer in
+this whole chain (same-file assignment, see the CABAC notes section above)
+- remains the single largest cost in H.264 decode on this real target by a
+wide margin: bigger than mc+recon+intra combined (~29%), bigger than
+bin+coeff+mvpred+mbinfo combined (~23%), and roughly double the next
+largest named bucket (`mc` at 13.8%).
+
+This closes out the "if mbinfo turns out to explain most of that
+remainder" branch from the previous section with a real answer (no, not
+most of it) rather than leaving it open, and reconfirms - now with actual
+per-bucket real-hardware proportions instead of a single unattributed
+number - the CABAC notes section's own conclusion that reaching for direct
+measurement of `pf_parse_inter_mb` itself (which needs reimplementing the
+~200-line dispatcher, the same shape of fix already applied for `--wrap`-
+reachable functions like `ih264d_mvpred_dispatch_port.c`) is the only way
+to attribute the remaining ~48% further, not something derivable from
+wrapping more adjacent function pointers - `pf_get_mb_info` was the one
+other genuinely wrap-able per-MB pointer in the whole call graph, and it
+has now been tried.
+
+Also visible in this capture, unrelated to the mbinfo question but worth
+recording: `decoded`/`presented` stayed at 0.5-0.9 fps throughout (target
+25 fps) and `hw-starvations` climbed to 143 by the session's end (114
+frames, `timing/114 frames: decode=132208 ms` - 1160 ms/frame average) -
+this specific test run was plain Turbo with no Skip Frames/dynamic-skip
+and no `--throughput` override visible in the log, so it is not a
+regression report, just confirmation that a 360p YouTube stream is still
+nowhere near real-time on this target under Turbo alone, consistent with
+every other 360p/A1200 capture already on record in this file.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
