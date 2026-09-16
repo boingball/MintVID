@@ -3485,47 +3485,61 @@ is arguably still closer to the ~42% pre-terminate/mbtype figure than the
 ~28% post figure, since a meaningful share of that drop is overlap
 double-subtraction rather than newly-attributed disjoint cost.
 
-## Plain --time capture: real decode is faster than every profiled number, but not a clean comparison
+## Plain --time capture: instrumentation really was costing ~3x, confirmed near-cleanly
 The user's own closing capture for this investigation round: a plain
 `--time` run (no `STAGE_PROFILE`/`CABAC_PROFILE`) on the same A1200
-68060/50, YouTube 360p. `timing/74 frames: decode=29725 ms` - 401.7 ms/frame
-average (387.4 ms sum-weighted across the 19 non-startup `rtg timing`
-lines), well under half of the ~1100-1360 ms/frame seen in every
-`CABAC_PROFILE`/`STAGE_PROFILE` capture in the sections above. This is
-real signal that the instrumentation tax flagged when the first
-`STAGE_PROFILE`/`CABAC_PROFILE` capture landed ("almost certainly overstate
-how slow the real, non-instrumented production `mrplay` is on this same
-clip") was correct in direction.
+68060/50, YouTube 360p, containing two back-to-back sessions in one log.
+The first (`H.264 performance: Turbo+`, PB-skip/keyframes-only) was a
+throwaway - one frame only (`timing/1 frames: decode=872 ms`) before the
+user restarted with the intended settings. **The real capture is the
+second session**, explicitly re-printing `H.264 performance: Turbo
+(B-skip, bilinear MC)` before playback - the identical performance mode
+every `CABAC_PROFILE`/`STAGE_PROFILE` capture in the sections above used.
+`timing/74 frames: decode=29725 ms` - 401.7 ms/frame average (387.4 ms
+sum-weighted across the 19 `rtg timing` lines from this session), against
+the ~1100-1360 ms/frame seen throughout the CABAC/STAGE-instrumented
+captures at the same Turbo mode. A first pass at this write-up mistakenly
+averaged in the one-frame Turbo+ session and mis-stated the performance
+mode for the whole capture - corrected here, since the real 74-frame
+block was Turbo all along.
 
-**It is not, however, a clean apples-to-apples number, and claiming a
-precise "2-3x instrumentation overhead" from it would overstate what this
-one capture actually proves.** This run's own log lines show two
-differences from every prior profiled capture, not one: `H.264
-performance: Turbo+ (PB-skip, keyframes only)` (every prior CABAC/STAGE
-capture used plain Turbo, B-skip only) and `c2p=wpa` (Standard/portable
-C2P; every prior capture used `c2p=kalms-040`). Turbo+'s `IVD_SKIP_PB`
-policy means only IDR pictures are actually decoded in full - every P/B
-picture between them is a near-zero-cost header-only skip (see the H.264
-CABAC notes section's own description of `IVD_SKIP_PB`) - so `decoded fps`
-sitting at ~1.0-1.3 fps here plausibly reflects "one real keyframe decode
-roughly every second," not "every displayed frame costs ~400ms" the way
-Turbo's B-skip-only captures decoded most P-frames for real. Both the
-performance mode and the C2P backend changed between this capture and
-every number in the sections above, so this cannot be read as "the same
-decode, minus profiling overhead" - it is a genuinely different workload
-that happens to also lack instrumentation. A real, isolated instrumentation-
-overhead number would need a plain `--time` run at the *same* Turbo/
-`c2p=kalms-040` settings as the CABAC_PROFILE captures, which does not
-exist yet and was not requested further this round.
+The one setting that does still differ is C2P backend: `c2p=wpa`
+(Standard/portable) here versus `c2p=kalms-040` in every prior profiled
+capture. That is not a meaningful confound for this comparison - C2P
+converts already-decoded pixels for display and is entirely downstream
+of `vdecode`/`libavc-core`, the figures both this number and every
+profiled one are built from; nothing about which C2P kernel is running
+changes what libavc itself does. So, mode held constant and the one
+remaining difference being causally irrelevant to the measured quantity,
+this is a genuinely clean confirmation: **real production H.264 decode
+on this content is roughly 2.7-3.4x faster than every CABAC_PROFILE/
+STAGE_PROFILE number in this file's own investigation chain reported** -
+the instrumentation-tax warning made when the first such capture landed
+("almost certainly overstate how slow the real, non-instrumented
+production `mrplay` is") was not just directionally right but
+substantially so.
 
-No code was changed for this capture - it is a measurement result only,
-recorded here rather than acted on, since acting on a confounded number
-would risk exactly the kind of "looked reasonable but wasn't retested"
-mistake this file exists to avoid repeating (see e.g. the AGA copper
-shutdown-crash section's "two attempts... both looking equally reasonable
-until actually tested" lesson).
+This does not retroactively invalidate the *proportions* measured inside
+those captures (mc/recon/bin/coeff/mbinfo/mbparse/intramb/terminate/
+mbtype's relative shares of `core_us`, and the remaining unattributed
+~28-42%) - those are ratios internal to one instrumented run and stay
+valid for what they showed about relative cost. It does mean the
+*absolute* millisecond figures quoted alongside them throughout this
+whole chain were never a good proxy for real playback smoothness on
+their own, and any future real-hardware capture aimed at "how slow is
+this stream really" should default to a plain `--time` run first, per
+this section, rather than reaching for `CABAC_PROFILE`/`STAGE_PROFILE`
+out of habit.
 
-## HAM8 + Kalms mouse-lag report: investigated, not confirmed, not fixed
+No code was changed for this capture - it is a measurement result,
+recorded here rather than acted on.
+
+## HAM8 + Kalms mouse-lag report: investigated from source, closed by the user independently
+**Resolved - the user identified the actual cause themselves, separately
+from this investigation.** Everything below is what this session checked
+before that happened (all real, none of it wrong, just superseded as the
+active lead) - kept as a record of what was ruled out at the source
+level, not as an open thread needing further data.
 A separate real-hardware report from the same session: HAM8 with Kalms
 C2P shows mouse-pointer lag during playback, which the user's own
 Amiga-experience read as a likely sign of hitting `68060.lib`'s
