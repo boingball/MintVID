@@ -2742,6 +2742,56 @@ banking more, whatever the eventual verdict on steady-vs-variance above)
 and whether `--time`'s `video-queue: cap=...` line now reports a
 meaningfully larger `cap=` than 16 on this machine's actual free RAM.
 
+## Default CPU=68060 mrplay build never actually linked MintAMP's polyphase asm
+A real toolchain hit on the first actual attempt to link `mrplay` for
+CPU=68060 with the default `ASM60_GROUPS`, while gathering an
+`STAGE_PROFILE=1 CABAC_PROFILE=1` trace for the 720p/Turbo investigation
+above: `undefined reference to AmigaM68KPolyphaseMonoFast`/
+`MonoFastPolyphaseStride4_Amiga_m68k`/dozens more, all from
+`build/vendor/MintAMP/real/polyphase.o` at the final link.
+
+Root cause, found by reading `Makefile.amiga`'s own `ASM60_GROUPS` table
+rather than guessing: `ASM60_FLAGS_poly060`/`ASM60_FLAGS_lowrate060` both
+set `-DAMIGA_M68K_POLYPHASE_68060`, which makes MintAMP's `real/polyphase.c`
+call straight into the hand-asm symbols `real/amiga_m68k_polyphase.S`
+defines - the exact same `.S` file the separate `asm_polyphase` group's own
+`ASM60_SRC_asm_polyphase` entry already points at. But `poly060`/
+`lowrate060` never had a matching `ASM60_SRC_poly060`/`ASM60_SRC_lowrate060`
+entry, so `MINTAMP_ASM_SOURCES` (built only from the groups actually present
+in `ASM60_GROUPS`) never pulled that file in for the *default*
+`ASM60_GROUPS ?= lowrate060 huffman midside planars8`. The C dispatch code
+that calls those symbols was correctly compiled in and reachable - the
+symbols it calls just never existed in the link. `huffman`/`midside`
+(also in the default set) don't need a source-list entry at all - they're
+inline asm inside plain `.c` files already on the normal source list, not a
+separate `.S` - so the gap was specific to the polyphase-family groups, and
+only the one group (`asm_polyphase`) that happens not to be in the default
+selection was ever correctly wired.
+
+This means every default-flags `CPU=68060 mrplay`/`mrplay` release build
+was always going to fail this exact link, on any real `m68k-amigaos-gcc`
+toolchain - it simply hadn't been attempted on one until now. Exactly the
+class of gap this file's "Validate against ffmpeg" section exists to name:
+`make -f Makefile.amiga -n mrplay CPU=68060 AMIGA_GCC=/fake/...` dry-runs
+elsewhere in this file's history checked *which flags* land on the compile
+line, but nothing before this had checked whether the *source file list*
+computed from `ASM60_GROUPS` was actually complete - qemu/ELF can't catch
+this either, since it's a link-time source-selection gap in this Makefile,
+not an instruction-safety or bit-exactness question `check-m68k` covers.
+
+Fixed by adding the two missing entries (`ASM60_SRC_poly060`/
+`ASM60_SRC_lowrate060 := $(MINTAMP_ROOT)/real/amiga_m68k_polyphase.S`,
+mirroring `ASM60_SRC_asm_polyphase`'s existing line). Verified with a
+before/after dry-run diff (`make -f Makefile.amiga -n mrplay CPU=68060
+AMIGA_GCC=/fake/m68k-amigaos-gcc`, grepping for `amiga_m68k_polyphase.S` on
+the resulting compile/link line): 0 occurrences before this fix, 1 after,
+for the exact default `ASM60_GROUPS` a plain `CPU=68060` build uses;
+`CPU=68030` (the separate `MINTAMP_ASM_SOURCES_FULL030` path, untouched by
+this table at all) still shows 1 either way, confirming the fix is scoped
+to the 68060 branch and changes nothing for 68030/040. Not yet confirmed
+by an actual completed real link - the user is rebuilding with this fix on
+their own `m68k-amigaos-gcc 13.2.0` toolchain now.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.

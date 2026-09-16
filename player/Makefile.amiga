@@ -221,6 +221,22 @@ ASM60_FLAGS_full030             := $(MINTAMP_ASM_CPPFLAGS_FULL030)
 
 ASM60_SRC_planars8      := $(MINTAMP_ROOT)/amiga_m68k_planars8.S
 ASM60_SRC_asm_polyphase := $(MINTAMP_ROOT)/real/amiga_m68k_polyphase.S
+# poly060/lowrate060 both set -DAMIGA_M68K_POLYPHASE_68060 (ASM60_FLAGS_
+# poly060/lowrate060 above), which makes real/polyphase.c call straight
+# into the asm symbols amiga_m68k_polyphase.S defines - the same .S file
+# asm_polyphase's own ASM60_SRC entry above already points at. Without an
+# ASM60_SRC_poly060/lowrate060 entry too, MINTAMP_ASM_SOURCES (built only
+# from the groups actually present in ASM60_GROUPS) never pulls that file
+# in for a default `ASM60_GROUPS ?= lowrate060 huffman midside planars8`
+# build - the C dispatch code is compiled in and reachable, but its own
+# asm implementation never gets linked: "undefined reference to
+# AmigaM68KPolyphaseMonoFast"/`MonoFastPolyphaseStride4_Amiga_m68k`/etc.
+# from build/vendor/MintAMP/real/polyphase.o at the final `mrplay` link,
+# on every default-group CPU=68060 build. Real m68k-amigaos-gcc link
+# failure - qemu/ELF can't catch this (it's a link-time source-list gap,
+# not an instruction-safety or bit-exactness question).
+ASM60_SRC_poly060       := $(MINTAMP_ROOT)/real/amiga_m68k_polyphase.S
+ASM60_SRC_lowrate060    := $(MINTAMP_ROOT)/real/amiga_m68k_polyphase.S
 ASM60_SRC_full030       := $(MINTAMP_ASM_SOURCES_FULL030)
 
 ASM60_KNOWN := huffman dequant imdct fdct32 antialias midside intensity \
