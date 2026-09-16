@@ -3485,6 +3485,117 @@ is arguably still closer to the ~42% pre-terminate/mbtype figure than the
 ~28% post figure, since a meaningful share of that drop is overlap
 double-subtraction rather than newly-attributed disjoint cost.
 
+## Plain --time capture: real decode is faster than every profiled number, but not a clean comparison
+The user's own closing capture for this investigation round: a plain
+`--time` run (no `STAGE_PROFILE`/`CABAC_PROFILE`) on the same A1200
+68060/50, YouTube 360p. `timing/74 frames: decode=29725 ms` - 401.7 ms/frame
+average (387.4 ms sum-weighted across the 19 non-startup `rtg timing`
+lines), well under half of the ~1100-1360 ms/frame seen in every
+`CABAC_PROFILE`/`STAGE_PROFILE` capture in the sections above. This is
+real signal that the instrumentation tax flagged when the first
+`STAGE_PROFILE`/`CABAC_PROFILE` capture landed ("almost certainly overstate
+how slow the real, non-instrumented production `mrplay` is on this same
+clip") was correct in direction.
+
+**It is not, however, a clean apples-to-apples number, and claiming a
+precise "2-3x instrumentation overhead" from it would overstate what this
+one capture actually proves.** This run's own log lines show two
+differences from every prior profiled capture, not one: `H.264
+performance: Turbo+ (PB-skip, keyframes only)` (every prior CABAC/STAGE
+capture used plain Turbo, B-skip only) and `c2p=wpa` (Standard/portable
+C2P; every prior capture used `c2p=kalms-040`). Turbo+'s `IVD_SKIP_PB`
+policy means only IDR pictures are actually decoded in full - every P/B
+picture between them is a near-zero-cost header-only skip (see the H.264
+CABAC notes section's own description of `IVD_SKIP_PB`) - so `decoded fps`
+sitting at ~1.0-1.3 fps here plausibly reflects "one real keyframe decode
+roughly every second," not "every displayed frame costs ~400ms" the way
+Turbo's B-skip-only captures decoded most P-frames for real. Both the
+performance mode and the C2P backend changed between this capture and
+every number in the sections above, so this cannot be read as "the same
+decode, minus profiling overhead" - it is a genuinely different workload
+that happens to also lack instrumentation. A real, isolated instrumentation-
+overhead number would need a plain `--time` run at the *same* Turbo/
+`c2p=kalms-040` settings as the CABAC_PROFILE captures, which does not
+exist yet and was not requested further this round.
+
+No code was changed for this capture - it is a measurement result only,
+recorded here rather than acted on, since acting on a confounded number
+would risk exactly the kind of "looked reasonable but wasn't retested"
+mistake this file exists to avoid repeating (see e.g. the AGA copper
+shutdown-crash section's "two attempts... both looking equally reasonable
+until actually tested" lesson).
+
+## HAM8 + Kalms mouse-lag report: investigated, not confirmed, not fixed
+A separate real-hardware report from the same session: HAM8 with Kalms
+C2P shows mouse-pointer lag during playback, which the user's own
+Amiga-experience read as a likely sign of hitting `68060.lib`'s
+unimplemented-instruction emulation (a real, well-known 68060 symptom -
+see this file's own extensive `plm_audio_smul64_060`/`mr_u64_div_u16`
+family of fixes for the general mechanism). Investigated as far as this
+dev host allows, and explicitly **not** turned into a code change, because
+nothing found rises to this file's own bar for trusting a fix.
+
+Checked and ruled out at the *source* level: the four Kalms kernels
+actually wired into `Makefile.amiga`'s `KALMS_OBJ`
+(`c2p1x1_8_c5_040.s`, `c2p1x1_8_c5_bm_040.s`, `c2p2x2_8_c5_bm.s`,
+`c2p1x1_6_c5_bm_040.s` - the ones a HAM8 session under Kalms actually
+runs, since `aga_open()`'s `kalms_kind` selection is keyed on plane
+`depth` alone, and HAM8's 8 real bitplanes select the same kernel a
+plain 256-colour session would; this is architecturally expected, not a
+gap - 8-plane C2P transposition doesn't care what the 8-bit chunky value
+means, only how many bitplanes it fans out to, which is exactly why HAM6
+gets its own dedicated `KALMS_1X1_6` kernel while HAM8 correctly shares
+the 8-plane ones) contain no extended `MULS.L`/`MULU.L`, no `DIVS.L`/
+`DIVU.L` at all, and no `TAS`/`MOVEP`/`CAS2`/`CHK2` - only `mulu.w`
+(2-operand, hardware since the 68000, the same safe form this project's
+own MP2/68060 kernels already rely on). The classic trap mechanism this
+file documents at length elsewhere doesn't show up in these kernels'
+source. `vendor/kalms-c2p/ham8/*.s` (a different, unused set of files
+with "h8" in the name) turned out to be a red herring - reading their
+actual operation, they are an RGB→HAM8 *encoder*, not a C2P kernel, and
+are referenced by nothing in `Makefile.amiga` at all; this project's own
+portable-C `mr_ham_encode()` does that job instead.
+
+**A source grep is not the level of proof this file normally insists on,
+though, and getting further needs real work this dev host cannot
+finish in one pass.** No Kalms kernel of any kind has ever been run
+through `tests/check_m68060_asm.sh`'s real disassembly scan - a genuine,
+previously-undocumented coverage gap, unlike every project-authored `.S`
+file in `core/`/`vendor/libavc_port/`. Attempting to close it directly:
+`m68k-linux-gnu-as` refuses these files outright - they use Amiga-
+assembler syntax (`;` line comments, `section code,code`, colon-less
+`XDEF`-exported labels) GNU as does not understand. A first mechanical
+translation pass (strip `;` comments, `section` → `.text`, `XDEF` →
+`.globl`) got further but still failed on ordinary instructions like
+`swap d4` and `movem.l d2-d7/a2-a6,-(sp)` with "operands mismatch" -
+GNU as's default m68k dialect in this cross toolchain evidently
+disagrees with something more structural than comments (colon-less
+label syntax is the leading suspect, since PhxAss/vasm-style assemblers
+accept a bare label at column 0 where GNU as wants `label:`, and a
+misparsed label can desynchronise everything that follows it on the same
+statement). Turning this into a fully working GNU-as translation - and
+then a real disassembly answer via the existing `scan_m68060_forbidden.py`
+- is real, bounded engineering work, just not work this pass finished;
+it was not pushed further once it became clear "confirm or deny the
+68060.lib theory" needed a genuine syntax port, not a quick fix.
+
+**No fix was made for this report**, on purpose: every candidate this
+session considered (excluding Kalms from HAM8 the way the AGA copper-
+vdouble section's own prose already claims happens, when the code
+actually doesn't do that) would be a guess dressed up as a fix, exactly
+the thing this file's own discipline throughout the H.264 CABAC
+investigation above refuses to do without a number in hand first. What
+*is* useful right now, needing no code change and no more of the user's
+time than one side-by-side comparison: play the same clip as HAM8 with
+Kalms C2P, then again as HAM8 with `--c2p`/"Portable" (Standard), same
+resolution and scale. If the lag tracks Kalms specifically (present with
+Kalms, gone with Standard), that is real, actionable evidence pointing
+back at the Kalms kernel; if HAM8 lags similarly either way, the cause is
+upstream of C2P entirely (most likely `mr_ham_encode()`'s own dither cost,
+or simply CPU saturation from full-screen HAM8 encode+C2P+blit at every
+frame, not a trap at all) and the Kalms kernel is cleared. Either result
+is more useful than a guessed patch, and neither needs a rebuild.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
