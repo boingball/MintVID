@@ -3821,6 +3821,163 @@ undertaking than what this section attempted, with its own differential
 fuzz-testing needs, not something to reach for again without deciding
 that undertaking is worth it explicitly.
 
+## Tried and reverted: a genuine hand-asm reimplementation of ih264d_parse_mb_type_cabac()
+Direct follow-up, taking the larger lever the section above named and
+declined to start without an explicit go-ahead: implement, verify
+bit-exact, and benchmark a real hand-written m68k reimplementation of the
+CABAC mb_type binarization control flow itself (spec table 9-37), not
+just a call-forwarding trick. This is the fuller, more honest test of
+whether that whole angle helps at all - and the answer turned out to be
+no, decisively, once actually measured.
+
+**The change**: a new `vendor/libavc_port/ih264_m68k_mbtype_cabac.S`
+reimplemented `ih264d_parse_mb_type_cabac()`'s full SI/P/B dispatch by
+hand, keeping the CABAC engine state (range, offset, the cabac_table
+pointer, the bitstream pointer) pinned in registers across every bin one
+macroblock's mb_type decode needs, instead of round-tripping each value
+through `ps_dec->s_cab_dec_env`/`ps_bitstrm` on every individual
+`ih264d_decode_bin()` call the way the C version does. A new `--wrap`
+port file (`ih264d_mbtype_cabac_wrap_port.c`, same GNU ld mechanism as
+every other wrap in this chain) redirected the one real call site
+(`ih264d_parse_pslice.c`'s shared per-MB loop - confirmed by grep to be
+the only cross-file reference, the same check every wrap in this family
+starts with) to the new asm, unconditionally under `MR_M68K_ASM` - a
+production optimisation, not a CABAC_PROFILE-gated diagnostic. The
+pre-existing `ih264d_mbtype_wrap_port.c` (a pure timing pass-through
+feeding the `mbtype_us` CABAC-profiling bucket from earlier in this file)
+was folded into the new wrap file rather than kept alongside it, since
+both wanted to provide the same `__wrap_ih264d_parse_mb_type_cabac`
+symbol and only one function can.
+
+**Two real bugs, both caught by differential testing before any timing
+number was trusted - worth recording in full since both are exactly the
+class of mistake this style of hand-asm is prone to, and neither was
+visible from reading the code:**
+
+1. The differential test (`tests/mr_h264_mbtype_cabac_check.c`, modelled
+   on `mr_h264_mvpred_dispatch_check.c`'s real-`dec_struct_t` pattern) was
+   *first* built with `--wrap=ih264d_parse_mb_type_cabac` on its own link
+   line - which redirected the test's own plain-named "real" call to the
+   asm wrapper too, silently comparing the asm against itself instead of
+   the genuine vendored C. Every initial run "passed" for the wrong
+   reason. Caught by checking `mr_h264_mvpred_dispatch_check.m68k`'s own
+   build line (no `--wrap` at all - the real symbol and the `__wrap_`
+   symbol are both called by their own plain names with no linker
+   redirection active) and matching that precedent instead.
+2. Once genuinely comparing against the real C, the test failed ~78,000
+   of 60,000 iterations (more than one failure per iteration in places)
+   with wildly out-of-domain range/val_ofst values. Two distinct causes,
+   found by reading the failing leaf paths against the asm, not guessed:
+   - Several leaf paths (SI_FLAT, P_INTER, B_SKIP, four B-slice
+     sub-branches) computed the correct mb_type return value into d0 but
+     never flushed the still-live d0/d1 (range/val_ofst) to
+     `ps_dec->s_cab_dec_env` before overwriting d0 with that return value
+     - only the paths that call out to `ih264d_parse_mb_type_intra_cabac`/
+     `ih264d_decode_bins` flushed, since those genuinely need fresh memory
+     state for the callee. Every non-call leaf needed its own flush
+     inserted immediately before d0 was repurposed.
+   - The P_SLICE inter path held b1's decoded value in d5 across the
+     subsequent bin-decode call that reads b2 - but that shared bin-decode
+     core's own documented clobber list includes d5, so the second call
+     silently destroyed it, corrupting the final `(b1<<1)+b2` computation
+     with whatever the b2 decode's own internal scratch use had left in
+     d5. Fixed by saving b1 on the stack across that one call instead of
+     in a register the shared core might clobber.
+   Both fixes brought the differential test (60,000 iterations, all 11
+   leaf branches hit well above the minimum coverage bar) to a clean pass
+   with zero failures - genuinely bit-exact against the real C this time,
+   confirmed by the corrected build.
+
+**Full correctness re-verified with the real bugs fixed**: `make check`
+(host) passed unchanged. `make check-m68k` (the full conformance suite,
+including the new differential test wired into `tests/run_m68k_check.sh`
+the same no-`--wrap`-for-the-function-under-test way as its mvpred
+sibling) passed end to end - `test_h264_high.mp4`'s worst-frame MAE
+unchanged at 0.705, identical to every build in this whole investigation
+chain. `tests/check_m68060_asm.sh`'s disassembly scan (the new `.S`/port
+file added to the existing whole-object H.264 scan list) reported clean -
+no extended MULS.L/MULU.L, no extended-dividend divide, no libgcc 64-bit
+calls.
+
+**The benchmark, and the actual finding**: qemu-m68k wall-clock, same
+methodology as the section above - a baseline build (real C, no
+`--wrap=ih264d_parse_mb_type_cabac`) against the asm build (production
+default, wrap active), both at identical `-m68030` flags otherwise.
+
+- `test_h264_high.mp4` (the standard 128x96/24-frame conformance fixture,
+  small MB count): baseline mean **0.1206 s**, asm mean **0.1376 s** -
+  **~14% slower**, consistent across 5 runs each side (baseline range
+  0.1176-0.1271 s, asm range 0.1366-0.1390 s - non-overlapping).
+- A generated 640x360/25fps/8s synthetic clip (`libx264 -profile high`,
+  ad hoc, not checked in - same "not committed" precedent as the earlier
+  `mr_h264_set_dynamic_skip()`/weighted-pred host probes in this file),
+  chosen specifically to raise the macroblock count and so the relative
+  weight of `mb_type_cabac` itself: baseline mean **1.835 s**, asm mean
+  **2.524 s** - **~38% slower**, an even larger regression, not a smaller
+  one, as MB density (and so call frequency) went up.
+
+That second result is the one that matters: if the slowdown were fixed
+per-call overhead unrelated to how often the function runs, a
+denser clip would dilute it, not amplify it. Instead the gap *grew*
+substantially with call frequency, which is the signature of a real,
+scaling per-call cost, not noise or a fixed one-time tax.
+
+**Why, read from the two builds' own structure rather than guessed**: the
+"genuine reimplementation" approach replaces a per-bin call chain that -
+per the section directly above this one - was *already* effectively
+free (`__wrap_ih264d_decode_bin` compiles to a single `bral` straight
+into the same hand-tuned bin-decode core this new function's own `.Lbin`
+copies). So there was less real overhead to remove than the design
+assumed going in. Meanwhile the new function pays two costs the compiled
+C path did not have to: `mr_ih264d_parse_mb_type_cabac_m68k` saves/
+restores eleven registers (`movem.l %d2-%d7/%a2-%a6`, 44 bytes each way)
+on *every* call regardless of which leaf branch actually runs, including
+the cheapest ones (SI_FLAT, B_SKIP - a single bin decode) - a fixed tax
+GCC's own per-branch register allocation for the original C function has
+no equivalent of paying unconditionally; and every one of this function's
+own internal bin decodes now goes through a real `bsr`/`rts` pair to its
+local `.Lbin` subroutine, where the baseline's C path reaches the same
+underlying asm core via what is, per the section above, already a free
+tail call with no call frame at all - so this rewrite traded a chain that
+was free for one that is not. Both costs scale with how often the
+function is called (more macroblocks, more `movem.l` pairs and more
+`bsr .Lbin` round trips), matching the observed direction exactly. This
+was not measured or ruled out at implementation time - it follows
+directly from the structure now that the benchmark's direction is known,
+the same kind of after-the-fact structural explanation the section above
+already modelled correctly.
+
+**Reverted, per the same standing instruction as every attempt in this
+chain**: `ih264_m68k_mbtype_cabac.S`, `ih264d_mbtype_cabac_wrap_port.c`
+and `tests/mr_h264_mbtype_cabac_check.c` deleted; `ih264d_mbtype_
+wrap_port.c` restored; `vendor/libavc_port/libavc.mk`, `tests/
+run_m68k_check.sh` and `tests/check_m68060_asm.sh` reverted to their
+pre-change state (`git checkout --`). `make check-m68k` re-run after the
+revert to confirm it reproduces the exact pre-existing passing state, not
+just that the revert applied cleanly.
+
+The practical upshot for anyone revisiting "make mbtype_us faster" yet
+again: both real levers this file identified for this specific function -
+redirecting the bin-decode call chain, and a full register-cached
+reimplementation of the dispatch itself - have now been tried, verified
+correct (the second one only after real differential-testing work
+surfaced and fixed two genuine bugs), benchmarked, and found to make
+real production decode measurably *slower*, not faster, with the
+evidence pointing at fixed per-call register-save/call-frame overhead in
+a hand-written multi-branch dispatch outweighing whatever memory-
+round-trip savings it was designed to capture. A future attempt would
+need a fundamentally different structure - e.g. only entering the
+register-cached path for the multi-bin branches that actually chain
+several bin decodes together (B-slice's deeper sub-branches), falling
+straight through to the plain C/already-free-tail-call path for the
+cheap single-bin leaves that dominate real content (P_INTER, B_SKIP,
+SI_FLAT - see the mbparse_us retest's own "~65-73% of macroblocks are
+skip or intra" findings elsewhere in this file for why those leaves
+dominate) - not a blanket reimplementation of every branch. Not attempted
+here; this section's job was to test the blanket version honestly and
+report what it actually measured, not to iterate further within the same
+session.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
