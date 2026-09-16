@@ -2500,6 +2500,155 @@ recurring on a completely different platform (JIT-emulated 68040), which
 makes it more likely to be a real, codec/scheduler-level cost than
 something specific to one CPU tier's silicon quirks.
 
+## 720p H.264 decode: a real per-macroblock cost, not a decoder-scaling bug
+Follow-up to the WinUAE 720p investigation above. The user's own steer once
+the JIT/asm-hostility angle was on the table: don't chase whether WinUAE's
+JIT accelerates the hand-tuned `.S` kernels well - "if WinUAE can't run our
+ASM good, that's their issue" - instead look for a real, decoder-internal
+cause. The `M68K_ASM=0` `Makefile.amiga` diagnostic from that earlier
+section was reverted outright (the JIT-hostility question it existed to
+answer was explicitly deprioritized, not investigated further) - CFLAGS is
+back to a hardcoded `-DMR_M68K_ASM=1` with no build-time toggle.
+
+**Two measurement pitfalls surfaced before any real finding, both worth
+recording since they'd otherwise mislead a future profiling pass on this
+codebase specifically.**
+
+First: `tests/mr_decode.c`'s `--time` output is only representative of real
+playback when paired with `--h264-yuv`. Without it, every profiled frame
+pays `emit_rgb()`'s RGB24 conversion (`mr_yuv420_to_rgb24()` alone was 36%
+of total instructions in an early host callgrind capture) - but
+`amiga/mrplay.c` already routes essentially every real H.264 display path
+(RTG CGX/P96, and the AGA RGB fallback) through `mr_h264_set_yuv_output()`
+instead, exactly as this file's own "RGB24 round-trip is the expensive
+part" note already established for MPEG-2. The test harness's default output
+mode and real playback's actual output mode had quietly diverged; `--h264-yuv`
+is the flag that puts them back in step, and any future host-side H.264
+profiling on this codebase needs it or the numbers describe a cost nothing
+in `mrplay.c` actually pays.
+
+Second: the existing `STAGE_PROFILE`/`CABAC_PROFILE` clock()-based
+per-primitive breakdown (mc/deblock/recon/intra, bin/coeff/mvpred) is not
+trustworthy under qemu-m68k once macroblock count gets large. At 720p
+(3600 MB/frame, vs. the existing fixture's 48 MB/frame), the reported
+`mc_us + deblock_us + recon_us + intra_us` summed to roughly *13x* the
+enclosing `core_us` span they are nested inside of - physically impossible
+for a real measurement, since core_us wraps the exact call that contains
+all of the others. Removing `CABAC_PROFILE` (dropping ~483,000 clock()
+calls/decode) barely moved the numbers, ruling out CABAC's own call volume
+as the cause. The real explanation: each `clock()` call is a real syscall
+qemu-user has to trap, and that trap cost is roughly constant per call -
+paid twice for the single core_us span, but paid once per MB-level
+primitive call for the nested timers, so at 3600 MB/frame the nested sum is
+dominated by profiling overhead, not real work. Comparing wall time with
+instrumentation on vs. off confirmed this isn't free (76% more wall time,
+mostly `sys` time) even though the *shape* of the distortion (13x) is far
+worse than the wall-time-overhead ratio (1.75x) would suggest on its own.
+Conclusion: this instrumentation is fine for small fixtures (the existing
+128x96 clip) but unusable for judging *relative stage cost* at 720p-class
+macroblock counts; a host callgrind profile (instruction-count based, no
+per-call syscall trap) is the right tool instead, matching exactly how this
+file's own H.264 CABAC notes section already characterized the CABAC/MV-
+prediction split via "a real-hardware trace and a host callgrind profile."
+
+**With both pitfalls avoided, two real, load-bearing findings came out of
+qemu-m68k wall-clock timing and host callgrind profiling of a generated
+1280x720 clip (ad hoc, not checked in - same "not committed" precedent as
+the earlier `mr_h264_set_dynamic_skip()` host probes in this file):**
+
+1. **No algorithmic complexity blow-up.** Real (non-instrumented) qemu-m68k
+   wall time across four resolutions (320x240 through 1280x720, same
+   encode settings) fits a clean `total_us ≈ 3.18ms fixed + 15.8us/MB`
+   linear model (predicted vs. actual differ by well under 1ms across all
+   four points) - macroblock count, not pixel count non-linearly, is what
+   decode cost tracks, exactly as a per-macroblock pipeline should scale.
+   Per-MB cost actually *drops slightly* at 720p vs. the tiny existing
+   fixture (fixed per-frame overhead amortizing over more MBs), the
+   opposite of what a superlinear "decoder limitation" would look like.
+   This directly answers "are we hitting a limitation of the decoder" in
+   the complexity sense: no.
+
+2. **A real, previously undocumented inefficiency: explicit weighted
+   prediction is dispatched from the PPS capability bit, not from whether
+   the slice's actual signalled weights are non-default.**
+   `ih264d_inter_pred.c` sets `u1_wght_pred_type` for P/SP slices straight
+   from `ps_cur_pps->u1_wted_pred_flag`, and for B slices from
+   `u1_wted_bipred_idc` - both are per-PPS/per-slice-type capability
+   flags, set once by the encoder for the whole stream, saying "this
+   stream *may* signal explicit per-reference weights," not "this
+   particular slice's weights are actually non-default." A host callgrind
+   profile of the generated 720p clip (`--h264-yuv`, matching real
+   playback - see above) showed `ih264_weighted_pred_luma`/`_chroma`
+   consuming **~31% of total decode instructions even with zero B-frames**
+   - yet x264's own encoder log for that exact clip reported
+   `Weighted P-Frames: Y:0.0% UV:0.0%`: the encoder never used a non-
+   default weight, but every P-slice inter macroblock still paid the
+   expensive explicit-weight multiply/round/clip path regardless, because
+   `weighted_pred_flag=1` is x264's own default for High-profile P-slices
+   (`weightp=2`, "smart" analysis) independent of whether any block ends
+   up using a non-trivial weight. High profile is the most common H.264
+   profile in real broadcast/streaming encodes, so this is very unlikely
+   to be specific to the synthetic test clip.
+
+   **Fixed in the `vendor/libavc` fork** (`boingball/libavc`, branch
+   `claude/weighted-pred-trivial-skip`, commit `cb8d7c3` - kept off
+   `main` deliberately: `main` had independently diverged with a large,
+   unrelated upstream ARM/encoder/mem_fns sync in the time between
+   branching and finishing this fix, and merging into it would have
+   pulled in changes never validated against this project's own patches
+   - the parent repo's submodule gitlink points straight at the fix
+   commit instead of at `main`, which is a normal, fully-supported way to
+   pin a submodule). `ih264d_parse_pred_weight_table()` (the function that
+   implements `pred_weight_table()` of spec section 7.3.3.2, called
+   exactly when `weighted_pred_flag`/`weighted_bipred_idc==1` requires it)
+   now computes, once per slice, whether every parsed luma/chroma
+   weight/offset across every active reference in every list equals the
+   implicit default (`weight == 1<<log2_denom`, `offset == 0` - the same
+   packed representation the parser already uses for both the explicit and
+   implicit-default cases, so one integer comparison per reference covers
+   both) and stores the result as a new `dec_slice_params_t` field,
+   `u1_wts_ofst_trivial`. `ih264d_inter_pred.c`'s dispatch downgrades
+   `u1_wght_pred_type` to 0 (the cheap default/unweighted path, which
+   already exists and is already used for the genuinely-unweighted case)
+   whenever that flag is set - for P/SP slices unconditionally, and for B
+   slices only when `weighted_bipred_idc==1` (explicit). Implicit weighted
+   bi-prediction (`idc==2`) is deliberately untouched: those weights are
+   derived per-MB from POC distance, never come through
+   `pred_weight_table()` at all, and can be genuinely non-trivial frame to
+   frame - `u1_wts_ofst_trivial` doesn't apply to it and the existing
+   `idc==2` handling is unchanged. The flag can never cause an incorrect
+   downgrade from a stale previous value: `pred_weight_table()` is
+   unconditionally re-parsed (and the flag freshly recomputed) on every
+   single slice where the PPS/idc condition would otherwise set a nonzero
+   `u1_wght_pred_type` in the first place, so by the time the flag is ever
+   consulted it always reflects the current slice.
+
+   Verified bit-exact three ways before trusting it: `make check` (host,
+   full ffmpeg-oracle suite, unchanged worst-frame MAE on every existing
+   H.264 fixture) and `make check-m68k` (real m68k/big-endian under qemu,
+   both the plain and `MR_H264_CABAC_PROFILE=1` builds, unchanged
+   worst-frame MAE) both pass; a direct before/after stash-and-rebuild
+   comparison decoded the generated 720p clip to PPM with the fix
+   reverted and re-applied and diffed the two output directories
+   byte-for-byte - identical. The actual win: a re-profile of the fixed
+   decoder shows `ih264_weighted_pred_luma`/`_chroma` gone entirely from
+   the callgrind top-functions list, **31% fewer total instructions** on
+   the no-B-frame 720p clip and **12% fewer** on the B-frame one (whose
+   dominant weighted-bipred cost there is the untouched `idc==2` implicit
+   case, not the explicit one this fix addresses).
+
+   Not yet confirmed: the real-hardware/WinUAE speedup this predicts.
+   Every number above is host-instruction-count or qemu-m68k wall-clock,
+   proving the fix is correct and that it removes real, measured work -
+   not a 68040/68060 timing claim, per this file's standing qemu-vs-
+   hardware caveat. The original WinUAE "50% of real-time decoding power"
+   report used YouTube Live content, whose actual encoder settings
+   (profile, `weightp`) are unknown from here; if that stream's PPS
+   doesn't set `weighted_pred_flag`/`weighted_bipred_idc==1` at all, this
+   fix buys it nothing, though High profile with default `weightp`
+   settings (as used here) is a common enough encoder default that it is
+   a reasonable first thing to have fixed.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
