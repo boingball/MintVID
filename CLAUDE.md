@@ -3302,6 +3302,96 @@ function boundary to hook - see the mbparse_us correction's own note)
 becomes the leading remaining suspect. Not guessed at further here without
 that data.
 
+## intramb_us retest, and terminate_us/mbtype_us: two more clean --wrap targets, still ~36% left over
+The real-hardware retest the previous section asked for landed (57 paired
+`h264 stages:`+`h264 cabac:` reports, `timing/117 frames: decode=139306 ms`,
+same A1200 68060/50 / YouTube 360p / Turbo setup as every capture in this
+chain). Sum-weighted across all 57 reports:
+
+| bucket | % of core |
+|---|---|
+| mbparse | 8.2% |
+| intramb | 5.0% |
+| remainder before mbparse+intramb | 49.5% |
+| **remainder after subtracting both** | **36.2%** |
+
+`intramb_us` answers the question the previous section left open, and the
+answer is "mostly skip, not mostly intra": `intramb_count` averaged only
+42.2% of the `mbinfo_count - mbparse_count` "skip-or-intra" gap (range
+0-90.9%), not the "close to 100%" that would confirm intra dominates. So
+per that section's own decision rule, the still-unmeasured skip-path
+per-MB-loop bookkeeping (`memset`, `ih264d_update_nnz_for_skipmb()` - no
+function-pointer or cross-file-call boundary to hook, unlike every bucket
+built so far) is a real candidate for (part of) the remaining ~36%, not
+ruled out the way it would have been had intramb_us come back large.
+
+**Two more genuinely wrap-able per-MB costs, found by re-reading the same
+shared per-MB loop (`ih264d_parse_inter_slice_data_cabac()` in
+`ih264d_parse_pslice.c`) once more with the ~36% remainder as the target:**
+
+- **`ih264d_decode_terminate()`** (defined in `ih264d_cabac.c`) - the
+  CABAC "termination" bin (spec 9.3.3.2.2.3): `end_of_slice_flag`, decoded
+  once per macroblock **regardless of skip/inter/intra** at the end of the
+  shared per-MB loop, plus the I16x16-vs-I_PCM bin inside
+  `ih264d_parse_mb_type_intra_cabac()` (`ih264d_parse_mb_header.c`). Read
+  its body before assuming it was worth measuring: pure inline arithmetic
+  (CLZ, range update, conditional renorm) with no other function calls at
+  all - not a thin wrapper around `ih264d_decode_bin()`, so `terminate_us`
+  is not folded into `bin_us` already. All three real call sites
+  (`ih264d_parse_pslice.c`, `ih264d_parse_islice.c`,
+  `ih264d_parse_mb_header.c`) are in different files from the one that
+  defines it - an ordinary cross-object relocation, the same `--wrap`
+  shape as mbinfo/intramb, not the same-file dead end `pf_parse_inter_mb`
+  hits. Because it runs on every macroblock unconditionally, this is the
+  one bucket in the whole chain besides `mbinfo_us` that reaches the full
+  population, not just a subset - and it is fully disjoint from every
+  other bucket (bin/coeff/mvpred/mbinfo/mbparse/intramb), a real additive
+  measurement, not another overlapping one.
+
+- **`ih264d_parse_mb_type_cabac()`** (defined in `ih264d_parse_mb_header.c`,
+  called from `ih264d_parse_pslice.c`) - the `mb_type` syntax-element
+  dispatch for every **non-skip** P/B macroblock (inter and intra alike),
+  run strictly before that macroblock's `pf_parse_inter_mb`/
+  `ih264d_parse_imb_cabac` dispatch. Same cross-object shape, checked the
+  same way, plain `--wrap` target. Its body calls only
+  `ih264d_decode_bin()`/`ih264d_decode_bins()` (confirmed by reading it) -
+  never `ih264d_decode_terminate()` - so `mbtype_us` overlaps `bin_us` the
+  same way `mbparse_us`/`intramb_us` do, but is disjoint from
+  `terminate_us`.
+
+Both are pure `--wrap` timing pass-throughs
+(`vendor/libavc_port/ih264d_terminate_wrap_port.c`,
+`ih264d_mbtype_wrap_port.c`), gated identically to mbinfo/intramb: the
+`-Wl,--wrap=` flags for both only exist under `CABAC_PROFILE=1`
+(`libavc.mk`), so a normal build links zero bytes of either. Wired through
+the same accumulator/plumbing path every prior bucket used
+(`ih264d_cabac_profile.h`/`.c` now track eight buckets; `core/mr_h264.h`/
+`.c`; `amiga/mrplay.c`'s `"h264 cabac:"` printf line; both m68k test
+scripts' `LIBAVC_SRC` lists and `--wrap` link flags).
+
+Verified via `tests/run_m68k_check.sh`: `mr_decode_cabac_profile.m68k` now
+runs all four `CABAC_PROFILE`-only wraps (mbinfo struct-field-swap,
+mbparse struct-field-swap, intramb `--wrap`, terminate `--wrap`, mbtype
+`--wrap` - five mechanisms across four distinct measured functions, since
+mbinfo's wrap also does the mbparse swap) together on every macroblock of
+a real decode, and still decodes the H.264 High Profile fixture at
+worst-frame MAE=0.705 - unchanged from every other build in this whole
+chain. The full m68k/big-endian conformance suite, including the 68060
+disassembly scan (which now also builds and scans
+`ih264d_terminate_wrap_port.c`/`ih264d_mbtype_wrap_port.c`, both empty at
+production flags same as their mbinfo/intramb siblings), reports
+`m68k/big-endian check: OK` end to end. `make check` (host,
+`MR_H264_CABAC_PROFILE` never defined there) passes unchanged.
+
+Not yet known: how much of the ~36% remaining unattributed cost
+`terminate_us`/`mbtype_us` actually explain, and - since `terminate_us`
+reaches every macroblock the same way `mbinfo_us` does - whether the
+skip-path bookkeeping suspect named above is still needed once it's
+measured. Needs the same thing every bucket in this chain has needed
+before its real size was known: a real A1200 `CABAC_PROFILE=1
+STAGE_PROFILE=1` capture with `terminate=`/`mbtype=` in the log. The
+user has offered to send another one from their own A1200 as needed.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
