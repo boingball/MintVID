@@ -29,6 +29,7 @@ MINTVID_DECLARE_VERSION(ytgui_version_tag, "ytgui");
 #include <gadgets/string.h>
 #include <images/label.h>
 #include <intuition/intuition.h>
+#include <clib/alib_protos.h>
 #include <proto/button.h>
 #include <proto/chooser.h>
 #include <proto/dos.h>

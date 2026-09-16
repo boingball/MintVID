@@ -28,6 +28,7 @@ MINTVID_DECLARE_VERSION(iptvgui_version_tag, "iptvgui");
 #include <gadgets/string.h>
 #include <images/label.h>
 #include <intuition/intuition.h>
+#include <clib/alib_protos.h>
 #include <proto/button.h>
 #include <proto/chooser.h>
 #include <proto/dos.h>

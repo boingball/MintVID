@@ -32,6 +32,7 @@
 #include <proto/dos.h>
 #include <proto/exec.h>
 #include <proto/intuition.h>
+#include <clib/alib_protos.h>
 #include <proto/graphics.h>
 #include <proto/utility.h>
 #include <proto/cybergraphics.h>

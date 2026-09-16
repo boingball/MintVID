@@ -30,6 +30,7 @@
 #include <exec/ports.h>
 #include <exec/types.h>
 #include <proto/exec.h>
+#include <dos/dos.h>
 #include <string.h>
 
 #include "../iptv/mr_iptv.h" /* MR_IPTV_PLAYER_PORT */
