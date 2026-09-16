@@ -3392,6 +3392,99 @@ before its real size was known: a real A1200 `CABAC_PROFILE=1
 STAGE_PROFILE=1` capture with `terminate=`/`mbtype=` in the log. The
 user has offered to send another one from their own A1200 as needed.
 
+## terminate_us/mbtype_us retest: remainder down to ~28%, but the arithmetic itself needs a caveat now
+The real-hardware retest landed (31 paired `h264 stages:`+`h264 cabac:`
+reports, `timing/62 frames: decode=81449 ms`, same A1200 68060/50 /
+YouTube 360p / Turbo setup, this capture's clip a different session than
+the one behind the ~36% figure above). Sum-weighted across all 31 reports:
+
+| bucket | % of core |
+|---|---|
+| mc | 9.1% |
+| recon | 11.6% |
+| intra | 4.5% |
+| bin | 6.2% |
+| coeff | 4.9% |
+| mvpred | 1.6% |
+| mbinfo | 7.3% |
+| mbparse | 5.6% |
+| intramb | 6.8% |
+| **terminate** | **2.9%** |
+| **mbtype** | **11.1%** |
+| remainder before terminate+mbtype | 42.4% |
+| **remainder after subtracting both** | **28.4%** |
+
+Both new buckets are real. `mbtype_us` is not a small addition - at
+11.1% of core it is the single largest bucket added in this entire
+chain besides `mc`/`recon` themselves, bigger than `mbinfo_us` and
+nearly double `mbparse_us`. `terminate_us` is small (2.9%), as expected
+for a bucket whose own body is a handful of CLZ/compare/renorm
+instructions with no other function calls.
+
+**`terminate_count` (83,443) exceeds `mbinfo_count` (60,720) - a ratio of
+137%, worth explaining rather than treating as a red flag.** `mbinfo_us`
+and `terminate_us` were both documented as "reaches every macroblock,"
+but not through the same set of call sites: `mbinfo`'s wrap only covers
+the shared P/B per-MB loop's `pf_get_mb_info` (see the mbinfo_us
+section above), while `terminate_us` wraps `ih264d_decode_terminate()`
+directly and is reached from three places - the shared P/B loop's own
+end-of-slice check (the population `mbinfo_us` also covers), the
+*separate* I-slice per-MB loop in `ih264d_parse_islice.c` (macroblocks
+`mbinfo_us`'s wrap never sees, since that loop doesn't go through
+`pf_get_mb_info` the same way), and the extra I16x16-vs-I_PCM bin inside
+`ih264d_parse_mb_type_intra_cabac()` for every intra macroblock. The
+excess over 100% is exactly those two additional sources, not double
+counting within a single call site.
+
+**A methodological point worth stating plainly now that a genuinely large
+bucket (`mbtype_us`) overlaps `bin_us`: the "remainder = core minus every
+named bucket" arithmetic this whole chain has used since the CABAC notes
+section is not a strict partition, and it gets *less* accurate, not more,
+as overlapping buckets pile up.** `mbparse_us`, `intramb_us` and
+`mbtype_us` each wrap a function whose own wall-clock time already
+includes calls into `ih264d_decode_bin()` (counted again, separately,
+under `bin_us`) and - for mbparse/intramb - `ih264d_parse_residual4x4_
+cabac()`/mv-prediction (`coeff_us`/`mvpred_us`). Subtracting all of
+`bin_us`+`coeff_us`+`mvpred_us`+`mbparse_us`+`intramb_us`+`mbtype_us`
+from `core` therefore subtracts the shared, nested portion more than
+once - the "remainder" figure is a real, useful *directional* signal
+(it has correctly tracked every genuinely new measurement finding real
+cost in this chain so far, mbtype_us included), but as an absolute
+number it is now more likely to **understate** the true still-unattributed
+cost than to overstate it, precisely because more of what gets subtracted
+is double-counted overlap rather than newly-measured, actually-disjoint
+work. This was already true, in smaller degree, from the moment
+`mbparse_us` was added; it is worth calling out now because `mbtype_us`'s
+11.1% is large enough that the effect is no longer negligible. A properly
+disjoint accounting would need *exclusive* (self) time for each wrapped
+function - time spent in the function's own body minus time spent in any
+nested wrapped call - which none of the `clock()`-bracketed wraps in this
+chain currently attempt; that is a real methodology upgrade to consider
+before adding further overlapping buckets, not something to guess at
+without deciding whether it is worth the added instrumentation
+complexity.
+
+This capture's own skip/intra split, for reference: `mbparse_count +
+intramb_count` = 44,494 of `mbinfo_count`'s 60,720 (73.3% non-skip) -
+notably different from the ~35% non-skip (65% skip-or-intra) the earlier
+`mbparse_us` retest measured. Both numbers are real; they describe
+different sessions/clips, and this is a reminder that the skip/intra
+mix is content-dependent, not a fixed property of "YouTube 360p Turbo on
+this hardware" to expect a single number for.
+
+No code changed this round - this is a documentation-only update
+recording a real-hardware measurement result, the same as the
+mbparse_us-retest section above. `make check`/`make check-m68k` are
+unaffected. The leading still-open question is unchanged in kind from
+before this retest, only smaller in size: the skip-path per-MB-loop
+bookkeeping (`memset`, `ih264d_update_nnz_for_skipmb()`) remains
+completely unmeasured (it has no function-pointer or cross-file-call
+boundary `--wrap` or a struct-field swap can reach), and - per the
+methodological point above - the true remainder it would need to explain
+is arguably still closer to the ~42% pre-terminate/mbtype figure than the
+~28% post figure, since a meaningful share of that drop is overlap
+double-subtraction rather than newly-attributed disjoint cost.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
