@@ -546,6 +546,7 @@ typedef struct playback_stats {
     uint64_t h264_mvpred_us, h264_mvpred_count;
     uint64_t h264_mbinfo_us, h264_mbinfo_count;
     uint64_t h264_mbparse_us, h264_mbparse_count;
+    uint64_t h264_intramb_us, h264_intramb_count;
     uint64_t rescue_us;
     unsigned rescue_entries, rescue_packets, rescue_audio_packets;
     unsigned rescue_video_decoded, rescue_video_queued, rescue_video_skipped;
@@ -1256,7 +1257,8 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
          * estimate. */
         printf("h264 cabac: bin=%lu/%lu us (%lu calls) coeff=%lu/%lu us "
                "(%lu calls) mvpred=%lu/%lu us (%lu calls) mbinfo=%lu/%lu us "
-               "(%lu calls) mbparse=%lu/%lu us (%lu calls)\n",
+               "(%lu calls) mbparse=%lu/%lu us (%lu calls) intramb=%lu/%lu "
+               "us (%lu calls)\n",
                (unsigned long)(st->h264_bin_us / st->decoded),
                st->h264_bin_count
                    ? (unsigned long)(st->h264_bin_us / st->h264_bin_count)
@@ -1281,7 +1283,12 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
                st->h264_mbparse_count
                    ? (unsigned long)(st->h264_mbparse_us / st->h264_mbparse_count)
                    : 0UL,
-               (unsigned long)st->h264_mbparse_count);
+               (unsigned long)st->h264_mbparse_count,
+               (unsigned long)(st->h264_intramb_us / st->decoded),
+               st->h264_intramb_count
+                   ? (unsigned long)(st->h264_intramb_us / st->h264_intramb_count)
+                   : 0UL,
+               (unsigned long)st->h264_intramb_count);
 #endif
         if (audio) service_audio_for_display(trace);
     }
@@ -3695,6 +3702,8 @@ int main(int argc, char **argv)
                         stats.h264_mbinfo_count += ht.mbinfo_count;
                         stats.h264_mbparse_us += ht.mbparse_us;
                         stats.h264_mbparse_count += ht.mbparse_count;
+                        stats.h264_intramb_us += ht.intramb_us;
+                        stats.h264_intramb_count += ht.intramb_count;
                     }
                     if (decode_status == MR_ENOMEM) {
                         printf("h264-decode-oom: packet %lu len=%lu - "

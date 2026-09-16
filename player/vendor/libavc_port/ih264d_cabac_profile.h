@@ -142,28 +142,50 @@
  *                          intra-coded, never reaching pf_parse_inter_mb
  *                          at all. See CLAUDE.md's "mbparse_us retest"
  *                          section and ih264d_mbinfo_wrap_port.c's own
- *                          correction note for the likely real location of
- *                          that cost (per-MB loop skip-path bookkeeping,
- *                          intra-MB dispatch) - neither measured yet.
+ *                          correction note.
+ *
+ *   intramb_us/intramb_count - the intra-side sibling of mbparse_us: the
+ *                          entire wall-clock cost of ih264d_parse_
+ *                          imb_cabac(), the mb_type/pred-mode/CBP/
+ *                          mb_qp_delta/residual syntax dispatch for a
+ *                          macroblock decoded as intra, whether embedded
+ *                          in a P/B slice or (via its own same-file call
+ *                          in ih264d_parse_islice.c, unwrap-able and left
+ *                          uncovered - I frames are a small minority of
+ *                          pictures) a whole I slice. Unlike pf_parse_
+ *                          inter_mb, this one is a completely ordinary
+ *                          --wrap target: the P/B-embedded call site
+ *                          (ih264d_parse_pslice.c's shared per-MB loop) is
+ *                          a plain direct call, and ih264d_parse_imb_
+ *                          cabac() is *defined* in the separate ih264d_
+ *                          parse_islice.c - a genuine cross-object
+ *                          relocation, no struct-field-swap trick needed.
+ *                          Fed from ih264d_intramb_wrap_port.c. Same
+ *                          overlap shape as mbparse_us (contains bin_us/
+ *                          coeff_us contributions plus previously-
+ *                          unmeasured intra-mode-signalling glue) - added
+ *                          because the mbparse_us retest found ~65% of
+ *                          macroblocks on real content were skip-or-intra,
+ *                          and mbparse_us only ever covered the inter
+ *                          half of that gap.
  *
  * Like ih264d_stage_profile.c, this module always compiles in (portable C,
  * no MR_M68K_ASM guard) so mr_h264.c's reset/get calls are unconditionally
  * safe - the accumulators just stay at zero unless something is actually
- * feeding them. Only the five feed sites (gated by MR_H264_CABAC_PROFILE
+ * feeding them. Only the six feed sites (gated by MR_H264_CABAC_PROFILE
  * in ih264d_cabac_wrap.c / ih264d_parse_cabac_coeff_port.c /
  * ih264d_mvpred_dispatch_port.c / ih264d_mbinfo_wrap_port.c, the last of
- * which feeds both mbinfo_us and mbparse_us) cost anything, and only in a
- * build that opted in (Makefile.amiga CABAC_PROFILE=1, mirroring
- * STAGE_PROFILE=1). A normal playback build pays nothing for any of this:
- * the bin_us feed site is not just disabled but replaced outright -
- * ih264d_cabac_wrap.c's C trampoline (one extra call/return per decoded
- * bin, the very overhead these counters exist to help quantify) is swapped
- * for a direct asm alias with no C call layer at all (see
- * ih264_m68k_cabac.S) - and both the mbinfo_us --wrap linker flag and the
- * mbparse_us struct-field-swap code live entirely inside ih264d_mbinfo_
- * wrap_port.c's own MR_H264_CABAC_PROFILE guard, so a normal build neither
- * links the wrap nor ever touches ps_dec->pf_parse_inter_mb from this file
- * at all - not even a branch to check.
+ * which feeds both mbinfo_us and mbparse_us / ih264d_intramb_wrap_port.c)
+ * cost anything, and only in a build that opted in (Makefile.amiga
+ * CABAC_PROFILE=1, mirroring STAGE_PROFILE=1). A normal playback build
+ * pays nothing for any of this: the bin_us feed site is not just disabled
+ * but replaced outright - ih264d_cabac_wrap.c's C trampoline (one extra
+ * call/return per decoded bin, the very overhead these counters exist to
+ * help quantify) is swapped for a direct asm alias with no C call layer at
+ * all (see ih264_m68k_cabac.S) - and the mbinfo_us/intramb_us --wrap
+ * linker flags plus the mbparse_us struct-field-swap code all live inside
+ * their own files' MR_H264_CABAC_PROFILE guards, so a normal build links
+ * none of it and never touches ps_dec->pf_parse_inter_mb at all.
  */
 
 typedef struct mr_h264_cabac_us {
@@ -172,15 +194,17 @@ typedef struct mr_h264_cabac_us {
     unsigned long mvpred_us, mvpred_count;
     unsigned long mbinfo_us, mbinfo_count;
     unsigned long mbparse_us, mbparse_count;
+    unsigned long intramb_us, intramb_count;
 } mr_h264_cabac_us;
 
-/* Called only from the five MR_H264_CABAC_PROFILE-gated feed sites above -
+/* Called only from the six MR_H264_CABAC_PROFILE-gated feed sites above -
  * never called at all in a normal build. */
 void mr_h264_cabac_profile_add_bin(unsigned long us);
 void mr_h264_cabac_profile_add_coeff(unsigned long us);
 void mr_h264_cabac_profile_add_mvpred(unsigned long us);
 void mr_h264_cabac_profile_add_mbinfo(unsigned long us);
 void mr_h264_cabac_profile_add_mbparse(unsigned long us);
+void mr_h264_cabac_profile_add_intramb(unsigned long us);
 
 /* Zero the accumulators before a libavc decode sub-call - paired with
  * mr_h264_stage_profile_reset(), called from the same site in mr_h264.c. */

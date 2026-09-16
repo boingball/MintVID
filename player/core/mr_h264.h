@@ -24,20 +24,27 @@ typedef struct mr_h264_timing {
      * (vendor/libavc_port/ih264d_cabac_profile.h): CABAC bin decode,
      * residual coefficient parsing, MV prediction, and per-MB neighbour-
      * availability/context setup - see that header for why these four are
-     * disjoint from each other. mbparse_us is different: it is the whole
-     * wall-clock cost of the mb_type/cbp/ref_idx/mvd/intra-mode/mb_qp_delta
-     * syntax dispatch itself (pf_parse_inter_mb), reached via a struct-
-     * field swap rather than --wrap (see ih264d_mbinfo_wrap_port.c) - it
-     * necessarily overlaps bin/coeff/mvpred, since that dispatch is what
-     * calls into all three, so treat it as a direct measurement of (most
-     * of) the remainder below, not a fifth additive bucket. core_us minus
-     * mc/deblock/recon/intra/bin/coeff/mvpred/mbinfo is what remains
-     * unattributed by subtraction; mbparse_us is what that remainder
-     * actually is, measured directly instead of derived. */
+     * disjoint from each other. mbparse_us/intramb_us are different: each
+     * is the whole wall-clock cost of one macroblock-type syntax dispatch
+     * (pf_parse_inter_mb for inter MBs, ih264d_parse_imb_cabac for intra
+     * MBs - see ih264d_mbinfo_wrap_port.c/ih264d_intramb_wrap_port.c), so
+     * both necessarily overlap bin/coeff/mvpred, since that's what they
+     * call into - treat them as direct measurements of (most of) the
+     * remainder below, not a fifth/sixth additive bucket. A real A1200
+     * retest found mbparse_us alone only explains ~12% of the remainder
+     * (most macroblocks on real content are skip or intra, never reaching
+     * pf_parse_inter_mb at all - see CLAUDE.md's "mbparse_us retest"),
+     * which is what motivated adding intramb_us as its intra-side sibling.
+     * core_us minus mc/deblock/recon/intra/bin/coeff/mvpred/mbinfo/
+     * mbparse/intramb is what remains unattributed by subtraction - likely
+     * dominated by per-MB-loop skip-macroblock bookkeeping, which has no
+     * function-pointer boundary of its own to hook and so is not measured
+     * here at all yet. */
     unsigned long bin_us, bin_count, coeff_us, coeff_count;
     unsigned long mvpred_us, mvpred_count;
     unsigned long mbinfo_us, mbinfo_count;
     unsigned long mbparse_us, mbparse_count;
+    unsigned long intramb_us, intramb_count;
 } mr_h264_timing;
 typedef enum mr_h264_speed_mode {
     MR_H264_SPEED_QUALITY = 0,
