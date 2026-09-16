@@ -3024,6 +3024,126 @@ regression report, just confirmation that a 360p YouTube stream is still
 nowhere near real-time on this target under Turbo alone, consistent with
 every other 360p/A1200 capture already on record in this file.
 
+## Reaching pf_parse_inter_mb after all: a struct-field swap, not `--wrap`
+Direct follow-up to "the syntax dispatch is still the dominant unmeasured
+cost" above - the user's own call once that was clear: reimplement
+`ih264d_parse_pmb_cabac()`/`ih264d_parse_bmb_cabac()` and go after the
+real number, not just the derived one.
+
+`--wrap` was re-confirmed a dead end before trying anything else, this
+time by actually enumerating every reference to both symbols across the
+whole vendored tree (`grep -rn`), not just re-trusting the earlier finding
+by assumption: both functions are declared in `ih264d_parse_islice.h` and
+referenced from `vendor/libavc/decoder/mvc/`/`svc/` (unused - `LIBAVC_
+DECODER`'s wildcard is non-recursive, those subdirectories are never
+compiled here), but every reference in the *actual* compiled source is
+exactly the same-file shape already established: defined and assigned to
+`ps_dec->pf_parse_inter_mb` both inside `ih264d_parse_pslice.c` (for
+`ih264d_parse_pmb_cabac`) and both inside `ih264d_parse_bslice.c` (for
+`ih264d_parse_bmb_cabac`). A tempting-looking escape hatch was checked and
+rejected: `ih264d_parse_inter_slice_data_cabac` (the per-MB loop function
+one level up, which is what actually calls `pf_parse_inter_mb`) *is*
+referenced cross-file - defined in `ih264d_parse_pslice.c` but also
+assigned to `ps_dec->pf_parse_inter_slice` from `ih264d_parse_bslice.c` -
+but P slices assign it from *within* `ih264d_parse_pslice.c` itself (same
+file, same dead end), and P slices are the dominant, non-skipped cost
+under Turbo (B is skip-decoded - see the H.264 CABAC notes section), so
+even a successful wrap there would have measured nothing for the case that
+actually matters.
+
+A force-included preprocessor rename (`vendor/libavc_port/compat.h`
+already does exactly this for one libc symbol - `#define strnlen
+mr_libavc_strnlen` - applied via `-include compat.h` on every `LIBAVC_SRC`
+file) was considered and rejected too, for a sharper reason than "seems
+risky": it cannot work *in principle* for this specific case. A `#define
+ih264d_parse_pmb_cabac ih264d_parse_pmb_cabac_vendored` would rename
+*every* textual occurrence of that identifier in the whole translation
+unit uniformly - both the definition *and* the same-file assignment that
+was supposed to keep pointing at "the real one" so our replacement could
+take over the public name. There is no way to select "rename only the
+definition, leave that one other reference alone" via a macro that's
+already active for the entire file by the time either line is
+preprocessed, without editing `ih264d_parse_pslice.c` itself to `#undef`
+between them - forbidden, and pointless anyway since the same problem
+would recur for `ih264d_parse_bmb_cabac` in `ih264d_parse_bslice.c`.
+
+**The mechanism that actually works reaches in from outside the same-file
+relocation problem entirely, using infrastructure already built for
+`mbinfo_us`.** `__wrap_ih264d_get_mb_info_cabac_nonmbaff()` (`ih264d_
+mbinfo_wrap_port.c`) already runs, with a live `dec_struct_t*`, on *every*
+macroblock - skip or not - strictly *before* that same macroblock's
+`ps_dec->pf_parse_inter_mb` is looked up and called (confirmed by reading
+the per-MB loop in `ih264d_parse_pslice_data_cabac()`: `pf_get_mb_info()`
+runs first each iteration, `pf_parse_inter_mb()` - for non-skip MBs only -
+after). So instead of trying to intercept libavc's own address-of
+assignment, the mbinfo wrapper now *also* does a plain C struct-field
+swap, one step later: capture whatever real function `ps_dec->pf_parse_
+inter_mb` currently holds (freshly reassigned by every slice's own header
+parse - P slices get `ih264d_parse_pmb_cabac`, B get `ih264d_parse_bmb_
+cabac`) into a static, then overwrite the field with a local timing
+wrapper. No linker trick, no relocation, no vendored-file edit - just a
+normal write to a struct field the vendored code itself exposes and
+reassigns. The very next call through that field - this MB or a later one
+in the same slice - runs the wrapper, times the call through to whatever
+was captured, and is otherwise fully transparent.
+
+Idempotent by construction: the swap only fires when `ps_dec->pf_parse_
+inter_mb != mr_wrap_parse_inter_mb` - true exactly once per slice boundary
+(a fresh real P/B assignment), false for every other MB in that same
+slice (the field already holds the wrapper, so nothing is rewritten,
+and there is no risk of the wrapper capturing *itself* and recursing).
+Handles P/B intermixing and any number of slices per picture for free,
+since each slice's own header parse naturally re-triggers the capture on
+the very next macroblock. Only the non-MBAFF CABAC path is covered -
+same "no MBAFF/CAVLC test content, no verified primitive to compare
+against" precedent `ih264d_mvpred_dispatch_port.c` already set - so a
+non-CABAC or MBAFF slice's `pf_parse_inter_mb` runs completely unwrapped
+and unmeasured, never incorrectly.
+
+New `mbparse_us`/`mbparse_count` bucket (`ih264d_cabac_profile.h`/`.c`,
+`core/mr_h264.h`/`.c`, `amiga/mrplay.c`'s `"h264 cabac:"` line) is
+deliberately documented as *not* a clean fifth additive bucket the way
+bin/coeff/mvpred/mbinfo are: `pf_parse_inter_mb` itself calls `ih264d_
+decode_bin()` (bin_us), `ih264d_parse_residual4x4_cabac()` (coeff_us) and
+the mv-predictor dispatch (mvpred_us), so `mbparse_us` necessarily
+contains all three, on top of whatever previously-unmeasured C-level glue
+exists between them (the partition loops, sub_mb_type/ref_idx/CBP/
+transform8x8-flag/mb_qp_delta bookkeeping `ih264d_parse_pmb_cabac()`'s own
+body is full of - see the H.264 CABAC notes section's summary of that
+function). That overlap is the entire point, not a flaw: `mbparse_us`,
+summed over a frame, is a *direct* wall-clock measurement of the same
+quantity `core_us - mc - deblock - recon - intra - bin - coeff - mvpred -
+mbinfo` has only ever been able to *derive* by subtraction. A real
+hardware capture with this wired in can finally settle whether that ~48%
+remainder genuinely *is* `pf_parse_inter_mb` (`mbparse_us` tracks it
+closely) or there is further, still-unattributed cost beyond it
+(`mbparse_us` reads meaningfully smaller).
+
+No new bit-exactness test, for the same reason `mbinfo_us` needed none:
+the swap changes no decode behaviour by construction - it is a captured
+function pointer called through unchanged, not a reimplementation of the
+parsing logic itself, so there is nothing new to prove bit-exact. What
+*is* worth verifying is that the wiring doesn't break anything, and it
+doesn't: `make check` (host, `MR_H264_CABAC_PROFILE` never defined there)
+passes unchanged, and `tests/run_m68k_check.sh`'s existing `mr_decode_
+cabac_profile.m68k` build (the one CABAC_PROFILE=1 build in that suite)
+decodes the H.264 High Profile fixture through the *entire* mbinfo+
+mbparse machinery active at once and matches the same worst-frame MAE as
+every other build - the swap logic runs on real m68k/big-endian for every
+single macroblock of a real multi-slice-capable decode and changes
+nothing about the output.
+
+Real "glory" - a concrete fix inside `ih264d_parse_pmb_cabac()`/`ih264d_
+parse_bmb_cabac()`, or confirmation that the whole ~48% really is that one
+function and nothing more - still needs a real-hardware `CABAC_PROFILE=1
+STAGE_PROFILE=1` capture with `mbparse_us` in it, the same way `mbinfo_us`
+itself needed one before its actual size was known. Until that capture
+exists, reimplementing the two dispatchers wholesale (the only way to
+change what they *do*, rather than just measure them) stays exactly as
+unjustified as the CABAC notes section always said it was for a diagnostic
+alone - now with a direct number to decide it by, once that capture lands,
+rather than a subtraction-derived guess.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.

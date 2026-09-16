@@ -16,6 +16,7 @@ static unsigned long g_bin_us, g_bin_count;
 static unsigned long g_coeff_us, g_coeff_count;
 static unsigned long g_mvpred_us, g_mvpred_count;
 static unsigned long g_mbinfo_us, g_mbinfo_count;
+static unsigned long g_mbparse_us, g_mbparse_count;
 
 void mr_h264_cabac_profile_add_bin(unsigned long us)
 {
@@ -41,6 +42,12 @@ void mr_h264_cabac_profile_add_mbinfo(unsigned long us)
     g_mbinfo_count++;
 }
 
+void mr_h264_cabac_profile_add_mbparse(unsigned long us)
+{
+    g_mbparse_us += us;
+    g_mbparse_count++;
+}
+
 void mr_h264_cabac_profile_reset(void)
 {
     g_bin_us = 0;
@@ -51,6 +58,8 @@ void mr_h264_cabac_profile_reset(void)
     g_mvpred_count = 0;
     g_mbinfo_us = 0;
     g_mbinfo_count = 0;
+    g_mbparse_us = 0;
+    g_mbparse_count = 0;
 }
 
 void mr_h264_cabac_profile_get(mr_h264_cabac_us *out)
@@ -63,4 +72,6 @@ void mr_h264_cabac_profile_get(mr_h264_cabac_us *out)
     out->mvpred_count = g_mvpred_count;
     out->mbinfo_us = g_mbinfo_us;
     out->mbinfo_count = g_mbinfo_count;
+    out->mbparse_us = g_mbparse_us;
+    out->mbparse_count = g_mbparse_count;
 }

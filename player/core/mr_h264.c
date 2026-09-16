@@ -830,6 +830,8 @@ static mr_status h264_decode(mr_decoder *dec,
                 s->timing.mvpred_count += cabac.mvpred_count;
                 s->timing.mbinfo_us += cabac.mbinfo_us;
                 s->timing.mbinfo_count += cabac.mbinfo_count;
+                s->timing.mbparse_us += cabac.mbparse_us;
+                s->timing.mbparse_count += cabac.mbparse_count;
             }
             used = sub_out.s_ivd_video_decode_op_t.u4_num_bytes_consumed;
 

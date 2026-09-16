@@ -23,15 +23,21 @@ typedef struct mr_h264_timing {
     /* Further sub-stages under MR_H264_CABAC_PROFILE
      * (vendor/libavc_port/ih264d_cabac_profile.h): CABAC bin decode,
      * residual coefficient parsing, MV prediction, and per-MB neighbour-
-     * availability/context setup - see that header for why these four, and
-     * not the mb_type/cbp/ref_idx/mvd/intra-mode/mb_qp_delta syntax
-     * dispatch itself, are as far as this breakdown goes. core_us minus
-     * all eight of mc/deblock/recon/intra/bin/coeff/mvpred/mbinfo is what
-     * remains unattributed - mostly that syntax-element dispatch and
-     * whatever per-MB bookkeeping mbinfo_us doesn't already cover. */
+     * availability/context setup - see that header for why these four are
+     * disjoint from each other. mbparse_us is different: it is the whole
+     * wall-clock cost of the mb_type/cbp/ref_idx/mvd/intra-mode/mb_qp_delta
+     * syntax dispatch itself (pf_parse_inter_mb), reached via a struct-
+     * field swap rather than --wrap (see ih264d_mbinfo_wrap_port.c) - it
+     * necessarily overlaps bin/coeff/mvpred, since that dispatch is what
+     * calls into all three, so treat it as a direct measurement of (most
+     * of) the remainder below, not a fifth additive bucket. core_us minus
+     * mc/deblock/recon/intra/bin/coeff/mvpred/mbinfo is what remains
+     * unattributed by subtraction; mbparse_us is what that remainder
+     * actually is, measured directly instead of derived. */
     unsigned long bin_us, bin_count, coeff_us, coeff_count;
     unsigned long mvpred_us, mvpred_count;
     unsigned long mbinfo_us, mbinfo_count;
+    unsigned long mbparse_us, mbparse_count;
 } mr_h264_timing;
 typedef enum mr_h264_speed_mode {
     MR_H264_SPEED_QUALITY = 0,

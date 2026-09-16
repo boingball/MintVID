@@ -88,36 +88,69 @@
  *                          are from each other, though one bin's cost is
  *                          negligible next to the rest of the function.
  *
- * The remaining "macroblock parsing" cost is still derivable, just not
- * directly measured: treat (core_us - mc_us - deblock_us - recon_us -
- * intra_us - bin_us - coeff_us - mvpred_us - mbinfo_us) as that combined
- * remainder - the same unattributed-remainder idea ih264d_stage_profile.h
- * already uses, just smaller and more useful now that four of its buckets
- * are broken out. A real-hardware STAGE_PROFILE+CABAC_PROFILE capture
- * (YouTube 360p, Turbo, A1200 68060/50 - see CLAUDE.md) found this
- * remainder at 52-55% of core_us before mbinfo_us existed - bigger than
- * mc+deblock+recon+intra or bin+coeff+mvpred combined - which is what
- * motivated singling out pf_get_mb_info as the next thing to try to
- * measure directly rather than guess about further.
+ * A real A1200 retest with mbinfo_us wired in (see CLAUDE.md) found the
+ * remainder only dropped from that 52-55% to ~48% - consistent with
+ * mbinfo_us (a real ~8% of core_us) simply having been carved out of what
+ * was previously lumped into the remainder, not with it having explained
+ * most of that remainder. pf_parse_inter_mb itself is still the largest
+ * single cost by a wide margin.
+ *
+ *   mbparse_us/mbparse_count - the *entire* wall-clock cost of
+ *                          pf_parse_inter_mb (ih264d_parse_pmb_cabac() for
+ *                          a P slice, ih264d_parse_bmb_cabac() for a B
+ *                          slice), reached without --wrap at all:
+ *                          ih264d_mbinfo_wrap_port.c's mbinfo wrapper
+ *                          already runs, with a live dec_struct_t*, on
+ *                          every macroblock strictly before that same
+ *                          macroblock's pf_parse_inter_mb is looked up and
+ *                          called - so it captures whatever real function
+ *                          libavc just assigned for the slice in progress
+ *                          and overwrites the struct field with a timing
+ *                          wrapper, a plain C pointer write with no linker
+ *                          trick needed. See that file's own header for
+ *                          why this reaches pf_parse_inter_mb despite the
+ *                          same-file --wrap dead end described above, and
+ *                          for the idempotency argument (a fresh real
+ *                          assignment at every slice boundary is always
+ *                          re-captured on the very next macroblock).
+ *
+ *                          Unlike bin/coeff/mvpred/mbinfo, mbparse_us is
+ *                          *not* disjoint from the others - pf_parse_
+ *                          inter_mb itself calls ih264d_decode_bin()
+ *                          (bin_us), ih264d_parse_residual4x4_cabac()
+ *                          (coeff_us) and the mv-predictor dispatch
+ *                          (mvpred_us), so it necessarily contains all
+ *                          three plus whatever previously-unmeasured C
+ *                          glue exists between them (partition loops,
+ *                          sub_mb_type/ref_idx/CBP/transform8x8-flag/
+ *                          mb_qp_delta bookkeeping). That overlap is the
+ *                          point: mbparse_us is a *direct* measurement of
+ *                          the same quantity the remainder above only
+ *                          derives by subtraction, so comparing the two on
+ *                          a real capture settles whether the remainder
+ *                          genuinely *is* pf_parse_inter_mb (mbparse_us
+ *                          tracks it closely) or there is further,
+ *                          still-unattributed cost beyond it (mbparse_us
+ *                          reads meaningfully smaller).
  *
  * Like ih264d_stage_profile.c, this module always compiles in (portable C,
  * no MR_M68K_ASM guard) so mr_h264.c's reset/get calls are unconditionally
  * safe - the accumulators just stay at zero unless something is actually
- * feeding them. Only the four feed sites (gated by MR_H264_CABAC_PROFILE
+ * feeding them. Only the five feed sites (gated by MR_H264_CABAC_PROFILE
  * in ih264d_cabac_wrap.c / ih264d_parse_cabac_coeff_port.c /
- * ih264d_mvpred_dispatch_port.c / ih264d_mbinfo_wrap_port.c) cost anything,
- * and only in a build that opted in (Makefile.amiga CABAC_PROFILE=1,
- * mirroring STAGE_PROFILE=1). A normal playback build pays nothing for any
- * of this: the bin_us feed site is not just disabled but replaced outright
- * - ih264d_cabac_wrap.c's C trampoline (one extra call/return per decoded
+ * ih264d_mvpred_dispatch_port.c / ih264d_mbinfo_wrap_port.c, the last of
+ * which feeds both mbinfo_us and mbparse_us) cost anything, and only in a
+ * build that opted in (Makefile.amiga CABAC_PROFILE=1, mirroring
+ * STAGE_PROFILE=1). A normal playback build pays nothing for any of this:
+ * the bin_us feed site is not just disabled but replaced outright -
+ * ih264d_cabac_wrap.c's C trampoline (one extra call/return per decoded
  * bin, the very overhead these counters exist to help quantify) is swapped
  * for a direct asm alias with no C call layer at all (see
- * ih264_m68k_cabac.S) - and the mbinfo_us feed site's --wrap linker flag
- * itself is only added to the link when CABAC_PROFILE=1 (see libavc.mk),
- * unlike bin/coeff/mvpred/update_qp's always-on wraps, since there is no
- * asm replacement to gain from wrapping pf_get_mb_info outside of
- * profiling - a normal build never links __wrap_ih264d_get_mb_info_cabac_
- * nonmbaff at all, so it costs literally nothing, not even a call/return.
+ * ih264_m68k_cabac.S) - and both the mbinfo_us --wrap linker flag and the
+ * mbparse_us struct-field-swap code live entirely inside ih264d_mbinfo_
+ * wrap_port.c's own MR_H264_CABAC_PROFILE guard, so a normal build neither
+ * links the wrap nor ever touches ps_dec->pf_parse_inter_mb from this file
+ * at all - not even a branch to check.
  */
 
 typedef struct mr_h264_cabac_us {
@@ -125,14 +158,16 @@ typedef struct mr_h264_cabac_us {
     unsigned long coeff_us, coeff_count;
     unsigned long mvpred_us, mvpred_count;
     unsigned long mbinfo_us, mbinfo_count;
+    unsigned long mbparse_us, mbparse_count;
 } mr_h264_cabac_us;
 
-/* Called only from the four MR_H264_CABAC_PROFILE-gated feed sites above -
+/* Called only from the five MR_H264_CABAC_PROFILE-gated feed sites above -
  * never called at all in a normal build. */
 void mr_h264_cabac_profile_add_bin(unsigned long us);
 void mr_h264_cabac_profile_add_coeff(unsigned long us);
 void mr_h264_cabac_profile_add_mvpred(unsigned long us);
 void mr_h264_cabac_profile_add_mbinfo(unsigned long us);
+void mr_h264_cabac_profile_add_mbparse(unsigned long us);
 
 /* Zero the accumulators before a libavc decode sub-call - paired with
  * mr_h264_stage_profile_reset(), called from the same site in mr_h264.c. */
