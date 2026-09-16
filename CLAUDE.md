@@ -2792,6 +2792,81 @@ to the 68060 branch and changes nothing for 68030/040. Not yet confirmed
 by an actual completed real link - the user is rebuilding with this fix on
 their own `m68k-amigaos-gcc 13.2.0` toolchain now.
 
+## Real-hardware STAGE_PROFILE/CABAC_PROFILE capture: YouTube 360p, Turbo, A1200 68060/50
+The first real payoff from the `ASM60_SRC_poly060`/`lowrate060` link fix
+above: a GadTools "Log: on" capture (`RAM:MintVID.log`, `mrplay` rebuilt
+`CPU=68060 STAGE_PROFILE=1 CABAC_PROFILE=1`) of a real YouTube 360p
+(640x360, progressive MP4, H.264/AAC) session, Turbo performance mode,
+92 real decoded frames over the capture. This is the actual real-hardware
+data the "still open" wall-clock-vs-libavc-core question (raised twice
+earlier in this file - the 68060/50 live-TS 256x144 case, and the WinUAE
+720p case) had been waiting on.
+
+**Finding 1: the wall-clock-vs-libavc-core gap from the earlier live-TS
+report does not reproduce here - `core` now tracks `vdecode` almost
+exactly.** Across every sampled report in the capture, `libavc-core`'s own
+self-reported average is 98-99% of `vdecode`'s wall-clock average (e.g.
+one representative sample: `vdecode=968.41 ms`, `libavc-core=956.333 ms`;
+another: `vdecode=1165.56 ms`, `core=1152.5 ms`) - `input`/`rgb-output`
+are both ~0. So for this stream/path, essentially all of the wall-clock
+decode time really is inside libavc's own reported cost, not lost in the
+wrapper/scheduler around it the way the earlier 5-10x-gap live-TS report
+showed. That mystery either doesn't apply to this progressive-MP4 path or
+was specific to that other stream's demux/reassembly shape - it is not a
+general property of this target.
+
+**Finding 2: within libavc's own reported cost, the single largest bucket
+is the one that has never been directly measured - the un-instrumented
+macroblock-header/syntax-element parsing dispatch the H.264 CABAC notes
+section above already named (`pf_parse_inter_mb`, the same-file function-
+pointer-assignment case `--wrap` cannot intercept) - and it is not a small
+remainder, it is roughly half of total decode time.** Computing
+`core - (mc+deblock+recon+intra) - (bin+coeff+mvpred)` from several
+representative samples: 956.3-(119.3+0+111.7+39.0)-(82.0+52.0+26.7) =
+525.7 ms (55% of core); 1152.5-(199.0+0+118.0+32.0)-(81.5+72.0+34.0) =
+616.0 ms (53%); 1057.5-(185.0+0+103.5+50.5)-(81.0+50.5+31.0) = 556.0 ms
+(53%) - consistently 52-55% across the capture, bigger than mc+deblock+
+recon+intra combined (~27-30% of core) and bigger than bin+coeff+mvpred
+combined (~15-18%). `deblock` reads exactly 0 us in every single report -
+direct confirmation that Turbo's all-or-nothing `i4_degrade_pics=4` policy
+(see the H.264 TurboGT retirement section above) really is disabling
+deblocking for every frame on this real target, not just in theory.
+
+**Caveat that has to be stated before either finding above gets used to
+justify real work: this capture pays for both `MR_H264_STAGE_PROFILE` and
+`MR_H264_CABAC_PROFILE` at once, and the CABAC wrapper overhead question
+earlier in this file is not hypothetical - it is exactly what
+`bin_count`/`coeff_count`/`mvpred_count` here show paying for, at real
+volume.** `bin_count` alone runs 3,450-8,196 calls *per single decoded
+frame* in this capture (coeff_count 1,400-3,700, mvpred_count 350-2,600) -
+each a `clock()`-bracketed call under `MR_H264_CABAC_PROFILE`, and mc/
+deblock/recon/intra are separately wrapped under `MR_H264_STAGE_PROFILE`.
+None of that instrumentation cost is free on real hardware, even without
+qemu's syscall-trap-specific inflation (see the qemu-vs-hardware note at
+the top of this file) - a `ReadEClock()`-class timer read still costs real
+cycles, tens of thousands of times per frame. So the *proportions* above
+(core tracks vdecode; the syntax-dispatch remainder dominates within core)
+are trustworthy, structural findings, but the *absolute* numbers in this
+capture - `vdecode` averaging ~1000-1200 ms/frame, `decoded=0.45-0.70 fps`
+throughout the session, the final `timing/92 frames: decode=101817 ms`
+summary (1106.7 ms/frame average, cross-checking the per-report samples
+closely) - almost certainly overstate how slow the real, non-instrumented
+production `mrplay` is on this same clip. Whether that gap is small or
+large is itself unmeasured here; a plain `--time`-only capture (no
+`STAGE_PROFILE`/`CABAC_PROFILE`) on the identical clip/settings is the
+natural next real-hardware data point, to separate "how slow is decode"
+from "where does decode time go" instead of conflating them in one
+capture.
+
+Not yet acted on: the syntax-dispatch bucket dominating decode time on
+real hardware is new information the H.264 CABAC notes section's own
+closing line ("[reimplementing the dispatcher] is not justified just to
+add a diagnostic counter") was written without - now that it is
+structurally the largest cost, not a small unattributed remainder,
+whether it is worth reaching for direct measurement (or a real
+optimisation) is an open question for the next round of this
+investigation, not decided here.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
