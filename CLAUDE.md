@@ -3232,6 +3232,76 @@ recording a real-hardware measurement result. The capture itself
 (`RAM:MintVID.log`, GadTools "Log: on") is the same build already pushed
 and verified (`e8194eb`) - nothing to rebuild or re-verify.
 
+## intramb_us: the other half of the skip-or-intra gap, and it's a plain --wrap this time
+Direct follow-up to the mbparse_us correction above - the user's own call:
+keep chasing. Of the two candidates named there (per-MB-loop skip-path
+bookkeeping, intra-MB dispatch), intra-MB dispatch turned out to have a
+real, clean interception point, found by reading the same per-MB loop the
+mbinfo/mbparse work already lives in one more time: `ih264d_parse_
+pslice.c`'s shared per-MB loop (`ih264d_parse_inter_slice_data_cabac()`,
+used by both P and B slices - see the mbparse_us section above for why it
+is "shared") has an `else` branch alongside its `pf_parse_inter_mb` call,
+for exactly the `u1_mb_type >= u1_mb_threshold` (intra) case:
+`ret = ih264d_parse_imb_cabac(ps_dec, ps_cur_mb_info, ...)` - a *plain
+direct function call*, not a function-pointer assignment at all.
+
+Checked before assuming it would be wrap-able, the same discipline as
+every other addition in this chain: `ih264d_parse_imb_cabac()` is
+*defined* in `ih264d_parse_islice.c`, a completely different file from
+where this call site lives (`ih264d_parse_pslice.c`) - an ordinary
+cross-object relocation, the textbook `--wrap` case (the same shape that
+already lets bin/coeff/mvpred/mbinfo work, not the same-file case
+`pf_parse_inter_mb` itself fails on). No struct-field-swap trick needed
+this time - a plain `-Wl,--wrap=ih264d_parse_imb_cabac` reaches it
+directly. The one gap: `ih264d_parse_islice.c`'s *own* per-MB loop (a
+whole I slice/I frame) calls `ih264d_parse_imb_cabac()` from within the
+same file that defines it - the identical same-file dead end
+`pf_parse_inter_mb` hits, left unwrapped deliberately. I frames are a
+small minority of pictures (one per GOP); the P/B-embedded case this wrap
+*does* reach is exactly where the mbparse_us retest's "~65% of
+macroblocks are skip or intra" finding lives.
+
+New `vendor/libavc_port/ih264d_intramb_wrap_port.c` is the intra sibling
+of `ih264d_mbinfo_wrap_port.c` - same pure timing pass-through via GNU
+ld's `__real_ih264d_parse_imb_cabac` symbol, same `CABAC_PROFILE=1`-only
+`--wrap` flag (`libavc.mk`), same zero cost in a normal build, no
+reimplementation so no new bit-exactness claim to prove. New `intramb_us`/
+`intramb_count` bucket wired through the identical path as mbinfo/mbparse
+(`ih264d_cabac_profile.h`/`.c`, `core/mr_h264.h`/`.c`, `amiga/mrplay.c`'s
+`"h264 cabac:"` line) - documented with the same non-disjoint-bucket
+caveat as `mbparse_us`: `ih264d_parse_imb_cabac()` itself calls
+`ih264d_decode_bin()` (`bin_us`) and `ih264d_parse_residual4x4_cabac()`
+(`coeff_us`), so `intramb_us` necessarily overlaps both, on top of
+whatever previously-unmeasured intra-mode-signalling/CBP/mb_qp_delta glue
+is in its own body.
+
+Verified via `tests/run_m68k_check.sh`: `mr_decode_cabac_profile.m68k`
+now runs the mbinfo/mbparse struct-field-swap *and* the new intramb
+`--wrap` together on every macroblock of a real decode, and still decodes
+the H.264 High Profile fixture at worst-frame MAE=0.705 - unchanged from
+every other build. The full m68k/big-endian conformance suite, including
+the 68060 disassembly scan (which now also builds and scans `ih264d_
+intramb_wrap_port.c`, empty at production flags same as `ih264d_mbinfo_
+wrap_port.c`), passes clean.
+
+Not yet known: how much of the remaining ~43% unattributed cost (the
+figure left over after the mbparse_us retest) `intramb_us` actually
+explains. Needs the same thing every bucket in this chain has needed
+before its real size was known: a real A1200 `CABAC_PROFILE=1
+STAGE_PROFILE=1` capture with `intramb_us` in the log. Given the
+mbparse_us retest's own finding (mbparse_count only 35% of mbinfo_count,
+i.e. ~65% skip-or-intra) and mbinfo_count/mbparse_count's own per-report
+numbers, a rough expectation can be formed once a capture lands: if
+`intramb_count` comes back close to `mbinfo_count - mbparse_count`, that
+confirms most of the "skip or intra" 65% was actually intra (not skip),
+and `intramb_us` should explain a correspondingly large share of the
+remainder - if it comes back much smaller than that difference, most of
+those macroblocks were genuinely skip, and the still-unmeasured skip-path
+per-MB-loop bookkeeping (memset/`ih264d_update_nnz_for_skipmb()`, no
+function boundary to hook - see the mbparse_us correction's own note)
+becomes the leading remaining suspect. Not guessed at further here without
+that data.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
