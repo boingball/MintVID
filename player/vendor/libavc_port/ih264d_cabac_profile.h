@@ -169,23 +169,73 @@
  *                          and mbparse_us only ever covered the inter
  *                          half of that gap.
  *
+ * A real A1200 retest with intramb_us wired in (see CLAUDE.md's
+ * "intramb_us" section) found mbparse_us+intramb_us together explained
+ * only ~13 of the ~49.5% pre-existing remainder, leaving ~36% of core_us
+ * still completely unattributed - and intramb_count averaged only 42% of
+ * the mbinfo_count-mbparse_count "skip-or-intra" gap, meaning most of
+ * that gap really is skip macroblocks, not intra ones. Two more genuine,
+ * previously-untouched per-MB costs were found by re-reading the same
+ * per-MB loop again:
+ *
+ *   terminate_us/terminate_count - ih264d_decode_terminate(), the CABAC
+ *                          end_of_slice_flag/I_PCM-detection termination
+ *                          bin (spec 9.3.3.2.2.3): small, self-contained
+ *                          arithmetic (CLZ + range update, no call into
+ *                          ih264d_decode_bin() at all - checked by
+ *                          reading its body, not assumed) that decode_bin
+ *                          never covers. Called once per *macroblock*,
+ *                          skip or not - the only bucket besides mbinfo_us
+ *                          that reaches every single macroblock, not just
+ *                          a subset. Defined in ih264d_cabac.c, called
+ *                          from ih264d_parse_pslice.c/_islice.c/_mb_
+ *                          header.c - every call site cross-file, a plain
+ *                          --wrap target. Genuinely disjoint from every
+ *                          other bucket (it calls nothing else measured,
+ *                          and nothing else measured calls it). Fed from
+ *                          ih264d_terminate_wrap_port.c.
+ *   mbtype_us/mbtype_count - ih264d_parse_mb_type_cabac(), the mb_type
+ *                          syntax-element dispatch for a *non-skip*
+ *                          macroblock (inter or intra alike), called once
+ *                          per such macroblock right before pf_parse_
+ *                          inter_mb/ih264d_parse_imb_cabac. Defined in
+ *                          ih264d_parse_mb_header.c, called from ih264d_
+ *                          parse_pslice.c - cross-file, plain --wrap
+ *                          target, same shape as intramb_us. Calls only
+ *                          ih264d_decode_bin()/ih264d_decode_bins()
+ *                          internally (checked by reading its body) - not
+ *                          ih264d_decode_terminate(), unlike its sibling
+ *                          ih264d_parse_mb_type_intra_cabac() in the same
+ *                          file, so mbtype_us and terminate_us are
+ *                          disjoint from each other even though neither
+ *                          is disjoint from bin_us. Fed from ih264d_
+ *                          mbtype_wrap_port.c.
+ *
+ * Whether these two, together with mbparse_us/intramb_us, finally close
+ * most of the ~36% remainder - or whether real per-MB-loop skip-path
+ * bookkeeping (memset/ih264d_update_nnz_for_skipmb() calls with no
+ * function-pointer boundary of their own to hook) is still the dominant
+ * leftover cost - needs another real-hardware capture with both of these
+ * wired in. See CLAUDE.md for whichever answer that capture gives.
+ *
  * Like ih264d_stage_profile.c, this module always compiles in (portable C,
  * no MR_M68K_ASM guard) so mr_h264.c's reset/get calls are unconditionally
  * safe - the accumulators just stay at zero unless something is actually
- * feeding them. Only the six feed sites (gated by MR_H264_CABAC_PROFILE
+ * feeding them. Only the eight feed sites (gated by MR_H264_CABAC_PROFILE
  * in ih264d_cabac_wrap.c / ih264d_parse_cabac_coeff_port.c /
  * ih264d_mvpred_dispatch_port.c / ih264d_mbinfo_wrap_port.c, the last of
- * which feeds both mbinfo_us and mbparse_us / ih264d_intramb_wrap_port.c)
- * cost anything, and only in a build that opted in (Makefile.amiga
- * CABAC_PROFILE=1, mirroring STAGE_PROFILE=1). A normal playback build
- * pays nothing for any of this: the bin_us feed site is not just disabled
- * but replaced outright - ih264d_cabac_wrap.c's C trampoline (one extra
- * call/return per decoded bin, the very overhead these counters exist to
- * help quantify) is swapped for a direct asm alias with no C call layer at
- * all (see ih264_m68k_cabac.S) - and the mbinfo_us/intramb_us --wrap
- * linker flags plus the mbparse_us struct-field-swap code all live inside
- * their own files' MR_H264_CABAC_PROFILE guards, so a normal build links
- * none of it and never touches ps_dec->pf_parse_inter_mb at all.
+ * which feeds both mbinfo_us and mbparse_us / ih264d_intramb_wrap_port.c /
+ * ih264d_terminate_wrap_port.c / ih264d_mbtype_wrap_port.c) cost anything,
+ * and only in a build that opted in (Makefile.amiga CABAC_PROFILE=1,
+ * mirroring STAGE_PROFILE=1). A normal playback build pays nothing for
+ * any of this: the bin_us feed site is not just disabled but replaced
+ * outright - ih264d_cabac_wrap.c's C trampoline (one extra call/return
+ * per decoded bin, the very overhead these counters exist to help
+ * quantify) is swapped for a direct asm alias with no C call layer at all
+ * (see ih264_m68k_cabac.S) - and every other file's --wrap linker flag
+ * (or, for mbparse_us, the struct-field-swap code) lives inside its own
+ * file's MR_H264_CABAC_PROFILE guard, so a normal build links none of it
+ * and never touches ps_dec->pf_parse_inter_mb at all.
  */
 
 typedef struct mr_h264_cabac_us {
@@ -195,9 +245,11 @@ typedef struct mr_h264_cabac_us {
     unsigned long mbinfo_us, mbinfo_count;
     unsigned long mbparse_us, mbparse_count;
     unsigned long intramb_us, intramb_count;
+    unsigned long terminate_us, terminate_count;
+    unsigned long mbtype_us, mbtype_count;
 } mr_h264_cabac_us;
 
-/* Called only from the six MR_H264_CABAC_PROFILE-gated feed sites above -
+/* Called only from the eight MR_H264_CABAC_PROFILE-gated feed sites above -
  * never called at all in a normal build. */
 void mr_h264_cabac_profile_add_bin(unsigned long us);
 void mr_h264_cabac_profile_add_coeff(unsigned long us);
@@ -205,6 +257,8 @@ void mr_h264_cabac_profile_add_mvpred(unsigned long us);
 void mr_h264_cabac_profile_add_mbinfo(unsigned long us);
 void mr_h264_cabac_profile_add_mbparse(unsigned long us);
 void mr_h264_cabac_profile_add_intramb(unsigned long us);
+void mr_h264_cabac_profile_add_terminate(unsigned long us);
+void mr_h264_cabac_profile_add_mbtype(unsigned long us);
 
 /* Zero the accumulators before a libavc decode sub-call - paired with
  * mr_h264_stage_profile_reset(), called from the same site in mr_h264.c. */

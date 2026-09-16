@@ -1,14 +1,15 @@
 /*
  * Diagnostic accumulators for the H.264 CABAC bin/coeff/mvpred/mbinfo/
- * mbparse/intramb timing breakdown - see ih264d_cabac_profile.h. Plain
- * counters, no wrapping machinery here: unlike ih264d_stage_profile.c
- * (which has to install itself into dec_struct_t's function-pointer
- * table), each of this file's six buckets is fed directly by a --wrap'd
- * entry point or a struct-field swap that already exists (ih264d_cabac_
- * wrap.c, ih264d_parse_cabac_coeff_port.c, ih264d_mvpred_dispatch_port.c
- * for a real optimisation; ih264d_mbinfo_wrap_port.c and ih264d_intramb_
- * wrap_port.c purely for this timing), so there is nothing to install -
- * those files just call the add_*() functions below when
+ * mbparse/intramb/terminate/mbtype timing breakdown - see ih264d_cabac_
+ * profile.h. Plain counters, no wrapping machinery here: unlike ih264d_
+ * stage_profile.c (which has to install itself into dec_struct_t's
+ * function-pointer table), each of this file's eight buckets is fed
+ * directly by a --wrap'd entry point or a struct-field swap that already
+ * exists (ih264d_cabac_wrap.c, ih264d_parse_cabac_coeff_port.c, ih264d_
+ * mvpred_dispatch_port.c for a real optimisation; ih264d_mbinfo_wrap_
+ * port.c, ih264d_intramb_wrap_port.c, ih264d_terminate_wrap_port.c and
+ * ih264d_mbtype_wrap_port.c purely for this timing), so there is nothing
+ * to install - those files just call the add_*() functions below when
  * MR_H264_CABAC_PROFILE opts in.
  */
 #include "ih264d_cabac_profile.h"
@@ -19,6 +20,8 @@ static unsigned long g_mvpred_us, g_mvpred_count;
 static unsigned long g_mbinfo_us, g_mbinfo_count;
 static unsigned long g_mbparse_us, g_mbparse_count;
 static unsigned long g_intramb_us, g_intramb_count;
+static unsigned long g_terminate_us, g_terminate_count;
+static unsigned long g_mbtype_us, g_mbtype_count;
 
 void mr_h264_cabac_profile_add_bin(unsigned long us)
 {
@@ -56,6 +59,18 @@ void mr_h264_cabac_profile_add_intramb(unsigned long us)
     g_intramb_count++;
 }
 
+void mr_h264_cabac_profile_add_terminate(unsigned long us)
+{
+    g_terminate_us += us;
+    g_terminate_count++;
+}
+
+void mr_h264_cabac_profile_add_mbtype(unsigned long us)
+{
+    g_mbtype_us += us;
+    g_mbtype_count++;
+}
+
 void mr_h264_cabac_profile_reset(void)
 {
     g_bin_us = 0;
@@ -70,6 +85,10 @@ void mr_h264_cabac_profile_reset(void)
     g_mbparse_count = 0;
     g_intramb_us = 0;
     g_intramb_count = 0;
+    g_terminate_us = 0;
+    g_terminate_count = 0;
+    g_mbtype_us = 0;
+    g_mbtype_count = 0;
 }
 
 void mr_h264_cabac_profile_get(mr_h264_cabac_us *out)
@@ -86,4 +105,8 @@ void mr_h264_cabac_profile_get(mr_h264_cabac_us *out)
     out->mbparse_count = g_mbparse_count;
     out->intramb_us = g_intramb_us;
     out->intramb_count = g_intramb_count;
+    out->terminate_us = g_terminate_us;
+    out->terminate_count = g_terminate_count;
+    out->mbtype_us = g_mbtype_us;
+    out->mbtype_count = g_mbtype_count;
 }

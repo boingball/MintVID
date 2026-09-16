@@ -35,16 +35,27 @@ typedef struct mr_h264_timing {
      * (most macroblocks on real content are skip or intra, never reaching
      * pf_parse_inter_mb at all - see CLAUDE.md's "mbparse_us retest"),
      * which is what motivated adding intramb_us as its intra-side sibling.
-     * core_us minus mc/deblock/recon/intra/bin/coeff/mvpred/mbinfo/
-     * mbparse/intramb is what remains unattributed by subtraction - likely
-     * dominated by per-MB-loop skip-macroblock bookkeeping, which has no
-     * function-pointer boundary of its own to hook and so is not measured
-     * here at all yet. */
+     * A real A1200 retest with intramb_us wired in found mbparse_us+
+     * intramb_us together only explained ~13 of the ~49.5% pre-existing
+     * remainder, leaving ~36% still unattributed - see CLAUDE.md's
+     * "intramb_us"/terminate_us-mbtype_us sections. terminate_us/mbtype_us
+     * are two more per-MB costs found the same way: terminate_us (ih264d_
+     * decode_terminate - the CABAC end_of_slice_flag bin, called once per
+     * *macroblock*, skip or not) is genuinely disjoint from every other
+     * bucket; mbtype_us (ih264d_parse_mb_type_cabac - the mb_type syntax
+     * dispatch for a non-skip MB) overlaps bin_us the same way mbparse_us/
+     * intramb_us do. core_us minus mc/deblock/recon/intra/bin/coeff/
+     * mvpred/mbinfo/mbparse/intramb/terminate/mbtype is what remains
+     * unattributed by subtraction - possibly dominated by per-MB-loop
+     * skip-macroblock bookkeeping, which has no function-pointer boundary
+     * of its own to hook and so is not measured here at all yet. */
     unsigned long bin_us, bin_count, coeff_us, coeff_count;
     unsigned long mvpred_us, mvpred_count;
     unsigned long mbinfo_us, mbinfo_count;
     unsigned long mbparse_us, mbparse_count;
     unsigned long intramb_us, intramb_count;
+    unsigned long terminate_us, terminate_count;
+    unsigned long mbtype_us, mbtype_count;
 } mr_h264_timing;
 typedef enum mr_h264_speed_mode {
     MR_H264_SPEED_QUALITY = 0,
