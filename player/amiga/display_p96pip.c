@@ -146,12 +146,26 @@ static void fit_within(int w, int h, int max_w, int max_h, int *out_w,
     if (*out_h < 1) *out_h = 1;
 }
 
+static void calculate_geometry(p96pip_state *s)
+{
+    mr_aspect_rect fit =
+        mr_aspect_fit(s->source_w, s->source_h, s->win_w, s->win_h);
+    s->dx = fit.x;
+    s->dy = fit.y;
+    s->dw = fit.w;
+    s->dh = fit.h;
+}
+
 /*
  * Opens the PIP itself. WA_* tags place/size the window exactly like
  * OpenWindowTags(); the P96PIP_* tags describe the source buffer (fixed at
  * s->source_w/h for the PIP's lifetime) and its aspect-fitted destination
  * rectangle within that window (s->dx/dy/dw/dh, already computed by the
- * caller). P96PIP_Relativity is explicitly cleared to 0: the *default*
+ * caller). These four geometry tags are init-only in the P96 API, so every
+ * size change closes and reopens the PIP rather than trying to update them
+ * with p96PIP_SetTags().
+ *
+ * P96PIP_Relativity is explicitly cleared to 0: the *default*
  * (PIPRel_Width|PIPRel_Height, per libraries/Picasso96.h) interprets
  * P96PIP_Width/Height as a margin *not* covered by the PIP at the window's
  * right/bottom edge, not an absolute size - easy to miss, since
@@ -182,32 +196,29 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
         top  = s->have_window_geometry ? s->window_top  : 0;
     }
 
-    /* Windowed: request the CONTENT area directly via WA_InnerWidth/Height
-     * (same as display_p96.c's/display_cgx.c's own windowed open), so
-     * s->win_w/win_h (the aspect-fit box) never has to guess at border
-     * chrome thickness. Fullscreen is borderless, so outer and inner are
-     * the same and WA_Width/WA_Height is exact either way. */
+    /* P96's PIP API explicitly ignores WA_Width/WA_Height and requires
+     * WA_InnerWidth/WA_InnerHeight. Use the inner-size tags for both modes;
+     * fullscreen is borderless, so its inner and outer dimensions are equal.
+     * This also keeps s->win_w/win_h in content-area units everywhere. */
     *err = 0;
     win = (struct Window *)p96PIP_OpenTags(
         WA_PubScreen, (ULONG)scr,
         WA_Title, (ULONG)s->title,
         WA_Left, (ULONG)left, WA_Top, (ULONG)top,
-        s->fullscreen ? WA_Width : WA_InnerWidth, (ULONG)s->win_w,
-        s->fullscreen ? WA_Height : WA_InnerHeight, (ULONG)s->win_h,
+        WA_InnerWidth, (ULONG)s->win_w,
+        WA_InnerHeight, (ULONG)s->win_h,
         WA_Flags, flags,
         WA_IDCMP, idcmp,
         P96PIP_SourceFormat, (ULONG)RGBFB_B8G8R8,
         P96PIP_SourceWidth, (ULONG)s->source_w,
         P96PIP_SourceHeight, (ULONG)s->source_h,
         P96PIP_Type, type,
-        /* P96PIP_Left/Top/Width/Height are set again, correctly, by
-         * rebuild_geometry() -> p96PIP_SetTags() immediately after this
-         * call returns (it needs the real, post-open content size to
-         * compute them, which isn't known until now) - these are only a
-         * reasonable first placement so the PIP has *something* valid
-         * between open and that first SetTags. */
+        /* The PIP rectangle is relative to the window's interior, not its
+         * outer RastPort coordinates. Do not add BorderLeft/BorderTop here:
+         * doing so shifts a full-size PIP outside the interior and can make
+         * an otherwise valid open look cropped to the driver. */
         P96PIP_Relativity, (ULONG)0,
-        P96PIP_Left, (ULONG)(s->bl + s->dx), P96PIP_Top, (ULONG)(s->bt + s->dy),
+        P96PIP_Left, (ULONG)s->dx, P96PIP_Top, (ULONG)s->dy,
         P96PIP_Width, (ULONG)s->dw, P96PIP_Height, (ULONG)s->dh,
         P96PIP_ErrorCode, (ULONG)err,
         TAG_END);
@@ -218,12 +229,9 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
 
 /* Read the window's real content (border-excluded) geometry back after
  * open/resize, mirroring display_p96.c's/display_cgx.c's own bl/bt/iw/ih
- * tracking. P96PIP_Left/Top/Width/Height below are then set relative to
- * that content origin (s->bl,s->bt added the same way every other backend
- * in this tree adds its own bl/bt to a draw coordinate) - libraries/
- * Picasso96.h does not actually document which coordinate space P96PIP_Left/
- * Top use, so this is the most consistent assumption available, not a
- * confirmed one; unverified until tested on a real windowed PIP. */
+ * tracking. bl/bt are retained only for drawing the letterbox bars through
+ * the window RastPort; P96PIP_Left/Top themselves are interior-relative and
+ * must not include those border offsets. */
 static void sync_content_geometry(p96pip_state *s)
 {
     if (!s->win) return;
@@ -267,18 +275,10 @@ static void paint_letterbox(p96pip_state *s)
 
 static void rebuild_geometry(p96pip_state *s, const char *reason)
 {
-    mr_aspect_rect fit;
-    fit = mr_aspect_fit(s->source_w, s->source_h, s->win_w, s->win_h);
-    s->dx = fit.x; s->dy = fit.y; s->dw = fit.w; s->dh = fit.h;
+    calculate_geometry(s);
     s->geometry_valid = 1;
     s->force_full_redraw = 1;
     paint_letterbox(s);
-    if (s->win)
-        p96PIP_SetTags(s->win,
-            P96PIP_Relativity, (ULONG)0,
-            P96PIP_Left, (ULONG)(s->bl + s->dx), P96PIP_Top, (ULONG)(s->bt + s->dy),
-            P96PIP_Width, (ULONG)s->dw, P96PIP_Height, (ULONG)s->dh,
-            TAG_END);
     if (g_display_want_time)
         printf("p96pip-geometry reason=%s win=%dx%d video=%d,%d %dx%d "
                "hw-overlay=%d\n",
@@ -286,11 +286,53 @@ static void rebuild_geometry(p96pip_state *s, const char *reason)
                s->dx, s->dy, s->dw, s->dh, s->hw_overlay);
 }
 
+/* Close and reopen using geometry already stored in s. P96PIP_Source* and
+ * P96PIP_{Left,Top,Width,Height} are init-only, and a hardware overlay may
+ * allow only one live video window. Close the old PIP first so it cannot
+ * make its own replacement look unavailable. */
+static int reopen_pip(p96pip_state *s, const char *reason)
+{
+    LONG err = 0;
+
+    close_pip(s);
+    calculate_geometry(s);
+
+    s->win = open_pip(s, PIPT_VideoWindow, &err);
+    s->hw_overlay = s->win != NULL;
+    if (!s->win) {
+        if (g_display_want_time)
+            printf("p96pip: hardware video window unavailable (error %ld), "
+                   "trying software PIP\n", (long)err);
+        s->win = open_pip(s, PIPT_MemoryWindow, &err);
+    }
+    if (!s->win) {
+        if (g_display_want_time)
+            printf("p96pip: PIP open failed (error %ld)\n", (long)err);
+        return 0;
+    }
+
+    /* p96PIP_GetTagList() returns a count, not a success boolean. Check the
+     * retrieved pointer itself so either convention remains harmless. */
+    p96PIP_GetTags(s->win, P96PIP_SourceBitMap, (ULONG)&s->source_bitmap,
+                   TAG_END);
+    if (!s->source_bitmap) {
+        if (g_display_want_time)
+            printf("p96pip: could not retrieve source bitmap - closing\n");
+        close_pip(s);
+        return 0;
+    }
+
+    sync_content_geometry(s);
+    s->pending_w = s->win_w;
+    s->pending_h = s->win_h;
+    rebuild_geometry(s, reason);
+    return 1;
+}
+
 static void *p96pip_open(int w, int h, const char *title)
 {
     p96pip_state *s;
     struct Screen *scr;
-    LONG err = 0;
     int screen_w = 0, screen_h = 0;
 
     if (!P96Base) return NULL;
@@ -321,41 +363,10 @@ static void *p96pip_open(int w, int h, const char *title)
         fit_within(w, h, avail_w, avail_h, &s->win_w, &s->win_h);
     }
 
-    {
-        mr_aspect_rect fit = mr_aspect_fit(w, h, s->win_w, s->win_h);
-        s->dx = fit.x; s->dy = fit.y; s->dw = fit.w; s->dh = fit.h;
-    }
-
-    s->win = open_pip(s, PIPT_VideoWindow, &err);
-    s->hw_overlay = s->win != NULL;
-    if (!s->win) {
-        if (g_display_want_time)
-            printf("p96pip: hardware video window unavailable (error %ld), "
-                   "trying software PIP\n", (long)err);
-        s->win = open_pip(s, PIPT_MemoryWindow, &err);
-    }
-    if (!s->win) {
-        if (g_display_want_time)
-            printf("p96pip: PIP open failed (error %ld)\n", (long)err);
+    if (!reopen_pip(s, "init")) {
         FreeVec(s);
         return NULL;
     }
-
-    /* p96PIP_GetTagList()'s own return-code convention (count processed vs.
-     * count failed) isn't documented in the vendored header, so this checks
-     * the retrieved pointer itself rather than trusting a guessed sign
-     * convention on the return value. */
-    p96PIP_GetTags(s->win, P96PIP_SourceBitMap, (ULONG)&s->source_bitmap,
-                  TAG_END);
-    if (!s->source_bitmap) {
-        if (g_display_want_time)
-            printf("p96pip: could not retrieve source bitmap - closing\n");
-        close_pip(s);
-        FreeVec(s);
-        return NULL;
-    }
-
-    sync_content_geometry(s);
 
     if (g_display_want_time)
         printf("p96pip: opened %s overlay, window=%dx%d source=%dx%d\n",
@@ -374,10 +385,6 @@ static void *p96pip_open(int w, int h, const char *title)
         s->window_height = s->win_h;
     }
 
-    s->pending_w = s->win_w;
-    s->pending_h = s->win_h;
-    rebuild_geometry(s, "init");
-
     return s;
 }
 
@@ -388,26 +395,25 @@ static void *p96pip_open(int w, int h, const char *title)
  * segment, same case display_p96.c's p96_show_packed() handles for its own
  * screen-bitmap path) needs a full close/reopen rather than a SetTags
  * update. Keeps the current window geometry/fullscreen state; only the
- * source dimensions and the resulting aspect-fit change. */
+ * source dimensions and the resulting aspect-fit change. If the new size
+ * is refused, the previous PIP is restored instead of leaving the backend
+ * with no live window. */
 static int reopen_for_size(p96pip_state *s, int w, int h)
 {
-    LONG err = 0;
-    close_pip(s);
+    int old_w = s->source_w;
+    int old_h = s->source_h;
+
     s->source_w = w;
     s->source_h = h;
-    s->win = open_pip(s, PIPT_VideoWindow, &err);
-    s->hw_overlay = s->win != NULL;
-    if (!s->win) s->win = open_pip(s, PIPT_MemoryWindow, &err);
-    if (!s->win) return 0;
-    p96PIP_GetTags(s->win, P96PIP_SourceBitMap, (ULONG)&s->source_bitmap,
-                  TAG_END);
-    if (!s->source_bitmap) {
-        close_pip(s);
-        return 0;
-    }
-    sync_content_geometry(s);
-    rebuild_geometry(s, "frame-size-change");
-    return 1;
+    if (reopen_pip(s, "frame-size-change"))
+        return 1;
+
+    /* Keep the backend usable if a transient/invalid source size is refused. */
+    s->source_w = old_w;
+    s->source_h = old_h;
+    if (!reopen_pip(s, "frame-size-rollback"))
+        s->quit = 1;
+    return 0;
 }
 
 static unsigned long elapsed_us(clock_t begin)
@@ -421,7 +427,7 @@ static unsigned long elapsed_us(clock_t begin)
  * is no destination offset to track the way display_p96.c's write_pixel_
  * strip() needs one: the PIP's source bitmap is always exactly source_w x
  * source_h, and its placement/scaling within the window is handled entirely
- * by P96PIP_Left/Top/Width/Height (see rebuild_geometry()), not by us. Only
+ * by P96PIP_Left/Top/Width/Height (set by open_pip()), not by us. Only
  * RGBFB_B8G8R8 is ever requested (see the file header for why), so unlike
  * display_p96.c/display_cgx.c's multi-format write_pixel_strip() this needs
  * no format switch - just an optional R/B channel swap depending on the
@@ -555,8 +561,27 @@ static int p96pip_poll(void *h)
     }
     if (s->pending_w != s->win_w || s->pending_h != s->win_h) {
         if (clock() - s->resize_at >= CLOCKS_PER_SEC / 10) {
-            sync_content_geometry(s);
-            rebuild_geometry(s, "resize");
+            int old_w = s->win_w, old_h = s->win_h;
+            int old_saved_w = s->window_width;
+            int old_saved_h = s->window_height;
+
+            /* Preserve the user's current position before closing the old
+             * PIP, then reopen because its rectangle tags are init-only. */
+            s->have_window_geometry = 1;
+            s->window_left = s->win->LeftEdge;
+            s->window_top = s->win->TopEdge;
+            s->win_w = s->pending_w;
+            s->win_h = s->pending_h;
+            s->window_width = s->win_w;
+            s->window_height = s->win_h;
+            if (!reopen_pip(s, "resize")) {
+                s->win_w = old_w;
+                s->win_h = old_h;
+                s->window_width = old_saved_w;
+                s->window_height = old_saved_h;
+                if (!reopen_pip(s, "resize-rollback"))
+                    s->quit = 1;
+            }
         }
     }
     return s->quit ? MR_EV_QUIT : ev;
@@ -566,9 +591,7 @@ static int p96pip_toggle_fullscreen(void *h)
 {
     p96pip_state *s = (p96pip_state *)h;
     int next_fullscreen;
-    LONG err = 0;
-    struct Window *replacement;
-    int hw_overlay;
+    int old_fullscreen, old_win_w, old_win_h;
     if (!s || !s->win) return 0;
     if (!s->fullscreen) {
         s->have_window_geometry = 1;
@@ -580,6 +603,9 @@ static int p96pip_toggle_fullscreen(void *h)
         s->window_width = s->win_w;
         s->window_height = s->win_h;
     }
+    old_fullscreen = s->fullscreen;
+    old_win_w = s->win_w;
+    old_win_h = s->win_h;
     next_fullscreen = !s->fullscreen;
     s->fullscreen = next_fullscreen;
     if (s->fullscreen) {
@@ -589,27 +615,16 @@ static int p96pip_toggle_fullscreen(void *h)
         s->win_w = s->window_width;
         s->win_h = s->window_height;
     }
-    replacement = open_pip(s, PIPT_VideoWindow, &err);
-    hw_overlay = replacement != NULL;
-    if (!replacement) replacement = open_pip(s, PIPT_MemoryWindow, &err);
-    if (!replacement) {
-        s->fullscreen = !next_fullscreen;
-        return 0;
-    }
-    close_pip(s); /* old window/PIP */
-    s->win = replacement;
-    s->hw_overlay = hw_overlay;
-    p96PIP_GetTags(s->win, P96PIP_SourceBitMap, (ULONG)&s->source_bitmap,
-                  TAG_END);
-    if (!s->source_bitmap) {
-        close_pip(s);
-        return 0;
-    }
-    sync_content_geometry(s);
-    s->pending_w = s->win_w;
-    s->pending_h = s->win_h;
-    rebuild_geometry(s, "fullscreen-toggle");
-    return 1;
+    if (reopen_pip(s, "fullscreen-toggle"))
+        return 1;
+
+    /* Restore the previous mode if the requested PIP cannot be opened. */
+    s->fullscreen = old_fullscreen;
+    s->win_w = old_win_w;
+    s->win_h = old_win_h;
+    if (!reopen_pip(s, "fullscreen-rollback"))
+        s->quit = 1;
+    return 0;
 }
 
 static void p96pip_status(void *h, const char *text)
