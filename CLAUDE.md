@@ -3720,6 +3720,107 @@ for the user to make explicitly, with this section's own honest
 "no shortcut found" as the reason it would be starting from scratch,
 not from a known 2x-in-a-day win the way the per-slice divmod fix was.
 
+## Tried and reverted: calling mr_ih264d_decode_bin_m68k directly from ih264d_parse_mb_type_cabac()
+Direct follow-up, on explicit instruction to stop investigating and ship
+something: implement and benchmark one concrete optimisation of
+`ih264d_parse_mb_type_cabac()` against the same test clip, keep the
+original available for comparison, revert and explain if it doesn't help.
+
+**The change**: all 13 single-bin `ih264d_decode_bin()` call sites inside
+`ih264d_parse_mb_type_cabac()` (SI/P/B branches; the 2 multi-bin
+`ih264d_decode_bins()` calls in the deep B-slice branches were left alone
+- no direct asm primitive exists for those) were redirected to call
+`mr_ih264d_decode_bin_m68k()` - the existing, already-verified hand-asm
+CABAC bin decoder `ih264_m68k_cabac.S` provides - directly, instead of
+through the vendored `ih264d_decode_bin()` symbol. On a real m68k link
+that symbol resolves via `--wrap` to `__wrap_ih264d_decode_bin()`
+(`ih264d_cabac_wrap.c`), a C function whose entire body is
+`return mr_ih264d_decode_bin_m68k(...)`. That file's own header
+documents this as "a second full call/return layer... paid on every
+single decoded bin" and records that removing it *globally* (exporting
+`__wrap_ih264d_decode_bin` straight from the `.S` file, no C code) broke
+the real AmigaOS link and was reverted for that reason. This was a
+narrower, different mechanism: change what ONE caller calls, never
+touching `--wrap` or the trampoline itself - a new self-contained header,
+`vendor/libavc_port/ih264_m68k_mbtype_bin.h` (`MR_M68K_ASM` calls the
+primitive directly; the portable fallback calls `ih264d_decode_bin()`
+unchanged), included from a one-line change to `vendor/libavc`'s
+`ih264d_parse_mb_header.c` (on a new branch,
+`claude/mbtype-cabac-direct-asm-call`, off the currently-pinned `cb8d7c3`).
+
+**Correctness, checked before any timing number was trusted**: host
+`make check` (portable fallback path, unaffected either way) passed
+unchanged. Two full m68k builds - one with the change, one built from a
+`git stash`-restored original source, both at the exact same production
+flags `tests/run_m68k_check.sh` uses - decoded `test_h264_high.mp4` (and
+`test_h264_aac.ts`/`test_h264_ac3.ts`/`test_h264_aac.mkv`, different
+container/mux shapes over the same content) to **byte-for-byte identical
+PPM output** and identical worst-frame MAE (0.705) against `ref_h264_high`.
+Expected, not a surprise: the change calls the exact same
+already-bit-exact-verified primitive `__wrap_ih264d_decode_bin` itself
+already called, just one call-frame closer - no new arithmetic, nothing
+to newly prove bit-exact, only the wiring to get right.
+
+**The actual finding, from disassembling `ih264d_parse_mb_type_cabac`
+in both builds before trusting a timing number at all**: `__wrap_
+ih264d_decode_bin` compiles, at this toolchain's `-O2`, to a **single
+`bral` (branch-always-long) instruction straight to
+`mr_ih264d_decode_bin_m68k`** - GCC's own sibling/tail-call optimisation
+recognising `return f(args);` with identical argument shapes needs no
+call frame at all. `objdump --disassemble=ih264d_parse_mb_type_cabac` on
+both builds came back **byte-identical instruction counts (219
+instructions, 18 jsr/bsr sites in each)** - the only difference anywhere
+in the function is which symbol the one `jsr` that hits `SI_SLICE`'s b0
+call targets (`__wrap_ih264d_decode_bin` vs `mr_ih264d_decode_bin_m68k`
+directly); every other call site already compiles to an indirect
+`jsr %a4@` through a register GCC loads once and reuses, identical in
+both builds. So the "second full call/return layer" this file's own
+`ih264d_cabac_wrap.c`/`ih264_m68k_cabac.S` headers describe **already
+does not exist in the compiled code at this optimisation level** - it is
+one `bral` (a handful of cycles at most, not a stack frame, argument
+reload, or `rts`) per bin, not a real function call. There was
+essentially nothing left to remove.
+
+**Benchmark, run only after that finding explained why to expect little**:
+7 qemu-m68k wall-clock runs each of `test_h264_high.mp4 --check`,
+identical `-m68030` build flags both sides. Baseline mean 0.11906 s
+(stdev 0.00086); with the change, mean 0.11960 s (stdev 0.00269) - a
+nominal **+0.46% slower**, but the "with the change" run's own variance
+is more than 3x the baseline's, so this reads as pure scheduling/qemu
+noise, not a real regression, consistent with the disassembly showing
+no instruction-count difference to produce one either way.
+
+**Reverted, per the standing instruction to revert and explain rather
+than ship a change that doesn't help**: `vendor/libavc`'s working tree
+restored to the exact pinned `cb8d7c3` (`git checkout --`, branch
+deleted), the new header removed, nothing left in either tree. Explained
+above, not just asserted: the mechanism this change targeted (a real,
+documented, and previously load-bearing concern elsewhere in this file -
+see the CABAC notes section's own account of the *global* wrap-removal
+attempt) turned out to already be closed by the compiler at this
+optimisation level for *this* specific trivial-tail-call shape, which
+the earlier, larger attempt's real AmigaOS link failure never actually
+disproved or confirmed either way (that attempt failed to *link*, not
+because the removed layer turned out to be free). One genuine residual
+uncertainty, stated plainly rather than glossed over: this was verified
+against `m68k-linux-gnu-gcc` at `-O2`, not the real `m68k-amigaos-gcc`
+toolchain (still unavailable on this dev host) - GCC's sibling-call
+optimisation is standard and has applied to this exact code shape across
+many GCC generations, so there is no specific reason to expect Bebbo's
+toolchain to differ, but "no specific reason to expect otherwise" is not
+the same standard of proof this file holds every other 68060-specific
+claim to, and is recorded as a gap rather than papered over as certainty.
+
+The practical upshot for anyone revisiting "make mbtype_us faster" next:
+the call-overhead angle this section chased is a dead end, checked and
+closed with real evidence, not left as an assumption. The only lever
+that remains real, per the section above this one, is a genuine hand-asm
+reimplementation of the CABAC binarisation logic itself (not just
+redirecting which primitive gets called) - a substantially larger
+undertaking than what this section attempted, with its own differential
+fuzz-testing needs, not something to reach for again without deciding
+that undertaking is worth it explicitly.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
