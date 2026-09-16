@@ -2450,20 +2450,39 @@ int main(int argc, char **argv)
         int budget_frames = frame_bytes ? (int)(budget / frame_bytes) : 0;
         int video_cap = network_source ? VIDEO_QUEUE_NET_DEPTH
                                         : VIDEO_QUEUE_DISK_DEPTH;
-        /* VIDEO_QUEUE_NET_DEPTH above is only a starting default, not a
-         * floor - the budget_frames clamp below can still pull it under 16
-         * on a tight machine (e.g. a large frame size at 720p+). A live HLS
-         * segment fetch can stall for hundreds of ms up to well over a
-         * second (observed on YouTube live - one segment of lookahead is
-         * all the single-TLS-connection design in hls_fetch.c allows), so
-         * 16 frames (~466 ms of cushion at 30fps) is nowhere near enough
-         * headroom on a machine with room to spare, and every stall shows up
-         * as audio-clock drift that compounds until a hard live-resync jump.
-         * Let a healthy RAM budget grow the network queue past that default
-         * instead of requiring an explicit --net-queue for every live
-         * stream; the budget_frames/VIDEO_QUEUE_CAP clamps below still
-         * apply either way. */
-        if (network_source && budget_frames > video_cap)
+        /* VIDEO_QUEUE_NET_DEPTH/VIDEO_QUEUE_DISK_DEPTH above are only
+         * starting defaults, not floors - the budget_frames clamp below can
+         * still pull either under 16 on a tight machine (e.g. a large frame
+         * size at 720p+). A live HLS segment fetch can stall for hundreds of
+         * ms up to well over a second (observed on YouTube live - one
+         * segment of lookahead is all the single-TLS-connection design in
+         * hls_fetch.c allows), so 16 frames (~466 ms of cushion at 30fps) is
+         * nowhere near enough headroom on a machine with room to spare, and
+         * every stall shows up as audio-clock drift that compounds until a
+         * hard live-resync jump.
+         *
+         * A local disk file has no fetch-stall to ride out, but on a real
+         * 68060 a clip whose average decode cost sits right at (or a little
+         * over) one frame period benefits from exactly the same cushion for
+         * a different reason: decode already races ahead to fill the ring
+         * whenever qcount < video_cap (queue_full only gates output, not
+         * decode - see skip_reason_queue_full below), so a bigger ring
+         * banks more of that free head start and rides out per-frame
+         * decode-time variance (an expensive keyframe, a CABAC-heavy P
+         * slice) for longer before falling into the same lockstep
+         * decode-then-present stepping a too-small ring hits immediately.
+         * It cannot fix a clip whose *average* decode cost is steadily
+         * below real time - a bigger buffer only delays that wall, it does
+         * not remove it - but it costs nothing to try, and the RAM is
+         * otherwise idle.
+         *
+         * Let a healthy RAM budget grow the queue past its starting default
+         * for both source kinds instead of requiring an explicit
+         * --net-queue for every live stream (or having no equivalent knob
+         * for disk at all, which is what this file did before) - the
+         * budget_frames/VIDEO_QUEUE_CAP clamps below still apply either
+         * way, so a tight machine is unaffected. */
+        if (budget_frames > video_cap)
             video_cap = budget_frames;
         if (net_queue > 0 && video_cap < net_target) video_cap = net_target;
         if (video_cap < target_depth) video_cap = target_depth;

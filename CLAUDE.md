@@ -2649,6 +2649,99 @@ the earlier `mr_h264_set_dynamic_skip()` host probes in this file):**
    settings (as used here) is a common enough encoder default that it is
    a reasonable first thing to have fixed.
 
+## Local-disk video queue growth (real A1200/68060 report)
+A real-hardware report on the 720p work above's branch, on a genuinely
+different clip than the 720p one: a local H.264 mp4 on an A1200 68060/50
+plays perfectly for the first ~10 frames (a different clip: ~3 seconds),
+then settles into a visible "decode, present, decode, present" stepping
+pattern that never recovers. The user's own read of it, and the right one:
+this is exactly the shape a too-small decode-ahead buffer produces once it
+drains, not a hard freeze or a network symptom (this is a local file, no
+fetch involved at all).
+
+`amiga/mrplay.c` already has the mechanism this needed - it just wasn't
+applied evenly. `video_cap` (the modulus of the `queued_video vq[]` ring -
+see the file's own top-of-file comment block) starts at a small default
+per source kind (`VIDEO_QUEUE_NET_DEPTH`/`VIDEO_QUEUE_DISK_DEPTH`, both 16)
+and decode already races ahead to fill it whenever `qcount < video_cap`
+(`queue_full = qcount >= video_cap` only gates *output* - see
+`skip_reason_queue_full` - it does not pause decode itself), so the ring
+banks a free head start before playback visibly needs it and keeps
+refilling in the background afterward. But the RAM-budget growth logic
+that lets that ring grow past its 16-frame default when the machine has
+room to spare (`budget_frames`, derived from `AvailMem(MEMF_ANY)` minus a
+floor, clamped to `VIDEO_QUEUE_CAP`=48) was gated `if (network_source &&
+...)` - added for a real, different problem (live HLS segment fetch
+stalls, see the Live HLS notes above) but never extended to local disk
+files, which stayed hardcoded at 16 forever regardless of free Fast RAM.
+16 frames is well under a second of cushion at any real frame rate - a
+plausible match for "perfect for a few seconds, then permanent stutter"
+once a clip's average per-frame decode cost sits at or a little past one
+frame period on a real 68060/50 and that thin cushion drains.
+
+Fixed by dropping the `network_source &&` gate - the same `budget_frames`/
+`VIDEO_QUEUE_CAP` growth now applies to disk sources too, with the same
+safety clamps already in place (a RAM-tight machine still gets clamped
+back down; `video_cap` still cannot exceed the fixed 48-slot `vq[]` array).
+This is a pure sizing change - the ring's actual fill/drain/present logic,
+`target_depth` (still 3 for local files, governing only when playback
+*starts*, not how much can bank ahead of it), and every skip/throughput
+decision elsewhere in the file are all untouched. Per-slot RGB/indexed/
+YUV buffers are allocated lazily per slot index the first time the ring
+actually reaches it (`realloc` in the handful of `q->rgb = ...` sites),
+not up front for all 48 array slots, so this costs no memory on a stream
+that never needs the extra depth - it only grows RAM use on a machine that
+both has the room (`budget_frames`) and a clip that actually drains the
+ring that far.
+
+**This cannot fix a clip whose *average* decode cost is steadily below
+real time - only variance and a one-time startup shortfall.** A ring
+buffer trades time, not work: it banks a surplus while decode is briefly
+ahead of the display clock and spends it back during a briefly-behind
+stretch, but if the *long-run average* decode rate never catches back up
+to real time, the surplus can only shrink, never regrow, so any fixed
+buffer size just delays the point where the same steady stutter resumes,
+never removes it. Worth confirming which case this clip is with a
+`--time` trace (the existing `video-queue: cap=... cushion=...` printf,
+already `want_time`-gated, now reports the grown number) rather than
+assuming - if the stutter recurs at a proportionally later point rather
+than going away, that is itself the evidence this is the steady-average
+case, not the variance case, and the real fix is decode-side (per-frame
+profiling, as the 720p section above already does for a different
+symptom), not more buffer.
+
+**A true "decode the whole file ahead, like MintAMP's own decode-then-play
+audio mode" was raised and is not feasible for video on this hardware -
+the RAM math rules it out outright, not a design taste call.** MintAMP's
+audio equivalent works because PCM is tiny (16-bit 44.1kHz stereo is
+~172 KiB/s, so a whole 4-minute track is ~41 MB - a real, affordable
+prebuffer). A decoded *video* frame is the queue's own `frame_bytes` -
+width*height for the AGA indexed path, ~1.5x that for YUV420-indexed,
+3x that for RGB24/RTG - and a 4-minute 360p (640x360) clip at a real H.264
+frame rate is thousands of frames: at 25fps (6000 frames) that is roughly
+1.3 GB indexed, 1.9 GB YUV420-indexed, or 3.9 GB RGB24, held as raw pixels
+simultaneously; even at this project's own lower 12fps test-clip rate
+(2880 frames) that is still ~630 MB / ~950 MB / ~1.85 GB respectively -
+one to several orders of magnitude past any real A1200's Fast RAM, expanded
+or not. The now-larger *rolling* buffer above is the actually-tractable
+version of the same instinct: it banks tens of frames (a few seconds,
+bounded by real free RAM via the same `budget_frames` math this section's
+fix reuses) rather than the whole file, needs no "please wait, decoding"
+startup phase or status-bar notification before the window opens (playback
+already starts as soon as `qcount > 0` - the very first decoded frame -
+and the ring keeps filling in the background from there, exactly as it
+already did before this change, just deeper), and costs proportionally
+bounded RAM instead of gigabytes.
+
+Not yet retested on real hardware - `amiga/mrplay.c` is Amiga-only and can
+only be reviewed on this dev host (see "Validate against ffmpeg" above);
+`make check`/`make check-m68k` are unaffected (neither touches this file).
+Needs the same clip that showed the original report, watching whether the
+smooth opening stretch measurably lengthens (confirms the ring is now
+banking more, whatever the eventual verdict on steady-vs-variance above)
+and whether `--time`'s `video-queue: cap=...` line now reports a
+meaningfully larger `cap=` than 16 on this machine's actual free RAM.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
