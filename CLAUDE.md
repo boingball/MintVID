@@ -3144,6 +3144,94 @@ unjustified as the CABAC notes section always said it was for a diagnostic
 alone - now with a direct number to decide it by, once that capture lands,
 rather than a subtraction-derived guess.
 
+## mbparse_us retest: the hypothesis was wrong - pf_parse_inter_mb is not the remainder
+The real-hardware retest the previous section asked for landed
+(`CPU=68060 STAGE_PROFILE=1 CABAC_PROFILE=1`, YouTube 360p progressive
+MP4, Turbo, A1200 68060/50, 60 decoded frames / 28 paired `h264 stages:`+
+`h264 cabac:` reports). Parsed and summed all 28 reports (both per-report-
+averaged and totals-weighted, which agreed within 0.2 points):
+
+| bucket | avg % of core |
+|---|---|
+| mc | 10.2% |
+| recon | 13.2% |
+| intra | 4.8% |
+| bin | 7.3% |
+| coeff | 5.4% |
+| mvpred | 1.8% |
+| mbinfo | 8.2% |
+| **mbparse** | **6.2%** (0.2-10.7% range) |
+| remainder before mbparse | 49.0% |
+| **remainder after subtracting mbparse** | **~43%** |
+
+`mbparse_us` came back real but *small* - only ~6% of core_us, and it
+accounts for just ~12% of the ~49% remainder that motivated building it
+(`sum(mbparse)/sum(remainder)` across the whole capture = 12.2%, matching
+the per-report average of 12.6% closely). This directly contradicts the
+working hypothesis stated in the previous section and in `ih264d_mbinfo_
+wrap_port.c`'s own header: `pf_parse_inter_mb` is *not* the dominant
+unattributed cost. After adding a real, direct measurement of it, ~43% of
+total decode time is *still* completely unattributed - barely smaller than
+before mbparse_us existed.
+
+**Why `mbparse_us` reads this small has a concrete, source-grounded
+explanation, not just "the measurement must be wrong": `mbparse_count` is
+consistently a small fraction of `mbinfo_count`.** `mbinfo_count` (5520,
+2760, 1840, ... per frame) counts *every* macroblock via `pf_get_mb_info`,
+skip or not, intra or not. `mbparse_count` (345, 361, 507, 847, ...)
+counts only calls that actually reach `pf_parse_inter_mb` - which, per the
+per-MB loop read while building the mbinfo swap (`ih264d_parse_pslice.c`'s
+`while(!u1_slice_end)` loop), is gated behind *two* conditions: not a skip
+MB, *and* `u1_mb_type < u1_mb_threshold` (P/B-inter, not intra - an intra
+MB embedded in a P/B slice is dispatched elsewhere entirely, never through
+`pf_parse_inter_mb`). Averaged across the capture, `mbparse_count/
+mbinfo_count` = 35.1% (range 1.2-54.5%) - meaning on average **65% of
+macroblocks in this real content are either skip or intra-coded**,
+bypassing `pf_parse_inter_mb` completely. For a fairly static YouTube
+360p talking-head-style clip that is entirely plausible (skip runs are the
+cheapest thing an H.264 encoder can emit for unchanged background), and it
+means the earlier ~48-55% remainder was never really "the cost of parsing
+inter macroblocks" - most macroblocks in this stream aren't going through
+that path at all.
+
+**The real, still-unmeasured cost is most likely the per-MB loop's own
+skip-path and intra-dispatch handling - neither of which any bucket built
+so far touches.** Two concrete, previously-unconsidered candidates, both
+visible in the same per-MB loop already read while building `pf_get_mb_
+info`/`pf_parse_inter_mb`'s wraps:
+- **Skip-MB bookkeeping**: for every skip MB (the majority here), the loop
+  itself does a `memset(ps_dec->ps_curr_ctxt_mb_info, 0, ...)`, sets
+  `pu1_left_mv_ctxt_inc`/`pi1_left_ref_idx_ctxt_inc`/`pu1_left_yuv_dc_csbp`
+  to zero, writes `ps_part_info` (direct/skip partition bookkeeping), and
+  calls `ih264d_update_nnz_for_skipmb()` - none of this runs inside
+  `pf_get_mb_info` (already measured) or `pf_parse_inter_mb` (now
+  measured, but never called for a skip MB at all) - it is loop-body C
+  code with no function-pointer indirection of its own to hook.
+- **Intra-MB dispatch inside P/B slices**: `ih264d_parse_mb_type_cabac()`
+  (called for every non-skip MB, its own bin-decode cost already inside
+  `bin_us`, but its C-level dispatch is not) decides intra vs. inter, and
+  an intra result is parsed through whatever the intra equivalent of
+  `pf_parse_inter_mb` is - not `pf_parse_inter_mb` itself, so `mbparse_us`
+  never sees it, and it has not been identified or measured at all yet.
+
+Neither of these has a clean, already-proven interception point the way
+`pf_get_mb_info`/`pf_parse_inter_mb` did - they would need their own
+investigation (does the intra path go through another dec_struct_t
+function pointer that happens to be cross-file? is skip-MB bookkeeping
+worth a dedicated `clock()` bracket around the `if(u4_mb_skip){...}` arm
+specifically, which - unlike the two function-pointer cases so far - has
+no vendored function boundary to hook at all, only a block of inline
+loop-body code) before assuming either is buildable the same way mbinfo/
+mbparse were. Not attempted in this round; this section exists to correct
+the record, not to guess at the next fix without checking source first the
+way every other addition in this chain did.
+
+Verification for this round is identical to the mbinfo/mbparse rounds
+before it - no new code was written, this is a documentation-only update
+recording a real-hardware measurement result. The capture itself
+(`RAM:MintVID.log`, GadTools "Log: on") is the same build already pushed
+and verified (`e8194eb`) - nothing to rebuild or re-verify.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.

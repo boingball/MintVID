@@ -109,6 +109,23 @@
  * remainder genuinely *is* pf_parse_inter_mb (mbparse_us tracks it
  * closely) or whether there is a further, still-unattributed cost outside
  * it (mbparse_us reads meaningfully smaller than the remainder).
+ *
+ * CORRECTION (see CLAUDE.md's "mbparse_us retest" section): a real A1200
+ * capture answered this, and it is the second case, decisively -
+ * mbparse_us averaged only ~6% of core_us, explaining just ~12% of the
+ * ~49% remainder it was built to attribute. pf_parse_inter_mb is *not*
+ * the dominant unmeasured cost after all. Root cause, found in the same
+ * per-MB loop this file already reads: mbparse_count (calls that actually
+ * reach pf_parse_inter_mb) averaged only 35% of mbinfo_count (every MB) -
+ * on this real content, ~65% of macroblocks are skip or intra-coded and
+ * never reach pf_parse_inter_mb at all. The genuinely unmeasured cost is
+ * most likely the per-MB loop's own skip-MB bookkeeping (memset/nnz-
+ * update inline code with no function-pointer boundary to hook) and/or
+ * whatever dispatches an intra MB embedded in a P/B slice (not yet
+ * identified) - see CLAUDE.md for the full writeup. Neither is
+ * implemented here; this file's own mechanism and correctness are
+ * unaffected by this correction, only the expectation of what its number
+ * would show.
  */
 #include "ih264_typedefs.h"
 #include "ih264d_structs.h"

@@ -133,6 +133,19 @@
  *                          still-unattributed cost beyond it (mbparse_us
  *                          reads meaningfully smaller).
  *
+ *                          CORRECTION: a real A1200 retest answered this -
+ *                          mbparse_us averaged only ~6% of core_us
+ *                          (~12% of the ~49% remainder), so pf_parse_
+ *                          inter_mb is *not* the dominant unmeasured cost.
+ *                          mbparse_count averaged only 35% of mbinfo_count
+ *                          on real content - most macroblocks were skip or
+ *                          intra-coded, never reaching pf_parse_inter_mb
+ *                          at all. See CLAUDE.md's "mbparse_us retest"
+ *                          section and ih264d_mbinfo_wrap_port.c's own
+ *                          correction note for the likely real location of
+ *                          that cost (per-MB loop skip-path bookkeeping,
+ *                          intra-MB dispatch) - neither measured yet.
+ *
  * Like ih264d_stage_profile.c, this module always compiles in (portable C,
  * no MR_M68K_ASM guard) so mr_h264.c's reset/get calls are unconditionally
  * safe - the accumulators just stay at zero unless something is actually
