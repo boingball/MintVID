@@ -3978,6 +3978,273 @@ here; this section's job was to test the blanket version honestly and
 report what it actually measured, not to iterate further within the same
 session.
 
+## DV (IEC 61834/SMPTE 314M) video decoder
+A real user report: a DV-PAL AVI from a camcorder (720x576, `DV Video`
+codec, PCM audio already demuxed into its own WAVEFORMATEX stream - a
+"type-2" DV-AVI) would not play at all - Fast Buffer filled (reading the
+whole ~2 GB file into Fast RAM), then nothing: no error, no video, and the
+process had to be closed by hand to release the memory, rather than the
+usual ~2 s auto-exit `mrplay.c`'s "no decoder" path already does for an
+unsupported codec. Root cause, confirmed from source before writing
+anything: `core/mr_codec.c`'s registry had no DV decoder at all - this file
+could never have played, buffer size aside - and the apparent hang was a
+separate, real gap in `core/mr_source.c`'s `open_local_file()`: the
+whole-file Fast Buffer cache is a single blocking `fread()` of the entire
+file *before* the codec is ever even looked at, so a slow NAS/SMB read of a
+multi-gigabyte file has nothing to do with codec support and stalls ahead
+of every fast-fail/status-reporting path that would otherwise report it
+promptly. That second issue is real but out of scope for this change - not
+investigated or fixed here, since DV wasn't decodable regardless of how
+fast the file opened.
+
+**Decision: reuse a proven decoder rather than reimplement DV's DCT/VLC/
+quantisation bitstream from scratch.** DV's macroblock-adaptive coding
+(8x8 vs. 2-4-8 DCT block selection per macroblock, its own weighting/
+quantisation tables, and a bit-exact VLC scheme) is comparable in scope to
+the H.264/MPEG work already in this tree, and this project's own precedent
+(vendoring Ittiam's libavc for H.264, VideoLAN's libmpeg2 and a Rockbox/
+a52dec AC-3 core, both GPL-2.0-or-later - see THIRD-PARTY-LICENSES.txt) is
+to vendor a mature reference decoder and write a thin port layer, not to
+hand-roll a new one. `player/vendor/libdv/` is a decode-only subset of
+libdv (Quasar DV Codec, LGPL-2.1-or-later - a more permissive licence than
+either GPL component already vendored here), fetched from its
+`deepin-community/libdv` GitHub mirror. Only the files the decode path
+actually needs are carried: `dv.c/h`, `dv_types.h`, `parse.c/h`, `place.c/h`,
+`weighting.c/h`, `quant.c/h`, `idct_248.c/h`, `dct.c/h`, `bitstream.c/h`,
+`vlc.c/h`, `audio.c/h` (needed only for `dv_audio_new()`/`dv_parse_header()`'s
+own internal call into it, not for PCM decode - see below), and `YV12.c/h`.
+Dropped entirely: the encoder, the popt CLI helper, and the RGB/YUY2
+colour-space output paths (rgb.c/YUY2.c) - MintVID only ever wants planar
+YV12/4:2:0, and `dv.c`'s own pre-existing `YUV_420_USE_YV12` build switch
+(present in upstream, just never turned on) already retargets the standard
+`e_dv_color_yuv` dispatch at `dv_mb420_YV12()` instead of a packed-YUY2
+renderer, so no new dispatch enum/case was needed - just enabling the
+switch that was already there and deleting the two colour-space paths this
+build doesn't use.
+
+**Three portability bugs found and fixed while adapting the vendored
+code, one of them silent-but-would-have-been-wrong-on-real-hardware -
+exactly the class of gap this file's "Validate against ffmpeg" section
+exists to catch, this time before it ever reached a commit:**
+
+- **Endian detection was structurally broken for a buildless vendor copy,
+  and it mattered for more than a metadata field.** `dv_types.h`/
+  `bitstream.h` derive `LITTLE_ENDIAN_BITFIELD`/`BIG_ENDIAN_BITFIELD` and
+  `bitstream.h`'s `swab32()` (the macro that un-reverses a native 32-bit
+  word load back into the DV bitstream's MSB-first bit order) from
+  `BYTE_ORDER`/`LITTLE_ENDIAN`/`BIG_ENDIAN`, normally supplied by
+  `<endian.h>` behind `HAVE_ENDIAN_H`/`HAVE_MACHINE_ENDIAN_H` - autoconf
+  macros this tree's buildless vendor copy never defines. With both macros
+  undefined, the preprocessor treats them as `0`, so `#if (BYTE_ORDER ==
+  LITTLE_ENDIAN)` reads as `0 == 0` and is always true - silently forcing
+  little-endian behaviour on every target, m68k included. `swab32()`'s
+  `BIG_ENDIAN` branch is a no-op (a real big-endian CPU's native word load
+  already matches the bitstream's own MSB-first packing) - getting this
+  wrong doesn't just mis-tag an audio pack, it breaks VLC decode outright.
+  Fixed with a new `player/vendor/libdv/mr_dv_endian.h`, derived from the
+  compiler's own `__BYTE_ORDER__`/`__ORDER_BIG_ENDIAN__` builtins instead
+  of a libc `<endian.h>` - defined by every GCC-family cross compiler this
+  project targets (host gcc, m68k-linux-gnu-gcc, and - unverified so far,
+  see below - m68k-amigaos-gcc), independent of whether the target libc
+  even has `<endian.h>` at all (AmigaOS's clib2/newlib do not).
+- **A latent `int */uint16_t*` pointer-type mismatch in `dv_decode_full_frame()`'s
+  own `pitches` parameter, upstream, not introduced here** - `dv.h` declares
+  `int *pitches`, but `dv_mb420_YV12()` (YV12.h) - the renderer this build's
+  `YUV_420_USE_YV12` switch now actually routes through - takes `uint16_t
+  *pitches` and reads it as such. On a little-endian host this silently
+  reads the correct low 16 bits of each `int` regardless; on big-endian
+  m68k it would read the *wrong* 16 bits of every stride value. Fixed by
+  narrowing `dv_decode_full_frame()`/`dv_render_video_segment_yuv()`/
+  `dv_render_macroblock_yuv()`'s own `pitches` parameter to `uint16_t *`
+  throughout, matching what the renderer they call actually expects, and
+  `core/mr_dv.c` passes a real `uint16_t pitches[3]` array, not an `int`
+  one.
+- **`M_PI` is a POSIX/BSD `<math.h>` extension, not exposed under
+  `-std=c99`** (weighting.c/idct_248.c/dct.c's one-time table-init `cos()`
+  calls) - normally supplied via config.h/autoconf feature-test macros this
+  buildless copy has none of. Added to the same `mr_dv_endian.h` compat
+  header rather than a separate file, since it's the same "autoconf-shaped
+  gap in a no-configure vendor copy" problem.
+
+Also dropped, for portability rather than correctness: the
+`pthread_mutex_t` guarding `dv_decode_full_frame()` - mrplay/`mr_decode`
+only ever call into this decoder from one task at a time, so libdv's own
+defence against concurrent decoder use is dead weight here, and AmigaOS
+has no pthreads to link against at all. And the `dv_init()` calls into
+`dv_rgb_init()`/`dv_YUY2_init()` (rgb.c/YUY2.c, not vendored) and libdv's
+own encoder-side table builders (`_dv_init_vlc_test_lookup()` etc.) are
+removed from the one-time init function, matching the render paths they
+existed to support also being removed.
+
+**`core/mr_dv.c`** is the `mr_codec` plugin: `dv_open()` scope-checks
+`dec->width == 720 && dec->height == 576` before doing anything else - DV/
+PAL, IEC 61834, 4:2:0 (the common consumer camcorder case, and the one the
+bug report was about) is all this decoder supports for now. NTSC/DVCPRO's
+4:1:1 sampling (`e_dv_sample_411`) is a real, common format this does not
+yet handle - `dv_decode()` also re-checks `dv->system`/`dv->sampling`
+against what each individual frame's own header actually declares (not
+just the container's width/height) and refuses rather than misdecode.
+Registered fourccs: `dvsd`/`DVSD` (standard consumer DV), `dvc `/`DVC `
+(space-padded, some capture tools' spelling), `CDVC`/`cdvc` (Canopus's own
+tag, same bitstream), `dvsl`/`DVSL` (DVCPRO, still 4:2:0 at 625/50).
+`dvhd`/`DVHD` (DVCPRO50/HD) are deliberately not listed - those profiles
+are always 4:1:1 or higher-resolution, and routing them to this decoder
+would turn a clean "no decoder" report into a confusing "decoder init
+failed" one instead. Matches the case-insensitive fourcc-matching note
+above - each tag is listed once, in `mr_codec_dv`'s own case.
+
+**Defaults to RGB24, matching every other codec's host-testable default -
+not YUV420P, despite libdv decoding into planar Y/Cb/Cr internally.**
+`tests/mr_decode.c`'s `write_ppm()`/`check_ppm()` only ever read
+`dec->frame.data` as packed RGB24 (see their own implementation - neither
+checks `frame.fmt`), the same way H.264/MPEG-2 only opt into YUV420P
+output via `mr_h264_set_yuv_output()`/`mr_mpeg2_set_yuv_output()` for the
+Amiga display path and default to RGB24 for host validation otherwise.
+The first cut of this decoder skipped that and handed back
+`MR_PIX_YUV420P` directly - every frame decoded structurally fine (real,
+varying Y/Cb/Cr bytes, confirmed with an ad-hoc debug dump before assuming
+anything about the RGB path), but every output pixel came back pure
+grayscale (R==G==B exactly), because the harness was reading three
+consecutive Y-plane bytes as one RGB24 pixel. `mr_dv.c` now always decodes
+into internal Y/U/V planes (libdv's own real output shape) and, by
+default, converts them to RGB24 via `core/mr_yuv.c`'s existing
+`mr_yuv420_to_rgb24()` - already relied on for this exact studio-range
+YUV420 shape elsewhere in this file - immediately after
+`dv_decode_full_frame()`. `mr_dv_set_yuv_output(dec, enabled)` (mirroring
+`mr_h264_set_yuv_output()`/`mr_mpeg2_set_yuv_output()`) is the opt-in an
+Amiga display path would use later to skip that conversion and consume the
+planes directly - added now since the shape was already there, but not
+yet wired into `amiga/mrplay.c`.
+
+**Verified two ways, both passing clean:** a new `test_dv_pal.avi` fixture
+(`tests/gen_assets.sh`, `ffmpeg -c:v dvvideo -pix_fmt yuv420p`, 720x576/
+25fps/1s, `dvsd` fourcc) checked against ffmpeg's own dvvideo decode
+(`ref_dv_pal/`) via the standard `mr_decode --check` path - worst-frame
+MAE=1.615 (comfortably under the suite's 6.0 "high" threshold; higher than
+Cinepak's ~0.2 benchmark elsewhere in this file, consistent with DV's own
+DCT quantisation and the chroma-upsample rounding in
+`mr_yuv420_to_rgb24()`, not a decode bug). `make check` passes unchanged
+end to end. The same fixture also passes bit-for-bit-identical (MAE=1.615,
+same worst-frame number) cross-built for real m68k/big-endian under qemu
+(`tests/run_m68k_check.sh` - `core/mr_dv.c` and `player/vendor/libdv/`
+added to that script's `$CORE`/`$CORE_060` lists and linked with `-lm`,
+since libdv's table-init `cos()`/`tan()` calls need it) - real
+confirmation that the endian fixes above are actually correct on
+big-endian hardware, not just plausible from reading the source.
+`mr_codec_registry_check` (a separate, narrower registry test that stubs
+out most codecs to test routing in isolation) needed one matching
+`STUB(dv);` line added alongside its existing stubs for the same reason.
+
+**Not done in this pass, staged deliberately rather than guessed at:** the
+local-file Fast Buffer hang for large files over a slow network share
+(`core/mr_source.c`'s single blocking whole-file `fread()`, described
+above - real, but unrelated to DV support itself and not investigated
+further here); type-1 DV-AVI (audio embedded in the DIF blocks themselves,
+no separate WAVEFORMATEX stream - would need `dv_decode_full_audio()`
+wired into `mr_avi.c`, out of scope per this file's standing "Audio is
+MintAMP... do not add an in-tree audio codec" principle, and this
+project's audio registry is separate from the video `mr_codec.h` one this
+change touches); `amiga/mrplay.c`'s own wiring of `mr_dv_set_yuv_output()`
+(the Amiga display path still gets DV via the default RGB24 conversion,
+same as every other codec before its own YUV opt-in was wired in); and
+`tests/check_m68060_asm.sh`'s disassembly scan (libdv's dequantisation/
+IDCT integer multiplies have not been checked for the extended-`MULS.L`/
+libgcc-64-bit-call patterns this file's other 68060 sections spend so much
+effort avoiding - a real gap, not yet closed).
+
+**Immediate correction: this shipped a real CI break, caught and fixed
+within the hour by CI itself, not by anything on this dev host.**
+`core/mr_codec.c`'s registry references `&mr_codec_dv` unconditionally
+(no `#ifdef` gate, matching every other always-on codec here except
+H.264's `MR_HAVE_H264`) - but `Makefile.amiga`'s `CORE` list never gained
+`core/mr_dv.c`/the vendored `libdv` sources, so every Amiga target failed
+the real `m68k-amigaos-gcc` link with `undefined reference to
+mr_codec_dv`. This is exactly the class of gap the "Validate against
+ffmpeg" section names: `make check`/`make check-m68k` (host + qemu-m68k,
+both green) prove the portable core decodes correctly, but neither one
+compiles a single line of `Makefile.amiga` - only CI's real AmigaOS
+toolchain step can catch a *link*-level gap in that separate build file,
+the same lesson the 68060 MP2 kernel underscore-alias saga and the
+`__wrap_ih264d_decode_bin` link failure both already taught earlier in
+this file. Fixed by adding `core/mr_dv.c` and `player/vendor/libdv/*.c` to
+`Makefile.amiga`'s `CORE` (mirroring the host Makefile exactly) and `-lm`
+to `LDFLAGS` (libdv's one-time `dv_init()` table setup calls `cos()`/
+`tan()` - no other `CORE` file needs libm, and nothing in this tree had
+ever linked it before, so there was no existing precedent to check
+against on this dev host, which has no real `m68k-amigaos-gcc` to test a
+link against at all - `-lm` was pushed as a real bet, not a confirmed
+fact, and CI's `build` job (`sacredbanana/amiga-compiler:m68k-amigaos`,
+`m68k-amigaos-gcc` 6.5.0b) is what actually confirmed it: green on the
+very next push, for every Amiga target (`mrplay`, `MintVID`, `iptvgui`,
+`ytgui`, their `-GT` variants, `mr_decode`) in one pass. Not attempted for
+the separate `vbcc` toolchain path in the same Makefile (its own `mr_decode`
+rule also now transitively pulls in `mr_dv.c`/libdv via the shared `CORE`
+list, but uses neither `$(LDFLAGS)` nor `-lm` - unlike the gcc path, CI
+never exercises `TOOLCHAIN=vbcc` at all, so there is no CI feedback loop
+to confirm or deny a fix there, and vc's own math-library linking
+convention is unknown from this dev host).
+
+**NTSC/PAL-SMPTE 314M DVCPRO (4:1:1) support added, once the CI fix
+above was confirmed - the user's own direct follow-up ("add NTSC in, why
+not?").** libdv has no planar 4:1:1 renderer (only `dv_mb420_YV12()` for
+4:2:0) - its only 4:1:1 output path is packed YUY2/4:2:2
+(`dv_mb411_YUY2()`/`dv_mb411_right_YUY2()`, YUY2.c/h, now vendored
+alongside YV12.c/h with the same `pitches` `int*`->`uint16_t*` adaptation
+YV12's own functions already needed - see the type-mismatch note above,
+the same latent upstream bug in a second file). `dv.c`'s YUV dispatch
+(`dv_render_macroblock_yuv()`), stripped down to 420-only in the first
+pass, is restored to branch on `dv->sampling` again - `e_dv_sample_420`
+still goes to `dv_mb420_YV12()`, `e_dv_sample_411` (and its `mb->x >= 704`
+right-edge case, DV's odd 720-not-a-multiple-of-32 macroblock geometry)
+now goes to the YUY2 renderer instead of being unreachable; `dv_init()`
+regained its `dv_YUY2_init()` call alongside `dv_YV12_init()`.
+
+The genuinely new piece is `core/mr_dv.c`'s own `unpack_yuy2_to_yuv420()`:
+libdv's packed YUY2 output already has the hard, DV-specific part right
+(chroma correctly placed per real macroblock geometry, upsampled from
+DV's native 4:1 horizontal-only subsampling to YUY2's 2:1 - not something
+this change had to re-derive), so reaching `MR_PIX_YUV420P` from there
+needed only one further, completely generic step: averaging vertically
+adjacent chroma sample pairs (4:2:2 has no vertical subsampling at all;
+4:2:0 needs 2:1 both ways). `dv_open()` now accepts 720x480 alongside
+720x576 (anything else - DVCPRO50/HD's larger/faster profiles, a
+different geometry entirely - is still rejected, MR_EFORMAT); `dv_ctx`
+gained an `is_411` flag and, only when set, an extra packed-YUY2
+intermediate buffer the 420 path never allocates. `dv_decode()` also
+re-checks each frame's own parsed `sampling` against what `dv_open()`
+committed to (720x480 could, in principle, still carry a 420-sampled
+frame) and refuses rather than misdecode, mirroring the existing 420-path
+check.
+
+Verified the same two ways as the PAL case, plus a direct pixel-level
+sanity check the PAL case didn't need (since a wrong chroma-plane mapping
+would pass a coarse MAE check while still being visibly broken - see the
+chroma-swap-vs-stride-bug distinction in the MPEG-2 YUV notes above): a
+new `test_dv_ntsc.avi` fixture (`tests/gen_assets.sh`, `ffmpeg -c:v
+dvvideo -pix_fmt yuv411p`, 720x480/29.97fps/1s) checked against ffmpeg's
+own decode - worst-frame MAE=3.163, comfortably under the 6.0 threshold
+but genuinely higher than PAL's 1.615, expected and not a bug signature:
+mr_dv.c's box-filter vertical average and ffmpeg/swscale's own 411->RGB
+chroma interpolation are two different, equally valid filters over the
+same native 4:1:1 data, not a correctness disagreement. Spot-checked
+individual pixels directly (red stayed red, blue stayed blue, cyan-ish
+stayed cyan-ish, just off by single-digit-to-tens per channel) to rule
+out exactly the failure mode a coarse MAE pass could hide - a real chroma
+swap or plane-order bug would show as wrong hues entirely, not small
+per-channel deltas. Passes bit-for-bit identically (MAE=3.163, same
+worst-frame number) cross-built for real m68k/big-endian under qemu
+(`tests/run_m68k_check.sh`, `YUY2.c` added to its `LIBDV_SRC` list
+alongside the host Makefile and `Makefile.amiga`) - the same real
+big-endian confirmation the PAL case got, now covering the pitches-type
+fix's second occurrence (YUY2.c's own `int*`->`uint16_t*` adaptation) as
+well as the first (YV12.c's).
+
+Not yet done: `Makefile.amiga`/CI confirms the NTSC-capable build still
+links (same `CORE`/`LIBDV_SRC` list, no new source files beyond `YUY2.c`
+already added), but no real hardware has played back an actual DV-NTSC or
+DVCPRO camcorder file through this path yet - only the synthetic ffmpeg
+fixture above, on host and qemu-m68k.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.

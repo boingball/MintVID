@@ -89,6 +89,11 @@ MP2_ASM_060_SRC="core/mr_mpeg1_idct_m68k.S \
                  core/plm_audio_idct36_m68k_060.S \
                  core/plm_audio_synth_window_m68k_060.S"
 
+LIBDV_SRC="vendor/libdv/dv.c vendor/libdv/parse.c vendor/libdv/place.c \
+      vendor/libdv/weighting.c vendor/libdv/quant.c vendor/libdv/idct_248.c \
+      vendor/libdv/dct.c vendor/libdv/bitstream.c vendor/libdv/vlc.c \
+      vendor/libdv/audio.c vendor/libdv/YV12.c vendor/libdv/YUY2.c"
+
 CORE="core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
       core/mr_youtube.c core/mr_demux.c core/mr_latm.c core/mr_mkv.c \
       core/mr_avi.c core/mr_mov.c core/mr_ts.c core/mr_ps.c \
@@ -104,7 +109,7 @@ CORE="core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
       vendor/libmpeg2/libmpeg2/motion_comp.c vendor/libmpeg2/libmpeg2/slice.c \
       core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_wmv.c core/mr_wmv2.c core/mr_h263.c core/mr_h264.c \
       core/mr_msvideo1.c core/mr_rle.c core/mr_rawvideo.c core/mr_yuv.c \
-      core/mr_yuv_m68k.S"
+      core/mr_yuv_m68k.S core/mr_dv.c $LIBDV_SRC"
 
 # Same as $CORE, but $MP2_ASM_060_SRC instead of $MP2_ASM_SRC - used with
 # $CC_060 below for the one 68060-dispatch end-to-end test (mr_mpeg1.c
@@ -124,7 +129,7 @@ CORE_060="core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
       vendor/libmpeg2/libmpeg2/motion_comp.c vendor/libmpeg2/libmpeg2/slice.c \
       core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_wmv.c core/mr_wmv2.c core/mr_h263.c core/mr_h264.c \
       core/mr_msvideo1.c core/mr_rle.c core/mr_rawvideo.c core/mr_yuv.c \
-      core/mr_yuv_m68k.S"
+      core/mr_yuv_m68k.S core/mr_dv.c $LIBDV_SRC"
 LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
     | grep -v -e ithread.c -e ih264_resi_trans_quant.c -e ih264_trans_data.c) \
     $(printf '%s\n' vendor/libavc/decoder/*.c) \
@@ -178,7 +183,7 @@ $CC -o "$BUILD/mr_decode.m68k" tests/mr_decode.c $CORE $LIBAVC_SRC \
     -Wl,--wrap=ih264d_mvpred_nonmbaffB \
     -Wl,--wrap=ih264d_parse_residual4x4_cabac \
     -Wl,--wrap=ih264d_read_coeff4x4_cabac \
-    -Wl,--wrap=ih264d_update_qp
+    -Wl,--wrap=ih264d_update_qp -lm
 
 echo "== building mr_decode_cabac_profile.m68k (MR_H264_CABAC_PROFILE=1) =="
 # Same link, $CC_CABAC_PROFILE instead of $CC - proves the diagnostic bin/
@@ -207,7 +212,7 @@ $CC_CABAC_PROFILE -o "$BUILD/mr_decode_cabac_profile.m68k" tests/mr_decode.c \
     -Wl,--wrap=ih264d_get_mb_info_cabac_nonmbaff \
     -Wl,--wrap=ih264d_parse_imb_cabac \
     -Wl,--wrap=ih264d_decode_terminate \
-    -Wl,--wrap=ih264d_parse_mb_type_cabac
+    -Wl,--wrap=ih264d_parse_mb_type_cabac -lm
 
 # AC-3 on a real big-endian target. The decoder's IMDCT runs through MintAMP's
 # vendored Rockbox FFT, whose MULT32 takes the high half of a 64-bit product
@@ -274,7 +279,7 @@ $CC -o "$BUILD/mr_mpeg1_decim_check.m68k" tests/mr_mpeg1_decim_check.c $CORE $LI
     -Wl,--wrap=ih264d_mvpred_nonmbaff \
     -Wl,--wrap=ih264d_mvpred_nonmbaffB \
     -Wl,--wrap=ih264d_parse_residual4x4_cabac \
-    -Wl,--wrap=ih264d_read_coeff4x4_cabac
+    -Wl,--wrap=ih264d_read_coeff4x4_cabac -lm
 
 # Same test, -mcpu=68060 - proves the Fast MP2 dispatch inside
 # plm_audio_decode_frame() picks plm_audio_idct36_m68k_060/
@@ -288,7 +293,7 @@ $CC_060 -o "$BUILD/mr_mpeg1_decim_check_060.m68k" tests/mr_mpeg1_decim_check.c $
     -Wl,--wrap=ih264d_mvpred_nonmbaff \
     -Wl,--wrap=ih264d_mvpred_nonmbaffB \
     -Wl,--wrap=ih264d_parse_residual4x4_cabac \
-    -Wl,--wrap=ih264d_read_coeff4x4_cabac
+    -Wl,--wrap=ih264d_read_coeff4x4_cabac -lm
 
 echo "== building mr_h264_m68k_check.m68k =="
 $CC -o "$BUILD/mr_h264_m68k_check.m68k" tests/mr_h264_m68k_check.c \
@@ -577,6 +582,12 @@ run "$BUILD/mr_decode.m68k" tests/assets/test_msvideo1_pal8.avi \
 echo "[Microsoft RLE, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_msrle.avi \
     --check tests/assets/ref_msrle
+echo "[DV/PAL 4:2:0, real m68k/big-endian]"
+run "$BUILD/mr_decode.m68k" tests/assets/test_dv_pal.avi \
+    --check tests/assets/ref_dv_pal
+echo "[DV/NTSC 4:1:1, real m68k/big-endian]"
+run "$BUILD/mr_decode.m68k" tests/assets/test_dv_ntsc.avi \
+    --check tests/assets/ref_dv_ntsc
 echo "[MPEG-4 Part 2 Simple Profile, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_mp4v_sp.avi \
     --check tests/assets/ref_mp4v_sp

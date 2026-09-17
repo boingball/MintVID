@@ -75,6 +75,7 @@ extern const mr_codec mr_codec_h263;
 extern const mr_codec mr_codec_msvideo1;
 extern const mr_codec mr_codec_rle;
 extern const mr_codec mr_codec_rawvideo;
+extern const mr_codec mr_codec_dv;
 #ifdef MR_HAVE_H264
 extern const mr_codec mr_codec_h264;
 #endif

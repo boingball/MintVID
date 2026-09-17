@@ -27,6 +27,21 @@ Rockbox/a52dec-derived fixed-point AC-3 core
   The GPL text supplied with the release also applies to this component.
   Copyright/licence notices remain in the corresponding source files.
 
+libdv (Quasar DV Codec) - decode-only subset
+  Licence: LGPL-2.1-or-later
+  Source:  player/vendor/libdv/
+  Release notice: player/vendor/libdv/COPYING.LGPL-2.1
+  Vendored for DV (IEC 61834/SMPTE 314M) video decode - core/mr_dv.c is the
+  MintVID-side codec plugin, covering both DV/PAL (4:2:0) and DV/NTSC or
+  PAL/SMPTE 314M DVCPRO (4:1:1). Only the decode-only files are carried (no
+  encoder, no RGB colour-space output, no popt CLI helper - see each file's
+  own "MintVID adaptation" comment for what changed and why: dropped
+  pthread locking, a corrected endian-detection shim in
+  player/vendor/libdv/mr_dv_endian.h, and a pitches-array type fix). YUY2.c
+  is kept (unlike RGB): libdv has no planar 4:1:1 renderer, only a packed-
+  YUY2 one, and core/mr_dv.c downsamples that itself. Upstream:
+  http://libdv.sourceforge.net/
+
 Ittiam libavc
   Licence: Apache License 2.0
   Source:  player/vendor/libavc/ (pinned submodule)

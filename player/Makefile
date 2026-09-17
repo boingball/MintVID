@@ -32,7 +32,14 @@ CORE     = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
            core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_wmv.c core/mr_wmv2.c core/mr_h263.c core/mr_h264.c \
            core/mr_msvideo1.c core/mr_rle.c \
            core/mr_rawvideo.c core/mr_yuv.c core/mr_yuv_m68k.S \
+           core/mr_dv.c $(LIBDV_SRC) \
            $(LIBAVC_SRC)
+LIBDV_ROOT = vendor/libdv
+LIBDV_SRC = $(LIBDV_ROOT)/dv.c $(LIBDV_ROOT)/parse.c $(LIBDV_ROOT)/place.c \
+            $(LIBDV_ROOT)/weighting.c $(LIBDV_ROOT)/quant.c \
+            $(LIBDV_ROOT)/idct_248.c $(LIBDV_ROOT)/dct.c \
+            $(LIBDV_ROOT)/bitstream.c $(LIBDV_ROOT)/vlc.c \
+            $(LIBDV_ROOT)/audio.c $(LIBDV_ROOT)/YV12.c $(LIBDV_ROOT)/YUY2.c
 TESTSRC  = tests/mr_decode.c
 MINTAMP_ROOT ?= vendor/MintAMP
 MINTAMP_MP3 = $(MINTAMP_ROOT)/mp3dec.c $(MINTAMP_ROOT)/mp3tabs.c \
@@ -78,12 +85,13 @@ HEADERS  = core/mr_codec.h core/mr_source.h core/mr_http.h core/mr_hls.h \
            core/mr_h263.h core/mr_h264.h core/mr_types.h
 HEADERS  += core/mr_msvideo1.h core/mr_rle.h
 HEADERS  += core/mr_rawvideo.h core/mr_yuv.h
+HEADERS  += core/mr_dv.h
 HEADERS  += amiga/mintvid_version.h
 
 all: mr_decode
 
 mr_decode: $(TESTSRC) $(CORE) $(HEADERS) | check-libavc
-	$(CC) $(CFLAGS) -o $@ $(TESTSRC) $(CORE)
+	$(CC) $(CFLAGS) -o $@ $(TESTSRC) $(CORE) -lm
 
 # Optional host HTTPS build used by the local TLS integration test. The Amiga
 # build uses AmiSSL instead; this only validates the shared HTTP/TLS parser and
@@ -240,7 +248,7 @@ mr_mpeg1_audio_time_check_skip: tests/mr_mpeg1_audio_time_check.c core/mr_mpeg1.
 # just mr_mpeg1.c) to pull a real MP2 elementary stream out of an existing
 # TS fixture, so this links the full $(CORE) like mr_decode does.
 mr_mpeg1_decim_check: tests/mr_mpeg1_decim_check.c $(CORE) $(HEADERS) | check-libavc
-	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_decim_check.c $(CORE)
+	$(CC) $(CFLAGS) -o $@ tests/mr_mpeg1_decim_check.c $(CORE) -lm
 
 # Focused synthetic counterpart: plm_audio_synth_window_decim() against
 # plm_audio_synth_window() directly, no real bitstream or mr_demux involved -
@@ -432,6 +440,7 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	    && test -d tests/assets/ref_msvideo1 \
 	    && test -d tests/assets/ref_msvideo1_pal8 \
 	    && test -d tests/assets/ref_msrle \
+	    && test -d tests/assets/ref_dv_pal && test -d tests/assets/ref_dv_ntsc \
 	    && test -d tests/assets/ref_mjpeg && test -d tests/assets/ref_raw_mjpeg \
 	    && test -d tests/assets/ref_mpeg1 \
 	    && test -d tests/assets/ref_mp4v_intra && test -d tests/assets/ref_mp4v_sp \
@@ -469,6 +478,10 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	./mr_msvideo1_indexed_check tests/assets/test_msvideo1_pal8.avi
 	@echo "[Microsoft RLE]"
 	./mr_decode tests/assets/test_msrle.avi --check tests/assets/ref_msrle
+	@echo "[DV/PAL 4:2:0]"
+	./mr_decode tests/assets/test_dv_pal.avi --check tests/assets/ref_dv_pal
+	@echo "[DV/NTSC 4:1:1]"
+	./mr_decode tests/assets/test_dv_ntsc.avi --check tests/assets/ref_dv_ntsc
 	@echo "[Cinepak MOV]"
 	./mr_decode tests/assets/test_cinepak.mov --check tests/assets/ref_mov
 	@echo "[MOV seek]"
