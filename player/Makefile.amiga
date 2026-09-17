@@ -653,6 +653,7 @@ release:
 	@test -f vendor/libmpeg2/COPYING || { echo "ERROR: libmpeg2 GPL licence text is missing"; exit 1; }
 	@test -f vendor/libavc/LICENSE -a -f vendor/libavc/NOTICE || { echo "ERROR: libavc licence/NOTICE missing - initialise submodules"; exit 1; }
 	@test -f $(MINTAMP_ROOT)/LICENSE.txt -a -f $(MINTAMP_ROOT)/RPSL.txt -a -f $(MINTAMP_ROOT)/RCSL.txt || { echo "ERROR: MintAMP/Helix licence notices missing - initialise submodules"; exit 1; }
+	@test -f vendor/libdv/COPYING.LGPL-2.1 || { echo "ERROR: libdv LGPL licence text is missing"; exit 1; }
 	@cp ../LICENSE "$(RELEASE_LICENSE_DIR)/MintVID-LICENSE.txt"
 	@cp ../THIRD-PARTY-LICENSES.txt "$(RELEASE_LICENSE_DIR)/THIRD-PARTY-LICENSES.txt"
 	@cp vendor/libmpeg2/COPYING "$(RELEASE_LICENSE_DIR)/GPL-2.0.txt"
@@ -664,6 +665,7 @@ release:
 	@cp $(MINTAMP_ROOT)/LICENSE.txt "$(RELEASE_LICENSE_DIR)/MintAMP-LICENSE.txt"
 	@cp $(MINTAMP_ROOT)/RPSL.txt "$(RELEASE_LICENSE_DIR)/RPSL.txt"
 	@cp $(MINTAMP_ROOT)/RCSL.txt "$(RELEASE_LICENSE_DIR)/RCSL.txt"
+	@cp vendor/libdv/COPYING.LGPL-2.1 "$(RELEASE_LICENSE_DIR)/libdv-LGPL-2.1.txt"
 	@echo "Release binaries written to $(RELEASE_DIR)/"
 	@echo "Ready-to-run sets: MintVID030, MintVID040 and MintVID060"
 	@echo "Licence notices: $(RELEASE_LICENSE_DIR)/"

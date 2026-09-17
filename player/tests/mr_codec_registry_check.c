@@ -5,6 +5,7 @@
 STUB(h264); STUB(cinepak); STUB(mjpeg); STUB(mpeg2); STUB(msvideo1); STUB(rawvideo);
 STUB(wmv1);
 STUB(wmv2);
+STUB(dv);
 static int expect(const char s[4], const mr_codec *wanted) {
     const mr_codec *got=mr_codec_find(MR_FOURCC(s[0],s[1],s[2],s[3]));
     if(got!=wanted) { fprintf(stderr,"bad route: %.4s\n",s); return 1; } return 0;

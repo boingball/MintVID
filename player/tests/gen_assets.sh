@@ -139,6 +139,12 @@ python3 ../make_msvideo1_pal8.py test_msvideo1_pal8.avi
 ffmpeg -v error -f lavfi -i testsrc2=size=66x50:rate=10:duration=2 \
     -c:v msrle -pix_fmt pal8 test_msrle.avi -y
 
+# DV/PAL (IEC 61834, 4:2:0), 720x576 - the standard consumer DV geometry
+# (fourcc 'dvsd'). See core/mr_dv.c's own scope note: NTSC's 4:1:1 sampling
+# isn't supported yet, so there is no test_dv_ntsc fixture here.
+ffmpeg -v error -f lavfi -i testsrc2=size=720x576:rate=25:duration=1 \
+    -c:v dvvideo -pix_fmt yuv420p test_dv_pal.avi -y
+
 # Ground-truth frames, decoded by ffmpeg's own Cinepak decoder (per container,
 # since ffmpeg re-encodes the Cinepak stream separately for each).
 rm -rf ref_cinepak && mkdir -p ref_cinepak
@@ -151,6 +157,8 @@ rm -rf ref_msvideo1_pal8 && mkdir -p ref_msvideo1_pal8
 ffmpeg -v error -i test_msvideo1_pal8.avi ref_msvideo1_pal8/f%03d.ppm -y
 rm -rf ref_msrle && mkdir -p ref_msrle
 ffmpeg -v error -i test_msrle.avi ref_msrle/f%03d.ppm -y
+rm -rf ref_dv_pal && mkdir -p ref_dv_pal
+ffmpeg -v error -i test_dv_pal.avi ref_dv_pal/f%03d.ppm -y
 rm -rf ref_mov && mkdir -p ref_mov
 ffmpeg -v error -i test_cinepak.mov ref_mov/f%03d.ppm -y
 rm -rf ref_mjpeg && mkdir -p ref_mjpeg
