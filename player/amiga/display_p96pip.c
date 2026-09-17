@@ -89,6 +89,7 @@
 #include <proto/exec.h>
 #include <proto/intuition.h>
 #include <proto/graphics.h>
+#include <proto/dos.h>
 #include <string.h>
 #include <time.h>
 #include <stdio.h>
@@ -184,6 +185,12 @@ static void log_screen_target(const char *label, struct Screen *scr,
            scr->Width, scr->Height, (unsigned long)depth,
            (unsigned long)format, (unsigned long)isp96,
            (unsigned long)onboard, (unsigned long)video_compatible);
+    /* This whole backend is new and, per the file header, not even known to
+     * be exercised by WinUAE's own P96/UAEGFX emulation - flush every
+     * diagnostic line the moment it's printed (not just at the well-behaved
+     * end of a call) so a real-hardware/WinUAE crash mid-open leaves a log
+     * that shows exactly which stage was last reached. */
+    Flush(Output());
 }
 
 static int close_video_screen(struct Screen **screen, const char *reason)
@@ -195,16 +202,19 @@ static int close_video_screen(struct Screen **screen, const char *reason)
     for (attempt = 0; attempt < 50; attempt++) {
         if (p96CloseScreen(*screen)) {
             *screen = NULL;
-            if (g_display_want_time && attempt > 0)
+            if (g_display_want_time && attempt > 0) {
                 printf("p96pip-screen: private screen closed after %d "
                        "VBlank(s) (%s)\n", attempt,
                        reason ? reason : "unknown");
+                Flush(Output());
+            }
             return 1;
         }
         WaitTOF();
     }
     printf("p96pip-screen: WARNING private screen still busy after "
            "50 VBlanks (%s)\n", reason ? reason : "unknown");
+    Flush(Output());
     return 0;
 }
 
@@ -249,23 +259,33 @@ static struct Screen *open_video_screen(p96pip_state *s, int target_w,
             P96BIDTAG_VideoCompatible, TRUE,
             TAG_END);
         if (mode_id == (ULONG)INVALID_ID) {
-            if (g_display_want_time)
+            if (g_display_want_time) {
                 printf("p96pip-screen: no video-compatible mode near "
                        "%dx%d depth=%lu\n", target_w, target_h,
                        (unsigned long)depths[i]);
+                Flush(Output());
+            }
             continue;
         }
 
         video_compatible =
             p96GetModeIDAttr(mode_id, P96IDA_VIDEOCOMPATIBLE);
         if (!video_compatible) {
-            if (g_display_want_time)
+            if (g_display_want_time) {
                 printf("p96pip-screen: rejected mode=0x%08lx depth=%lu; "
                        "driver did not mark it video-compatible\n",
                        (unsigned long)mode_id, (unsigned long)depths[i]);
+                Flush(Output());
+            }
             continue;
         }
 
+        if (g_display_want_time) {
+            printf("p96pip-screen: trying p96OpenScreenTags mode=0x%08lx "
+                   "depth=%lu\n", (unsigned long)mode_id,
+                   (unsigned long)depths[i]);
+            Flush(Output());
+        }
         err = 0;
         scr = p96OpenScreenTags(
             P96SA_DisplayID, mode_id,
@@ -276,10 +296,12 @@ static struct Screen *open_video_screen(p96pip_state *s, int target_w,
             P96SA_ErrorCode, (ULONG)&err,
             TAG_END);
         if (!scr) {
-            if (g_display_want_time)
+            if (g_display_want_time) {
                 printf("p96pip-screen: open failed mode=0x%08lx depth=%lu "
                        "error=%ld\n", (unsigned long)mode_id,
                        (unsigned long)depths[i], (long)err);
+                Flush(Output());
+            }
             continue;
         }
 
@@ -289,9 +311,11 @@ static struct Screen *open_video_screen(p96pip_state *s, int target_w,
     }
 
     s->screen_mode_id = (ULONG)INVALID_ID;
-    if (g_display_want_time)
+    if (g_display_want_time) {
         printf("p96pip-screen: no private video-compatible P96 mode for "
                "%dx%d; trying the public screen\n", target_w, target_h);
+        Flush(Output());
+    }
     return NULL;
 }
 
@@ -346,6 +370,13 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
      * WA_InnerWidth/WA_InnerHeight. Use the inner-size tags for both modes;
      * fullscreen is borderless, so its inner and outer dimensions are equal.
      * This also keeps s->win_w/win_h in content-area units everywhere. */
+    if (g_display_want_time) {
+        printf("p96pip: calling p96PIP_OpenTags type=%lu win=%dx%d "
+               "source=%dx%d dest=%d,%d %dx%d\n", (unsigned long)type,
+               s->win_w, s->win_h, s->source_w, s->source_h,
+               s->dx, s->dy, s->dw, s->dh);
+        Flush(Output());
+    }
     *err = 0;
     win = (struct Window *)p96PIP_OpenTags(
         screen_tag, (ULONG)scr,
@@ -369,6 +400,11 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
         P96PIP_ErrorCode, (ULONG)err,
         TAG_END);
 
+    if (g_display_want_time) {
+        printf("p96pip: p96PIP_OpenTags returned win=%p err=%ld\n",
+               (void *)win, (long)*err);
+        Flush(Output());
+    }
     if (pub_locked)
         UnlockPubScreen(NULL, scr);
     return win;
@@ -426,11 +462,13 @@ static void rebuild_geometry(p96pip_state *s, const char *reason)
     s->geometry_valid = 1;
     s->force_full_redraw = 1;
     paint_letterbox(s);
-    if (g_display_want_time)
+    if (g_display_want_time) {
         printf("p96pip-geometry reason=%s win=%dx%d video=%d,%d %dx%d "
                "hw-overlay=%d\n",
                reason ? reason : "?", s->win_w, s->win_h,
                s->dx, s->dy, s->dw, s->dh, s->hw_overlay);
+        Flush(Output());
+    }
 }
 
 /* Close and reopen using geometry already stored in s. P96PIP_Source* and
@@ -447,24 +485,34 @@ static int reopen_pip(p96pip_state *s, const char *reason)
     s->win = open_pip(s, PIPT_VideoWindow, &err);
     s->hw_overlay = s->win != NULL;
     if (!s->win) {
-        if (g_display_want_time)
+        if (g_display_want_time) {
             printf("p96pip: hardware video window unavailable (error %ld), "
                    "trying software PIP\n", (long)err);
+            Flush(Output());
+        }
         s->win = open_pip(s, PIPT_MemoryWindow, &err);
     }
     if (!s->win) {
-        if (g_display_want_time)
+        if (g_display_want_time) {
             printf("p96pip: PIP open failed (error %ld)\n", (long)err);
+            Flush(Output());
+        }
         return 0;
     }
 
+    if (g_display_want_time) {
+        printf("p96pip: calling p96PIP_GetTags for source bitmap\n");
+        Flush(Output());
+    }
     /* p96PIP_GetTagList() returns a count, not a success boolean. Check the
      * retrieved pointer itself so either convention remains harmless. */
     p96PIP_GetTags(s->win, P96PIP_SourceBitMap, (ULONG)&s->source_bitmap,
                    TAG_END);
     if (!s->source_bitmap) {
-        if (g_display_want_time)
+        if (g_display_want_time) {
             printf("p96pip: could not retrieve source bitmap - closing\n");
+            Flush(Output());
+        }
         close_pip(s);
         return 0;
     }
@@ -483,6 +531,11 @@ static void *p96pip_open(int w, int h, const char *title)
     int screen_w = 0, screen_h = 0;
 
     if (!P96Base) return NULL;
+
+    if (g_display_want_time) {
+        printf("p96pip: p96pip_open entered, source=%dx%d\n", w, h);
+        Flush(Output());
+    }
 
     s = (p96pip_state *)AllocVec(sizeof *s, MEMF_CLEAR);
     if (!s) return NULL;
@@ -535,11 +588,13 @@ static void *p96pip_open(int w, int h, const char *title)
         }
     }
 
-    if (g_display_want_time)
+    if (g_display_want_time) {
         printf("p96pip: opened %s overlay, window=%dx%d source=%dx%d\n",
                s->hw_overlay ? "hardware (PIPT_VideoWindow)" :
                                "software (PIPT_MemoryWindow)",
                s->win_w, s->win_h, w, h);
+        Flush(Output());
+    }
 
     if (!s->fullscreen) {
         s->have_window_geometry = 1;
@@ -641,9 +696,11 @@ static void p96pip_show_packed(void *h, const unsigned char *rgb, int w,
     if (!s || !s->win) return;
 
     if (w > 0 && hh > 0 && (w != s->source_w || hh != s->source_h)) {
-        if (g_display_want_time)
+        if (g_display_want_time) {
             printf("p96pip-source-size metadata=%dx%d frame=%dx%d; "
                    "reopening PIP\n", s->source_w, s->source_h, w, hh);
+            Flush(Output());
+        }
         if (!reopen_for_size(s, w, hh)) return;
     }
 
@@ -656,8 +713,10 @@ static void p96pip_show_packed(void *h, const unsigned char *rgb, int w,
     if (dy1 <= dy0) return;
 
     if (!write_source_rows(s->source_bitmap, dy0, rgb + (size_t)dy0 * stride,
-                           stride, w, dy1 - dy0, src_is_bgr))
+                           stride, w, dy1 - dy0, src_is_bgr)) {
         printf("p96pip-error: p96LockBitMap failed - dropped strip\n");
+        Flush(Output());
+    }
     if (service) service(service_opaque);
 
     if (timing) {

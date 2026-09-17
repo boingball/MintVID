@@ -2139,6 +2139,16 @@ int main(int argc, char **argv)
                  vi->width, vi->height, codec->name);
         player_status(MR_PLAYER_STATE_OPENING, codec->name, line);
     }
+    /* Flush *before* display_open(), not only after it returns (see the
+     * Flush() a few lines below, which was the only one here until real
+     * hardware showed mrplay itself crashing at Play time with the P96 PIP
+     * backend selected - see CLAUDE.md's "mrplay crashes on Play" section):
+     * if display_open() itself is what traps (backend_p96pip is new,
+     * untested even on WinUAE's own P96 emulation per its own file header),
+     * the "opening display..." line above needs to be durable before that
+     * call, not stuck in an unflushed stdio buffer the crash never lets run
+     * to the flush that used to be the only one on this path. */
+    Flush(Output());
     disp = display_open(vi->width, vi->height, "MintVID");
     if (!disp) { printf("cannot open a display (RTG or AGA)\n");
                  player_status(MR_PLAYER_STATE_ERROR, codec->name,
