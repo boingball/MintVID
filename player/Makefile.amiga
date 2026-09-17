@@ -514,7 +514,14 @@ check-cc:
 mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) $(KALMS_OBJ) $(MP2_ASM_OBJ) \
         $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) $(VERSION_HEADER) | check-libavc
 	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) $(LIBA52_FLAGS) -o $@ $(PLAY) $(CORE) \
-	    $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) $(KALMS_OBJ) $(MP2_ASM_OBJ) $(LDFLAGS) -lm
+	    $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) $(KALMS_OBJ) $(MP2_ASM_OBJ) $(LDFLAGS) -lm \
+	    -Wl,-Map=mrplay.map
+	# DIAGNOSTIC BRANCH (diag/current-main-diagnostics): -Wl,-Map=mrplay.map
+	# added above so CI can upload current main's own real-toolchain linker
+	# map alongside the binary, for direct comparison against the
+	# pre-DV-baseline and DV-excluded diagnostic branches - see CLAUDE.md's
+	# "mrplay crashes on Play" section. Nothing else on this branch differs
+	# from main.
 
 check-kalms:
 	@test -n "$(KALMS_VASM)" -a -x "$(KALMS_VASM)" || { \
