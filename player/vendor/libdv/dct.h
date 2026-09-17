@@ -48,10 +48,6 @@ extern "C" {
 #endif
 
 void _dv_dct_init(void);
-/* Input is transposed ! */
-void _dv_dct_88(dv_coeff_t *block);
-/* Input is transposed ! */
-void _dv_dct_248(dv_coeff_t *block);
 void _dv_idct_88(dv_coeff_t *block);
 #if BRUTE_FORCE_248
 void _dv_idct_248(double *block);

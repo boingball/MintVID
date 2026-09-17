@@ -41,8 +41,6 @@
 # include <config.h>
 #endif
 
-#include <math.h>
-
 #include "idct_248.h"
 #include "quant.h"
 

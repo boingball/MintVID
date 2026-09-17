@@ -4329,6 +4329,110 @@ comment: it is dead code in this build (never called - DV audio is
 out of scope, see the DV decoder section above), so it costs nothing
 today, but would need the same treatment before ever being wired up.
 
+**Correction: it wasn't fixed - the FPU fix above was real but incomplete,
+and the actual mechanism turned out to be a linking problem, not a
+per-file code problem.** A real-hardware retest after both fixes above
+merged still crashed with the identical Guru `8000000B`, but this time
+on *any* file (an unrelated MP4 crashed the same way) and *before*
+Play - specifically when `amiga/mrgui.c`'s `update_file_info()` reads a
+newly-selected file's size and formats the status line
+(`snprintf(..., "%s | type: %s | %ld bytes", ...)` - no float format
+specifier anywhere in it). Confirmed via direct questioning that this
+was a fresh rebuild from the actually-merged fix, ruling out "the user
+tested a stale binary" before looking further. `update_file_info()`
+itself has never had anything to do with DV or floating point - the
+puzzle was why a totally unrelated, unchanged function started crashing
+with an FPU trap right after landing an all-`cos()`/`tan()`-removed DV
+fix.
+
+The two prior PRs' fixed dct.c/idct_248.c/weighting.c genuinely had zero
+FPU instructions left (re-confirmed by disassembly again here) - but
+`Makefile.amiga`'s `LDFLAGS = -noixemul -lgcc -lm ...` is the single
+variable *every* AmigaOS link target uses, GUI binaries included, and
+-lm was still there because libdv still had two things left that
+referenced libm even though nothing ever called them: `dct.c`'s dead
+forward-DCT/encode path (`_dv_dct_88()`/`_dv_dct_248()`/`postscale88()`/
+`postscale248()`, called only from the encoder this decode-only tree
+never uses - `postscale88()`/`postscale248()` themselves call `pow()`)
+and `audio.c`'s `dv_dump_aaux_as()` (a debug dump with a real `"%.1f kHz"`
+float-format `printf()`, its one call site already commented out - the
+same dead-code shape as `dv_test12bit_conv()`, found by grepping for
+every remaining `%f`/`%e`/`%g` format specifier in the whole vendored
+tree, not just cos/sin/tan/sqrt/pow call sites, once source-level FPU
+avoidance stopped being enough to explain the symptom). Neither of these
+runs, on any file, DV or not - but the mere presence of an unresolved (or
+resolved-via-`-lm`) reference to `pow()`/`printf`-with-`%f` in the final
+linked binary is enough for *this specific toolchain* to select a
+different, floating-point-capable variant of `snprintf`/`vsnprintf` for
+the *entire binary* - including every caller, whether or not that caller
+ever touches a float. That silently swapped-in variant is what actually
+traps: `update_file_info()`'s own call, formatting nothing but a string,
+an enum-like extension, and an integer size, executes through
+floating-point-capable formatting machinery it never asked for and
+crashes on the same missing-fpsp040.library gap the original DV fix
+already diagnosed correctly - just from a different, indirect trigger.
+This is a genuinely new class of gap for this file's whole "no AmigaOS
+toolchain on this dev host" theme: not an instruction-safety question
+`check-m68060_asm.sh`-style disassembly answers, not a link-succeeds-or-
+fails question CI's real `m68k-amigaos-gcc` `build` job answers, but
+which *library variant gets silently selected* by the presence of an
+unrelated symbol reference anywhere in the link - unreachable from
+qemu/ELF (different C library, different symbol-selection behaviour
+entirely) and invisible to a `-n` dry-run (which shows flags and object
+lists, not which library implementation the linker actually resolves a
+weak/overloaded symbol to).
+
+Fixed two ways, both confirmed via disassembly/dry-run rather than
+assumed: (1) every remaining libm reference deleted from libdv outright
+- `_dv_dct_88()`/`_dv_dct_248()`/`postscale88()`/`postscale248()`/
+`dct88_aan()`/`dct44_aan_line()`/`dct248_aan()` (dct.c, encode-only, the
+`postSC88`/`postSC248` arrays they alone consumed removed from
+weighting.c too) and `dv_dump_aaux_as()` (audio.c, its one commented-out
+call site in dv.c removed alongside it) - and `dv_audio_deemphasis()`
+(audio.c) actually converted this time rather than left as a documented
+landmine: `a1`/`b0`/`b1` depend only on the DV standard's three legal
+audio sample rates (32000/44100/48000 Hz), so `dv_deemphasis_coeffs()`
+precomputes all three offline (`tools/gen_dv_tables.py`, cross-checked
+against the file's own pre-existing 44.1/48kHz reference comment to
+double-precision, and filling in the 32kHz case that comment had marked
+"?") instead of calling `tan()` at runtime, with an unrecognised
+frequency falling back to the 48kHz coefficients rather than guessing
+further - the per-sample recursive filter itself keeps plain
+double `+`/`*` (hardware `FADD`/`FMUL`, never a library call, so this
+doesn't reintroduce the same problem). A whole-tree grep for every
+remaining `cos`/`sin`/`tan`/`sqrt`/`pow`/`log`/`exp`/... call, `<math.h>`
+include, and `%f`/`%e`/`%g` format specifier confirms libdv now has zero
+libm dependency anywhere, reachable or not - `quant.c`'s own leftover
+`#include <math.h>` (already unused before this) removed too, for the
+same "prove it by grepping, don't just trust the header removed above"
+discipline. (2) `-lm` removed from `Makefile.amiga`'s shared `LDFLAGS`
+entirely and re-added only on `mrplay`'s own link line, since `mrplay` -
+unlike every GUI target - genuinely links MintAMP/liba52's real DSP code
+(confirmed by grep: `real/imdct.c`, `decoders/wma/mdct.c`, etc. all use
+double-precision trig/log for filter-table generation) and is the only
+target that should ever need it; a before/after `make -f Makefile.amiga
+-n <target> -DAMIGA_GCC=/fake/...` dry-run confirms `-lm` now appears
+exactly once for `mrplay` and zero times for `MintVID`/`MintVID-GT` (and,
+by the same shared-LDFLAGS mechanism, `iptvgui`/`ytgui`/their `-GT`
+variants).
+
+Verified on host and real m68k/big-endian under qemu: `make check` (DV/PAL
+MAE=1.139, DV/NTSC MAE=2.901 - unchanged) and the full
+`tests/run_m68k_check.sh` (identical MAE, `m68k/big-endian check: OK`,
+68060 disassembly scan clean) both pass exactly as before this round of
+deletions - confirming the removed code was truly dead, not silently
+load-bearing. `m68k-linux-gnu-nm`/`objdump -T` on the resulting qemu-target
+binary show zero dynamic references to any libm symbol. **Not yet
+confirmed on the actual real-hardware WinUAE repro** that started this
+correction - the `-lm`-changes-snprintf-variant mechanism is a strong,
+evidence-based hypothesis (matches every symptom: any file, before Play,
+right at the one plain-string `snprintf()` call, appearing only after
+`-lm` first got linked) but, per this file's own standing limitation,
+only a real rebuild-and-retest on the reporting user's own WinUAE/68040
+setup can actually prove the crash is gone - qemu/ELF and CI's real
+toolchain link both structurally cannot exercise this specific
+library-variant-selection behaviour.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.

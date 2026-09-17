@@ -28,7 +28,6 @@
 #endif
 
 #include <stdio.h>
-#include <math.h>
 #include <string.h>
 
 #include "dv.h"
@@ -281,42 +280,14 @@ dv_audio_new(void)
   return(result);
 } /* dv_audio_new */
 
-void
-dv_dump_aaux_as(void *buffer, int ds, int audio_dif)
-{
-  dv_aaux_as_t *dv_aaux_as;
-
-  dv_aaux_as = (dv_aaux_as_t *)buffer + 3; /* Is this correct after cast? */
-
-  if(dv_aaux_as->pc0 == 0x50) {
-    /* AAUX AS  */
-
-    printf("DS %d, Audio DIF %d, AAUX AS pack: ", ds, audio_dif);
-
-    if(dv_aaux_as->pc1.lf) {
-      printf("Unlocked audio");
-    } else {
-      printf("Locked audio");
-    }
-
-    printf(", Sampling ");
-    printf("%.1f kHz", (float)frequency[dv_aaux_as->pc4.smp] / 1000.0);
-
-    printf(" (%d samples, %d fields)",
-	   dv_audio_samples_per_frame(dv_aaux_as,frequency[dv_aaux_as->pc4.smp]),
-	   (dv_aaux_as->pc3.system ? 50 : 60));
-
-    printf(", Quantization %d bits", quantization[dv_aaux_as->pc4.qu]);
-
-    printf(", Emphasis %s\n", (dv_aaux_as->pc4.ef ? "off" : "on"));
-
-  } else {
-
-    fprintf(stderr, "libdv(%s):  Missing AAUX AS PACK!\n", __FUNCTION__);
-
-  } /* else */
-
-} /* dv_dump_aaux_as */
+/* MintVID adaptation: dv_dump_aaux_as() (a debug dump of one AAUX AS
+ * pack, including a real "%.1f kHz" float-format printf()) is deleted
+ * outright rather than kept and fixed - its one call site in dv.c was
+ * already commented out, matching dv_test12bit_conv()'s own dead-code
+ * precedent elsewhere in this file. See dv_deemphasis_coeffs()'s own
+ * comment for why a dead float-using function is worth deleting rather
+ * than leaving alone on this target: it forces -lm onto the whole
+ * AmigaOS link regardless of whether it ever executes. */
 
 /* ---------------------------------------------------------------------------
  */
@@ -495,17 +466,45 @@ dv_update_num_samples(dv_audio_t *dv_audio, const uint8_t *inbuf) {
 
 /* This code originates from cdda2wav, by way of Giovanni Iachello <g.iachello@iol.it>
    to Arne Schirmacher <arne@schirmacher.de>. */
-/* MintVID note: never called from core/mr_dv.c - DV audio is out of
- * scope for this decode-only build (see mr_dv.h's own header; the
+/* MintVID adaptation: never called from core/mr_dv.c today - DV audio is
+ * out of scope for this decode-only build (see mr_dv.h's own header; the
  * reported DV-AVI's audio is a separate demuxed PCM stream, not DIF-
- * embedded). Left unconverted on purpose: unlike weighting.c/idct_248.c/
- * dct.c's cos()/sqrt()/pow() calls (all on the real per-frame decode
- * path and fixed - see those files' own "MintVID adaptation" comments),
- * this filter-design tan() call only executes if something starts
- * calling this function, which nothing currently does. Convert it the
- * same way (precompute a1/b0/b1 per sample rate offline) before wiring
- * type-1 DV-AVI audio through libdv - do not call this as-is on the
- * m68k target. */
+ * embedded) - but dv_decode_full_audio() (dv.c) still calls this
+ * unconditionally, so it stays in the AmigaOS link regardless of whether
+ * MintVID ever reaches it. Its original tan() call was a *linking*
+ * problem on this target, not just a runtime one: even though the call
+ * never executes, the mere reference forces -lm onto the AmigaOS build's
+ * shared link line - and that turned out to be the actual cause of a
+ * real-hardware crash unrelated to DV at all (see CLAUDE.md's DV decoder
+ * section's own account: any file crashed with the same Line-1111 FPU
+ * trap the instant its info was read, because -lm silently changed which
+ * snprintf() variant the toolchain linked in for the whole binary,
+ * including callers - like the GUI's own file-info display - that never
+ * touch DV or libdv at all). Fixed the same way as the video path's
+ * tables: a1/b0/b1 depend only on the DV standard's three legal audio
+ * sample rates (32000/44100/48000 Hz - see dv_types.h), so they are
+ * precomputed offline (tools/gen_dv_tables.py) instead of calling tan()
+ * at runtime; the file's own pre-existing comment already gave the
+ * 44.1/48kHz reference values as a cross-check (matched to the precision
+ * quoted), and 32kHz's un-filled-in "?" is now filled in below. An
+ * unrecognised frequency (should not happen for real DV audio) falls
+ * back to the 48kHz coefficients rather than guessing further. */
+static void dv_deemphasis_coeffs(int frequency, double *a1, double *b0, double *b1)
+{
+    switch (frequency) {
+    case 32000:
+        *a1 = -0.4680532717668171; *b0 = 0.5129733270913585; *b1 = 0.018973401141824442;
+        return;
+    case 44100:
+        *a1 = -0.6278688171962878; *b0 = 0.4599545198951315; *b1 = -0.08782333709141932;
+        return;
+    case 48000:
+    default:
+        *a1 = -0.6590646752707611; *b0 = 0.4496052939789251; *b1 = -0.1086699692496862;
+        return;
+    }
+}
+
 void
 dv_audio_deemphasis(dv_audio_t *audio, int16_t **outbuf)
 {
@@ -516,27 +515,11 @@ dv_audio_deemphasis(dv_audio_t *audio, int16_t **outbuf)
     short lastin;
     double lastout;
     short *pmm;
-    /* See deemphasis.gnuplot */
-    double V0     = 0.3365;
-    double OMEGAG = (1./19e-6);
-    double T  = (1./audio->frequency);
-    double H0 = (V0-1.);
-    double B  = (V0*tan((OMEGAG * T)/2.0));
-    double a1 = ((B - 1.)/(B + 1.));
-    double b0 = (1.0 + (1.0 - a1) * H0/2.0);
-    double b1 = (a1 + (a1 - 1.0) * H0/2.0);
+    double a1, b0, b1;
+    dv_deemphasis_coeffs(audio->frequency, &a1, &b0, &b1);
 
   if (audio->emphasis) {
     for (ch=0; ch< audio->raw_num_channels; ch++) {
-      /* ---------------------------------------------------------------------
-       * For 48Khz:   a1=-0.659065
-       *              b0= 0.449605
-       *              b1=-0.108670
-       * For 44.1Khz: a1=-0.62786881719628784282
-       *              b0= 0.45995451989513153057
-       *              b1=-0.08782333709141937339
-       * For 32kHZ ?
-       */
       lastin = audio->lastin [ch];
       lastout = audio->lastout [ch];
       for (pmm = (short *)outbuf [ch], i=0;
