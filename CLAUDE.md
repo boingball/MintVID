@@ -4245,6 +4245,90 @@ already added), but no real hardware has played back an actual DV-NTSC or
 DVCPRO camcorder file through this path yet - only the synthetic ffmpeg
 fixture above, on host and qemu-m68k.
 
+**Real-hardware crash on first playback: AmigaOS Guru `8000000B` on a
+68040 WinUAE build, the moment Play was pressed on a real DV-PAL AVI.**
+`8000000B` is AmigaOS's own encoding for the CPU's "Line 1111 emulator"
+exception (vector 11, offset `$02C`) - an F-line instruction the CPU
+doesn't implement in hardware, normally trapped and emulated in software
+by `fpsp040.library`/`fpsp060.library`, which a real playback system may
+not have loaded. 68040/68060 hardware FPUs implement ordinary arithmetic
+(`FADD`/`FMUL`/`FDIV`/`FSQRT` on the 040) but *not* the transcendental
+instructions (`FCOS`/`FSIN`/`FTAN`/`FLOGN`/`FETOX` etc.) - exactly what
+`cos()`/`tan()`/`sqrt()`/`pow()` compile down to when the target has a
+hardware FPU at all (this cross-compiler does, by default, for
+`-mcpu=68040`/`68060`). Root-caused directly from the crash code alone,
+before touching any file: `player/vendor/libdv/weighting.c`'s
+`_dv_weight_init()`, `idct_248.c`'s `dv_dct_248_init()`, and `dct.c`'s
+`_dv_dct_init()` all call `cos()`/`sqrt()`/`pow()` to build one-time
+constant tables, and all three run unconditionally from `dv_init()` the
+very first time a DV decoder is created (`dv_decoder_new()` -> `dv_open()`
+in `core/mr_dv.c`) - i.e. exactly when Play is first pressed on a DV file,
+matching the report precisely. `dct.c`'s `_dv_idct_88()` (the non-x86
+brute-force 8x8 IDCT, actually reachable during real decode - `_dv_idct_248()`
+is a separate, always-integer 2-4-8 path, see the DV decoder section
+above) went further: it did double-precision floating-point
+multiply-accumulate *every macroblock*, not just at init, using the
+cos()-built `KC88[8][8][8][8]`/`C[8]` tables - basic `FADD`/`FMUL` are
+hardware-safe on 68040/68060 so this specific part wasn't the crash's own
+mechanism, but it is real FPU dependency in the hot decode path on a
+target this project otherwise keeps rigorously integer-only (see the
+whole 68060 MP2/H.264 kernel family elsewhere in this file) - explicitly
+called out by the user mid-fix ("should be no FPU in code, only integer
+btw"), so it was converted too, not left as "technically not the crash".
+
+Every one of these tables is a pure function of the DV standard's own
+constants with no runtime decoder state, so each was precomputed once,
+offline (Python, this dev host's own libm, replicating the original C
+expressions and their exact truncation/rounding rules - `player/tools/
+gen_dv_tables.py` is the generator, kept in the tree so the hardcoded
+arrays can be reproduced/audited rather than trusted as opaque numbers)
+and hardcoded as `static const` arrays, removing every `cos()`/`sin()`/
+`tan()`/`sqrt()`/`pow()` call from the three files' active code paths
+entirely: `weighting.c`'s `dv_weight_inverse_88_matrix[64]` (the only
+one of its several tables actually consumed by real decode - `postSC88`/
+`postSC248`/`dv_weight_88_matrix`/`dv_weight_248_matrix`, and the
+`postscale88_init()`/`weight_88_float()`/etc. helpers that built them,
+turned out to be dead code even before this fix: those only feed
+`_dv_dct_88()`/`_dv_dct_248()`, the forward-DCT AAN encoder path, which
+nothing in this decode-only tree calls - confirmed by grepping the
+whole vendored source for call sites, not assumed - so they were deleted
+outright rather than also converted); `idct_248.c`'s `beta0..beta4`
+(Q30) and `dv_idct_248_prescale[64]` (already folding in what used to be
+`dv_weight_inverse_248_matrix[]`, itself now unneeded at runtime since
+the one thing it fed is precomputed); and, for the actual hot-path
+rewrite, `dct.c`'s `dv_idct88_basis[8][8]` - `KC88[x][y][h][v] =
+cos(pi*v*(2y+1)/16)*cos(pi*h*(2x+1)/16)` is separable into
+`COS8[v][y]*COS8[h][x]`, so folding in the per-index `C(k)` scale factor
+collapses the whole 4096-entry double table into one 8x8 Q14
+fixed-point basis matrix, and `_dv_idct_88()`'s brute-force loop becomes
+plain `int64_t` multiply-accumulate (`block[v*8+h] * A[v][y] * A[h][x]`,
+summed, then one rounded shift on the way out) - overflow-checked by
+hand (16-bit block value + two 14-bit table entries per term, 64 terms
+summed, comfortably inside int64's 63 usable bits) rather than just
+trusted. `_dv_dct_init()`/`dv_dct_248_init()`/`_dv_weight_init()`
+themselves are kept as callable no-ops (`dv.c`'s `dv_init()` still calls
+all three unconditionally) rather than removing the calls, to keep this
+a minimal, targeted diff.
+
+Verified against the real bar (ffmpeg's own dvvideo decode), not just
+"matches the old formula": worst-frame MAE actually *improved* slightly
+on both fixtures (PAL 1.615->1.139, NTSC 3.163->2.901) - expected, since
+the fixed-point path rounds to nearest on the way out where the original
+`block[i] = temp[i];` truncated a double straight to `int16_t` (toward
+zero) with no rounding at all. `make check` (host) and
+`tests/run_m68k_check.sh` (real m68k/big-endian under qemu, both
+`-mcpu=68040`/`68060`) both pass with these exact MAE figures reproduced
+bit-for-bit on m68k, and a direct disassembly check (`m68k-linux-gnu-gcc
+-mcpu=68040`/`68060 -O2`, `objdump -d`/`-r` on all three touched `.c`
+files) confirms zero FPU mnemonics and zero libm/soft-float symbol
+references anywhere in the compiled output - not just "no cos() calls in
+the source" but "no way to reach a Line-1111 trap from this code at all,
+on either CPU tier". `audio.c`'s `dv_audio_deemphasis()` has an identical
+`tan()` call in the same family, left deliberately unconverted with a
+comment: it is dead code in this build (never called - DV audio is
+out of scope, see the DV decoder section above), so it costs nothing
+today, but would need the same treatment before ever being wired up.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.

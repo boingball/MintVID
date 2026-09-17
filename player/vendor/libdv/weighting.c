@@ -43,8 +43,6 @@
 # include <config.h>
 #endif
 
-#include <math.h>
-
 #include "weighting.h"
 
 dv_coeff_t preSC[64] ALIGN32 = {
@@ -59,239 +57,73 @@ dv_coeff_t preSC[64] ALIGN32 = {
 	18081,25080,23624,21261, 18081,14206,9785,4988
 };
 
+/* MintVID adaptation: postSC88/postSC248 are consumed only by dct.c's
+ * postscale88()/postscale248(), which are themselves only reached from
+ * the forward-DCT AAN encoder path (_dv_dct_88()/_dv_dct_248()) - dead
+ * code in this decode-only tree (nothing calls either function; see
+ * core/mr_dv.c's own header). Left declared (implicitly zero-initialised)
+ * so dct.c's extern reference still links, but never filled or read. */
 dv_coeff_t postSC88[64] ALIGN32;
 dv_coeff_t postSC248[64] ALIGN32;
 
-static double W[8];
-
+/* MintVID adaptation: dv_weight_inverse_88_matrix was computed at
+ * dv_init() time via cos()/rint() on a W[8] table itself built from
+ * cos(). On this target (68k Amiga, host build's own m68k-amigaos-gcc
+ * cross-compile) that is a real crash, not just a slow path: 68040/68060
+ * hardware FPUs do not implement transcendental instructions at all
+ * (FCOS etc. trap to the "Line 1111 emulator" exception - AmigaOS Guru
+ * 8000000B - unless fpsp040.library is loaded to emulate them in
+ * software, which a real playback system may not have), and MintVID's
+ * own design intent for the m68k build is integer-only, no FPU
+ * dependency at all (see CLAUDE.md's DV decoder section). The matrix is
+ * a pure function of the DV standard's own constants with no runtime
+ * decoder state, so it is precomputed once, offline, from the exact
+ * original formula (CS(m)=cos(m*pi/16), W[]/weight_88_inverse_float() as
+ * upstream defines them, then dv_coeff_t(rint(...)) matching the
+ * original's own rounding) and hardcoded here - see
+ * tools/gen_dv_tables.py for the generator. dv_weight_inverse_248_matrix
+ * and W[] themselves are no longer needed at runtime: their only other
+ * consumer, idct_248.c's dv_dct_248_init(), is precomputed the same way
+ * (see that file). postscale88_init()/postscale248_init()/
+ * weight_88_float()/weight_248_float() (the encode-only postSC88/248 and
+ * dv_weight_88_matrix/dv_weight_248_matrix computations) are dropped
+ * entirely along with them - dead code in this decode-only tree, per the
+ * postSC88/248 note above. */
 #if (!ARCH_X86) && (!ARCH_X86_64)
-static dv_coeff_t dv_weight_inverse_88_matrix[64];
+static const dv_coeff_t dv_weight_inverse_88_matrix[64] = {
+	4, 2, 2, 2, 2, 2, 3, 3,
+	2, 2, 2, 2, 2, 2, 3, 3,
+	2, 2, 2, 2, 2, 3, 3, 3,
+	2, 2, 2, 2, 3, 3, 3, 3,
+	2, 2, 2, 3, 3, 3, 3, 3,
+	2, 2, 3, 3, 3, 3, 3, 3,
+	3, 3, 3, 3, 3, 3, 3, 4,
+	3, 3, 3, 3, 3, 3, 4, 4,
+};
 #endif
 
-#if BRUTE_FORCE_DCT_88
-static double dv_weight_88_matrix[64];
-#endif
-#if BRUTE_FORCE_DCT_248
-static double dv_weight_248_matrix[64];
-#endif
-
-double dv_weight_inverse_248_matrix[64];
-
-
-static inline double CS(int m) {
-  return cos(((double)m) * M_PI / 16.0);
-}
-
-static void weight_88_inverse_float(double *block);
-static void weight_88_float(double *block);
-static void weight_248_float(double *block);
-
-static inline short int_val(double f)
+void _dv_weight_init(void)
 {
-	return (short) floor(f + 0.5);
+	/* No runtime work left to do - see dv_weight_inverse_88_matrix's own
+	 * comment above. Kept as a callable no-op since dv.c's dv_init()
+	 * calls it unconditionally. */
 }
 
-static void postscale88_init(double* post_sc)
+void _dv_weight_88(dv_coeff_t *block)
 {
-	int i,j;
-	double ci,cj;
-
-	for( i = 0; i < 8; i++ ) {
-		ci = i==0 ? 1/(8.*sqrt(2.)) : 1.0/16.0;
-		/* di = i==0 ? 1.5/(sqrt(2.)) : 0.5;
-		   ps3[i] = 2.0*2.0*ci/cos(i*M_PI/16); 
-		   israelh. this is table1 from AAN paper. 
-		   Note the trick if 8 or 16 deivision
-		*/
-		for( j = 0; j < 8; j++) {
-			cj = j==0 ? 1/(8*sqrt(2.)) : 1.0/16.0;
-			post_sc[i * 8 + j] = 4.0*4.0 * ci * cj / 
-				(cos(i*M_PI/16)*cos(j*M_PI/16));
-			/* israelh. patch the first 4.0? */
-		}
-	}
-	post_sc[63] = 1.0;    
+	/* Forward-weight (encode-only); dead code in this decode-only tree -
+	 * see postSC88's own comment above. Never called. */
+	(void)block;
 }
 
-static void postscale248_init(double* post_sc)
+void _dv_weight_248(dv_coeff_t *block)
 {
-	int i,j;
-	double ci,cj;
-
-	for( i = 0; i < 4; i++ ) {
-		ci = i==0 ? 1/(4.*sqrt(2.)) : 1.0/8.0;
-		/* di = i==0 ? 1.5/(sqrt(2.)) : 0.5;
-		   ps3[i] = 2.0*2.0*ci/cos(i*M_PI/16); 
-		   israelh. this is table1 from AAN paper. 
-		   Note the trick if 8 or 16 deivision
-		*/
-		for( j = 0; j < 8; j++) {
-			cj = j==0 ? 1/(8*sqrt(2.)) : 1.0/16.0;
-			post_sc[i * 8 + j] = 4.0*2.0 * ci * cj / 
-				(cos(i*M_PI/8)*cos(j*M_PI/16));
-			post_sc[i * 8 + 32 + j] = 4.0*2.0 * ci * cj / 
-				(cos(i*M_PI/8)*cos(j*M_PI/16));
-			/* israelh. patch the first 4.0? */
-		}
-	}
-	post_sc[63-32] = 1.0;    
-	post_sc[63] = 1.0;    
+	/* Forward-weight (encode-only); dead code in this decode-only tree -
+	 * see postSC88's own comment above. Never called. */
+	(void)block;
 }
 
-void _dv_weight_init(void) 
-{
-	double temp[64];
-	double temp_postsc[64];
-	int i, z, x;
-#if ARCH_X86 || ARCH_X86_64
-	const double dv_weight_bias_factor = (double)(1UL << DV_WEIGHT_BIAS);
-#endif
-
-	W[0] = 1.0;
-	W[1] = CS(4) / (4.0 * CS(7) * CS(2));
-	W[2] = CS(4) / (2.0 * CS(6));
-	W[3] = 1.0 / (2 * CS(5));
-	W[4] = 7.0 / 8.0;
-	W[5] = CS(4) / CS(3); 
-	W[6] = CS(4) / CS(2); 
-	W[7] = CS(4) / CS(1);
-	
-	for (i = 0; i < 64; i++) {
-		temp[i] = 1.0;
-	}
-	weight_88_inverse_float(temp);
-
-	for (i=0;i<64;i++) {
-#if (!ARCH_X86) && (!ARCH_X86_64)
-		dv_weight_inverse_88_matrix[i] = (dv_coeff_t)rint(temp[i]);
-#else
-		/* If we're using MMX assembler, fold weights into the iDCT
-		   prescale */
-		preSC[i] *= temp[i] * (16.0 / dv_weight_bias_factor);
-#endif
-	}
-
-	postscale88_init(temp_postsc);
-	for (i = 0; i < 64; i++) {
-		temp[i] = 1.0;
-	}
-	weight_88_float(temp);
-
-	for (i=0;i<64;i++) {
-#if BRUTE_FORCE_DCT_88
-		dv_weight_88_matrix[i] = temp[i];
-#else
-		/* If we're not using brute force(tm), 
-		   fold weights into the DCT
-		   postscale */
-		postSC88[i]= int_val(temp_postsc[i] * temp[i] * 32768.0 * 2.0);
-#endif
-	}
-	postSC88[63] = temp[63] * 32768 * 2.0;    
-
-	postscale248_init(temp_postsc);
-
-	for (i = 0; i < 64; i++) {
-		temp[i] = 1.0;
-	}
-	weight_248_float(temp);
-
-	for (i=0;i<64;i++) {
-#if BRUTE_FORCE_DCT_248
-		dv_weight_248_matrix[i] = temp[i];
-#else
-		/* If we're not using brute force(tm), 
-		   fold weights into the DCT
-		   postscale */
-		postSC248[i]= int_val(temp_postsc[i]* temp[i] * 32768.0 * 2.0);
-#endif
-	}
-
-	for (z=0;z<4;z++) {
-		for (x=0;x<8;x++) {
-			dv_weight_inverse_248_matrix[z*8+x] = 
-				2.0 / (W[x] * W[2*z]);
-			dv_weight_inverse_248_matrix[(z+4)*8+x] = 
-				2.0 / (W[x] * W[2*z]);
-			
-		}
-	}
-	dv_weight_inverse_248_matrix[0] = 4.0;
-}
-
-void _dv_weight_88(dv_coeff_t *block) 
-{
-	/* These weights are now folded into the dct postscaler - so this
-	   function doesn't do anything. */
-#if BRUTE_FORCE_DCT_88
-	int i;
-
-	for (i=0;i<64;i++) {
-		block[i] *= dv_weight_88_matrix[i];
-	}
-#endif
-}
-
-static void weight_88_float(double *block) 
-{
-	int x,y;
-	double dc;
-
-	dc = block[0];
-	for (y=0;y<8;y++) {
-		for (x=0;x<8;x++) {
-			block[y*8+x] *= W[x] * W[y] / 2.0;
-		}
-	}
-	block[0] = dc / 4.0;
-}
-
-
-void _dv_weight_248(dv_coeff_t *block) 
-{
-	/* These weights are now folded into the dct postscaler - so this
-	   function doesn't do anything. */
-#if BRUTE_FORCE_DCT_248
-	int i;
-
-	for (i=0;i<64;i++) {
-		block[i] *= dv_weight_248_matrix[i];
-	}
-#endif
-}
-
-static void weight_248_float(double *block) 
-{
-	int x,z;
-	double dc;
-
-	dc = block[0];
-	for (z=0;z<4;z++) {
-		for (x=0;x<8;x++) {
-			block[z*8+x] *= W[x] * W[2*z] / 2;
-			block[(z+4)*8+x] *= W[x] * W[2*z] / 2;
-		}
-	}
-	block[0] = dc / 4;
-	block[32] = dc / 4;
-}
-
-
-static void weight_88_inverse_float(double *block) 
-{
-	int x,y;
-	double dc;
-
-	dc = block[0];
-	for (y=0;y<8;y++) {
-		for (x=0;x<8;x++) {
-			block[y*8+x] /= (W[x] * W[y] / 2.0);
-		}
-	}
-	block[0] = dc * 4.0;
-}
-
-void _dv_weight_88_inverse(dv_coeff_t *block) 
+void _dv_weight_88_inverse(dv_coeff_t *block)
 {
 	/* When we're using MMX assembler, weights are applied in the 8x8
 	   iDCT prescale */

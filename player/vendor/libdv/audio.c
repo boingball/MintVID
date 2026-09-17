@@ -511,6 +511,17 @@ dv_update_num_samples(dv_audio_t *dv_audio, const uint8_t *inbuf) {
 
 /* This code originates from cdda2wav, by way of Giovanni Iachello <g.iachello@iol.it>
    to Arne Schirmacher <arne@schirmacher.de>. */
+/* MintVID note: never called from core/mr_dv.c - DV audio is out of
+ * scope for this decode-only build (see mr_dv.h's own header; the
+ * reported DV-AVI's audio is a separate demuxed PCM stream, not DIF-
+ * embedded). Left unconverted on purpose: unlike weighting.c/idct_248.c/
+ * dct.c's cos()/sqrt()/pow() calls (all on the real per-frame decode
+ * path and fixed - see those files' own "MintVID adaptation" comments),
+ * this filter-design tan() call only executes if something starts
+ * calling this function, which nothing currently does. Convert it the
+ * same way (precompute a1/b0/b1 per sample rate offline) before wiring
+ * type-1 DV-AVI audio through libdv - do not call this as-is on the
+ * m68k target. */
 void
 dv_audio_deemphasis(dv_audio_t *audio, int16_t **outbuf)
 {
