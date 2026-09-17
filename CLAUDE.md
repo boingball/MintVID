@@ -4433,6 +4433,59 @@ setup can actually prove the crash is gone - qemu/ELF and CI's real
 toolchain link both structurally cannot exercise this specific
 library-variant-selection behaviour.
 
+**Real `m68k-amigaos-gcc 13.2.0` link attempt found a third bug, immediately
+- and it invalidated a specific assumption this whole file otherwise
+relies on.** Merging the `-lm`-scoping fix above and building `mr_decode`
+for real failed with `undefined reference to __subdf3`/`__gtdf2`/
+`__adddf3`/`__muldf3` inside `dv_audio_deemphasis()` - libgcc's
+soft-float double-arithmetic helpers, not libm. That function's per-sample
+filter recurrence (`lastout = *pmm*b0 + lastin*b1 - lastout*a1;`) is
+plain `+`/`-`/`*`/`>` on `double`s, no library call anywhere in the
+source - and it was left that way on the reasoning "`FADD`/`FMUL` are
+hardware-safe on 68040/68060, so this doesn't reintroduce the trap the
+`cos()`/`tan()` fixes exist for." That reasoning holds for
+`m68k-linux-gnu-gcc` (this dev host's own cross-compiler, used for every
+qemu/disassembly check in this whole investigation) but **not** for
+Bebbo's real `m68k-amigaos-gcc`, which evidently defaults to software
+floating point for `-mcpu=68040`/`68060` here - meaning ordinary `double`
+arithmetic, not just transcendental library calls, lowers to unresolved
+libgcc calls on the actual target. This is the sharpest version yet of
+this file's own standing "no AmigaOS toolchain on this dev host" gap:
+not a missing library or a wrong flag, but two different cross-compilers
+disagreeing about a basic ABI default (hardware vs. software float) for
+the *same* `-mcpu=68040`/`68060` flags, invisible to every qemu-based
+check in this entire file because they all run through the *other*
+compiler.
+
+Fixed by removing `double`/`float` from `dv_audio_deemphasis()` entirely
+rather than chasing which library provides these symbols: `a1`/`b0`/`b1`
+become Q16.16 fixed-point `int32_t` constants (same three DV audio
+rates, same offline-precompute discipline as every other table in this
+whole investigation - `tools/gen_dv_tables.py`), the per-sample
+recurrence becomes `int64_t` multiply-accumulate with one final rounded
+shift (overflow-checked: a full-scale int16 sample times a Q16.16
+coefficient is ~2.1e9, comfortably inside int64's 63 usable bits), and
+`dv_audio_t::lastout[4]` (`dv_types.h`) changes from `double[4]` to
+`int64_t[4]` to carry the filter's Q16.16 state between calls - confirmed
+via grep that nothing else in the vendored tree reads that field, so the
+type change is contained to this one function. A fresh whole-tree grep
+for every remaining `double`/`float` (not just math-function calls this
+time) confirms the only survivors are inside code already proven dead by
+a `#if <never-defined-macro>` guard (`idct_248.c`'s unit-test data,
+`dct.c`'s `BRUTE_FORCE_248`-gated `_dv_idct_248(double*)`) - genuinely
+zero reachable floating-point arithmetic anywhere in libdv now, on either
+compiler's ABI defaults. Directly verified against the actual failure
+mode this time, not just reasoned about: `m68k-linux-gnu-gcc -c -O2
+-mcpu=68040`/`68060` on the fixed `audio.c`, `nm`-scanned for
+`__adddf3`/`__subdf3`/`__muldf3`/`__divdf3`/`__gtdf2`/`__ltdf2`/`__eqdf2`/
+`__nedf2`/`__gedf2`/`__ledf2` and every libm symbol from before - clean at
+both tiers. `make check`/`tests/run_m68k_check.sh` both still pass with
+the exact same DV/PAL and DV/NTSC MAE as every prior round (this function
+is dead code in the current integration, so nothing decode-visible could
+have changed) - the real test this needed, a clean `m68k-amigaos-gcc`
+link, is what the user's own next build attempt confirms or denies, not
+anything provable from this dev host.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
