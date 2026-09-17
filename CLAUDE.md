@@ -4590,6 +4590,94 @@ file's standing "no AmigaOS toolchain" limitation - the real test is
 whether the next real-hardware Play attempt, run with `--time`, produces
 a log that pinpoints the crash.
 
+**Retraction: the P96-PIP-specific hypothesis above is wrong - the user's
+direct follow-up test confirms the identical crash happens with AGA
+selected too.** AGA display mode never opens `Picasso96API.library` at
+all (`display_open()`'s own gating: `P96Base` is only opened `if
+(g_force_p96 && !g_force_aga)`, and every P96-mode `order[]` entry -
+`backend_p96pip` included - is itself gated `!g_force_aga`), so
+`display_p96pip.c` cannot be involved when AGA is selected. This rules the
+whole backend out as the cause, cleanly - not "less likely," structurally
+impossible for this report. The diagnostics added to it above are kept
+(harmless, zero cost in a normal build, and still useful if P96 is
+revisited later), but the search moves on.
+
+**Re-scoped the search using what's actually new versus what's shared.**
+`git log` across every commit in this whole DV/-lm/soft-float investigation
+(from `eb72015`, the DV-CI-fix commit, through the P96 diagnostics commit
+just above) shows `amiga/mrplay.c`, `amiga/display.c`,
+`amiga/display_aga.c`, `core/mr_codec.c` and `audio/mr_audio_decode.c` were
+*never touched* by any of it, except the display-open diagnostics commit
+itself. `core/mr_codec.c`'s `mr_codec_find()` is confirmed pure FourCC
+tag-matching with no probing (read in full: it folds case and compares
+`fourcc` fields, then calls exactly one codec's `open()` - the one whose
+tag matched, nothing else) - so a Cinepak file's Play never touches
+`core/mr_dv.c`/`vendor/libdv` at all, at the C-control-flow level. Two
+real conclusions follow: the crash is not "DV code running when it
+shouldn't" (no call path reaches it for a non-DV file), and whatever *is*
+new is confined to what actually changed in this whole investigation:
+`Makefile.amiga` (the DV/libdv `CORE` additions, and the `-lm`
+scoping/reordering), and the new `core/mr_dv.c`/`vendor/libdv/*` object
+files themselves - present in every Amiga link target's `CORE` list, *just
+sitting there unlinked-to-by-name* for a non-DV file, not something
+reachable via source alone.
+
+That "just sitting there" phrasing matters given this file's own already-
+proven precedent: the exact mechanism that broke `mrgui.c`'s plain-string
+`snprintf()` (see the "Correction: it wasn't fixed" section) was *linked
+but never called* code changing which library variant the whole binary
+resolves a shared symbol to - not anything reachable from the crashing
+function's own control flow. The same class of mechanism remains a live,
+unruled-out suspect here: `mrplay` links every one of the same
+`core/mr_dv.c`/`vendor/libdv` object files the GUI targets do (same shared
+`CORE` list), and the file-info-display crash is confirmed fixed only for
+the GUI binaries (`MintVID`/`MintVID-GT`) - nothing in this whole
+investigation has yet linked and Played through `mrplay` itself
+specifically, on the real toolchain, since libdv was added to its `CORE`
+list. Every "real hardware confirmed" Play session anywhere earlier in
+this file predates the DV feature's `Makefile.amiga` changes entirely, so
+this may not be a regression introduced by anything reachable from
+`mrplay.c`'s own source at all - it could be the first time `mrplay`
+itself has actually been linked-and-Played since those `Makefile.amiga`
+changes landed.
+
+**Broadened the diagnostics accordingly, rather than guessing further at
+which specific mechanism it is.** The P96-PIP checkpoints only cover the
+tail of the Play sequence (`display_open()` and after); if the crash is
+instead in the *shared* front half - `mr_demux_open_file_ex()`/
+`mr_demux_open()`, the codec-probe/`mr_codec_find()` step, or
+`mr_decoder_open_config()` itself, all of which run identically for every
+display mode and every codec - none of that had any `Flush(Output())` at
+all before now, unconditionally printed lines included (`"streaming ...
+from ..."`, `"loaded %ld bytes"`, `"codec probe: ..."`, the `want_time`-
+gated `"video fourcc=..."` line). Added `Flush(Output())` after each of
+those, plus a new checkpoint immediately before `mr_decoder_open_config()`
+is called (mirroring the same "flush before, not just after" reasoning
+already applied to `display_open()`) and a new `"decoder open: %s\n"`
+line immediately after it succeeds. This is the same
+instrumentation-not-guess discipline as the P96 diagnostics above, just
+now covering the part of the sequence AGA's own crash proves is at least
+as plausible a site.
+
+A real-hardware retest with `--live-diag` or `--time` (either engages
+enough of this path's own gated lines; the unconditional ones show
+regardless) should now show one of: a log ending right after `"codec
+probe: ..."` with no `"decoder open: ..."` line following (crash inside
+`mr_decoder_open_config()`/`codec->open()` - worth checking with a codec
+*other* than Cinepak too, to see whether it's decoder-specific or
+universal even there); a log ending right after `"decoder open: ..."`
+with no `"%dx%d, opening display..."` line following (crash somewhere in
+the h264-speed/timing-setup glue between decoder-open and display-open,
+none of which any bucket here yet checkpoints); or a log that reaches
+`"opening display..."` and stops there even under AGA (crash inside
+`backend_aga`'s own `open()` in `display_aga.c` - a file this whole DV/-lm
+investigation never touched, so if this is where it lands, the cause is
+either pre-existing and only now being reached for the first time, or a
+`Makefile.amiga`-level effect exactly like the printf-variant mechanism,
+not anything in `display_aga.c`'s own source). Whichever of these the next
+capture shows narrows the remaining search space a lot further than
+guessing does.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
