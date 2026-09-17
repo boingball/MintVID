@@ -594,6 +594,16 @@ static void p96_rebuild_geometry(p96_state *s, const char *reason)
     if (s->iw < 1) s->iw = 1;
     if (s->ih < 1) s->ih = 1;
 
+    /* A private screen has no resize gadget or IDCMP_NEWSIZE events. Its
+     * initial borderless Window dimensions can differ from the full bitmap
+     * dimensions selected above, so keep the debounce cache in the same
+     * coordinate space. Otherwise pending_* remains permanently different
+     * and this function is called once for every presented frame. */
+    if (s->screen) {
+        s->pending_w = s->iw;
+        s->pending_h = s->ih;
+    }
+
     /*
      * Never upscale on the P96 CPU path.  If the source fits, centre it at
      * exactly 1:1 and let the fast BGR row-copy path handle presentation.
