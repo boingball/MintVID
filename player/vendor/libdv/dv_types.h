@@ -424,7 +424,11 @@ typedef struct {
    * memorize deemphasis values
    */
   short            lastin [4];
-  double           lastout [4];
+  /* MintVID adaptation: was double[4] - changed to int64_t Q16.16
+   * fixed-point to avoid plain double arithmetic needing unresolved
+   * libgcc soft-float helpers on the real m68k-amigaos-gcc toolchain;
+   * see audio.c's dv_audio_deemphasis() for the full account. */
+  int64_t          lastout [4];
 
   FILE             *error_log;
   dv_decoder_tp    dv_decoder;

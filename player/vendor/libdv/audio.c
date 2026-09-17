@@ -471,36 +471,56 @@ dv_update_num_samples(dv_audio_t *dv_audio, const uint8_t *inbuf) {
  * reported DV-AVI's audio is a separate demuxed PCM stream, not DIF-
  * embedded) - but dv_decode_full_audio() (dv.c) still calls this
  * unconditionally, so it stays in the AmigaOS link regardless of whether
- * MintVID ever reaches it. Its original tan() call was a *linking*
- * problem on this target, not just a runtime one: even though the call
- * never executes, the mere reference forces -lm onto the AmigaOS build's
- * shared link line - and that turned out to be the actual cause of a
- * real-hardware crash unrelated to DV at all (see CLAUDE.md's DV decoder
- * section's own account: any file crashed with the same Line-1111 FPU
- * trap the instant its info was read, because -lm silently changed which
- * snprintf() variant the toolchain linked in for the whole binary,
- * including callers - like the GUI's own file-info display - that never
- * touch DV or libdv at all). Fixed the same way as the video path's
- * tables: a1/b0/b1 depend only on the DV standard's three legal audio
+ * MintVID ever reaches it.
+ *
+ * Two real problems here, found one after the other on the real
+ * m68k-amigaos-gcc toolchain (neither reachable from this dev host's own
+ * m68k-linux-gnu-gcc cross-compiler, which apparently defaults to
+ * hardware double codegen for -mcpu=68040/68060 where this one does
+ * not): the original tan() call forced -lm onto the whole AmigaOS
+ * build's shared link line even though it never executes, and that
+ * alone was enough to make the linker select a different, floating-
+ * point-capable snprintf()/vsnprintf() variant for the entire binary -
+ * including callers, like the GUI's own file-info display, that never
+ * touch DV or a float at all (see CLAUDE.md's DV decoder section for
+ * the full account). Fixing *that* (deleting the tan() call, scoping
+ * -lm to the one target that actually needs it) surfaced the second,
+ * deeper one on the next real build: plain `double` arithmetic itself -
+ * not just tan()/pow()-style library calls - lowers to unresolved
+ * libgcc soft-float helpers (`__adddf3`/`__subdf3`/`__muldf3`/`__gtdf2`)
+ * on this toolchain, meaning this function's *own* per-sample filter
+ * loop (plain `+`/`-`/`*`/`>` on doubles, no library call in the source
+ * at all) was never actually AmigaOS-safe either, independent of -lm.
+ * Both problems have the same fix: no `double`/`float` anywhere in this
+ * function. a1/b0/b1 depend only on the DV standard's three legal audio
  * sample rates (32000/44100/48000 Hz - see dv_types.h), so they are
- * precomputed offline (tools/gen_dv_tables.py) instead of calling tan()
- * at runtime; the file's own pre-existing comment already gave the
- * 44.1/48kHz reference values as a cross-check (matched to the precision
- * quoted), and 32kHz's un-filled-in "?" is now filled in below. An
- * unrecognised frequency (should not happen for real DV audio) falls
- * back to the 48kHz coefficients rather than guessing further. */
-static void dv_deemphasis_coeffs(int frequency, double *a1, double *b0, double *b1)
+ * precomputed offline as Q16.16 fixed-point constants
+ * (tools/gen_dv_tables.py) instead of computed via tan() at runtime; the
+ * file's own pre-existing comment already gave the 44.1/48kHz reference
+ * values as a cross-check (matched to the precision quoted before
+ * fixed-point rounding), and 32kHz's un-filled-in "?" is now filled in
+ * below. An unrecognised frequency (should not happen for real DV audio)
+ * falls back to the 48kHz coefficients rather than guessing further.
+ * `dv_audio_t::lastout[]` changed from `double[4]` to `int64_t[4]`
+ * (Q16.16, scaled by 2^16) to carry the filter's fractional state
+ * between calls without ever holding a float - `lastin[]` was already
+ * plain `short`, unaffected. Overflow check: a full-scale int16 sample
+ * (~32767) times a Q16.16 coefficient (~65536 max magnitude) is
+ * ~2.1e9, and lastout_q16 itself (a Q16.16-scaled sample) is bounded by
+ * the same ~2.1e9 - both computed in int64_t, comfortably inside its 63
+ * usable bits with no intermediate overflow. */
+static void dv_deemphasis_coeffs_q16(int frequency, int32_t *a1, int32_t *b0, int32_t *b1)
 {
     switch (frequency) {
     case 32000:
-        *a1 = -0.4680532717668171; *b0 = 0.5129733270913585; *b1 = 0.018973401141824442;
+        *a1 = -30674; *b0 = 33618; *b1 = 1243;
         return;
     case 44100:
-        *a1 = -0.6278688171962878; *b0 = 0.4599545198951315; *b1 = -0.08782333709141932;
+        *a1 = -41148; *b0 = 30144; *b1 = -5756;
         return;
     case 48000:
     default:
-        *a1 = -0.6590646752707611; *b0 = 0.4496052939789251; *b1 = -0.1086699692496862;
+        *a1 = -43192; *b0 = 29465; *b1 = -7122;
         return;
     }
 }
@@ -513,23 +533,27 @@ dv_audio_deemphasis(dv_audio_t *audio, int16_t **outbuf)
        to undo the effect of pre-emphasis. The filter is of
        a recursive first order */
     short lastin;
-    double lastout;
+    int64_t lastout_q16;
     short *pmm;
-    double a1, b0, b1;
-    dv_deemphasis_coeffs(audio->frequency, &a1, &b0, &b1);
+    int32_t a1, b0, b1;
+    dv_deemphasis_coeffs_q16(audio->frequency, &a1, &b0, &b1);
 
   if (audio->emphasis) {
     for (ch=0; ch< audio->raw_num_channels; ch++) {
       lastin = audio->lastin [ch];
-      lastout = audio->lastout [ch];
+      lastout_q16 = audio->lastout [ch];
       for (pmm = (short *)outbuf [ch], i=0;
            i < audio->raw_samples_this_frame [0]; /* TODO: check for second channel */
            i++) {
-        lastout = *pmm * b0 + lastin * b1 - lastout * a1;
+        int64_t sample;
+        lastout_q16 = (int64_t)(*pmm) * b0 + (int64_t)lastin * b1
+                      - (((int64_t)lastout_q16 * a1) >> 16);
         lastin = *pmm;
-        *pmm++ = (lastout > 0.0) ? lastout + 0.5 : lastout - 0.5;
+        sample = lastout_q16 >= 0 ? (lastout_q16 + 32768) >> 16
+                                   : -(((-lastout_q16) + 32768) >> 16);
+        *pmm++ = (short)sample;
       } /* for (pmn = .. */
-      audio->lastout [ch] = lastout;
+      audio->lastout [ch] = lastout_q16;
       audio->lastin [ch] = lastin;
     } /* for (ch = .. */
   } /* if (audio -> .. */
