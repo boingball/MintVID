@@ -57,15 +57,6 @@ dv_coeff_t preSC[64] ALIGN32 = {
 	18081,25080,23624,21261, 18081,14206,9785,4988
 };
 
-/* MintVID adaptation: postSC88/postSC248 are consumed only by dct.c's
- * postscale88()/postscale248(), which are themselves only reached from
- * the forward-DCT AAN encoder path (_dv_dct_88()/_dv_dct_248()) - dead
- * code in this decode-only tree (nothing calls either function; see
- * core/mr_dv.c's own header). Left declared (implicitly zero-initialised)
- * so dct.c's extern reference still links, but never filled or read. */
-dv_coeff_t postSC88[64] ALIGN32;
-dv_coeff_t postSC248[64] ALIGN32;
-
 /* MintVID adaptation: dv_weight_inverse_88_matrix was computed at
  * dv_init() time via cos()/rint() on a W[8] table itself built from
  * cos(). On this target (68k Amiga, host build's own m68k-amigaos-gcc
@@ -86,9 +77,15 @@ dv_coeff_t postSC248[64] ALIGN32;
  * consumer, idct_248.c's dv_dct_248_init(), is precomputed the same way
  * (see that file). postscale88_init()/postscale248_init()/
  * weight_88_float()/weight_248_float() (the encode-only postSC88/248 and
- * dv_weight_88_matrix/dv_weight_248_matrix computations) are dropped
- * entirely along with them - dead code in this decode-only tree, per the
- * postSC88/248 note above. */
+ * dv_weight_88_matrix/dv_weight_248_matrix computations, along with the
+ * postSC88/248 arrays themselves and dct.c's postscale88()/postscale248()/
+ * _dv_dct_88()/_dv_dct_248() - the whole forward-DCT AAN encoder path) are
+ * dropped entirely - dead code in this decode-only tree, confirmed by
+ * grepping the whole vendored source for call sites (see core/mr_dv.c's
+ * own header). Deleting them, not just leaving them unreachable, is what
+ * let dct.c/audio.c drop their last cos()/tan()/sqrt()/pow() references
+ * and this build drop its only reason to link -lm at all - see
+ * Makefile.amiga's own note on that. */
 #if (!ARCH_X86) && (!ARCH_X86_64)
 static const dv_coeff_t dv_weight_inverse_88_matrix[64] = {
 	4, 2, 2, 2, 2, 2, 3, 3,

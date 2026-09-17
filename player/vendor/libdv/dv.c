@@ -338,7 +338,6 @@ dv_decode_full_frame(dv_decoder_t *dv, const uint8_t *buffer,
     for (v=0;v<27;v++) {
       /* skip audio block - interleaved before every 3rd video segment */
       if(!(v % 3)) {
-        /*dv_dump_aaux_as(buffer+(dif*80), ds, audio); */
 	dif++;
 	audio++;
       } /* if */
