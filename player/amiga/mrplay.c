@@ -2017,6 +2017,17 @@ int main(int argc, char **argv)
                 printf("warning: Fast buffer fell back to %lu MB\n",
                        (unsigned long)(actual_buffer / (1024UL * 1024UL)));
         }
+        /* Flush every checkpoint through the rest of the Play sequence, not
+         * only the "opening display..." one a few dozen lines down - a real
+         * report ("crashes when I press play, any file, any display mode,
+         * audio on or off") means the P96-PIP-specific checkpoints added
+         * alongside that one flush cannot be where this actually happens
+         * (AGA needs none of that code and still crashes), so the crash
+         * could equally be here, in demux/codec-probe/decoder-open, before
+         * display_open() is ever reached at all. See CLAUDE.md's "mrplay
+         * crashes on Play" section for the full retraction of the P96-only
+         * hypothesis. */
+        Flush(Output());
     } else {
         if (mr_demux_is_file_backed_container(media_path)) {
             char reason[MR_PLAYER_STATUS_TEXT_MAX];
@@ -2049,6 +2060,7 @@ int main(int argc, char **argv)
                                   "cannot read stream data");
                     status_hold(); return mrplay_exit(10); }
         printf("loaded %ld bytes\n", len);
+        Flush(Output());
 
         dx = mr_demux_open(buf, (size_t)len);
         if (!dx) {
@@ -2071,6 +2083,7 @@ int main(int argc, char **argv)
                                   sizeof audio_description);
     printf("codec probe: container=%s, video=%s, audio=%s\n",
            mr_demux_container_name(dx), video_description, audio_description);
+    Flush(Output());
     codec = mr_codec_find(vi->fourcc);
     if (!codec) { char reason[MR_PLAYER_STATUS_TEXT_MAX];
                   snprintf(reason, sizeof reason, "%s has no decoder",
@@ -2081,12 +2094,18 @@ int main(int argc, char **argv)
                   mr_demux_close(dx);
                   free(buf); return mrplay_exit(10); }
 
-    if (want_time)
+    if (want_time) {
         printf("video fourcc='%c%c%c%c'\n", (int)(vi->fourcc & 255),
                (int)((vi->fourcc >> 8) & 255),
                (int)((vi->fourcc >> 16) & 255),
                (int)((vi->fourcc >> 24) & 255));
-
+        Flush(Output());
+    }
+    /* Checkpoint before the decoder-open call itself, not only after it
+     * returns - mirrors the same "flush before, not just after" fix applied
+     * to display_open() below, for the same reason: if this call is what
+     * traps, the log needs to already show we got this far. */
+    Flush(Output());
     if (mr_decoder_open_config(&dec, codec, vi->width, vi->height,
                                vi->config, vi->config_len) != MR_OK) {
         char reason[MR_PLAYER_STATUS_TEXT_MAX];
@@ -2098,6 +2117,8 @@ int main(int argc, char **argv)
         mr_demux_close(dx);
         free(buf); return mrplay_exit(10);
     }
+    printf("decoder open: %s\n", codec->name);
+    Flush(Output());
     if (!apply_h264_speed(&dec, h264_speed, want_time)) {
         player_status(MR_PLAYER_STATE_ERROR, codec->name,
                       "H.264 performance mode was rejected by decoder");
@@ -2139,6 +2160,16 @@ int main(int argc, char **argv)
                  vi->width, vi->height, codec->name);
         player_status(MR_PLAYER_STATE_OPENING, codec->name, line);
     }
+    /* Flush *before* display_open(), not only after it returns (see the
+     * Flush() a few lines below, which was the only one here until real
+     * hardware showed mrplay itself crashing at Play time with the P96 PIP
+     * backend selected - see CLAUDE.md's "mrplay crashes on Play" section):
+     * if display_open() itself is what traps (backend_p96pip is new,
+     * untested even on WinUAE's own P96 emulation per its own file header),
+     * the "opening display..." line above needs to be durable before that
+     * call, not stuck in an unflushed stdio buffer the crash never lets run
+     * to the flush that used to be the only one on this path. */
+    Flush(Output());
     disp = display_open(vi->width, vi->height, "MintVID");
     if (!disp) { printf("cannot open a display (RTG or AGA)\n");
                  player_status(MR_PLAYER_STATE_ERROR, codec->name,
