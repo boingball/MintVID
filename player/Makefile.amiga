@@ -514,14 +514,22 @@ check-cc:
 mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) $(KALMS_OBJ) $(MP2_ASM_OBJ) \
         $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) $(VERSION_HEADER) | check-libavc
 	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) $(LIBA52_FLAGS) -o $@ $(PLAY) $(CORE) \
-	    $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) $(KALMS_OBJ) $(MP2_ASM_OBJ) $(LDFLAGS) -lm \
+	    $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) $(KALMS_OBJ) $(MP2_ASM_OBJ) $(LDFLAGS) \
 	    -Wl,-Map=mrplay.map
-	# DIAGNOSTIC BRANCH (diag/current-main-diagnostics): -Wl,-Map=mrplay.map
-	# added above so CI can upload current main's own real-toolchain linker
-	# map alongside the binary, for direct comparison against the
-	# pre-DV-baseline and DV-excluded diagnostic branches - see CLAUDE.md's
-	# "mrplay crashes on Play" section. Nothing else on this branch differs
-	# from main.
+	# DIAGNOSTIC BRANCH (diag/no-lm-with-dv): -lm removed from this link line
+	# entirely - DV is still present (unlike diag/dv-excluded-flags-unchanged,
+	# this isolates the opposite variable). The pre-DV baseline build
+	# (diag/baseline-pre-dv, PR #195's base commit) already links this exact
+	# same MintAMP/AAC/liba52 DSP object set with zero -lm at all and
+	# succeeds, contradicting this file's own prior claim that mrplay
+	# "genuinely needs real libm" for MintAMP - if that claim were true,
+	# removing -lm here should fail this exact link with undefined
+	# references to libm symbols the AAC/liba52/wma DSP code calls; if it
+	# links clean instead, it never needed -lm at all, on either the DV or
+	# the MintAMP side, and every -lm reference in this Makefile was
+	# purely a leftover from the now-fully-eliminated DV libm calls -
+	# -Wl,-Map=mrplay.map kept for the same real-toolchain map/disassembly
+	# comparison as the other three diagnostic branches.
 
 check-kalms:
 	@test -n "$(KALMS_VASM)" -a -x "$(KALMS_VASM)" || { \
