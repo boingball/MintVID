@@ -809,6 +809,22 @@ static int p96pip_toggle_fullscreen(void *h)
         if (s->have_window_geometry) {
             s->win_w = s->window_width;
             s->win_h = s->window_height;
+        } else {
+            /* Started fullscreen and never had a windowed size to save -
+             * s->win_w/win_h still hold the fullscreen screen dimensions
+             * at this point. Falling through with those would open a
+             * borderless-looking window the size of the whole display
+             * instead of one sized to the video, so fit it against the
+             * public screen exactly like p96pip_open()'s windowed path. */
+            struct Screen *pub = LockPubScreen(NULL);
+            int avail_w = 640, avail_h = 480;
+            if (pub) {
+                avail_w = pub->Width;
+                avail_h = pub->Height;
+                UnlockPubScreen(NULL, pub);
+            }
+            fit_within(s->source_w, s->source_h, avail_w, avail_h,
+                      &s->win_w, &s->win_h);
         }
         if (reopen_pip(s, "fullscreen-toggle")) {
             close_video_screen(&old_screen, "leave fullscreen");
