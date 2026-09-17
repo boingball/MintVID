@@ -305,7 +305,7 @@ dv_decode_full_frame(dv_decoder_t *dv, const uint8_t *buffer,
 		     dv_color_space_t color_space, uint8_t **pixels, uint16_t *pitches) {
 
   bitstream_t bs = { 0 };
-  dv_videosegment_t vs = { 0, 0, &bs };
+  dv_videosegment_t vs = { 0, 0, &bs, {{0}}, 0 };
   dv_videosegment_t *seg = &vs;
   dv_macroblock_t *mb;
   int ds, v, m;
