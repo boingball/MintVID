@@ -100,7 +100,14 @@ CORE  = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
         core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_wmv.c core/mr_wmv2.c core/mr_h263.c core/mr_msvideo1.c core/mr_rle.c \
         core/mr_rawvideo.c core/mr_yuv.c core/mr_yuv_m68k.S core/mr_yuv_dither.c \
         core/mr_yuv_dither_planar_m68k.S core/mr_yuv_dither_planar_direct_m68k.S \
-        core/mr_yuv_planar_queue.c core/mr_yuv_ham.c
+        core/mr_yuv_planar_queue.c core/mr_yuv_ham.c \
+        core/mr_dv.c $(LIBDV_SRC)
+LIBDV_ROOT = vendor/libdv
+LIBDV_SRC = $(LIBDV_ROOT)/dv.c $(LIBDV_ROOT)/parse.c $(LIBDV_ROOT)/place.c \
+            $(LIBDV_ROOT)/weighting.c $(LIBDV_ROOT)/quant.c \
+            $(LIBDV_ROOT)/idct_248.c $(LIBDV_ROOT)/dct.c \
+            $(LIBDV_ROOT)/bitstream.c $(LIBDV_ROOT)/vlc.c \
+            $(LIBDV_ROOT)/audio.c $(LIBDV_ROOT)/YV12.c
 # core/mr_yuv_dither_m68k.S (the established mr_yuv420_dither8_m68k kernel)
 # is intentionally NOT listed as its own CORE entry: mr_yuv_dither_planar_
 # m68k.S #includes its source under a renamed symbol and republishes
@@ -468,7 +475,9 @@ GUI_CFLAGS = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wext
 # toolchain on this dev host, but Bebbo's toolchain is a full binutils/ld
 # port and --wrap is standard GNU ld, confirmed working the same way on the
 # m68k-linux-gnu test toolchain in tests/run_m68k_check.sh).
-LDFLAGS = -noixemul -lgcc $(LIBAVC_M68K_LDFLAGS)
+# -lm: player/vendor/libdv's one-time table-init functions (dv_init(), see
+# core/mr_dv.c/CLAUDE.md) call cos()/tan() - no other CORE file needs libm.
+LDFLAGS = -noixemul -lgcc -lm $(LIBAVC_M68K_LDFLAGS)
 
 all: mrplay MintVID iptvgui ytgui MintVID-GT iptvgui-GT ytgui-GT mr_decode
 
