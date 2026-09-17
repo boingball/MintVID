@@ -45,49 +45,41 @@
 #endif
 
 #include <stdio.h>
-#include <math.h>
 
 #include "idct_248.h"
 
 #define IDCT_248_UNIT_TEST 0
 
-dv_248_coeff_t dv_idct_248_prescale[64];
+/* MintVID adaptation: beta0-4 and dv_idct_248_prescale[] used to be
+ * computed at dv_init() time via cos()/sqrt()/pow() (dv_dct_248_init(),
+ * below) - a real crash on this target, not just a slow path: 68040/68060
+ * hardware FPUs implement no transcendental instructions at all, and
+ * executing one traps to the "Line 1111 emulator" exception (AmigaOS
+ * Guru 8000000B) unless fpsp040.library is loaded to emulate it in
+ * software, which a real playback system may not have. Both tables are a
+ * pure function of the DV standard's own constants (no runtime decoder
+ * state - the diag[]/dv_weight_inverse_248_matrix[] intermediates the
+ * original formula built from cos()/W[] fold in identically every time),
+ * so they are precomputed once, offline, from the exact original
+ * formula and hardcoded here - see tools/gen_dv_tables.py for the
+ * generator, and weighting.c's own dv_weight_inverse_88_matrix comment
+ * for the matching rationale on the sibling 8x8 table. */
+static const int32_t beta0 = 222379212;
+static const int32_t beta1 = -1296121036;
+static const int32_t beta2 = 759250124;
+static const int32_t beta3 = -410903206;
+static const int32_t beta4 = 992008094;
 
-/*
-  beta2 = cos(M_PI/4);
-  beta0 = beta2 - 0.5;
-  beta1 = -1 - beta0;
-  beta3 = -cos(3 * M_PI / 8);
-  beta4 = cos(M_PI / 8);
-*/
-  
-
-static int32_t beta0;
-static int32_t beta1;
-static int32_t beta2;
-static int32_t beta3;
-static int32_t beta4;
-
-static double C(int u) {
-  double result;
-  if(u == 0) {
-    result = 0.5 / sqrt(2.0);
-  } else {
-    result = 0.5;
-  } // else
-  return(result);
-} // C
-
-static double tickC(int u) 
-{
-  double result;
-  if(u == 0) {
-    result = 1.0 / sqrt(2.0);
-  } else {
-    result = 0.5;
-  } // else
-  return(result);
-} // tickC
+dv_248_coeff_t dv_idct_248_prescale[64] = {
+	131072, 48174, 54291, 61928, 74898, 98081, 158217, 329471,
+	46340, 34064, 38390, 43789, 52961, 69354, 111876, 232971,
+	37449, 27528, 31023, 35387, 42799, 56046, 90410, 188269,
+	23170, 17032, 19195, 21894, 26480, 34677, 55938, 116485,
+	65536, 48174, 54291, 61928, 74898, 98081, 158217, 329471,
+	46340, 34064, 38390, 43789, 52961, 69354, 111876, 232971,
+	37449, 27528, 31023, 35387, 42799, 56046, 90410, 188269,
+	23170, 17032, 19195, 21894, 26480, 34677, 55938, 116485,
+};
 
 #if (ARCH_X86 || ARCH_X86_64) && defined(__GNUC__)
 
@@ -117,42 +109,10 @@ static inline int32_t fixed_multiply(int32_t a, int32_t b) {
 
 #endif
 
-/* Compute the prescale vector.
- * (verify against  matlab result for kron(inv(D2),D))
- */
+/* No runtime work left to do - beta0-4 and dv_idct_248_prescale[] are now
+ * hardcoded above. Kept as a callable no-op since dv.c's dv_init() calls
+ * it unconditionally. */
 void dv_dct_248_init() {
-  extern double dv_weight_inverse_248_matrix[];
-  int k, l;
-  double d;
-  double diag[2][8];
-  double dbeta0, dbeta1, dbeta2, dbeta3, dbeta4;
-
-  dbeta2 = cos(M_PI/4);
-  dbeta0 = dbeta2 - 0.5;
-  dbeta1 = -1 - dbeta0;
-  dbeta3 = -cos(3 * M_PI / 8);
-  dbeta4 = cos(M_PI / 8);
-
-  beta0 = dbeta0 * pow(2,30);
-  beta1 = dbeta1 * pow(2,30);
-  beta2 = dbeta2 * pow(2,30);
-  beta3 = dbeta3 * pow(2,30);
-  beta4 = dbeta4 * pow(2,30);
-
-  for(k=0; k<4;k++) {
-    d = C(k) / (2.0 * cos( (M_PI * (double)k) / 8.0 ));
-    diag[0][k] = diag[0][k+4] = d;
-  } // for
-  for(k=0; k<8;k++) {
-    diag[1][k] = tickC(k) / (2.0 * cos( M_PI * k / 16.0 ));
-  } // for
-  for(k=0; k<8;k++) {
-    for(l= 0; l<8 ; l++) {
-      // Note the 2^16 shift is for fixed point precision.
-      dv_idct_248_prescale[k*8+l] = 1.0/diag[0][k] * diag[1][l] * pow(2.0,14.0);
-      dv_idct_248_prescale[k*8+l] *= dv_weight_inverse_248_matrix[k*8+l];
-    } // for
-  } // for
 } // dv_dct_248_init
 
 /* Total cost: 144 mults, 576 adds, 144 shifts. AAN is cited as having
