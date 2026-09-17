@@ -92,7 +92,7 @@ MP2_ASM_060_SRC="core/mr_mpeg1_idct_m68k.S \
 LIBDV_SRC="vendor/libdv/dv.c vendor/libdv/parse.c vendor/libdv/place.c \
       vendor/libdv/weighting.c vendor/libdv/quant.c vendor/libdv/idct_248.c \
       vendor/libdv/dct.c vendor/libdv/bitstream.c vendor/libdv/vlc.c \
-      vendor/libdv/audio.c vendor/libdv/YV12.c"
+      vendor/libdv/audio.c vendor/libdv/YV12.c vendor/libdv/YUY2.c"
 
 CORE="core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
       core/mr_youtube.c core/mr_demux.c core/mr_latm.c core/mr_mkv.c \
@@ -585,6 +585,9 @@ run "$BUILD/mr_decode.m68k" tests/assets/test_msrle.avi \
 echo "[DV/PAL 4:2:0, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_dv_pal.avi \
     --check tests/assets/ref_dv_pal
+echo "[DV/NTSC 4:1:1, real m68k/big-endian]"
+run "$BUILD/mr_decode.m68k" tests/assets/test_dv_ntsc.avi \
+    --check tests/assets/ref_dv_ntsc
 echo "[MPEG-4 Part 2 Simple Profile, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_mp4v_sp.avi \
     --check tests/assets/ref_mp4v_sp

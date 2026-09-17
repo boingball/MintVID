@@ -4135,26 +4135,115 @@ big-endian hardware, not just plausible from reading the source.
 out most codecs to test routing in isolation) needed one matching
 `STUB(dv);` line added alongside its existing stubs for the same reason.
 
-**Not done in this pass, staged deliberately rather than guessed at:**
-NTSC/DVCPRO 4:1:1 support (would need `dv_mb411_YUY2()`'s packed-4:2:2
-renderer plus a chroma-downsample step to reach `MR_PIX_YUV420P` - a real
-follow-up, not attempted here); the local-file Fast Buffer hang for large
-files over a slow network share (`core/mr_source.c`'s single blocking
-whole-file `fread()`, described above - real, but unrelated to DV support
-itself and not investigated further here); type-1 DV-AVI (audio embedded
-in the DIF blocks themselves, no separate WAVEFORMATEX stream - would need
-`dv_decode_full_audio()` wired into `mr_avi.c`, out of scope per this
-file's standing "Audio is MintAMP... do not add an in-tree audio codec"
-principle, and this project's audio registry is separate from the video
-`mr_codec.h` one this change touches); `Makefile.amiga`'s `CORE` list and
-`amiga/mrplay.c` itself (this decoder is wired into the host Makefile and
-the m68k-linux-gnu/qemu conformance script only - the real AmigaOS
-cross-build and `mr_dv_set_yuv_output()`'s Amiga-side wiring are both
-unverified here, per this file's standing "no AmigaOS toolchain on this
-dev host" limitation); and `tests/check_m68060_asm.sh`'s disassembly scan
-(libdv's dequantisation/IDCT integer multiplies have not been checked for
-the extended-`MULS.L`/libgcc-64-bit-call patterns this file's other 68060
-sections spend so much effort avoiding - a real gap, not yet closed).
+**Not done in this pass, staged deliberately rather than guessed at:** the
+local-file Fast Buffer hang for large files over a slow network share
+(`core/mr_source.c`'s single blocking whole-file `fread()`, described
+above - real, but unrelated to DV support itself and not investigated
+further here); type-1 DV-AVI (audio embedded in the DIF blocks themselves,
+no separate WAVEFORMATEX stream - would need `dv_decode_full_audio()`
+wired into `mr_avi.c`, out of scope per this file's standing "Audio is
+MintAMP... do not add an in-tree audio codec" principle, and this
+project's audio registry is separate from the video `mr_codec.h` one this
+change touches); `amiga/mrplay.c`'s own wiring of `mr_dv_set_yuv_output()`
+(the Amiga display path still gets DV via the default RGB24 conversion,
+same as every other codec before its own YUV opt-in was wired in); and
+`tests/check_m68060_asm.sh`'s disassembly scan (libdv's dequantisation/
+IDCT integer multiplies have not been checked for the extended-`MULS.L`/
+libgcc-64-bit-call patterns this file's other 68060 sections spend so much
+effort avoiding - a real gap, not yet closed).
+
+**Immediate correction: this shipped a real CI break, caught and fixed
+within the hour by CI itself, not by anything on this dev host.**
+`core/mr_codec.c`'s registry references `&mr_codec_dv` unconditionally
+(no `#ifdef` gate, matching every other always-on codec here except
+H.264's `MR_HAVE_H264`) - but `Makefile.amiga`'s `CORE` list never gained
+`core/mr_dv.c`/the vendored `libdv` sources, so every Amiga target failed
+the real `m68k-amigaos-gcc` link with `undefined reference to
+mr_codec_dv`. This is exactly the class of gap the "Validate against
+ffmpeg" section names: `make check`/`make check-m68k` (host + qemu-m68k,
+both green) prove the portable core decodes correctly, but neither one
+compiles a single line of `Makefile.amiga` - only CI's real AmigaOS
+toolchain step can catch a *link*-level gap in that separate build file,
+the same lesson the 68060 MP2 kernel underscore-alias saga and the
+`__wrap_ih264d_decode_bin` link failure both already taught earlier in
+this file. Fixed by adding `core/mr_dv.c` and `player/vendor/libdv/*.c` to
+`Makefile.amiga`'s `CORE` (mirroring the host Makefile exactly) and `-lm`
+to `LDFLAGS` (libdv's one-time `dv_init()` table setup calls `cos()`/
+`tan()` - no other `CORE` file needs libm, and nothing in this tree had
+ever linked it before, so there was no existing precedent to check
+against on this dev host, which has no real `m68k-amigaos-gcc` to test a
+link against at all - `-lm` was pushed as a real bet, not a confirmed
+fact, and CI's `build` job (`sacredbanana/amiga-compiler:m68k-amigaos`,
+`m68k-amigaos-gcc` 6.5.0b) is what actually confirmed it: green on the
+very next push, for every Amiga target (`mrplay`, `MintVID`, `iptvgui`,
+`ytgui`, their `-GT` variants, `mr_decode`) in one pass. Not attempted for
+the separate `vbcc` toolchain path in the same Makefile (its own `mr_decode`
+rule also now transitively pulls in `mr_dv.c`/libdv via the shared `CORE`
+list, but uses neither `$(LDFLAGS)` nor `-lm` - unlike the gcc path, CI
+never exercises `TOOLCHAIN=vbcc` at all, so there is no CI feedback loop
+to confirm or deny a fix there, and vc's own math-library linking
+convention is unknown from this dev host).
+
+**NTSC/PAL-SMPTE 314M DVCPRO (4:1:1) support added, once the CI fix
+above was confirmed - the user's own direct follow-up ("add NTSC in, why
+not?").** libdv has no planar 4:1:1 renderer (only `dv_mb420_YV12()` for
+4:2:0) - its only 4:1:1 output path is packed YUY2/4:2:2
+(`dv_mb411_YUY2()`/`dv_mb411_right_YUY2()`, YUY2.c/h, now vendored
+alongside YV12.c/h with the same `pitches` `int*`->`uint16_t*` adaptation
+YV12's own functions already needed - see the type-mismatch note above,
+the same latent upstream bug in a second file). `dv.c`'s YUV dispatch
+(`dv_render_macroblock_yuv()`), stripped down to 420-only in the first
+pass, is restored to branch on `dv->sampling` again - `e_dv_sample_420`
+still goes to `dv_mb420_YV12()`, `e_dv_sample_411` (and its `mb->x >= 704`
+right-edge case, DV's odd 720-not-a-multiple-of-32 macroblock geometry)
+now goes to the YUY2 renderer instead of being unreachable; `dv_init()`
+regained its `dv_YUY2_init()` call alongside `dv_YV12_init()`.
+
+The genuinely new piece is `core/mr_dv.c`'s own `unpack_yuy2_to_yuv420()`:
+libdv's packed YUY2 output already has the hard, DV-specific part right
+(chroma correctly placed per real macroblock geometry, upsampled from
+DV's native 4:1 horizontal-only subsampling to YUY2's 2:1 - not something
+this change had to re-derive), so reaching `MR_PIX_YUV420P` from there
+needed only one further, completely generic step: averaging vertically
+adjacent chroma sample pairs (4:2:2 has no vertical subsampling at all;
+4:2:0 needs 2:1 both ways). `dv_open()` now accepts 720x480 alongside
+720x576 (anything else - DVCPRO50/HD's larger/faster profiles, a
+different geometry entirely - is still rejected, MR_EFORMAT); `dv_ctx`
+gained an `is_411` flag and, only when set, an extra packed-YUY2
+intermediate buffer the 420 path never allocates. `dv_decode()` also
+re-checks each frame's own parsed `sampling` against what `dv_open()`
+committed to (720x480 could, in principle, still carry a 420-sampled
+frame) and refuses rather than misdecode, mirroring the existing 420-path
+check.
+
+Verified the same two ways as the PAL case, plus a direct pixel-level
+sanity check the PAL case didn't need (since a wrong chroma-plane mapping
+would pass a coarse MAE check while still being visibly broken - see the
+chroma-swap-vs-stride-bug distinction in the MPEG-2 YUV notes above): a
+new `test_dv_ntsc.avi` fixture (`tests/gen_assets.sh`, `ffmpeg -c:v
+dvvideo -pix_fmt yuv411p`, 720x480/29.97fps/1s) checked against ffmpeg's
+own decode - worst-frame MAE=3.163, comfortably under the 6.0 threshold
+but genuinely higher than PAL's 1.615, expected and not a bug signature:
+mr_dv.c's box-filter vertical average and ffmpeg/swscale's own 411->RGB
+chroma interpolation are two different, equally valid filters over the
+same native 4:1:1 data, not a correctness disagreement. Spot-checked
+individual pixels directly (red stayed red, blue stayed blue, cyan-ish
+stayed cyan-ish, just off by single-digit-to-tens per channel) to rule
+out exactly the failure mode a coarse MAE pass could hide - a real chroma
+swap or plane-order bug would show as wrong hues entirely, not small
+per-channel deltas. Passes bit-for-bit identically (MAE=3.163, same
+worst-frame number) cross-built for real m68k/big-endian under qemu
+(`tests/run_m68k_check.sh`, `YUY2.c` added to its `LIBDV_SRC` list
+alongside the host Makefile and `Makefile.amiga`) - the same real
+big-endian confirmation the PAL case got, now covering the pitches-type
+fix's second occurrence (YUY2.c's own `int*`->`uint16_t*` adaptation) as
+well as the first (YV12.c's).
+
+Not yet done: `Makefile.amiga`/CI confirms the NTSC-capable build still
+links (same `CORE`/`LIBDV_SRC` list, no new source files beyond `YUY2.c`
+already added), but no real hardware has played back an actual DV-NTSC or
+DVCPRO camcorder file through this path yet - only the synthetic ffmpeg
+fixture above, on host and qemu-m68k.
 
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with

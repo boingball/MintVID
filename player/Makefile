@@ -39,7 +39,7 @@ LIBDV_SRC = $(LIBDV_ROOT)/dv.c $(LIBDV_ROOT)/parse.c $(LIBDV_ROOT)/place.c \
             $(LIBDV_ROOT)/weighting.c $(LIBDV_ROOT)/quant.c \
             $(LIBDV_ROOT)/idct_248.c $(LIBDV_ROOT)/dct.c \
             $(LIBDV_ROOT)/bitstream.c $(LIBDV_ROOT)/vlc.c \
-            $(LIBDV_ROOT)/audio.c $(LIBDV_ROOT)/YV12.c
+            $(LIBDV_ROOT)/audio.c $(LIBDV_ROOT)/YV12.c $(LIBDV_ROOT)/YUY2.c
 TESTSRC  = tests/mr_decode.c
 MINTAMP_ROOT ?= vendor/MintAMP
 MINTAMP_MP3 = $(MINTAMP_ROOT)/mp3dec.c $(MINTAMP_ROOT)/mp3tabs.c \
@@ -440,7 +440,7 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	    && test -d tests/assets/ref_msvideo1 \
 	    && test -d tests/assets/ref_msvideo1_pal8 \
 	    && test -d tests/assets/ref_msrle \
-	    && test -d tests/assets/ref_dv_pal \
+	    && test -d tests/assets/ref_dv_pal && test -d tests/assets/ref_dv_ntsc \
 	    && test -d tests/assets/ref_mjpeg && test -d tests/assets/ref_raw_mjpeg \
 	    && test -d tests/assets/ref_mpeg1 \
 	    && test -d tests/assets/ref_mp4v_intra && test -d tests/assets/ref_mp4v_sp \
@@ -480,6 +480,8 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	./mr_decode tests/assets/test_msrle.avi --check tests/assets/ref_msrle
 	@echo "[DV/PAL 4:2:0]"
 	./mr_decode tests/assets/test_dv_pal.avi --check tests/assets/ref_dv_pal
+	@echo "[DV/NTSC 4:1:1]"
+	./mr_decode tests/assets/test_dv_ntsc.avi --check tests/assets/ref_dv_ntsc
 	@echo "[Cinepak MOV]"
 	./mr_decode tests/assets/test_cinepak.mov --check tests/assets/ref_mov
 	@echo "[MOV seek]"

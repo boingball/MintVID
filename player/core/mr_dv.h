@@ -3,12 +3,15 @@
  * libdv decode core (player/vendor/libdv, LGPL-2.1-or-later - see
  * THIRD-PARTY-LICENSES.txt).
  *
- * Scope for now: DV/PAL, IEC 61834 (consumer "type-2" DV-AVI), 720x576,
- * 4:2:0 sampling - the common camcorder case, and the one this decoder was
- * added to fix (a DV-PAL AVI that MintVID could not play at all). NTSC/
- * DVCPRO's 4:1:1 sampling is not yet supported; mr_dv_open() rejects it
- * cleanly (MR_EFORMAT) rather than producing wrong pixels. See
- * player/vendor/libdv/dv.c's own adaptation note for why.
+ * Handles both real DV frame geometries: 720x576 (DV/PAL, IEC 61834,
+ * 4:2:0 - the camcorder AVI this decoder was originally added to fix) and
+ * 720x480 (DV/NTSC or PAL/SMPTE 314M DVCPRO, 4:1:1 - libdv has no planar
+ * 4:1:1 renderer, so core/mr_dv.c downsamples its packed-YUY2 output
+ * itself; see that file's own header). DVCPRO50/HD's larger, faster
+ * profiles are a different frame geometry entirely, not just a sampling
+ * difference, and are not handled - mr_dv_open() rejects anything whose
+ * width/height don't match one of the two shapes above cleanly
+ * (MR_EFORMAT) rather than producing wrong pixels.
  */
 #ifndef MR_DV_H
 #define MR_DV_H

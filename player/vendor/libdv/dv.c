@@ -43,11 +43,17 @@
 
 /* MintVID adaptation: this vendored copy is decode-only and single-threaded
  * (mrplay/mr_decode never call into the DV decoder from more than one task
- * at a time), so the encoder (encode.h), popt CLI helper (util.h), RGB/YUY2
- * colour-space output (rgb.h/YUY2.h - MintVID only ever asks for planar
- * YV12/4:2:0 to match MR_PIX_YUV420P) and the pthread mutex around
+ * at a time), so the encoder (encode.h), popt CLI helper (util.h), RGB
+ * colour-space output (rgb.h - MintVID never wants packed RGB out of libdv
+ * itself, only planar Y/Cb/Cr) and the pthread mutex around
  * dv_decode_full_frame() are all dropped; see mr_dv.c for the codec-plugin
- * side of this integration. */
+ * side of this integration. YUY2.h *is* kept, unlike the original cut of
+ * this port: DV/PAL (IEC 61834, e_dv_sample_420) decodes straight to
+ * planar YV12 via dv_mb420_YV12(), but DV/NTSC and PAL/SMPTE 314M
+ * (e_dv_sample_411) have no planar 4:1:1 renderer in libdv at all - only a
+ * packed-YUY2 (4:2:2) one, dv_mb411_YUY2()/dv_mb411_right_YUY2() - so
+ * mr_dv.c decodes 411 streams into a packed YUY2 buffer and does its own
+ * vertical 2:1 downsample afterward to reach MR_PIX_YUV420P. */
 #include "dv.h"
 #include "audio.h"
 #include "dct.h"
@@ -58,6 +64,7 @@
 #include "parse.h"
 #include "place.h"
 #include "YV12.h"
+#include "YUY2.h"
 #if ARCH_X86 || ARCH_X86_64
 #include "mmx.h"
 #endif
@@ -179,9 +186,11 @@ dv_init(int clamp_luma, int clamp_chroma) {
   dv_parse_init();
   dv_place_init();
   dv_quant_init();
-  /* MintVID adaptation: dv_rgb_init()/dv_YUY2_init() (rgb.c/YUY2.c) and the
-   * encoder-only table builders below are dropped along with the encoder
-   * and the RGB/YUY2 output paths - see the top-of-file note. */
+  /* MintVID adaptation: dv_rgb_init() (rgb.c) and the encoder-only table
+   * builders below are dropped along with the encoder and the RGB output
+   * path - see the top-of-file note. dv_YUY2_init() is kept: the 411 path
+   * needs it. */
+  dv_YUY2_init(clamp_luma, clamp_chroma);
   dv_YV12_init(clamp_luma, clamp_chroma);
 
   done=TRUE;
@@ -192,6 +201,7 @@ dv_init(int clamp_luma, int clamp_chroma) {
 
 void
 dv_reconfigure(int clamp_luma, int clamp_chroma) {
+  dv_YUY2_init(clamp_luma, clamp_chroma);
   dv_YV12_init(clamp_luma, clamp_chroma);
 } /* dv_reconfigure */
 
@@ -258,20 +268,23 @@ dv_decode_video_segment(dv_decoder_t *dv, dv_videosegment_t *seg, unsigned int q
   } /* for mb */
 } /* dv_decode_video_segment */
 
-/* MintVID adaptation: the RGB/BGR0 macroblock renderers (rgb.c/YUY2.c, not
- * vendored - see the top-of-file note) are dropped entirely, and the YUV
- * path is trimmed to the one case MintVID actually asks for: planar
- * YV12/4:2:0 (e_dv_sample_420, DV/PAL IEC 61834). NTSC/DVCPRO's 4:1:1
- * sampling (e_dv_sample_411) would need dv_mb411_YUY2()'s packed-4:2:2
- * renderer plus a chroma-downsample step to reach MR_PIX_YUV420P - a real
- * follow-up, not implemented here. mr_dv.c refuses to open a stream whose
- * height doesn't match 625/50-PAL before this code ever runs, so the
- * removed 411 branch is unreachable by construction, not just unused. */
+/* MintVID adaptation: the RGB/BGR0 macroblock renderers (rgb.c, not
+ * vendored - see the top-of-file note) are dropped, and the YUV path
+ * covers only the two cases MintVID actually asks for - planar YV12/4:2:0
+ * (e_dv_sample_420) via dv_mb420_YV12(), and packed YUY2/4:2:2 (e_dv_
+ * sample_411 - NTSC and PAL/SMPTE 314M) via dv_mb411_YUY2()/dv_mb411_
+ * right_YUY2() - core/mr_dv.c does its own vertical downsample of the
+ * 411 case's packed output to reach MR_PIX_YUV420P; see its own header. */
 
 static inline void
 dv_render_macroblock_yuv(dv_decoder_t *dv, dv_macroblock_t *mb, uint8_t **pixels, uint16_t *pitches) {
-  (void)dv;
-  {
+  if(dv->sampling == e_dv_sample_411) {
+    if(mb->x >= 704) {
+      dv_mb411_right_YUY2(mb, pixels, pitches, dv->add_ntsc_setup); /* Right edge are 16x16 */
+    } else {
+      dv_mb411_YUY2(mb, pixels, pitches, dv->add_ntsc_setup);
+    } /* else */
+  } else {
     DV_MB420_YUV(mb, pixels, pitches);
   } /* else */
 } /* dv_render_macroblock_yuv */
@@ -280,11 +293,10 @@ void
 dv_render_video_segment_yuv(dv_decoder_t *dv, dv_videosegment_t *seg, uint8_t **pixels, uint16_t *pitches) {
   dv_macroblock_t *mb;
   int m;
-  (void)dv;
   for (m=0,mb = seg->mb;
        m<5;
        m++,mb++) {
-    DV_MB420_YUV(mb, pixels, pitches);
+    dv_render_macroblock_yuv(dv, mb, pixels, pitches);
   } /* for    */
 } /* dv_render_video_segment_yuv */
 

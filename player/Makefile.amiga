@@ -107,7 +107,7 @@ LIBDV_SRC = $(LIBDV_ROOT)/dv.c $(LIBDV_ROOT)/parse.c $(LIBDV_ROOT)/place.c \
             $(LIBDV_ROOT)/weighting.c $(LIBDV_ROOT)/quant.c \
             $(LIBDV_ROOT)/idct_248.c $(LIBDV_ROOT)/dct.c \
             $(LIBDV_ROOT)/bitstream.c $(LIBDV_ROOT)/vlc.c \
-            $(LIBDV_ROOT)/audio.c $(LIBDV_ROOT)/YV12.c
+            $(LIBDV_ROOT)/audio.c $(LIBDV_ROOT)/YV12.c $(LIBDV_ROOT)/YUY2.c
 # core/mr_yuv_dither_m68k.S (the established mr_yuv420_dither8_m68k kernel)
 # is intentionally NOT listed as its own CORE entry: mr_yuv_dither_planar_
 # m68k.S #includes its source under a renamed symbol and republishes
