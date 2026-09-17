@@ -86,7 +86,7 @@ static void bitstream_next_word(bitstream_t *bs) {
 // -ah
 //
 
-uint32_t static inline bitstream_show_bh(bitstream_t *bs,uint32_t num_bits) {
+static inline uint32_t bitstream_show_bh(bitstream_t *bs,uint32_t num_bits) {
   uint32_t result;
 
   result = (bs->current_word << (32 - bs->bits_left)) >> (32 - bs->bits_left);
@@ -96,7 +96,7 @@ uint32_t static inline bitstream_show_bh(bitstream_t *bs,uint32_t num_bits) {
   return result;
 }
 
-uint32_t static inline bitstream_get_bh(bitstream_t *bs,uint32_t num_bits) {
+static inline uint32_t bitstream_get_bh(bitstream_t *bs,uint32_t num_bits) {
   uint32_t result;
 
   num_bits -= bs->bits_left;
@@ -112,7 +112,7 @@ uint32_t static inline bitstream_get_bh(bitstream_t *bs,uint32_t num_bits) {
   return result;
 }
 
-void static inline bitstream_flush_bh(bitstream_t *bs,uint32_t num_bits) {
+static inline void bitstream_flush_bh(bitstream_t *bs,uint32_t num_bits) {
   //fprintf(stderr,"(flush) current_word 0x%08x, next_word 0x%08x, bits_left %d, num_bits %d\n",current_word,next_word,bits_left,num_bits);
 
   bs->current_word = bs->next_word;

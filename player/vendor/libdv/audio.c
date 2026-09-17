@@ -225,21 +225,6 @@ dv_upsample(int32_t sample) {
 
 /* ---------------------------------------------------------------------------
  */
-void dv_test12bit_conv (void)
-{
-    int i;
-
-  for (i = 0; i < 0x7ff; ++i)
-  {
-    fprintf (stderr, " (%5d,%5d,0x%08x,0x%08x) -> (%5d,%5d,0x%08x,0x%08x) (%d)\n\r",
-             i, -i, i, -i,
-             dv_upsample (i), dv_upsample(-i), dv_upsample (i), dv_upsample (-i),
-             dv_upsample (-i) + dv_upsample (i));
-  }
-}
-
-/* ---------------------------------------------------------------------------
- */
 dv_audio_t *
 dv_audio_new(void)
 {
@@ -290,7 +275,6 @@ dv_audio_new(void)
   }; /* callback */
 
 #endif /* HAVE_LIBPOPT */
-  /* dv_test12bit_conv (); */
   return(result);
 
  no_mem:
