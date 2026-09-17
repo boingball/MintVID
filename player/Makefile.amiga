@@ -490,7 +490,15 @@ check-cc:
 mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) $(KALMS_OBJ) $(MP2_ASM_OBJ) \
         $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) $(VERSION_HEADER) | check-libavc
 	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) $(LIBA52_FLAGS) -o $@ $(PLAY) $(CORE) \
-	    $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) $(KALMS_OBJ) $(MP2_ASM_OBJ) $(LDFLAGS)
+	    $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) $(KALMS_OBJ) $(MP2_ASM_OBJ) $(LDFLAGS) \
+	    -Wl,-Map=mrplay.map
+	# DIAGNOSTIC BRANCH (diag/baseline-pre-dv): -Wl,-Map=mrplay.map added
+	# above so CI can upload this known-good pre-DV build's own linker map
+	# alongside the binary, for direct comparison against the DV-excluded
+	# and current-main diagnostic branches - see CLAUDE.md's "mrplay
+	# crashes on Play" section (in the current main revision; this exact
+	# commit predates that file's own DV/-lm history). Note this baseline
+	# never links -lm at all - see LDFLAGS just above.
 
 check-kalms:
 	@test -n "$(KALMS_VASM)" -a -x "$(KALMS_VASM)" || { \
