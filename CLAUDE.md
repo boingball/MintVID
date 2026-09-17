@@ -4486,6 +4486,135 @@ have changed) - the real test this needed, a clean `m68k-amigaos-gcc`
 link, is what the user's own next build attempt confirms or denies, not
 anything provable from this dev host.
 
+## Regression: mrplay crashed on Play, every codec, every display backend - `-lm` itself was the trigger
+A real-hardware report after the DV/libm-and-soft-float saga above landed:
+`mrplay` itself (not a GUI's file-info line this time) crashed with Guru
+`8000000B` on pressing Play, for a Cinepak file under RTG (P96) + Kalms
+C2P - a stream nowhere near DV, on the codec this whole tree was built
+around first. A first hypothesis (the new P96 PIP overlay backend) was
+tested and killed in one message: the user reproduced the identical crash
+under plain AGA, which never opens `Picasso96API.library` at all,
+structurally ruling out anything display-backend-specific.
+
+The user's own next instruction set the actual investigation's shape and
+its bar for being considered resolved, quoted because it is exactly what
+was followed: rebuild the exact pre-DV revision (PR #195's base commit,
+`939618a90fd04e78f73b72fd9737322e0cadeb27`) as a known-good baseline;
+build current source with DV's codec-registry entry and Amiga sources
+excluded but every other linker flag untouched, to isolate DV's object
+presence from everything else that changed alongside it; if that doesn't
+restore playback, look at linker flags specifically - `-lm` and which C
+runtime gets selected; get a real linker map and disassembly from the
+actual `m68k-amigaos-gcc` toolchain and find the faulting PC; keep the
+decoder integer-only, no new FPU dependency; and do not open another
+speculative PR - report the controlled builds' results first.
+
+**Two real network-policy walls hit while trying to get a real toolchain
+locally, neither routed around, per this environment's own agent-proxy
+README.** `docker pull sacredbanana/amiga-compiler:m68k-amigaos` (after
+manually starting `dockerd`, which this dev host allows) failed with a
+CONNECT 403 from `production.cloudfront.docker.com` - a policy-level
+block, confirmed via the proxy's own status endpoint, not a transient
+failure. Fetching the presigned Azure Blob Storage URLs GitHub's own API
+returns for workflow-run artifacts (`productionresultssa*.blob.core.windows.net`)
+hit the identical CONNECT 403 pattern. Both are exactly the class of
+"report the blocked host, don't retry" case that README exists for, so
+neither was retried or routed around; GitHub Actions CI - already
+configured to run the exact same `sacredbanana/amiga-compiler:m68k-amigaos`
+image with no such restriction - became the real-toolchain proxy instead,
+with job *console logs* (reachable via the GitHub API, unlike the blob
+storage CDN) standing in for direct artifact downloads wherever a log
+line already contained the needed fact (a binary size, a disassembly line
+count).
+
+**Four diagnostic branches, each with CI's `build` job (the real
+`m68k-amigaos-gcc` link step) extended with a linker-map
+(`-Wl,-Map=mrplay.map`) and a real `m68k-amigaos-objdump -d -r`/`-h` pass,
+uploaded as their own artifact separate from the compiled binaries:**
+
+1. `diag/baseline-pre-dv` - PR #195's exact base commit, rebuilt as-is.
+   Confirmed its `Makefile.amiga` already has `LDFLAGS = -noixemul -lgcc
+   $(LIBAVC_M68K_LDFLAGS)` with **no `-lm` anywhere** - not on the shared
+   variable, not appended to `mrplay`'s own recipe. Links clean.
+2. `diag/dv-excluded-flags-unchanged` - current source, DV's registry
+   entry (`&mr_codec_dv,` in `core/mr_codec.c`, gated behind a new,
+   purely-diagnostic `MR_DIAG_NO_DV` macro) and Amiga build sources
+   (`core/mr_dv.c`, `$(LIBDV_SRC)`) excluded from the `CORE` list, every
+   linker flag - `-lm` included - left exactly as current main has it.
+   Isolates "does the mere presence of DV's object code matter" from
+   "did something about the flags themselves change". Links clean, same
+   `-lm` on `mrplay`'s link line as main.
+3. `diag/current-main-diagnostics` - current main, unmodified except for
+   the linker-map/disassembly CI step. The actual failing configuration,
+   real-toolchain-linked for the first time with a map/disassembly to
+   inspect.
+4. `diag/no-lm-with-dv` (branched from #3) - current main, DV fully
+   present, MintAMP/AAC/liba52 DSP code fully present, every other fix in
+   this file's whole history intact - with exactly one change: `-lm`
+   removed from `mrplay`'s own link line. Links clean.
+
+Before reaching for a real-hardware retest, `mr_codec_find()`
+(`core/mr_codec.c`) was re-read in full to rule out one tempting but
+structurally impossible mechanism: it is pure case-folded FourCC tag
+matching, a linear scan with no speculative probing or calling of every
+registered codec's own `open()` - so a Cinepak file's Play sequence
+cannot reach `core/mr_dv.c`/`vendor/libdv` at the C-control-flow level no
+matter what got linked in alongside it. A `git log` across every shared
+file this crash could plausibly touch (`mrplay.c`, `display.c`,
+`display_aga.c`, `mr_codec.c`, `mr_audio_decode.c`) confirmed none of them
+were touched anywhere in the whole DV/-lm/soft-float investigation except
+by this session's own (already-superseded) P96 diagnostics commit -
+whatever the mechanism was, it had to be confined to `Makefile.amiga`
+itself and the new object files' mere presence in the link, not a shared
+C-level logic change.
+
+**The user built and tested build #4 (`diag/no-lm-with-dv`, PR #203) on
+real WinUAE/68040 hardware: "PR203 does not crash!"** - the first, and
+only, actually-decisive data point in this whole controlled investigation
+sequence, and it lands squarely on step 4 of the user's own numbered
+plan ("if it still crashes [after excluding DV], investigate the changed
+linker flags separately, particularly `-lm`"). This is the identical
+mechanism the earlier GUI file-info-line crash (see the DV decoder
+section above) had already proven once: on this real `m68k-amigaos-gcc`
+toolchain, merely linking `-lm` - regardless of whether anything in the
+binary actually calls a libm function - changes which `snprintf()`/
+`vsnprintf()` (or other shared runtime helper) variant the linker resolves
+for the *entire binary*, and that altered variant traps with a Line-1111
+FPU exception on code paths that have nothing to do with floating point
+at all. The GUI fix scoped `-lm` down to `mrplay`'s own link line on the
+theory that MintAMP/liba52's DSP code genuinely needed it there; this
+investigation shows that theory was never actually tested and is false -
+`diag/baseline-pre-dv` links that exact same MintAMP/AAC/liba52 object set
+with no `-lm` at all, and `diag/no-lm-with-dv` (current source, same DSP
+code, DV included) links and - now confirmed - runs correctly with no
+`-lm` either. Nothing in this codebase actually needs `-lm`.
+
+**The fix, once the real-hardware confirmation was in hand**: `-lm`
+removed from `Makefile.amiga`'s `mrplay` recipe entirely - the same,
+already-proven-correct change as `diag/no-lm-with-dv`, applied to the
+real designated branch rather than a throwaway diagnostic one. No other
+line changed: DV stays fully wired in (`core/mr_codec.c`'s registry entry,
+`Makefile.amiga`'s `CORE`/`LIBDV_SRC` lists), MintAMP/AAC/liba52 stay
+exactly as linked before. `LDFLAGS`'s own comment block (which asserted
+mrplay "genuinely uses trig/log for filter table generation" and
+therefore needed its own `-lm`) is corrected in place to record this
+finding rather than repeat the now-disproven claim. `make check` (host,
+unaffected by an Amiga-only Makefile change) passes unchanged.
+
+Per the user's own bar for closing this out ("verify Cinepak, MPEG-1,
+H.264 and DV playback before considering the regression resolved"): the
+confirmed build already covers the exact codec (Cinepak) and exact
+display/C2P combination (RTG/P96 and AGA, Kalms) the original report was
+filed against - MPEG-1, H.264 and DV playback on this same fixed binary
+still need their own explicit real-hardware confirmation before this is
+fully closed, not yet obtained as of this writing.
+
+The four `diag/*` branches and their auto-created PRs (#202, #203) were
+throwaway by design, per the user's own "do not make another speculative
+PR" instruction covering exactly this kind of branch - worth closing
+without merging once the real fix above is confirmed end to end, rather
+than left open as stray history.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.

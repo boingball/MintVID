@@ -487,11 +487,23 @@ GUI_CFLAGS = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wext
 # executes - changed which snprintf()/vsnprintf() variant this toolchain
 # resolved for the *whole binary*, and the GUI's own file-info display (no
 # DV or float code anywhere near it) started crashing with the same
-# Line-1111 FPU trap the moment any file was selected. mrplay is the only
-# real, current libm consumer (MintAMP/liba52's DSP code, linked only into
-# this target - see check-mintamp - genuinely uses trig/log for filter
-# table generation), so -lm is scoped to its own link line below instead of
-# this shared variable the GUI targets also use.
+# Line-1111 FPU trap the moment any file was selected.
+#
+# mrplay was then given its own -lm on its own link line, on the theory
+# that MintAMP/liba52's DSP code (linked only into this target - see
+# check-mintamp) genuinely needs trig/log for filter table generation.
+# That theory was never actually tested and turned out to be wrong: a
+# controlled regression investigation (see CLAUDE.md - "mrplay crashes on
+# Play" section) rebuilt the exact pre-DV baseline (PR #195's base commit)
+# with the real m68k-amigaos-gcc toolchain and found it links this same
+# MintAMP/AAC/liba52 object set with *no* -lm at all. A real-hardware A/B
+# test confirmed it: removing -lm from mrplay's own link line entirely -
+# DV code, MintAMP DSP code and every other fix in this file all still
+# present - stops the Guru 8000000B crash on real WinUAE/68040 hardware,
+# for every codec, every display backend, audio on or off. So mrplay is
+# in fact NOT a real libm consumer either - see check-mintamp's own build
+# recipe, which never links -lm on its own - and -lm is not linked
+# anywhere in this Makefile any more.
 LDFLAGS = -noixemul -lgcc $(LIBAVC_M68K_LDFLAGS)
 
 all: mrplay MintVID iptvgui ytgui MintVID-GT iptvgui-GT ytgui-GT mr_decode
@@ -514,7 +526,7 @@ check-cc:
 mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) $(KALMS_OBJ) $(MP2_ASM_OBJ) \
         $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) $(VERSION_HEADER) | check-libavc
 	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) $(LIBA52_FLAGS) -o $@ $(PLAY) $(CORE) \
-	    $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) $(KALMS_OBJ) $(MP2_ASM_OBJ) $(LDFLAGS) -lm
+	    $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) $(KALMS_OBJ) $(MP2_ASM_OBJ) $(LDFLAGS)
 
 check-kalms:
 	@test -n "$(KALMS_VASM)" -a -x "$(KALMS_VASM)" || { \
