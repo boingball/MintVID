@@ -16,12 +16,11 @@
  * WA_* tags OpenWindowTags() takes are accepted alongside it), but backed by
  * a dedicated video surface separate from that window's own screen bitmap.
  * P96PIP_Type selects PIPT_VideoWindow (a real hardware overlay window on
- * boards that support one) or PIPT_MemoryWindow (the default, always-
- * available software-composited fallback); this backend requests
- * PIPT_VideoWindow first and falls back to PIPT_MemoryWindow only if that
- * specific open fails, so selecting overlay mode never loses playback, only
- * the chance at real hardware acceleration - same fallback discipline as
- * every other backend in display_backend.h's chain.
+ * boards that support one) or PIPT_MemoryWindow (the default software-
+ * composited PIP type). This backend requests PIPT_VideoWindow first and
+ * tries PIPT_MemoryWindow if that specific open fails; drivers which expose
+ * no PIP support can reject both, in which case display_backend.h's normal
+ * fallback chain selects the direct P96 or CGX backend.
  *
  * Two real, structural differences from display_p96.c's own direct-lock
  * backend (backend_p96), both worth calling out explicitly:
@@ -82,6 +81,7 @@
 #include <intuition/intuition.h>
 #include <intuition/screens.h>
 #include <graphics/gfx.h>
+#include <graphics/displayinfo.h>
 #include <graphics/rastport.h>
 #include <libraries/Picasso96.h>
 #include <inline/Picasso96API.h>
@@ -96,6 +96,8 @@
 typedef struct {
     struct Window *win;             /* the PIP's own window (p96PIP_OpenTags) */
     struct BitMap *source_bitmap;   /* P96PIP_SourceBitMap - what we write to */
+    struct Screen *screen;          /* private video-compatible fullscreen mode */
+    ULONG          screen_mode_id;
     int            source_w, source_h;
     int            bl, bt;          /* border offset (0,0 when borderless)    */
     int            win_w, win_h;    /* current window CONTENT (inner) size -
@@ -118,6 +120,9 @@ typedef struct {
 
 static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err);
 static void close_pip(p96pip_state *s);
+static int close_video_screen(struct Screen **screen, const char *reason);
+static struct Screen *open_video_screen(p96pip_state *s, int target_w,
+                                        int target_h);
 static void sync_content_geometry(p96pip_state *s);
 static void paint_letterbox(p96pip_state *s);
 static void rebuild_geometry(p96pip_state *s, const char *reason);
@@ -156,6 +161,140 @@ static void calculate_geometry(p96pip_state *s)
     s->dh = fit.h;
 }
 
+static void log_screen_target(const char *label, struct Screen *scr,
+                              ULONG mode_id)
+{
+    struct BitMap *bm;
+    ULONG depth, format, isp96, onboard, video_compatible;
+
+    if (!g_display_want_time || !scr) return;
+    bm = scr->RastPort.BitMap;
+    depth = p96GetBitMapAttr(bm, P96BMA_DEPTH);
+    format = p96GetBitMapAttr(bm, P96BMA_RGBFORMAT);
+    isp96 = p96GetBitMapAttr(bm, P96BMA_ISP96);
+    onboard = p96GetBitMapAttr(bm, P96BMA_ISONBOARD);
+    video_compatible =
+        mode_id != (ULONG)INVALID_ID
+            ? p96GetModeIDAttr(mode_id, P96IDA_VIDEOCOMPATIBLE)
+            : 0;
+
+    printf("p96pip-screen target=%s mode=0x%08lx size=%dx%d depth=%lu "
+           "format=%lu isp96=%lu onboard=%lu video-compatible=%lu\n",
+           label ? label : "?", (unsigned long)mode_id,
+           scr->Width, scr->Height, (unsigned long)depth,
+           (unsigned long)format, (unsigned long)isp96,
+           (unsigned long)onboard, (unsigned long)video_compatible);
+}
+
+static int close_video_screen(struct Screen **screen, const char *reason)
+{
+    int attempt;
+    if (!screen || !*screen) return 1;
+
+    WaitBlit();
+    for (attempt = 0; attempt < 50; attempt++) {
+        if (p96CloseScreen(*screen)) {
+            *screen = NULL;
+            if (g_display_want_time && attempt > 0)
+                printf("p96pip-screen: private screen closed after %d "
+                       "VBlank(s) (%s)\n", attempt,
+                       reason ? reason : "unknown");
+            return 1;
+        }
+        WaitTOF();
+    }
+    printf("p96pip-screen: WARNING private screen still busy after "
+           "50 VBlanks (%s)\n", reason ? reason : "unknown");
+    return 0;
+}
+
+/*
+ * A PIP attaches to a screen; putting a borderless window on the current
+ * public screen does not make that screen capable of hosting a hardware
+ * video window. Ask Picasso96 for a mode explicitly marked VideoCompatible,
+ * trying the public screen's depth first and then the common RTG depths.
+ */
+static struct Screen *open_video_screen(p96pip_state *s, int target_w,
+                                        int target_h)
+{
+    static const ULONG fallback_depths[] = { 16, 24, 32 };
+    ULONG depths[4], preferred_depth = 16;
+    struct Screen *pub, *scr;
+    ULONG mode_id, video_compatible;
+    LONG err;
+    int count = 0, i, j;
+
+    pub = LockPubScreen(NULL);
+    if (pub) {
+        ULONG d = p96GetBitMapAttr(pub->RastPort.BitMap, P96BMA_DEPTH);
+        if (d == 15 || d == 16 || d == 24 || d == 32)
+            preferred_depth = d;
+        UnlockPubScreen(NULL, pub);
+    }
+
+    depths[count++] = preferred_depth;
+    for (i = 0; i < 3; i++) {
+        for (j = 0; j < count; j++)
+            if (depths[j] == fallback_depths[i])
+                break;
+        if (j == count)
+            depths[count++] = fallback_depths[i];
+    }
+
+    for (i = 0; i < count; i++) {
+        mode_id = p96BestModeIDTags(
+            P96BIDTAG_NominalWidth, (ULONG)target_w,
+            P96BIDTAG_NominalHeight, (ULONG)target_h,
+            P96BIDTAG_Depth, depths[i],
+            P96BIDTAG_VideoCompatible, TRUE,
+            TAG_END);
+        if (mode_id == (ULONG)INVALID_ID) {
+            if (g_display_want_time)
+                printf("p96pip-screen: no video-compatible mode near "
+                       "%dx%d depth=%lu\n", target_w, target_h,
+                       (unsigned long)depths[i]);
+            continue;
+        }
+
+        video_compatible =
+            p96GetModeIDAttr(mode_id, P96IDA_VIDEOCOMPATIBLE);
+        if (!video_compatible) {
+            if (g_display_want_time)
+                printf("p96pip-screen: rejected mode=0x%08lx depth=%lu; "
+                       "driver did not mark it video-compatible\n",
+                       (unsigned long)mode_id, (unsigned long)depths[i]);
+            continue;
+        }
+
+        err = 0;
+        scr = p96OpenScreenTags(
+            P96SA_DisplayID, mode_id,
+            P96SA_Type, CUSTOMSCREEN,
+            P96SA_Title, (ULONG)s->title,
+            P96SA_Quiet, TRUE,
+            P96SA_ShowTitle, FALSE,
+            P96SA_ErrorCode, (ULONG)&err,
+            TAG_END);
+        if (!scr) {
+            if (g_display_want_time)
+                printf("p96pip-screen: open failed mode=0x%08lx depth=%lu "
+                       "error=%ld\n", (unsigned long)mode_id,
+                       (unsigned long)depths[i], (long)err);
+            continue;
+        }
+
+        s->screen_mode_id = mode_id;
+        log_screen_target("private-video-compatible", scr, mode_id);
+        return scr;
+    }
+
+    s->screen_mode_id = (ULONG)INVALID_ID;
+    if (g_display_want_time)
+        printf("p96pip-screen: no private video-compatible P96 mode for "
+               "%dx%d; trying the public screen\n", target_w, target_h);
+    return NULL;
+}
+
 /*
  * Opens the PIP itself. WA_* tags place/size the window exactly like
  * OpenWindowTags(); the P96PIP_* tags describe the source buffer (fixed at
@@ -178,11 +317,18 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
 {
     struct Screen *scr;
     struct Window *win;
-    ULONG flags, idcmp;
+    ULONG flags, idcmp, screen_tag;
     int left = 0, top = 0;
+    int pub_locked = 0;
 
-    scr = LockPubScreen(NULL);
-    if (!scr) return NULL;
+    scr = s->screen;
+    screen_tag = WA_CustomScreen;
+    if (!scr) {
+        scr = LockPubScreen(NULL);
+        if (!scr) return NULL;
+        pub_locked = 1;
+        screen_tag = WA_PubScreen;
+    }
 
     if (s->fullscreen) {
         flags = WFLG_BORDERLESS | WFLG_BACKDROP | WFLG_ACTIVATE |
@@ -202,7 +348,7 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
      * This also keeps s->win_w/win_h in content-area units everywhere. */
     *err = 0;
     win = (struct Window *)p96PIP_OpenTags(
-        WA_PubScreen, (ULONG)scr,
+        screen_tag, (ULONG)scr,
         WA_Title, (ULONG)s->title,
         WA_Left, (ULONG)left, WA_Top, (ULONG)top,
         WA_InnerWidth, (ULONG)s->win_w,
@@ -223,7 +369,8 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
         P96PIP_ErrorCode, (ULONG)err,
         TAG_END);
 
-    UnlockPubScreen(NULL, scr);
+    if (pub_locked)
+        UnlockPubScreen(NULL, scr);
     return win;
 }
 
@@ -350,22 +497,42 @@ static void *p96pip_open(int w, int h, const char *title)
     if (scr) {
         screen_w = scr->Width;
         screen_h = scr->Height;
+        log_screen_target("public", scr, GetVPModeID(&scr->ViewPort));
         UnlockPubScreen(NULL, scr);
     }
     if (screen_w < 160) screen_w = 640;
     if (screen_h < 100) screen_h = 480;
 
+    s->screen_mode_id = (ULONG)INVALID_ID;
     if (s->fullscreen) {
-        s->win_w = screen_w;
-        s->win_h = screen_h;
+        s->screen = open_video_screen(s, screen_w, screen_h);
+        if (s->screen) {
+            s->win_w = s->screen->Width;
+            s->win_h = s->screen->Height;
+        } else {
+            s->win_w = screen_w;
+            s->win_h = screen_h;
+        }
     } else {
         int avail_w = screen_w, avail_h = screen_h;
         fit_within(w, h, avail_w, avail_h, &s->win_w, &s->win_h);
     }
 
     if (!reopen_pip(s, "init")) {
-        FreeVec(s);
-        return NULL;
+        /* A driver may advertise a VideoCompatible mode yet refuse PIP on
+         * it. Preserve the old public-screen attempt before falling through
+         * to the other display backends. */
+        if (s->screen) {
+            close_video_screen(&s->screen, "initial PIP fallback");
+            s->screen_mode_id = (ULONG)INVALID_ID;
+            s->win_w = screen_w;
+            s->win_h = screen_h;
+        }
+        if (!reopen_pip(s, "init-public-fallback")) {
+            close_video_screen(&s->screen, "initial open failure");
+            FreeVec(s);
+            return NULL;
+        }
     }
 
     if (g_display_want_time)
@@ -590,36 +757,85 @@ static int p96pip_poll(void *h)
 static int p96pip_toggle_fullscreen(void *h)
 {
     p96pip_state *s = (p96pip_state *)h;
-    int next_fullscreen;
+    struct Screen *old_screen;
+    ULONG old_mode_id;
     int old_fullscreen, old_win_w, old_win_h;
+    int public_w = 640, public_h = 480;
+
     if (!s || !s->win) return 0;
-    if (!s->fullscreen) {
-        s->have_window_geometry = 1;
-        s->window_left = s->win->LeftEdge;
-        s->window_top = s->win->TopEdge;
-        /* Content size, same units as open_pip()'s WA_InnerWidth/Height
-         * request - s->win_w/win_h already hold it, kept current by
-         * sync_content_geometry() after every open/resize. */
-        s->window_width = s->win_w;
-        s->window_height = s->win_h;
-    }
     old_fullscreen = s->fullscreen;
     old_win_w = s->win_w;
     old_win_h = s->win_h;
-    next_fullscreen = !s->fullscreen;
-    s->fullscreen = next_fullscreen;
-    if (s->fullscreen) {
-        struct Screen *scr = LockPubScreen(NULL);
-        if (scr) { s->win_w = scr->Width; s->win_h = scr->Height; UnlockPubScreen(NULL, scr); }
-    } else if (s->have_window_geometry) {
-        s->win_w = s->window_width;
-        s->win_h = s->window_height;
+    old_screen = s->screen;
+    old_mode_id = s->screen_mode_id;
+
+    if (!s->fullscreen) {
+        struct Screen *pub;
+        s->have_window_geometry = 1;
+        s->window_left = s->win->LeftEdge;
+        s->window_top = s->win->TopEdge;
+        /* Content size, same units as open_pip()'s WA_InnerWidth/Height. */
+        s->window_width = s->win_w;
+        s->window_height = s->win_h;
+
+        pub = LockPubScreen(NULL);
+        if (pub) {
+            public_w = pub->Width;
+            public_h = pub->Height;
+            UnlockPubScreen(NULL, pub);
+        }
+
+        s->fullscreen = 1;
+        s->screen = open_video_screen(s, public_w, public_h);
+        if (s->screen) {
+            s->win_w = s->screen->Width;
+            s->win_h = s->screen->Height;
+        } else {
+            s->win_w = public_w;
+            s->win_h = public_h;
+        }
+        if (reopen_pip(s, "fullscreen-toggle"))
+            return 1;
+
+        close_video_screen(&s->screen, "fullscreen open rollback");
+        s->screen_mode_id = (ULONG)INVALID_ID;
+    } else {
+        /* Keep the private screen alive until the public-screen PIP opens,
+         * so a failed toggle can restore the previous mode. reopen_pip()
+         * closes the old PIP before it requests the replacement. */
+        s->fullscreen = 0;
+        s->screen = NULL;
+        s->screen_mode_id = (ULONG)INVALID_ID;
+        if (s->have_window_geometry) {
+            s->win_w = s->window_width;
+            s->win_h = s->window_height;
+        } else {
+            /* Started fullscreen and never had a windowed size to save -
+             * s->win_w/win_h still hold the fullscreen screen dimensions
+             * at this point. Falling through with those would open a
+             * borderless-looking window the size of the whole display
+             * instead of one sized to the video, so fit it against the
+             * public screen exactly like p96pip_open()'s windowed path. */
+            struct Screen *pub = LockPubScreen(NULL);
+            int avail_w = 640, avail_h = 480;
+            if (pub) {
+                avail_w = pub->Width;
+                avail_h = pub->Height;
+                UnlockPubScreen(NULL, pub);
+            }
+            fit_within(s->source_w, s->source_h, avail_w, avail_h,
+                      &s->win_w, &s->win_h);
+        }
+        if (reopen_pip(s, "fullscreen-toggle")) {
+            close_video_screen(&old_screen, "leave fullscreen");
+            return 1;
+        }
     }
-    if (reopen_pip(s, "fullscreen-toggle"))
-        return 1;
 
     /* Restore the previous mode if the requested PIP cannot be opened. */
     s->fullscreen = old_fullscreen;
+    s->screen = old_screen;
+    s->screen_mode_id = old_mode_id;
     s->win_w = old_win_w;
     s->win_h = old_win_h;
     if (!reopen_pip(s, "fullscreen-rollback"))
@@ -642,6 +858,7 @@ static void p96pip_close(void *h)
     p96pip_state *s = (p96pip_state *)h;
     if (!s) return;
     close_pip(s);
+    close_video_screen(&s->screen, "shutdown");
     FreeVec(s);
 }
 
