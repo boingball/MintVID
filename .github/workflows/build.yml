@@ -103,6 +103,41 @@ jobs:
           file player/mrplay player/MintVID player/iptvgui player/ytgui \
             player/MintVID-GT player/iptvgui-GT player/ytgui-GT player/mr_decode || true
 
+      # DIAGNOSTIC BRANCH step: real m68k-amigaos-objdump disassembly of the
+      # linked mrplay, plus its linker map (player/mrplay.map, produced by
+      # the -Wl,-Map= flag added to this branch's Makefile.amiga) - both
+      # uploaded as artifacts for the controlled-regression investigation in
+      # CLAUDE.md's "mrplay crashes on Play" section. Uses the same docker
+      # image/toolchain as the real build step above, so the disassembly is
+      # real AmigaOS-target machine code, not the host's own objdump.
+      - name: Disassemble mrplay with the real Amiga toolchain
+        run: |
+          docker run --rm -v "$PWD":/src -w /src/player \
+            sacredbanana/amiga-compiler:m68k-amigaos \
+            bash -c '
+              set -e
+              AMIGA_GCC="$(command -v m68k-amigaos-gcc)"
+              AMIGA_ROOT="$(dirname "$(dirname "$AMIGA_GCC")")"
+              OBJDUMP="$(command -v m68k-amigaos-objdump || true)"
+              if [ -z "$OBJDUMP" ]; then
+                OBJDUMP="$AMIGA_ROOT/bin/m68k-amigaos-objdump"
+              fi
+              echo "Objdump: $OBJDUMP"
+              "$OBJDUMP" -d -r mrplay > mrplay.disasm.txt
+              "$OBJDUMP" -h mrplay > mrplay.sections.txt
+              wc -l mrplay.disasm.txt mrplay.map 2>/dev/null || true
+            '
+
+      - name: Upload diagnostic linker map and disassembly
+        uses: actions/upload-artifact@v4
+        with:
+          name: MintVID-AmigaOS-diagnostics
+          path: |
+            player/mrplay.map
+            player/mrplay.disasm.txt
+            player/mrplay.sections.txt
+          if-no-files-found: warn
+
       - name: Upload compiled programs
         uses: actions/upload-artifact@v4
         with:
