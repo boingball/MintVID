@@ -4807,6 +4807,98 @@ PR" instruction covering exactly this kind of branch - worth closing
 without merging once the real fix above is confirmed end to end, rather
 than left open as stray history.
 
+## DV decode speed: a real, measured 1.9x from libdv's own quality knob
+A user report on real WinUAE: DV video playback ("very slow") after the
+decoder landed. `core/mr_dv.c`'s `dv_open()` had always hardcoded
+`dv_set_quality(c->dv, DV_QUALITY_BEST)` with its own comment already
+flagging the gap ("not yet tuned for slower Amiga targets") - libdv's
+quality bits are a real, well-established decode-cost lever (the same
+kind of idea as H.264's speed modes elsewhere in this file), just never
+exposed by this port.
+
+Read `vendor/libdv/parse.c`'s `dv_parse_video_segment()` before assuming
+this would help: `DV_QUALITY_AC_MASK == DV_QUALITY_DC` skips
+`dv_parse_ac_coeffs_pass0()`/`dv_parse_ac_coeffs()` - the whole 3-pass AC
+coefficient VLC decode - entirely, for every block, reading only the 9-bit
+DC coefficient per block instead. `dv_decode_macroblock()`'s IDCT then has
+at most one nonzero coefficient to transform instead of however many AC
+terms the encoder emitted; `_dv_idct_88()` (already fixed-point, see the
+DV decoder section above) already skips a zero coefficient's whole inner
+8x8 accumulation loop (`if (!bvh) continue;`), so DC-only input is cheap
+there too, not merely "fewer VLC bits". Colour is kept independent of AC
+quality (`DV_QUALITY_COLOR` is a separate bit) - `MR_DV_SPEED_FAST` uses
+`DV_QUALITY_DC | DV_QUALITY_COLOR`, so chroma is still decoded and placed,
+just DC-only (flat per-8x8-block colour) - never dropped to monochrome,
+since libdv's own quality-bit design has no half-measure between "quality"
+and "no colour at all" and dropping colour wasn't asked for.
+
+`mr_dv_set_speed_mode(dec, MR_DV_SPEED_QUALITY|MR_DV_SPEED_FAST)`
+(`core/mr_dv.h`/`.c`) is the new opt-in, mirroring `mr_h264_set_speed_mode()`'s
+shape; default stays `MR_DV_SPEED_QUALITY` (`dv_open()`'s existing
+unconditional choice), so nothing changes unless a caller asks.
+`dv_set_quality()` just stores a bitmask `dv_decode_full_frame()` reads
+fresh every frame, so this can be toggled live with no decoder reset
+needed - unlike H.264/MPEG-2's own speed-mode plumbing, no per-picture
+state depends on which mode decoded the previous frame.
+
+Measured, not assumed: qemu-m68k/big-endian wall time (5 runs each,
+`-m68030`, real cross-built `mr_decode.m68k`) on both conformance
+fixtures - `test_dv_pal.avi` (720x576/25fps): quality mean 1.742 s, fast
+mean 0.899 s (**1.94x**); `test_dv_ntsc.avi` (720x480/29.97fps, the 4:1:1
+path): quality mean 1.742 s, fast mean 0.920 s (**1.89x**). This is a fair
+qemu comparison per this file's own standing qemu-vs-hardware caveat -
+real work removed (fewer VLC bits parsed, fewer IDCT terms per block), not
+a memory-footprint trade the "dither LUT" note at the top of this file
+warns qemu scores backwards.
+
+`tests/mr_decode.c` gained `--dv-speed=quality|fast` (mirroring
+`--h264-speed=`) so this is exercisable from `make check`/`make check-m68k`
+without a GUI: a new "DV speed-mode separation" smoke check decodes both
+fixtures at `--dv-speed=fast` and confirms the same frame count as the
+existing `--check` runs (25/30 - DV always decodes every frame regardless
+of quality bits, unlike H.264 Turbo+'s frame-skip, so this is a "still
+decodes cleanly, end to end, both the 4:2:0 and 4:1:1 code paths" check,
+not a MAE one - DC-only necessarily reads much higher MAE against
+ffmpeg's full-quality reference than the suite's normal threshold, by
+design, so `--check` itself isn't the right tool to validate this mode).
+Both pass on host and real m68k/big-endian under qemu.
+
+`amiga/mrplay.c` gained a matching `--dv-speed=quality|fast` CLI flag and
+an `apply_dv_speed()` helper (mirroring `apply_h264_speed()`'s shape,
+including its own no-op guard for any other codec), called once at
+decoder open and again after each of the three `mr_decoder_reset()` sites
+(seek, `--loop` restart, live/EOF reconnect) - `dv_open()` always starts a
+fresh `dv_decoder_t` at `DV_QUALITY_BEST`, so every reset needs the
+reapply, the same reason `apply_h264_speed()` itself is re-called at each
+of those sites. Default stays Quality (unchanged behaviour for anyone not
+passing the flag). Not yet wired into `core/mr_play_options.c` or either
+GUI's chooser list - DV files are opened through the same local-file
+browser both GUIs already have, so this is reachable today only via a
+direct Shell/`mrplay --dv-speed=fast` invocation, matching this file's own
+repeated pattern of staging Amiga-only, dev-host-unverifiable GUI wiring
+as an explicit follow-up rather than guessing at ReAction/GadTools layout
+changes with no way to test them here. `amiga/mrplay.c` itself can only be
+reviewed, not compiled, on this dev host (see "Validate against ffmpeg"
+above) - the qemu numbers above prove the underlying decode-cost claim,
+but the flag's actual real-hardware effect on WinUAE (the report that
+started this) still needs a retest to confirm.
+
+The RGB24 conversion `dv_decode()` still unconditionally pays for every
+frame (`mr_dv_set_yuv_output()` exists - see the DV decoder section above -
+but was never wired into `amiga/mrplay.c`'s display path) is a separate,
+larger lever, deliberately not attempted in this same pass: H.264/MPEG-2's
+own YUV-indexed-queue integration (`use_yuv_indexed_queue`/
+`use_yuv_rgb_queue` in `amiga/mrplay.c`) touches display-mode detection,
+queue-slot format selection, and every one of the same four decoder-open/
+-reset sites this change touched for the speed knob - real, substantial
+surface area to get right with no way to compile or run any of it here,
+unlike the speed knob above (a single boolean read fresh every frame, with
+no queue-format implications). A future pass extending that exact
+machinery to `codec == &mr_codec_dv` (DV's `y_stride == width` exactly, no
+macroblock-padding quirk to account for, unlike H.264/MPEG-2's aligned-vs-
+visible-width distinction) is the natural next lever if the quality-mode
+opt-in alone doesn't resolve the WinUAE report.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.

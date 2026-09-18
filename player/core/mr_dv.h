@@ -27,4 +27,29 @@ extern const mr_codec mr_codec_dv;
  * not yet wired into amiga/mrplay.c. */
 void mr_dv_set_yuv_output(mr_decoder *dec, int enabled);
 
+/* libdv's own decode-quality knob (dv_set_quality(), DV_QUALITY_* in
+ * vendor/libdv/dv_types.h) trades picture detail for real, measured
+ * decode cost - not a display-side tweak. DV_QUALITY_DC (this port's
+ * MR_DV_SPEED_FAST) makes dv_parse_video_segment() skip the AC
+ * coefficient VLC decode entirely (vendor/libdv/parse.c's 3-pass
+ * dv_parse_ac_coeffs()/dv_parse_ac_coeffs_pass0() - the same class of
+ * per-macroblock bitstream-parsing cost this file's own H.264 CABAC
+ * investigation found dominating decode time there) for every block,
+ * luma and chroma alike, and dv_decode_macroblock()'s IDCT then has at
+ * most one (the DC) nonzero coefficient per block to transform instead
+ * of however many AC terms the encoder emitted - both real, per-
+ * macroblock costs removed, not merely deferred. Colour is kept (still
+ * decodes/places Cb/Cr, just DC-only - flat per-8x8-block chroma, no
+ * softer half-measure exists between "quality" and "no colour at all"
+ * in libdv's own quality-bit design), so this only ever looks blockier,
+ * never wrong or monochrome. Default is MR_DV_SPEED_QUALITY
+ * (DV_QUALITY_BEST, dv_open()'s existing unconditional choice) - opt-in
+ * only, nothing changes unless a caller asks. */
+typedef enum {
+    MR_DV_SPEED_QUALITY = 0,  /* DV_QUALITY_BEST: full colour, full AC */
+    MR_DV_SPEED_FAST          /* DV_QUALITY_DC|COLOR: DC-only, still colour */
+} mr_dv_speed_mode;
+
+void mr_dv_set_speed_mode(mr_decoder *dec, mr_dv_speed_mode mode);
+
 #endif /* MR_DV_H */

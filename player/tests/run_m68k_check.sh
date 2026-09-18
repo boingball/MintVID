@@ -588,6 +588,11 @@ run "$BUILD/mr_decode.m68k" tests/assets/test_dv_pal.avi \
 echo "[DV/NTSC 4:1:1, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_dv_ntsc.avi \
     --check tests/assets/ref_dv_ntsc
+echo "[DV speed-mode separation (MR_DV_SPEED_FAST, DC-only), real m68k/big-endian]"
+run "$BUILD/mr_decode.m68k" tests/assets/test_dv_pal.avi --dv-speed=fast \
+    | grep -F "decoded 25 frames"
+run "$BUILD/mr_decode.m68k" tests/assets/test_dv_ntsc.avi --dv-speed=fast \
+    | grep -F "decoded 30 frames"
 echo "[MPEG-4 Part 2 Simple Profile, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_mp4v_sp.avi \
     --check tests/assets/ref_mp4v_sp

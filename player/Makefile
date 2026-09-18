@@ -482,6 +482,11 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	./mr_decode tests/assets/test_dv_pal.avi --check tests/assets/ref_dv_pal
 	@echo "[DV/NTSC 4:1:1]"
 	./mr_decode tests/assets/test_dv_ntsc.avi --check tests/assets/ref_dv_ntsc
+	@echo "[DV speed-mode separation]"
+	./mr_decode tests/assets/test_dv_pal.avi --dv-speed=fast \
+	    | grep -F "decoded 25 frames"
+	./mr_decode tests/assets/test_dv_ntsc.avi --dv-speed=fast \
+	    | grep -F "decoded 30 frames"
 	@echo "[Cinepak MOV]"
 	./mr_decode tests/assets/test_cinepak.mov --check tests/assets/ref_mov
 	@echo "[MOV seek]"
