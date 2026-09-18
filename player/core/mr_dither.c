@@ -117,3 +117,79 @@ void mr_dither_rgb8(const uint8_t *rgb, int w, int h, int rgb_stride,
 {
     mr_dither_rgb_indexed(rgb, w, h, rgb_stride, out, out_stride, y_base, 8);
 }
+
+/* Extra Half-Brite: 32-entry base cube, same 4x4x2 shape as the depth-5
+ * ECS/OCS cube (indexed_shape(5,...)), inlined directly rather than routed
+ * through mr_dither_palette_indexed() since that function's own contract
+ * assumes and zero-fills a 256-entry buffer. */
+void mr_dither_palette_ehb(uint8_t *pal32)
+{
+    int r, g, b, i = 0;
+    for (r = 0; r < 4; r++)
+        for (g = 0; g < 4; g++)
+            for (b = 0; b < 2; b++) {
+                pal32[i*3+0] = (uint8_t)(r * 255 / 3);
+                pal32[i*3+1] = (uint8_t)(g * 255 / 3);
+                pal32[i*3+2] = (uint8_t)(b * 255 / 1);
+                i++;
+            }
+}
+
+/* The 64 colours an EHB screen can actually show: the 32 real registers,
+ * plus the same 32 halved by the hardware for free. Built once and cached,
+ * mirroring build_lut()'s own lut_depth-guarded caching. */
+static uint8_t ehb_vr[64], ehb_vg[64], ehb_vb[64];
+static int ehb_built = 0;
+
+static void build_ehb_virtual(void)
+{
+    uint8_t pal[32 * 3];
+    int i;
+    mr_dither_palette_ehb(pal);
+    for (i = 0; i < 32; i++) {
+        ehb_vr[i] = pal[i*3+0]; ehb_vg[i] = pal[i*3+1]; ehb_vb[i] = pal[i*3+2];
+        ehb_vr[32+i] = (uint8_t)(ehb_vr[i] >> 1);
+        ehb_vg[32+i] = (uint8_t)(ehb_vg[i] >> 1);
+        ehb_vb[32+i] = (uint8_t)(ehb_vb[i] >> 1);
+    }
+    ehb_built = 1;
+}
+
+static uint8_t ehb_nearest(int r, int g, int b)
+{
+    int best = 0, best_d = 0x7fffffff, i;
+    for (i = 0; i < 64; i++) {
+        int dr = r - ehb_vr[i], dg = g - ehb_vg[i], db = b - ehb_vb[i];
+        int d = dr*dr + dg*dg + db*db;
+        if (d < best_d) { best_d = d; best = i; }
+    }
+    return (uint8_t)best;
+}
+
+void mr_dither_rgb_ehb(const uint8_t *rgb, int w, int h, int rgb_stride,
+                       uint8_t *out, int out_stride, int y_base)
+{
+    int x, y;
+    if (!ehb_built) build_ehb_virtual();
+    for (y = 0; y < h; y++) {
+        const uint8_t *sr = rgb + (size_t)y * rgb_stride;
+        uint8_t       *dr = out + (size_t)y * out_stride;
+        const uint8_t *br = bayer4[(y_base + y) & 3];
+        for (x = 0; x < w; x++) {
+            const uint8_t *p = sr + x * 3;
+            int t = br[x & 3];
+            /* Perturb by the base cube's own per-channel step (matching
+             * mr_dither_rgb_indexed()'s (t-8)*step/16 offset) before the
+             * nearest-of-64 search - the half-brite bit scales all three
+             * channels together, so unlike the plain indexed cube this
+             * can't be reduced to three independent per-channel LUTs. */
+            int rv = p[0] + (t - 8) * (255 / 3) / 16;
+            int gv = p[1] + (t - 8) * (255 / 3) / 16;
+            int bv = p[2] + (t - 8) * 255 / 16;
+            if (rv < 0) rv = 0; else if (rv > 255) rv = 255;
+            if (gv < 0) gv = 0; else if (gv > 255) gv = 255;
+            if (bv < 0) bv = 0; else if (bv > 255) bv = 255;
+            dr[x] = ehb_nearest(rv, gv, bv);
+        }
+    }
+}

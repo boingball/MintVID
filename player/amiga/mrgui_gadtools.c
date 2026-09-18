@@ -79,8 +79,8 @@ typedef struct gt_app {
     struct FileRequester *requester;
     mr_master_options_port *master;
     mr_gui_menu menu;
-    mr_display_mode modes[7];
-    STRPTR mode_labels[8];
+    mr_display_mode modes[8];
+    STRPTR mode_labels[9];
     unsigned mode_count;
     mr_c2p_mode c2p_modes[5];
     STRPTR c2p_labels[6];
@@ -981,10 +981,14 @@ static int build_window(gt_app *app)
         app->modes[app->mode_count++] = MR_DISPLAY_AGA_ECS32;
         app->mode_labels[app->mode_count] = (STRPTR)"Display: ECS (16)";
         app->modes[app->mode_count++] = MR_DISPLAY_AGA_ECS16;
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: ECS (EHB)";
+        app->modes[app->mode_count++] = MR_DISPLAY_AGA_EHB;
     } else {
         app->mode_labels[app->mode_count] = ecs() ? (STRPTR)"Display: ECS" :
                                                      (STRPTR)"Display: OCS";
         app->modes[app->mode_count++] = MR_DISPLAY_AGA;
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: ECS (EHB)";
+        app->modes[app->mode_count++] = MR_DISPLAY_AGA_EHB;
     }
     app->mode_labels[app->mode_count] = (STRPTR)"Display: HAM6";
     app->modes[app->mode_count++] = MR_DISPLAY_HAM6;

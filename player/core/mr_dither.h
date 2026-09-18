@@ -43,4 +43,22 @@ void mr_dither_rgb_indexed(const uint8_t *rgb, int w, int h, int rgb_stride,
 uint8_t mr_dither_rgb_indexed_pixel(uint8_t r, uint8_t g, uint8_t b,
                                     int x, int y, int depth);
 
+/* Extra Half-Brite (EHB, ECS/OCS - no AGA needed): 32-entry base palette
+ * (the same 4x4x2 RGB cube shape as the depth-5 ECS/OCS cube). Denise's own
+ * 6th-bitplane half-brite bit doubles this to 64 achievable colours for
+ * free - see amiga/display_aga.c's EHB section for the mechanism. */
+void mr_dither_palette_ehb(uint8_t *pal32);
+
+/* Convert an RGB24 frame to 6-bit EHB indices (0..63): the low 5 bits
+ * select one of the 32 real palette registers mr_dither_palette_ehb()
+ * describes; bit 5 (value 32) asks the hardware to halve that register's
+ * RGB for this pixel - no second palette bank is written, Denise derives it
+ * live. Ordered-dithered against the resulting 64 achievable colours by
+ * nearest search rather than the separable per-channel LUT
+ * mr_dither_rgb_indexed() uses, since the half-brite bit scales all three
+ * channels together and so can't be decomposed into independent per-channel
+ * thresholds. */
+void mr_dither_rgb_ehb(const uint8_t *rgb, int w, int h, int rgb_stride,
+                       uint8_t *out, int out_stride, int y_base);
+
 #endif /* MR_DITHER_H */

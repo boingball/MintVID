@@ -35,7 +35,13 @@ typedef enum {
      * planes/16 colours instead of auto-selecting by chipset. Available on
      * any chipset, including AGA, as an explicit speed/quality tradeoff. */
     MR_DISPLAY_AGA_ECS32,
-    MR_DISPLAY_AGA_ECS16
+    MR_DISPLAY_AGA_ECS16,
+    /* Extra Half-Brite: genuine ECS/OCS chipset feature (no AGA needed), 6
+     * planes for 64 apparent colours - 32 real palette registers plus 32
+     * free half-brightness duplicates the hardware derives itself. See
+     * core/mr_dither.h's mr_dither_rgb_ehb()/mr_dither_palette_ehb() and
+     * amiga/display_aga.c's EHB section. */
+    MR_DISPLAY_AGA_EHB
 } mr_display_mode;
 
 typedef enum {

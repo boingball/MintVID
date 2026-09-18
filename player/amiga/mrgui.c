@@ -1380,12 +1380,15 @@ int main(void)
     if (chipset_has_aga()) {
         if (!add_mode_node(&modes, "AGA (256 colours)", MR_DISPLAY_AGA) ||
             !add_mode_node(&modes, "ECS (32 colours)", MR_DISPLAY_AGA_ECS32) ||
-            !add_mode_node(&modes, "ECS (16 colours)", MR_DISPLAY_AGA_ECS16))
+            !add_mode_node(&modes, "ECS (16 colours)", MR_DISPLAY_AGA_ECS16) ||
+            !add_mode_node(&modes, "ECS (EHB, 64 colours)", MR_DISPLAY_AGA_EHB))
             goto cleanup;
     } else if (!add_mode_node(&modes,
                               chipset_has_ecs_denise() ? "ECS (32 colours)" :
                                                          "OCS (32 colours)",
-                              MR_DISPLAY_AGA))
+                              MR_DISPLAY_AGA) ||
+               !add_mode_node(&modes, "ECS (EHB, 64 colours)",
+                              MR_DISPLAY_AGA_EHB))
         goto cleanup;
     if (!add_mode_node(&modes, "HAM6", MR_DISPLAY_HAM6) ||
         (chipset_has_aga() &&
