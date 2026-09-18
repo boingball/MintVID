@@ -342,12 +342,16 @@ int main(void) {
                    "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
-    assert(!strcmp(args, "--fast-buffer=auto --h264-speed=turbo --throughput "
+    assert(!strcmp(args, "--fast-buffer=auto --h264-speed=turbo "
+                         "--dv-speed=fast --throughput "
                          "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     options.h264_performance = MR_H264_PERF_AUTO;
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
-    assert(!strcmp(args, "--fast-buffer=auto --throughput "
+    /* Auto still maps to VQ "fast" for the generic --dv-speed= lever - see
+     * mr_video_quality_prefers_fast()'s own header (core/mr_play_options.c):
+     * only Quality picks a codec's own quality mode. */
+    assert(!strcmp(args, "--fast-buffer=auto --dv-speed=fast --throughput "
                          "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     mr_play_options_default(&options);
     strcpy(launch.user_agent, "Mozilla/5.0 Test Agent");
@@ -393,6 +397,9 @@ int main(void) {
                                        launch.url, NULL, NULL));
       assert(!strcmp(first, second));
       assert(strstr(first, "--h264-speed=fast"));
+      /* VQ "Fast" maps to the generic --dv-speed=fast lever too - see
+       * mr_video_quality_prefers_fast()'s own header (core/mr_play_options.c). */
+      assert(strstr(first, "--dv-speed=fast"));
       assert(strstr(first, "--fast-buffer=16"));
       mr_play_options_summary(&parsed, summary, sizeof(summary));
       assert(strstr(summary, "Native planar / kalms / Lace on / 2x on"));
@@ -410,8 +417,19 @@ int main(void) {
       assert(mr_build_player_arguments(first, sizeof(first), &parsed,
                                        launch.url, NULL, NULL));
       assert(strstr(first, "--h264-speed=turbo+"));
+      assert(strstr(first, "--dv-speed=fast"));
       mr_play_options_summary(&parsed, summary, sizeof(summary));
       assert(strstr(summary, "H264 Turbo+"));
+
+      /* Only VQ "Quality" maps to the codec's own quality mode - every
+       * other choice (Auto/Balanced/Fast/Turbo/Turbo+, all checked above
+       * or at this function's own top) maps to fast. */
+      parsed.h264_performance = MR_H264_PERF_QUALITY;
+      assert(mr_build_player_arguments(first, sizeof(first), &parsed,
+                                       launch.url, NULL, NULL));
+      assert(strstr(first, "--h264-speed=quality"));
+      assert(strstr(first, "--dv-speed=quality") &&
+             !strstr(first, "--dv-speed=fast"));
 
       {
         char *turbo_args[] = {"iptvgui", "--h264-speed=turbo"};

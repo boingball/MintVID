@@ -131,6 +131,23 @@ static const char *c2p_name(mr_c2p_mode c2p)
     }
 }
 
+/* The GUIs' "VQ:" chooser (still backed by h264_performance/MR_H264_PERF_* -
+ * H.264's own speed dial, see core/mr_h264.h) doubles as a generic "does
+ * this session want fast decode over full quality" preference, reused for
+ * any other codec that has its own speed/quality lever - DV's
+ * mr_dv_set_speed_mode() (core/mr_dv.h) today, see CLAUDE.md's "DV decode
+ * speed" notes. Quality (the one mode a user picks specifically for best
+ * output) maps to that codec's own quality mode; every other choice - Auto
+ * included, since Auto's own H.264 resolution already defaults to Turbo,
+ * see mrplay.c's effective_h264_speed() - maps to fast. Safe to apply
+ * unconditionally regardless of what codec a given file turns out to be:
+ * mr_dv_set_speed_mode()/apply_h264_speed() in amiga/mrplay.c both no-op
+ * for a mismatched codec, the same way --h264-speed= already does. */
+static int mr_video_quality_prefers_fast(mr_h264_performance mode)
+{
+    return mode != MR_H264_PERF_QUALITY;
+}
+
 static int append_playback_flags(char *out, size_t cap,
                                  const mr_play_options *o, int explicit)
 {
@@ -204,6 +221,13 @@ static int append_playback_flags(char *out, size_t cap,
                          ? "--h264-speed=turbo+" : "--h264-speed=fast";
         if (!append_option(out, cap, mode)) return 0;
     }
+    /* Always explicit, like --throughput below: a GUI-launched session's
+     * VQ choice should override mrplay.c's own MR_DV_SPEED_QUALITY default
+     * in both directions, which a conditionally-omitted flag can't do -
+     * see mr_video_quality_prefers_fast()'s own header. */
+    if (!append_option(out, cap, mr_video_quality_prefers_fast(o->h264_performance)
+                                 ? "--dv-speed=fast" : "--dv-speed=quality"))
+        return 0;
     if (o->no_audio) {
         if (!append_option(out, cap, "--no-audio")) return 0;
     } else {

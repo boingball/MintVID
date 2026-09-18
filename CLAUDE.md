@@ -4899,6 +4899,81 @@ macroblock-padding quirk to account for, unlike H.264/MPEG-2's aligned-vs-
 visible-width distinction) is the natural next lever if the quality-mode
 opt-in alone doesn't resolve the WinUAE report.
 
+## The GUI VQ chooser: the H.264 speed gadget generalized to drive DV too
+Direct follow-up to the DV decode speed section above - the user's own
+suggestion, once `--dv-speed=` existed but had no GUI control: reuse the
+existing H.264 performance chooser (both GUIs already have one) as a
+generic "video quality" preference instead of adding a second, DV-specific
+gadget, since a real gadget slot is scarce in both windows and the two
+controls express the same underlying idea (trade picture quality for
+decode speed) for two different codecs.
+
+**The mapping the user asked for - "auto and anything else does fast,
+best does quality" - falls directly out of the existing enum, no new
+field needed.** `MR_H264_PERF_QUALITY` is the one mode a user picks
+specifically for full quality; every other value - `MR_H264_PERF_AUTO`
+included, since Auto's own H.264 resolution already defaults to Turbo
+(`mrplay.c`'s `effective_h264_speed()`) - already means "prefer speed".
+`mr_video_quality_prefers_fast(mr_h264_performance mode)`
+(`core/mr_play_options.c`, static) is exactly `mode != MR_H264_PERF_QUALITY`
+- no new struct field, no new enum, `h264_performance` itself becomes the
+shared VQ value. `append_playback_flags()` now emits `--dv-speed=fast`/
+`--dv-speed=quality` derived from that same field, unconditionally and
+explicitly in both directions right alongside the conditional
+`--h264-speed=` emission - the same "always emit explicitly, like
+`--throughput`" discipline this file's own Display-mode/persisted-settings
+section already established, since a GUI-launched session's VQ choice
+needs to override `amiga/mrplay.c`'s own `MR_DV_SPEED_QUALITY` default
+regardless of direction. Safe to always emit both flags regardless of
+which codec a launched file turns out to be: `apply_h264_speed()`/
+`apply_dv_speed()` in `mrplay.c` both already no-op for a mismatched
+codec (`dec->codec != &mr_codec_h264`/`&mr_codec_dv`), the exact same
+"emit the flag, let the player ignore it if irrelevant" pattern
+`--h264-speed=` itself already relied on before any of this.
+
+**Only the on-screen label changed, not the underlying identifiers.**
+`h264_performance`/`G_H264`/`MR_H264_PERF_*`/the `h264_label`/`h264_labels`
+variable names are all untouched - renaming those would be a much larger,
+purely-cosmetic diff for no functional benefit, and this file's own
+"match the scope of the change to what was asked" discipline argues
+against it. `mrgui.c`'s ReAction `h264_label` (`LABEL_GetClass()`,
+independent of the chooser's own "Auto"/"Quality"/.../"Turbo+" option
+list) changes from `"H.264"` to `"VQ"`. `mrgui_gadtools.c`'s GadTools
+`h264_labels[]` (`CYCLE_KIND`, each label embeds the full text since
+GadTools cycle gadgets have no separate caption) changes each `"H.264:
+X"` to `"VQ: X"` - shorter, not longer, than the string it replaces
+(`"VQ: Turbo+"` at 10 characters vs. `"H.264: Turbo+"` at 13), so the
+existing 144px gadget width needs no resize - deliberately avoiding the
+exact class of real, reported bug the AGA copper-doubling section's own
+"Copper 2x" GadTools label overflow already hit in this codebase (a
+label too long for its box, invisible until a real-hardware report caught
+it). No other GUI file (`iptv_gadtools.c`/`youtube_gadtools.c` and their
+ReAction counterparts) has its own H.264/VQ chooser - both browsers
+inherit play options from the main controller via `mr_master_options.h`'s
+`T:` snapshot, so nothing else needed touching.
+
+`tests/mr_iptv_check.c`'s two exact-string `mr_build_player_arguments()`
+pins needed updating for the new flag's position in the argument string
+(inserted between `--h264-speed=`/`--fast-buffer=` and `--throughput`,
+matching `append_playback_flags()`'s own emission order) - both directions
+verified explicitly, not just one: `MR_H264_PERF_TURBO`/`_AUTO` now expect
+`--dv-speed=fast` in the emitted string (Auto's own case gets a comment
+explaining why it's still "fast", not a silent pass), and a new
+`MR_H264_PERF_QUALITY` case (added alongside the existing Fast/Turbo/
+Turbo+ coverage) checks `--dv-speed=quality` is emitted and
+`--dv-speed=fast` is not. `make check` (host, `core/mr_play_options.c`/
+`tests/mr_iptv_check.c` are the only non-Amiga-only files this change
+touches) and `make check-m68k` both pass unchanged otherwise.
+
+Not yet done, same standing limitation as every other GUI change in this
+file: `amiga/mrgui.c`/`amiga/mrgui_gadtools.c` can only be reviewed, not
+compiled or run, on this dev host - needs a real-hardware/WinUAE pass to
+confirm the "VQ:" label actually renders correctly in both editions (the
+GadTools width math above is arithmetic, not a rendered screenshot) and
+that picking a VQ mode other than Quality genuinely speeds up DV playback
+end to end through the GUI launch path, not just via the CLI flag this
+section's own predecessor already measured under qemu.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.

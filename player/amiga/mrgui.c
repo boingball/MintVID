@@ -1594,8 +1594,14 @@ int main(void)
     c2p_label = (Object *)NewObject(LABEL_GetClass(), NULL,
                                     LABEL_Text, (ULONG)"C2P",
                                     TAG_DONE);
+    /* "VQ" (Video Quality), not "H.264" - still H.264's own speed dial
+     * internally (h264_performance/G_H264/MR_H264_PERF_*, unrenamed - see
+     * CLAUDE.md's "DV decode speed" notes), but now also drives DV's
+     * mr_dv_set_speed_mode() generically via mr_video_quality_prefers_fast()
+     * (core/mr_play_options.c), so the on-screen label no longer names one
+     * specific codec. */
     h264_label = (Object *)NewObject(LABEL_GetClass(), NULL,
-                                     LABEL_Text, (ULONG)"H.264",
+                                     LABEL_Text, (ULONG)"VQ",
                                      TAG_DONE);
     audio_rate_label = (Object *)NewObject(LABEL_GetClass(), NULL,
                                            LABEL_Text, (ULONG)"Audio rate",
