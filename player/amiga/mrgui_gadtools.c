@@ -376,6 +376,7 @@ static void update_mode_controls(gt_app *app, int output_changed)
                        app->modes[selected] == MR_DISPLAY_HAM8
 #ifdef MR_KALMS_040
                        || app->modes[selected] == MR_DISPLAY_HAM6
+                       || app->modes[selected] == MR_DISPLAY_AGA_EHB
 #endif
                       );
     /* Direct only ever targets the plain 1:1 8-plane AGA case (no HAM, no

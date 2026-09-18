@@ -575,6 +575,7 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
                        mode_values[selected] == MR_DISPLAY_HAM8
 #ifdef MR_KALMS_040
                        || mode_values[selected] == MR_DISPLAY_HAM6
+                       || mode_values[selected] == MR_DISPLAY_AGA_EHB
 #endif
                       );
     direct_available = 0;
