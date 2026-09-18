@@ -518,7 +518,7 @@ static void *aga_open(int w, int h, const char *title)
      * apparent colours vs. hold-and-modify); HAM takes priority if somehow
      * both are requested, since --ham is the more deliberate, less-common
      * choice - ehb is simply forced off rather than erroring. */
-    int   ehb   = g_aga_ehb && ham != 6;
+    int   ehb   = g_aga_ehb && ham == 0;
     int   akiko = g_aga_akiko && mr_akiko_available();
     int   riva_c2p_mode = (g_aga_c2p == 2) && !akiko;
     int   kalms_c2p_mode = (g_aga_c2p == 3) && !akiko;
@@ -617,12 +617,9 @@ static void *aga_open(int w, int h, const char *title)
     else if (kalms_c2p_mode && depth == 8)
         s->kalms_kind = KALMS_1X1_8;
 #ifdef MR_KALMS_040
-    else if (kalms_c2p_mode && depth == 6 && ham == 6)
-        /* This kernel's tuning has only ever been checked against HAM6
-         * data. EHB also uses depth 6, but whether a pure bit-transpose C2P
-         * kernel is actually agnostic to what those 6 bits mean (HAM
-         * control+data vs. EHB index+half-brite) hasn't been verified here -
-         * falls through to the portable/RiVA C2P instead until it is. */
+    else if (kalms_c2p_mode && depth == 6)
+        /* The 6-plane Kalms bitmap kernel transposes bits, so its input is
+         * equally valid for HAM6 control bytes and EHB palette indices. */
         s->kalms_kind = KALMS_1X1_6;
 #endif
     /* Akiko converts 32 pixels per batch, so it needs a 32-pixel-aligned x and
@@ -824,7 +821,8 @@ static void *aga_open(int w, int h, const char *title)
                     (s->kalms_src_width == s->w ? "kalms-2x2" :
                                                   "kalms-2x2-padded") :
                 s->kalms_kind == KALMS_1X1_8_BM ? "kalms-bitmap-040" :
-                s->kalms_kind == KALMS_1X1_6 ? "kalms-ham6" :
+                s->kalms_kind == KALMS_1X1_6 ?
+                    (s->ehb ? "kalms-ehb" : "kalms-ham6") :
                 s->kalms_kind == KALMS_1X1_8 ?
 #ifdef MR_KALMS_040
                                                "kalms-040" :

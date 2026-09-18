@@ -113,7 +113,7 @@ enum {
 
 /* Chooser rows are chipset-dependent, so never infer a display mode from a
  * hard-coded row number. This map is populated alongside the labels. */
-static mr_display_mode mode_values[7];
+static mr_display_mode mode_values[8];
 static unsigned mode_count;
 static mr_c2p_mode c2p_values[5];
 static unsigned c2p_count;
