@@ -34,6 +34,7 @@
 #include "amiga_display.h"
 #include "display_backend.h"
 #include "mr_aspect.h"
+#include "rtg_mode_pick.h"
 #include "../core/mr_scale.h"
 
 #include <stddef.h>
@@ -167,86 +168,68 @@ static int cgx_close_private_screen(struct Screen **screen, const char *reason)
     return 0;
 }
 
-/* Open a private RTG screen matching the current public-screen geometry.
- * Fullscreen means the whole display, not the closest mode to the video's
- * native dimensions; cgx_rebuild_geometry() aspect-fits the video afterwards.
- * A 16-bit mode is preferred to reduce RTG memory traffic; if unavailable,
- * retain truecolour compatibility by trying 32 and 24-bit modes. */
+/*
+ * Open a private RTG screen sized to the video, not forced to match the
+ * public screen's resolution - the same "native-or-downscale" policy
+ * display_p96.c's own private screen already uses (mr_rtg_best_mode_for_
+ * source(), rtg_mode_pick.h), via the shared picker rather than a second,
+ * divergent copy of it.
+ *
+ * This used to target the public (Workbench) screen's own dimensions
+ * unconditionally - "fullscreen means the whole display" - and let
+ * cgx_rebuild_geometry() software-scale the video up to fill whatever that
+ * turned out to be. A real Voodoo3/P96 capture (RAM:MintVID.log) comparing
+ * this backend against display_p96.c's on the same 540x360 clip against a
+ * 1024x768 Workbench measured exactly that cost: this backend paid
+ * cgx-slow operation=software-scale duration=289000 us (289 ms) on top of a
+ * 203 ms blit, every single frame (~500 ms/frame total), while display_p96.c
+ * - already using the native-or-downscale policy - opened a private screen
+ * close to the source's own 540x360 and paid scale=0 entirely, just its own
+ * ~120 ms blit. Nothing about that gap was P96-specific: it was purely this
+ * function always asking for public-screen-sized real estate instead of
+ * video-sized real estate. A 16-bit mode is still preferred first to reduce
+ * RTG memory traffic; unavailable falls through to 32-bit then 24-bit. */
 static struct Screen *cgx_open_private_screen(cgx_state *s, const char *title)
 {
     static const ULONG depths[] = { 16, 32, 24 };
-    struct Screen *public_screen;
     struct Screen *scr = NULL;
-    ULONG best_modeid = (ULONG)INVALID_ID;
-    ULONG best_depth = 0;
-    ULONG best_score = ~0UL;
-    int target_w = s->source_w;
-    int target_h = s->source_h;
     unsigned i;
 
-    /* Preserve the user's chosen Workbench size (for example 1024x768) while
-     * still allowing a lower-depth private screen for faster video uploads. */
-    public_screen = LockPubScreen(NULL);
-    if (public_screen) {
-        if (public_screen->Width > 0 && public_screen->Height > 0) {
-            target_w = public_screen->Width;
-            target_h = public_screen->Height;
-        }
-        UnlockPubScreen(NULL, public_screen);
-    }
-
     for (i = 0; i < sizeof depths / sizeof depths[0]; i++) {
-        ULONG modeid = BestCModeIDTags(
-            CYBRBIDTG_NominalWidth, (ULONG)target_w,
-            CYBRBIDTG_NominalHeight, (ULONG)target_h,
-            CYBRBIDTG_Depth, depths[i],
-            TAG_END);
-        ULONG mode_w, mode_h, mode_depth, score;
-        if (modeid == (ULONG)INVALID_ID || !IsCyberModeID(modeid))
-            continue;
-        mode_w = GetCyberIDAttr(CYBRIDATTR_WIDTH, modeid);
-        mode_h = GetCyberIDAttr(CYBRIDATTR_HEIGHT, modeid);
-        mode_depth = GetCyberIDAttr(CYBRIDATTR_DEPTH, modeid);
-        if (!mode_w || !mode_h || mode_w == ~0UL || mode_h == ~0UL ||
-            mode_depth <= 8 || mode_depth == ~0UL)
-            continue;
-        score = (ULONG)((int)mode_w >= target_w ? (int)mode_w - target_w
-                                                     : target_w - (int)mode_w) +
-                (ULONG)((int)mode_h >= target_h ? (int)mode_h - target_h
-                                                     : target_h - (int)mode_h);
-        /* Match the public-screen dimensions first. For otherwise equal modes
-         * prefer the lower depth and lower RTG memory traffic. */
-        if (score < best_score ||
-            (score == best_score && mode_depth < best_depth)) {
-            best_modeid = modeid;
-            best_depth = mode_depth;
-            best_score = score;
-        }
-    }
-    if (best_modeid != (ULONG)INVALID_ID)
+        ULONG depth = 0;
+        ULONG modeid = mr_rtg_best_mode_for_source(s->source_w, s->source_h,
+                                                    depths[i], &depth);
+        if (modeid == (ULONG)INVALID_ID) continue;
+
         scr = OpenScreenTags(NULL,
-            SA_DisplayID, best_modeid,
-            SA_Depth, best_depth,
+            SA_DisplayID, modeid,
+            SA_Depth, depth,
             SA_Type, CUSTOMSCREEN,
             SA_Title, (ULONG)(title ? title : "MintVID"),
             SA_Quiet, TRUE,
             SA_ShowTitle, FALSE,
             SA_Draggable, FALSE,
             TAG_END);
-    /* Some older CGX versions may still open a mode with the wrong depth.
-     * Never let that turn the private path into an unusable LUT8 screen. */
-    if (scr && GetCyberMapAttr(scr->RastPort.BitMap,
-                               CYBRMATTR_DEPTH) <= 8) {
-        CloseScreen(scr);
-        scr = NULL;
+        if (!scr) continue;
+
+        /* Some older CGX versions may still open a mode with the wrong
+         * depth. Never let that turn the private path into an unusable
+         * LUT8 screen - fall through to the next depth instead of giving
+         * up on a private screen entirely. */
+        if (GetCyberMapAttr(scr->RastPort.BitMap, CYBRMATTR_DEPTH) <= 8) {
+            CloseScreen(scr);
+            scr = NULL;
+            continue;
+        }
+        break;
     }
     if (scr && g_display_want_time)
-        printf("rtg-fullscreen private=%dx%d depth=%lu target=%dx%d "
-               "source=%dx%d\n",
+        printf("rtg-fullscreen private=%dx%d depth=%lu source=%dx%d "
+               "policy=native-or-downscale\n",
                scr->Width, scr->Height,
                (unsigned long)GetCyberMapAttr(scr->RastPort.BitMap,
                                                CYBRMATTR_DEPTH),
-               target_w, target_h, s->source_w, s->source_h);
+               s->source_w, s->source_h);
     return scr;
 }
 
