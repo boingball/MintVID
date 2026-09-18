@@ -54,8 +54,9 @@ static mr_status dv_open(mr_decoder *dec)
 
     c->dv = dv_decoder_new(0, 1, 1);
     if (!c->dv) { free(c); return MR_ENOMEM; }
-    /* Best (colour, full AC) quality - this is a v1 CPU-decode integration,
-     * not yet tuned for slower Amiga targets; see mr_dv.h. */
+    /* Best (colour, full AC) quality by default - unchanged unless a
+     * caller opts into MR_DV_SPEED_FAST via mr_dv_set_speed_mode() (see
+     * mr_dv.h), the real decode-cost lever for a slower Amiga target. */
     dv_set_quality(c->dv, DV_QUALITY_BEST);
 
     c->width = dec->width;
@@ -99,6 +100,16 @@ static mr_status dv_open(mr_decoder *dec)
     dec->frame.u_stride = 0;
     dec->frame.v_stride = 0;
     return MR_OK;
+}
+
+void mr_dv_set_speed_mode(mr_decoder *dec, mr_dv_speed_mode mode)
+{
+    dv_ctx *c;
+    if (!dec || dec->codec != &mr_codec_dv || !dec->priv) return;
+    c = (dv_ctx *)dec->priv;
+    dv_set_quality(c->dv, mode == MR_DV_SPEED_FAST
+                              ? (DV_QUALITY_DC | DV_QUALITY_COLOR)
+                              : DV_QUALITY_BEST);
 }
 
 void mr_dv_set_yuv_output(mr_decoder *dec, int enabled)

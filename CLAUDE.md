@@ -4807,6 +4807,321 @@ PR" instruction covering exactly this kind of branch - worth closing
 without merging once the real fix above is confirmed end to end, rather
 than left open as stray history.
 
+## DV decode speed: a real, measured 1.9x from libdv's own quality knob
+A user report on real WinUAE: DV video playback ("very slow") after the
+decoder landed. `core/mr_dv.c`'s `dv_open()` had always hardcoded
+`dv_set_quality(c->dv, DV_QUALITY_BEST)` with its own comment already
+flagging the gap ("not yet tuned for slower Amiga targets") - libdv's
+quality bits are a real, well-established decode-cost lever (the same
+kind of idea as H.264's speed modes elsewhere in this file), just never
+exposed by this port.
+
+Read `vendor/libdv/parse.c`'s `dv_parse_video_segment()` before assuming
+this would help: `DV_QUALITY_AC_MASK == DV_QUALITY_DC` skips
+`dv_parse_ac_coeffs_pass0()`/`dv_parse_ac_coeffs()` - the whole 3-pass AC
+coefficient VLC decode - entirely, for every block, reading only the 9-bit
+DC coefficient per block instead. `dv_decode_macroblock()`'s IDCT then has
+at most one nonzero coefficient to transform instead of however many AC
+terms the encoder emitted; `_dv_idct_88()` (already fixed-point, see the
+DV decoder section above) already skips a zero coefficient's whole inner
+8x8 accumulation loop (`if (!bvh) continue;`), so DC-only input is cheap
+there too, not merely "fewer VLC bits". Colour is kept independent of AC
+quality (`DV_QUALITY_COLOR` is a separate bit) - `MR_DV_SPEED_FAST` uses
+`DV_QUALITY_DC | DV_QUALITY_COLOR`, so chroma is still decoded and placed,
+just DC-only (flat per-8x8-block colour) - never dropped to monochrome,
+since libdv's own quality-bit design has no half-measure between "quality"
+and "no colour at all" and dropping colour wasn't asked for.
+
+`mr_dv_set_speed_mode(dec, MR_DV_SPEED_QUALITY|MR_DV_SPEED_FAST)`
+(`core/mr_dv.h`/`.c`) is the new opt-in, mirroring `mr_h264_set_speed_mode()`'s
+shape; default stays `MR_DV_SPEED_QUALITY` (`dv_open()`'s existing
+unconditional choice), so nothing changes unless a caller asks.
+`dv_set_quality()` just stores a bitmask `dv_decode_full_frame()` reads
+fresh every frame, so this can be toggled live with no decoder reset
+needed - unlike H.264/MPEG-2's own speed-mode plumbing, no per-picture
+state depends on which mode decoded the previous frame.
+
+Measured, not assumed: qemu-m68k/big-endian wall time (5 runs each,
+`-m68030`, real cross-built `mr_decode.m68k`) on both conformance
+fixtures - `test_dv_pal.avi` (720x576/25fps): quality mean 1.742 s, fast
+mean 0.899 s (**1.94x**); `test_dv_ntsc.avi` (720x480/29.97fps, the 4:1:1
+path): quality mean 1.742 s, fast mean 0.920 s (**1.89x**). This is a fair
+qemu comparison per this file's own standing qemu-vs-hardware caveat -
+real work removed (fewer VLC bits parsed, fewer IDCT terms per block), not
+a memory-footprint trade the "dither LUT" note at the top of this file
+warns qemu scores backwards.
+
+`tests/mr_decode.c` gained `--dv-speed=quality|fast` (mirroring
+`--h264-speed=`) so this is exercisable from `make check`/`make check-m68k`
+without a GUI: a new "DV speed-mode separation" smoke check decodes both
+fixtures at `--dv-speed=fast` and confirms the same frame count as the
+existing `--check` runs (25/30 - DV always decodes every frame regardless
+of quality bits, unlike H.264 Turbo+'s frame-skip, so this is a "still
+decodes cleanly, end to end, both the 4:2:0 and 4:1:1 code paths" check,
+not a MAE one - DC-only necessarily reads much higher MAE against
+ffmpeg's full-quality reference than the suite's normal threshold, by
+design, so `--check` itself isn't the right tool to validate this mode).
+Both pass on host and real m68k/big-endian under qemu.
+
+`amiga/mrplay.c` gained a matching `--dv-speed=quality|fast` CLI flag and
+an `apply_dv_speed()` helper (mirroring `apply_h264_speed()`'s shape,
+including its own no-op guard for any other codec), called once at
+decoder open and again after each of the three `mr_decoder_reset()` sites
+(seek, `--loop` restart, live/EOF reconnect) - `dv_open()` always starts a
+fresh `dv_decoder_t` at `DV_QUALITY_BEST`, so every reset needs the
+reapply, the same reason `apply_h264_speed()` itself is re-called at each
+of those sites. Default stays Quality (unchanged behaviour for anyone not
+passing the flag). Not yet wired into `core/mr_play_options.c` or either
+GUI's chooser list - DV files are opened through the same local-file
+browser both GUIs already have, so this is reachable today only via a
+direct Shell/`mrplay --dv-speed=fast` invocation, matching this file's own
+repeated pattern of staging Amiga-only, dev-host-unverifiable GUI wiring
+as an explicit follow-up rather than guessing at ReAction/GadTools layout
+changes with no way to test them here. `amiga/mrplay.c` itself can only be
+reviewed, not compiled, on this dev host (see "Validate against ffmpeg"
+above) - the qemu numbers above prove the underlying decode-cost claim,
+but the flag's actual real-hardware effect on WinUAE (the report that
+started this) still needs a retest to confirm.
+
+The RGB24 conversion `dv_decode()` still unconditionally pays for every
+frame (`mr_dv_set_yuv_output()` exists - see the DV decoder section above -
+but was never wired into `amiga/mrplay.c`'s display path) is a separate,
+larger lever, deliberately not attempted in this same pass: H.264/MPEG-2's
+own YUV-indexed-queue integration (`use_yuv_indexed_queue`/
+`use_yuv_rgb_queue` in `amiga/mrplay.c`) touches display-mode detection,
+queue-slot format selection, and every one of the same four decoder-open/
+-reset sites this change touched for the speed knob - real, substantial
+surface area to get right with no way to compile or run any of it here,
+unlike the speed knob above (a single boolean read fresh every frame, with
+no queue-format implications). A future pass extending that exact
+machinery to `codec == &mr_codec_dv` (DV's `y_stride == width` exactly, no
+macroblock-padding quirk to account for, unlike H.264/MPEG-2's aligned-vs-
+visible-width distinction) is the natural next lever if the quality-mode
+opt-in alone doesn't resolve the WinUAE report.
+
+## The GUI VQ chooser: the H.264 speed gadget generalized to drive DV too
+Direct follow-up to the DV decode speed section above - the user's own
+suggestion, once `--dv-speed=` existed but had no GUI control: reuse the
+existing H.264 performance chooser (both GUIs already have one) as a
+generic "video quality" preference instead of adding a second, DV-specific
+gadget, since a real gadget slot is scarce in both windows and the two
+controls express the same underlying idea (trade picture quality for
+decode speed) for two different codecs.
+
+**The mapping the user asked for - "auto and anything else does fast,
+best does quality" - falls directly out of the existing enum, no new
+field needed.** `MR_H264_PERF_QUALITY` is the one mode a user picks
+specifically for full quality; every other value - `MR_H264_PERF_AUTO`
+included, since Auto's own H.264 resolution already defaults to Turbo
+(`mrplay.c`'s `effective_h264_speed()`) - already means "prefer speed".
+`mr_video_quality_prefers_fast(mr_h264_performance mode)`
+(`core/mr_play_options.c`, static) is exactly `mode != MR_H264_PERF_QUALITY`
+- no new struct field, no new enum, `h264_performance` itself becomes the
+shared VQ value. `append_playback_flags()` now emits `--dv-speed=fast`/
+`--dv-speed=quality` derived from that same field, unconditionally and
+explicitly in both directions right alongside the conditional
+`--h264-speed=` emission - the same "always emit explicitly, like
+`--throughput`" discipline this file's own Display-mode/persisted-settings
+section already established, since a GUI-launched session's VQ choice
+needs to override `amiga/mrplay.c`'s own `MR_DV_SPEED_QUALITY` default
+regardless of direction. Safe to always emit both flags regardless of
+which codec a launched file turns out to be: `apply_h264_speed()`/
+`apply_dv_speed()` in `mrplay.c` both already no-op for a mismatched
+codec (`dec->codec != &mr_codec_h264`/`&mr_codec_dv`), the exact same
+"emit the flag, let the player ignore it if irrelevant" pattern
+`--h264-speed=` itself already relied on before any of this.
+
+**Only the on-screen label changed, not the underlying identifiers.**
+`h264_performance`/`G_H264`/`MR_H264_PERF_*`/the `h264_label`/`h264_labels`
+variable names are all untouched - renaming those would be a much larger,
+purely-cosmetic diff for no functional benefit, and this file's own
+"match the scope of the change to what was asked" discipline argues
+against it. `mrgui.c`'s ReAction `h264_label` (`LABEL_GetClass()`,
+independent of the chooser's own "Auto"/"Quality"/.../"Turbo+" option
+list) changes from `"H.264"` to `"VQ"`. `mrgui_gadtools.c`'s GadTools
+`h264_labels[]` (`CYCLE_KIND`, each label embeds the full text since
+GadTools cycle gadgets have no separate caption) changes each `"H.264:
+X"` to `"VQ: X"` - shorter, not longer, than the string it replaces
+(`"VQ: Turbo+"` at 10 characters vs. `"H.264: Turbo+"` at 13), so the
+existing 144px gadget width needs no resize - deliberately avoiding the
+exact class of real, reported bug the AGA copper-doubling section's own
+"Copper 2x" GadTools label overflow already hit in this codebase (a
+label too long for its box, invisible until a real-hardware report caught
+it). No other GUI file (`iptv_gadtools.c`/`youtube_gadtools.c` and their
+ReAction counterparts) has its own H.264/VQ chooser - both browsers
+inherit play options from the main controller via `mr_master_options.h`'s
+`T:` snapshot, so nothing else needed touching.
+
+`tests/mr_iptv_check.c`'s two exact-string `mr_build_player_arguments()`
+pins needed updating for the new flag's position in the argument string
+(inserted between `--h264-speed=`/`--fast-buffer=` and `--throughput`,
+matching `append_playback_flags()`'s own emission order) - both directions
+verified explicitly, not just one: `MR_H264_PERF_TURBO`/`_AUTO` now expect
+`--dv-speed=fast` in the emitted string (Auto's own case gets a comment
+explaining why it's still "fast", not a silent pass), and a new
+`MR_H264_PERF_QUALITY` case (added alongside the existing Fast/Turbo/
+Turbo+ coverage) checks `--dv-speed=quality` is emitted and
+`--dv-speed=fast` is not. `make check` (host, `core/mr_play_options.c`/
+`tests/mr_iptv_check.c` are the only non-Amiga-only files this change
+touches) and `make check-m68k` both pass unchanged otherwise.
+
+Not yet done, same standing limitation as every other GUI change in this
+file: `amiga/mrgui.c`/`amiga/mrgui_gadtools.c` can only be reviewed, not
+compiled or run, on this dev host - needs a real-hardware/WinUAE pass to
+confirm the "VQ:" label actually renders correctly in both editions (the
+GadTools width math above is arithmetic, not a rendered screenshot) and
+that picking a VQ mode other than Quality genuinely speeds up DV playback
+end to end through the GUI launch path, not just via the CLI flag this
+section's own predecessor already measured under qemu.
+
+## MPEG-1/2 B-frame skip, and a real iptvgui/ytgui launch-failure bug caught along the way
+Two requests in the same message: "is there any other codecs we have that
+could benifit from [the DV speed-mode] settings?" and, once MPEG-1/2 was
+picked, a real-hardware bug report (screenshot) - both `iptvgui` and
+`ytgui` failing to launch with `invalid playback option near
+--dv-speed=fast` and hanging.
+
+**Survey before picking a codec, not a guess.** Cinepak/MSVideo1/MSRLE
+have no DCT/transform stage at all - nothing to degrade. MJPEG/MPEG-4
+Part 2/H.263/WMV/MSMPEG4v2 are each this project's own from-scratch VLC
+decoders with no existing partial-decode/skip mechanism built in - adding
+one would be new decoder work, not wiring up an existing lever, unlike
+DV's `dv_set_quality()` or H.264's `IVD_SKIP_B`/`IVD_SKIP_PB`. MPEG-1/2
+(`vendor/libmpeg2`) does have exactly that existing, unused lever:
+`mpeg2_skip(mpeg2dec_t*, int skip)`, libmpeg2's own public API for
+skipping a picture's macroblock/slice decode entirely - never wired into
+`core/mr_mpeg2.c` before this.
+
+**Same safety argument as H.264's B-skip, real for MPEG-2 by spec design
+rather than assumed**: a B picture is never a reference for any later
+picture in MPEG-1/2 (that's what "B" means), so skipping its decode can
+never corrupt the I/P chain everything else depends on - only I and P
+frames ever get referenced, and those are never touched by
+`MR_MPEG2_SPEED_FAST`. `mr_mpeg2_set_speed_mode(dec, MR_MPEG2_SPEED_FAST)`
+(`core/mr_mpeg2.h`/`.c`) stores a `skip_b` flag on the adapter's own state
+and calls `mpeg2_skip(s->decoder, is_b)` once per picture, right after
+each `STATE_PICTURE`/`STATE_PICTURE_2ND` return - unconditionally, not
+just for B, since libmpeg2 never resets `nb_decode_slices` between
+pictures on its own (only at sequence-header time), so leaving a previous
+B's skip=1 in effect would silently skip the next I/P too.
+
+**The first cut looked complete and was actually broken - caught by
+testing, not by re-reading the code more carefully.** `mpeg2_skip()` was
+being called correctly (confirmed with a temporary debug `fprintf`) and
+`pump()`'s existing display-trigger condition
+(`state == STATE_SLICE || STATE_END || STATE_INVALID_END`) seemed like it
+should naturally exclude a picture whose slices were never processed. It
+didn't: frame count stayed at 50 (unchanged from Quality mode) instead of
+dropping by the B count, and a `--check` run against the ffmpeg reference
+showed MAE spikes of 13-114 at exactly 32 frame positions -
+`ffprobe -show_entries frame=pict_type` confirmed 32 B/5 I/13 P in this
+fixture, an exact match. So skipped B pictures *were* reaching the
+display queue, just with corrupted/stale pixel data, not simply being
+counted wrong.
+
+Root cause, found by reading `vendor/libmpeg2/libmpeg2/header.c`: after a
+picture's header is parsed, `mpeg2dec->state` is set to `STATE_SLICE`
+*before* any slice is actually decoded - it means "ready to decode
+slices," not "a slice was decoded" - so `mpeg2_parse()` returns
+`STATE_SLICE` for a fully-skipped picture exactly the same as for a
+normally-decoded one, with `display_fbuf` already pointing at that
+picture's buffer (in the skipped case, one nothing ever wrote this frame
+into - stale data from whatever decode last used that buffer slot).
+Trusting `display_fbuf` alone, as the first cut did, cannot tell a
+skipped picture from a real one. libmpeg2 itself already flags this exact
+situation, though: `header.c` sets `PIC_FLAG_SKIP` on the picture struct
+whenever `nb_decode_slices` came back 0. `pump()`'s display-trigger
+condition now also requires
+`!(s->info->display_picture && (s->info->display_picture->flags &
+PIC_FLAG_SKIP))` - checking the picture actually about to be displayed,
+not just its buffer pointer. `STATE_INVALID_END` (libmpeg2's own way of
+handing back a final display picture when a stream ends with no explicit
+sequence-end code) needed the identical check, for the same reason.
+
+Verified correct three ways once fixed, not just "frame count now looks
+right": a quick `--ppm` dump + SHA256 subsequence match on host confirmed
+byte-exact correctness at exactly the expected non-B frame indices; a new
+`tests/mr_mpeg2_bskip_check.c` decodes `test_mpeg2.ts` twice (Quality and
+Fast) and asserts every Fast-mode frame is an exact byte match to *some*
+frame of the Quality decode, in order - 50 frames -> 18, 32 B pictures
+dropped, zero mismatches - deliberately *not* a `--check`-against-ffmpeg
+test, since `--check` compares by sequential frame index and a
+frame-dropping mode desyncs that index the moment even one frame is
+skipped (this was tried first and produced a misleading, steadily-growing
+MAE that looked like accumulating corruption but was really just
+index drift against the wrong reference frame); and the same test passes
+bit-for-bit identically cross-built for real m68k/big-endian under qemu
+(`tests/run_m68k_check.sh`), the first time `test_mpeg2.ts` has been
+exercised on m68k at all. `mr_mpeg2.h`'s own header comment on
+`mr_mpeg2_speed_mode` was written before this debugging happened and
+undersells the fix (it describes the display-buffer handoff as safe via
+"pump() only queues on STATE_SLICE/STATE_END" without mentioning the
+`PIC_FLAG_SKIP` check that's the actual reason `STATE_SLICE` alone isn't
+enough) - accurate in the implementation's own comment in `mr_mpeg2.c`,
+just not yet corrected in the header's.
+
+Wired into `amiga/mrplay.c` exactly like DV's own speed lever:
+`apply_mpeg2_speed()` mirrors `apply_dv_speed()`'s shape (no-op for a
+mismatched codec, called at decoder-open and after all three
+`mr_decoder_reset()` sites - seek, `--loop` restart, live/EOF reconnect -
+since `mpeg2_open_decoder()` always starts a fresh state at
+`MR_MPEG2_SPEED_QUALITY`), a new `--mpeg2-speed=quality|fast` CLI flag,
+and `tests/mr_decode.c` gained the matching flag for host-side testing.
+Reuses the same shared "VQ" chooser both GUIs already have for H.264/DV
+(see the GUI VQ chooser section above) - no new gadget, `core/
+mr_play_options.c`'s `append_playback_flags()` emits
+`--mpeg2-speed=fast|quality` unconditionally and explicitly, derived from
+the identical `mr_video_quality_prefers_fast(o->h264_performance)` value
+`--dv-speed=` already uses (Quality picks the codec's own quality mode,
+every other VQ choice - Auto included - picks fast).
+
+**The reported iptvgui/ytgui bug turned out to be the exact same class of
+gap `--mpeg2-speed=` was about to reintroduce if left unfixed - caught
+and fixed for both flags in the same pass.** `append_playback_flags()`
+had already been unconditionally emitting `--dv-speed=` (from the earlier
+DV work), but `mr_play_options_parse()` - the function both `iptvgui` and
+`ytgui` use to re-parse their own inherited launch argv (confirmed via
+grep across `amiga/iptv_gadtools.c`/`iptv_reaction.c`/
+`youtube_gadtools.c`/`youtube_reaction.c`, all four call it) - had never
+been taught the flag. An unrecognized flag makes the whole parse fail
+("invalid playback option"), which is exactly the reported symptom: the
+browser launches `mrplay`/itself with a self-built argv it then can't
+parse back, and hangs waiting for a status port that never reports ready.
+Fixed by adding a recognize-but-discard case for `--dv-speed=` to
+`mr_play_options_parse()` (it carries no information not already present
+in `--h264-speed=`/the struct's own VQ default, so there's nothing to do
+with it but accept it) - and, since `--mpeg2-speed=` was about to be
+emitted unconditionally by the same function for the same reason, its own
+matching parse case was added proactively in the same change, rather than
+waiting to reproduce the identical bug a second time for a second flag.
+User confirmed the report covered `ytgui` too ("ytgui does teh same
+thing") - already covered by construction, since both browsers share this
+one parse function.
+
+`tests/mr_iptv_check.c` gained: direct regression pins for both flags
+(`--dv-speed=fast/quality/bogus`, `--mpeg2-speed=fast/quality/bogus`,
+each checked for accept/accept/reject-with-a-useful-error); a generic
+round-trip test that builds a real `mr_build_iptv_arguments()` string
+from default options, tokenizes it, and re-parses it through
+`mr_play_options_parse()` end to end - a guard against this whole *class*
+of gap (a flag added to the emission side with no matching parse case)
+recurring for some future flag, not just these two; and every existing
+pinned exact-string `mr_build_player_arguments()`/`mr_build_iptv_arguments()`
+assertion elsewhere in the file updated to expect `--mpeg2-speed=`
+alongside the `--dv-speed=` it already expected, in both the fast and
+quality directions.
+
+`make check` (host) and `make check-m68k` (real m68k/big-endian under
+qemu) both pass end to end with the full change in place - the decoder
+logic, the CLI/GUI-launch-string plumbing, and the regression tests all
+verified together, not just the isolated new test in each. `amiga/
+mrplay.c`/`mrgui.c`/`mrgui_gadtools.c` remain Amiga-only and can only be
+reviewed, not compiled or run, on this dev host (see "Validate against
+ffmpeg" above) - the launch-failure fix's actual effect on a real
+iptvgui/ytgui session, and the MPEG-2 Fast mode's real-hardware speedup,
+both still need a real-hardware retest to confirm, the same standing
+caveat as DV's own speed mode before it.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.

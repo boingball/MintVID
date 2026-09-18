@@ -588,6 +588,25 @@ run "$BUILD/mr_decode.m68k" tests/assets/test_dv_pal.avi \
 echo "[DV/NTSC 4:1:1, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_dv_ntsc.avi \
     --check tests/assets/ref_dv_ntsc
+echo "[DV speed-mode separation (MR_DV_SPEED_FAST, DC-only), real m68k/big-endian]"
+run "$BUILD/mr_decode.m68k" tests/assets/test_dv_pal.avi --dv-speed=fast \
+    | grep -F "decoded 25 frames"
+run "$BUILD/mr_decode.m68k" tests/assets/test_dv_ntsc.avi --dv-speed=fast \
+    | grep -F "decoded 30 frames"
+echo "[MPEG-TS: MPEG-2 Main Profile + B-frames, real m68k/big-endian]"
+run "$BUILD/mr_decode.m68k" tests/assets/test_mpeg2.ts \
+    --check tests/assets/ref_mpeg2_ts
+echo "== building mr_mpeg2_bskip_check.m68k =="
+$CC -o "$BUILD/mr_mpeg2_bskip_check.m68k" tests/mr_mpeg2_bskip_check.c \
+    $CORE $LIBAVC_SRC \
+    -Wl,--wrap=ih264d_decode_bin \
+    -Wl,--wrap=ih264d_mvpred_nonmbaff \
+    -Wl,--wrap=ih264d_mvpred_nonmbaffB \
+    -Wl,--wrap=ih264d_parse_residual4x4_cabac \
+    -Wl,--wrap=ih264d_read_coeff4x4_cabac \
+    -Wl,--wrap=ih264d_update_qp -lm
+echo "[MPEG-2 B-frame skip (mr_mpeg2_set_speed_mode Fast), real m68k/big-endian]"
+run "$BUILD/mr_mpeg2_bskip_check.m68k"
 echo "[MPEG-4 Part 2 Simple Profile, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_mp4v_sp.avi \
     --check tests/assets/ref_mp4v_sp

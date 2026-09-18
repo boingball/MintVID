@@ -41,6 +41,7 @@ typedef struct {
     uint64_t           last_output_pts;
     mr_mpeg2_service_fn service;
     void               *service_opaque;
+    int                skip_b;         /* MR_MPEG2_SPEED_FAST: skip B pictures */
 } mpeg2_state;
 
 static mr_status mpeg2_drain_decoder(mr_decoder *dec);
@@ -209,11 +210,44 @@ static mr_status pump(mr_decoder *dec, uint8_t *data, uint32_t len)
             break;
         if (state == STATE_INVALID)
             return MR_EFORMAT;
-        /* INVALID_END still carries libmpeg2's final display picture when a
-         * transport stream ends without an explicit sequence-end code. */
+        /* Every picture's header is fully parsed by the time mpeg2_parse()
+         * returns STATE_PICTURE/STATE_PICTURE_2ND, strictly before any of
+         * its own slices are processed (see mr_mpeg2_set_speed_mode()'s own
+         * header for why this is the right, and safe, place to decide).
+         * Called unconditionally, every picture, not just for B: libmpeg2
+         * never resets nb_decode_slices on its own between pictures (only
+         * once, at sequence-header time), so leaving a previous B's skip=1
+         * in effect would silently skip the next I/P too. */
+        if (state == STATE_PICTURE || state == STATE_PICTURE_2ND) {
+            const mpeg2_picture_t *pic = s->info->current_picture;
+            int is_b = pic &&
+                (pic->flags & PIC_MASK_CODING_TYPE) == PIC_FLAG_CODING_TYPE_B;
+            mpeg2_skip(s->decoder, s->skip_b && is_b);
+        }
+        /* header.c's own picture-ready transition (the code right after
+         * mpeg2_header_picture_finalize()) sets mpeg2dec->state to
+         * STATE_SLICE *before* any slice is actually decoded - "ready for
+         * slices", not "a slice was decoded" - so mpeg2_parse() returns
+         * STATE_SLICE for a fully-skipped picture exactly the same as for a
+         * normally-decoded one, with display_fbuf already pointing at that
+         * picture's (in the skipped case, never-written, stale) buffer.
+         * Verified the hard way, not assumed: an earlier version of this
+         * check trusted display_fbuf alone and empirically produced a
+         * corrupted frame - MAE 13-114 against ffmpeg's reference - at
+         * every one of the 32 B-frame positions in tests/assets/
+         * test_mpeg2.ts's real B-frame content, exactly matching the 32
+         * skipped B's. libmpeg2 itself already flags this precise
+         * situation (header.c: "if (!nb_decode_slices) picture->flags |=
+         * PIC_FLAG_SKIP") - checking it here, on the picture actually being
+         * displayed, is what makes this genuinely safe rather than merely
+         * plausible. INVALID_END still carries libmpeg2's final display
+         * picture when a transport stream ends without an explicit
+         * sequence-end code. */
         if ((state == STATE_SLICE || state == STATE_END ||
             state == STATE_INVALID_END) &&
-            s->info->display_fbuf) {
+            s->info->display_fbuf &&
+            !(s->info->display_picture &&
+              (s->info->display_picture->flags & PIC_FLAG_SKIP))) {
             result = queue_display_frame(dec);
             if (result != MR_OK) return result;
             /* queue_display_frame() just ran a full RGB/YUV conversion, and
@@ -373,6 +407,21 @@ int mr_mpeg2_output_pts(mr_decoder *dec, uint64_t *pts_us)
     s->have_last_output_pts = 1;
     *pts_us = cur;
     return 1;
+}
+
+/* See mr_mpeg2_speed_mode's declaration in mr_mpeg2.h for the safety
+ * argument. Unlike mr_mpeg2_set_yuv_output(), this needs no special
+ * handling for anything already queued - it only changes what pump() does
+ * on the *next* picture it parses, and libmpeg2 itself only ever reads
+ * skip_b through mpeg2_skip() at that same STATE_PICTURE point, so toggling
+ * it live (e.g. mid-stream from a GUI change) is safe. */
+void mr_mpeg2_set_speed_mode(mr_decoder *dec, mr_mpeg2_speed_mode mode)
+{
+    mpeg2_state *s;
+    if (!dec || dec->codec != &mr_codec_mpeg2) return;
+    s = (mpeg2_state *)dec->priv;
+    if (!s) return;
+    s->skip_b = mode == MR_MPEG2_SPEED_FAST;
 }
 
 static mr_status mpeg2_decode_packet(mr_decoder *dec,

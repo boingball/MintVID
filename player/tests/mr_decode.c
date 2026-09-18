@@ -27,6 +27,8 @@
 #include "../core/mr_dither.h"
 #include "../core/mr_ham.h"
 #include "../core/mr_h264.h"
+#include "../core/mr_dv.h"
+#include "../core/mr_mpeg2.h"
 #include "../amiga/mintvid_version.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -100,7 +102,8 @@ static long check_ppm(const char *path, const mr_frame *fr, int *maxerr)
 int main(int argc, char **argv)
 {
     int argi = 2, force_memory = 0, hls_buffer_segments = 0;
-    int h264_speed = -1, h264_yuv = 0, do_time = 0;
+    int h264_speed = -1, h264_yuv = 0, do_time = 0, dv_speed = -1;
+    int mpeg2_speed = -1;
     const char *user_agent = NULL, *referer = NULL;
     mr_http_options http_options;
     const char *mode;
@@ -142,6 +145,24 @@ int main(int argc, char **argv)
             argi++;
         } else if (!strcmp(argv[argi], "--h264-yuv")) {
             h264_yuv = 1;
+            argi++;
+        } else if (!strncmp(argv[argi], "--dv-speed=", 11)) {
+            const char *speed = argv[argi] + 11;
+            dv_speed = !strcmp(speed, "quality") ? MR_DV_SPEED_QUALITY :
+                       !strcmp(speed, "fast") ? MR_DV_SPEED_FAST : -2;
+            if (dv_speed < 0) {
+                fprintf(stderr, "invalid DV speed mode\n");
+                return 2;
+            }
+            argi++;
+        } else if (!strncmp(argv[argi], "--mpeg2-speed=", 14)) {
+            const char *speed = argv[argi] + 14;
+            mpeg2_speed = !strcmp(speed, "quality") ? MR_MPEG2_SPEED_QUALITY :
+                          !strcmp(speed, "fast") ? MR_MPEG2_SPEED_FAST : -2;
+            if (mpeg2_speed < 0) {
+                fprintf(stderr, "invalid MPEG-2 speed mode\n");
+                return 2;
+            }
             argi++;
         } else if (!strcmp(argv[argi], "--time")) {
             do_time = 1;
@@ -238,6 +259,10 @@ int main(int argc, char **argv)
     if (do_time && codec == &mr_codec_h264)
         mr_h264_set_timing_enabled(&dec, 1);
 #endif
+    if (dv_speed >= 0 && codec == &mr_codec_dv)
+        mr_dv_set_speed_mode(&dec, (mr_dv_speed_mode)dv_speed);
+    if (mpeg2_speed >= 0 && codec == &mr_codec_mpeg2)
+        mr_mpeg2_set_speed_mode(&dec, (mr_mpeg2_speed_mode)mpeg2_speed);
     unsigned long t_input_us = 0, t_core_us = 0, t_output_us = 0;
     unsigned long t_mc_us = 0, t_deblock_us = 0, t_recon_us = 0, t_intra_us = 0;
     unsigned long t_input_max = 0, t_core_max = 0, t_output_max = 0;

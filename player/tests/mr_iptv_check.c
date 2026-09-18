@@ -342,12 +342,18 @@ int main(void) {
                    "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
-    assert(!strcmp(args, "--fast-buffer=auto --h264-speed=turbo --throughput "
+    assert(!strcmp(args, "--fast-buffer=auto --h264-speed=turbo "
+                         "--dv-speed=fast --mpeg2-speed=fast --throughput "
                          "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     options.h264_performance = MR_H264_PERF_AUTO;
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
-    assert(!strcmp(args, "--fast-buffer=auto --throughput "
+    /* Auto still maps to VQ "fast" for the generic --dv-speed=/--mpeg2-speed=
+     * levers - see mr_video_quality_prefers_fast()'s own header
+     * (core/mr_play_options.c): only Quality picks a codec's own quality
+     * mode. */
+    assert(!strcmp(args, "--fast-buffer=auto --dv-speed=fast "
+                         "--mpeg2-speed=fast --throughput "
                          "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     mr_play_options_default(&options);
     strcpy(launch.user_agent, "Mozilla/5.0 Test Agent");
@@ -393,6 +399,11 @@ int main(void) {
                                        launch.url, NULL, NULL));
       assert(!strcmp(first, second));
       assert(strstr(first, "--h264-speed=fast"));
+      /* VQ "Fast" maps to the generic --dv-speed=fast/--mpeg2-speed=fast
+       * levers too - see mr_video_quality_prefers_fast()'s own header
+       * (core/mr_play_options.c). */
+      assert(strstr(first, "--dv-speed=fast"));
+      assert(strstr(first, "--mpeg2-speed=fast"));
       assert(strstr(first, "--fast-buffer=16"));
       mr_play_options_summary(&parsed, summary, sizeof(summary));
       assert(strstr(summary, "Native planar / kalms / Lace on / 2x on"));
@@ -410,8 +421,22 @@ int main(void) {
       assert(mr_build_player_arguments(first, sizeof(first), &parsed,
                                        launch.url, NULL, NULL));
       assert(strstr(first, "--h264-speed=turbo+"));
+      assert(strstr(first, "--dv-speed=fast"));
+      assert(strstr(first, "--mpeg2-speed=fast"));
       mr_play_options_summary(&parsed, summary, sizeof(summary));
       assert(strstr(summary, "H264 Turbo+"));
+
+      /* Only VQ "Quality" maps to the codec's own quality mode - every
+       * other choice (Auto/Balanced/Fast/Turbo/Turbo+, all checked above
+       * or at this function's own top) maps to fast. */
+      parsed.h264_performance = MR_H264_PERF_QUALITY;
+      assert(mr_build_player_arguments(first, sizeof(first), &parsed,
+                                       launch.url, NULL, NULL));
+      assert(strstr(first, "--h264-speed=quality"));
+      assert(strstr(first, "--dv-speed=quality") &&
+             !strstr(first, "--dv-speed=fast"));
+      assert(strstr(first, "--mpeg2-speed=quality") &&
+             !strstr(first, "--mpeg2-speed=fast"));
 
       {
         char *turbo_args[] = {"iptvgui", "--h264-speed=turbo"};
@@ -441,6 +466,83 @@ int main(void) {
         assert(mr_play_options_parse(&turbo_parsed, 2, turbo_gt_args, error,
                                      sizeof(error)));
         assert(turbo_parsed.h264_performance == MR_H264_PERF_TURBO);
+      }
+      {
+        /* Regression pin: append_playback_flags() always emits --dv-speed=
+         * (see mr_video_quality_prefers_fast()'s own header), including
+         * into mr_build_iptv_arguments()'s output - the exact argv
+         * iptvgui/ytgui re-parse via mr_play_options_parse() to recover
+         * their own inherited launch options (amiga/iptv_gadtools.c,
+         * amiga/iptv_reaction.c, amiga/youtube_gadtools.c,
+         * amiga/youtube_reaction.c all call it). A real-hardware report
+         * showed both browsers failing to open with "invalid playback
+         * option near --dv-speed=fast" - mr_play_options_parse() had
+         * never been taught this flag, only mrplay.c's own CLI parser
+         * and tests/mr_decode.c's. Any inherited argv containing it must
+         * parse cleanly from here on. */
+        char *dv_fast_args[] = {"iptvgui", "--dv-speed=fast"};
+        char *dv_quality_args[] = {"iptvgui", "--dv-speed=quality"};
+        char *dv_bad_args[] = {"iptvgui", "--dv-speed=bogus"};
+        mr_play_options dv_parsed;
+        mr_play_options_default(&dv_parsed);
+        assert(mr_play_options_parse(&dv_parsed, 2, dv_fast_args, error,
+                                     sizeof(error)));
+        mr_play_options_default(&dv_parsed);
+        assert(mr_play_options_parse(&dv_parsed, 2, dv_quality_args, error,
+                                     sizeof(error)));
+        mr_play_options_default(&dv_parsed);
+        assert(!mr_play_options_parse(&dv_parsed, 2, dv_bad_args, error,
+                                      sizeof(error)));
+        assert(strstr(error, "--dv-speed=bogus"));
+      }
+      {
+        /* Same regression, same fix, for --mpeg2-speed= (see
+         * core/mr_mpeg2.h's mr_mpeg2_set_speed_mode() and CLAUDE.md's
+         * "MPEG-1/2 B-frame skip" notes) - added proactively alongside the
+         * --dv-speed= fix above, to avoid shipping the identical
+         * iptvgui/ytgui launch failure a second time for a second flag. */
+        char *mpeg2_fast_args[] = {"iptvgui", "--mpeg2-speed=fast"};
+        char *mpeg2_quality_args[] = {"iptvgui", "--mpeg2-speed=quality"};
+        char *mpeg2_bad_args[] = {"iptvgui", "--mpeg2-speed=bogus"};
+        mr_play_options mpeg2_parsed;
+        mr_play_options_default(&mpeg2_parsed);
+        assert(mr_play_options_parse(&mpeg2_parsed, 2, mpeg2_fast_args, error,
+                                     sizeof(error)));
+        mr_play_options_default(&mpeg2_parsed);
+        assert(mr_play_options_parse(&mpeg2_parsed, 2, mpeg2_quality_args,
+                                     error, sizeof(error)));
+        mr_play_options_default(&mpeg2_parsed);
+        assert(!mr_play_options_parse(&mpeg2_parsed, 2, mpeg2_bad_args, error,
+                                      sizeof(error)));
+        assert(strstr(error, "--mpeg2-speed=bogus"));
+      }
+      {
+        /* Generic guard against the same class of gap, not just this one
+         * flag: mr_build_iptv_arguments() is the exact string iptvgui/
+         * ytgui feed back through mr_play_options_parse() as their own
+         * inherited launch options, so whatever it emits must always be
+         * re-parseable - a flag added to append_playback_flags() without
+         * a matching case in mr_play_options_parse() breaks that browser
+         * launch silently until someone hits it on real hardware, exactly
+         * as happened here. Round-trip the *default* options (the common
+         * case - no explicit choice made) end to end. */
+        char built[4096], tok_buf[4096];
+        char *argv2[32];
+        int argc2 = 1;
+        char *tok;
+        mr_play_options defaults2, roundtrip;
+        char error2[128];
+        mr_play_options_default(&defaults2);
+        assert(mr_build_iptv_arguments(built, sizeof(built), &defaults2));
+        strcpy(tok_buf, built);
+        argv2[0] = "iptvgui";
+        for (tok = strtok(tok_buf, " \n");
+             tok && argc2 < 32;
+             tok = strtok(NULL, " \n"))
+            argv2[argc2++] = tok;
+        mr_play_options_default(&roundtrip);
+        assert(mr_play_options_parse(&roundtrip, argc2, argv2, error2,
+                                     sizeof(error2)));
       }
     }
     {

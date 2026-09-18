@@ -92,9 +92,15 @@ typedef struct gt_app {
     ULONG status_seq;
 } gt_app;
 
-static STRPTR h264_labels[] = {(STRPTR)"H.264: Auto", (STRPTR)"H.264: Quality",
-                              (STRPTR)"H.264: Balanced", (STRPTR)"H.264: Fast",
-                              (STRPTR)"H.264: Turbo", (STRPTR)"H.264: Turbo+",
+/* "VQ" (Video Quality), not "H.264" - see mrgui.c's own h264_label comment:
+ * still H.264's own speed dial internally (h264_performance/G_H264/
+ * MR_H264_PERF_*, unrenamed), now also driving DV's mr_dv_set_speed_mode()
+ * generically via mr_video_quality_prefers_fast() (core/mr_play_options.c).
+ * Every label here is no longer than its "H.264: " predecessor, so the
+ * existing 144px gadget width (add_gadget() below) needs no resize. */
+static STRPTR h264_labels[] = {(STRPTR)"VQ: Auto", (STRPTR)"VQ: Quality",
+                              (STRPTR)"VQ: Balanced", (STRPTR)"VQ: Fast",
+                              (STRPTR)"VQ: Turbo", (STRPTR)"VQ: Turbo+",
                               NULL};
 /* Fixed, unlike mode_labels/c2p_labels - no value-array indirection needed:
  * read_options()/update_mode_controls() both hard-code 0=None, 1=2x,
