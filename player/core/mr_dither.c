@@ -135,42 +135,72 @@ void mr_dither_palette_ehb(uint8_t *pal32)
             }
 }
 
-/* The 64 colours an EHB screen can actually show: the 32 real registers,
- * plus the same 32 halved by the hardware for free. Built once and cached,
- * mirroring build_lut()'s own lut_depth-guarded caching. */
-static uint8_t ehb_vr[64], ehb_vg[64], ehb_vb[64];
-static int ehb_built = 0;
+/*
+ * The 64 colours an EHB screen can actually show split into two
+ * independent, separable RGB cubes: the 32 real registers, and the same 32
+ * values halved by the hardware for free. That separability is the whole
+ * optimisation - for an axis-aligned Cartesian-product grid, the point
+ * nearest any target is always the one found by quantising each channel
+ * independently (there are no cross-channel terms to trade off), so the
+ * true nearest-of-64 is exactly min(nearest-in-bright-cube,
+ * nearest-in-half-cube). Each of those two nearest-in-cube lookups costs
+ * three table reads instead of a 32-way scan, so the whole search drops
+ * from 64 full RGB-distance evaluations to 2 - not an approximation of the
+ * brute-force answer, the same answer, proven by tests/mr_dither_check.c's
+ * independent 64-way reference (unchanged, still the oracle this is
+ * checked against).
+ *
+ * The four (or two, for blue) levels in each cube are exactly the values
+ * mr_dither_palette_ehb() computes and their >>1 halves - listed explicitly
+ * here rather than re-derived by formula so the per-channel quantiser below
+ * can't drift out of step with the palette actually loaded into hardware.
+ */
+static const uint8_t ehb_bright_r[4] = { 0, 85, 170, 255 };
+static const uint8_t ehb_bright_g[4] = { 0, 85, 170, 255 };
+static const uint8_t ehb_bright_b[2] = { 0, 255 };
+static const uint8_t ehb_half_r[4]   = { 0, 42, 85, 127 };
+static const uint8_t ehb_half_g[4]   = { 0, 42, 85, 127 };
+static const uint8_t ehb_half_b[2]   = { 0, 127 };
 
-static void build_ehb_virtual(void)
+/* [0..255] -> index of the nearest level in the matching array above. Built
+ * once by brute-force over the (at most 4) real levels - cheap at build
+ * time, and exact regardless of whether a level list happens to be evenly
+ * spaced (the half-brite levels, being >>1 of the bright ones, are not
+ * quite: 42/43/42 apart, not 42.5/42.5). */
+static uint8_t ehb_q_br[256], ehb_q_bg[256], ehb_q_bb[256];
+static uint8_t ehb_q_hr[256], ehb_q_hg[256], ehb_q_hb[256];
+static int ehb_lut_built = 0;
+
+static void build_ehb_channel_quant(uint8_t *lut, const uint8_t *levels, int n)
 {
-    uint8_t pal[32 * 3];
-    int i;
-    mr_dither_palette_ehb(pal);
-    for (i = 0; i < 32; i++) {
-        ehb_vr[i] = pal[i*3+0]; ehb_vg[i] = pal[i*3+1]; ehb_vb[i] = pal[i*3+2];
-        ehb_vr[32+i] = (uint8_t)(ehb_vr[i] >> 1);
-        ehb_vg[32+i] = (uint8_t)(ehb_vg[i] >> 1);
-        ehb_vb[32+i] = (uint8_t)(ehb_vb[i] >> 1);
+    int v, i;
+    for (v = 0; v < 256; v++) {
+        int best = 0, best_d = 0x7fffffff;
+        for (i = 0; i < n; i++) {
+            int d = v - levels[i];
+            d = d < 0 ? -d : d;
+            if (d < best_d) { best_d = d; best = i; }
+        }
+        lut[v] = (uint8_t)best;
     }
-    ehb_built = 1;
 }
 
-static uint8_t ehb_nearest(int r, int g, int b)
+static void build_ehb_luts(void)
 {
-    int best = 0, best_d = 0x7fffffff, i;
-    for (i = 0; i < 64; i++) {
-        int dr = r - ehb_vr[i], dg = g - ehb_vg[i], db = b - ehb_vb[i];
-        int d = dr*dr + dg*dg + db*db;
-        if (d < best_d) { best_d = d; best = i; }
-    }
-    return (uint8_t)best;
+    build_ehb_channel_quant(ehb_q_br, ehb_bright_r, 4);
+    build_ehb_channel_quant(ehb_q_bg, ehb_bright_g, 4);
+    build_ehb_channel_quant(ehb_q_bb, ehb_bright_b, 2);
+    build_ehb_channel_quant(ehb_q_hr, ehb_half_r, 4);
+    build_ehb_channel_quant(ehb_q_hg, ehb_half_g, 4);
+    build_ehb_channel_quant(ehb_q_hb, ehb_half_b, 2);
+    ehb_lut_built = 1;
 }
 
 void mr_dither_rgb_ehb(const uint8_t *rgb, int w, int h, int rgb_stride,
                        uint8_t *out, int out_stride, int y_base)
 {
     int x, y;
-    if (!ehb_built) build_ehb_virtual();
+    if (!ehb_lut_built) build_ehb_luts();
     for (y = 0; y < h; y++) {
         const uint8_t *sr = rgb + (size_t)y * rgb_stride;
         uint8_t       *dr = out + (size_t)y * out_stride;
@@ -178,18 +208,37 @@ void mr_dither_rgb_ehb(const uint8_t *rgb, int w, int h, int rgb_stride,
         for (x = 0; x < w; x++) {
             const uint8_t *p = sr + x * 3;
             int t = br[x & 3];
-            /* Perturb by the base cube's own per-channel step (matching
-             * mr_dither_rgb_indexed()'s (t-8)*step/16 offset) before the
-             * nearest-of-64 search - the half-brite bit scales all three
-             * channels together, so unlike the plain indexed cube this
-             * can't be reduced to three independent per-channel LUTs. */
+            /* One dithered target per pixel, same as before - both cubes'
+             * quantisers are evaluated against this same (rv,gv,bv), which
+             * is exactly what the brute-force 64-way search also compared
+             * every candidate against. */
             int rv = p[0] + (t - 8) * (255 / 3) / 16;
             int gv = p[1] + (t - 8) * (255 / 3) / 16;
             int bv = p[2] + (t - 8) * 255 / 16;
+            int rq, gq, bq, hr, hg, hb;
+            int br_r, br_g, br_b, hf_r, hf_g, hf_b;
+            int dr_r, dr_g, dr_b;
+            long d_bright, d_half;
             if (rv < 0) rv = 0; else if (rv > 255) rv = 255;
             if (gv < 0) gv = 0; else if (gv > 255) gv = 255;
             if (bv < 0) bv = 0; else if (bv > 255) bv = 255;
-            dr[x] = ehb_nearest(rv, gv, bv);
+
+            rq = ehb_q_br[rv]; gq = ehb_q_bg[gv]; bq = ehb_q_bb[bv];
+            hr = ehb_q_hr[rv]; hg = ehb_q_hg[gv]; hb = ehb_q_hb[bv];
+            br_r = ehb_bright_r[rq]; br_g = ehb_bright_g[gq]; br_b = ehb_bright_b[bq];
+            hf_r = ehb_half_r[hr];   hf_g = ehb_half_g[hg];   hf_b = ehb_half_b[hb];
+
+            dr_r = rv - br_r; dr_g = gv - br_g; dr_b = bv - br_b;
+            d_bright = (long)dr_r*dr_r + (long)dr_g*dr_g + (long)dr_b*dr_b;
+            dr_r = rv - hf_r; dr_g = gv - hf_g; dr_b = bv - hf_b;
+            d_half = (long)dr_r*dr_r + (long)dr_g*dr_g + (long)dr_b*dr_b;
+
+            /* Ties go to the bright cube, matching the brute-force search's
+             * own ascending-index/strict-< scan (bright entries 0..31 are
+             * visited, and would win any tie, before half-bright 32..63). */
+            dr[x] = (d_bright <= d_half)
+                        ? (uint8_t)(rq * 8 + gq * 2 + bq)
+                        : (uint8_t)(32 + hr * 8 + hg * 2 + hb);
         }
     }
 }
