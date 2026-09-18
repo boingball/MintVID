@@ -193,7 +193,7 @@ void display_aga_frame_timing(unsigned long *enc_ms, unsigned long *blit_ms)
  * request, since aga_supports_indexed()/aga_supports_yuv_indexed() gate on
  * exactly these effective fields and a mismatch between what was asked for
  * and what was granted is the whole point of the diagnostic. */
-static int s_diag_depth = -1, s_diag_ham = 0, s_diag_scale = 1, s_diag_resize = 0;
+static int s_diag_depth = -1, s_diag_ham = 0, s_diag_ehb = 0, s_diag_scale = 1, s_diag_resize = 0;
 static const char *s_diag_c2p = "standard";
 static const char *s_diag_chipset = "OCS";
 /* Whether --copper-vdouble is not just requested but actually engaged for
@@ -205,7 +205,7 @@ static const char *s_diag_chipset = "OCS";
 static int s_diag_copper = 0;
 void display_aga_describe(int *depth, int *ham, int *scale, int *resize,
                           const char **c2p, const char **chipset,
-                          int *copper)
+                          int *copper, int *ehb)
 {
     if (depth)   *depth   = s_diag_depth;
     if (ham)     *ham     = s_diag_ham;
@@ -214,6 +214,7 @@ void display_aga_describe(int *depth, int *ham, int *scale, int *resize,
     if (c2p)     *c2p     = s_diag_c2p;
     if (chipset) *chipset = s_diag_chipset;
     if (copper)  *copper  = s_diag_copper;
+    if (ehb)     *ehb     = s_diag_ehb;
 }
 
 int display_aga_kalms_timing(unsigned long *conversion_ms)
@@ -238,7 +239,7 @@ typedef struct {
     int             pw;          /* chunky row stride (>= dw)               */
     int             depth;
     int             x0, y0, x0byte;
-    int             ham, scale, resize, use_c2p, use_riva_c2p, use_akiko;
+    int             ham, ehb, scale, resize, use_c2p, use_riva_c2p, use_akiko;
     int             kalms_kind;
     long            kalms_plane_spacing;
     int             kalms_src_width; /* aligned C2P input width             */
@@ -486,12 +487,13 @@ static int build_copper_vdouble(aga_state *s, int h, int depth)
     return 1;
 }
 
-static void load_palette(struct Screen *scr, int ham, int depth)
+static void load_palette(struct Screen *scr, int ham, int ehb, int depth)
 {
     ULONG tab[1 + 256 * 3 + 1];
     int   n, i;
     uint8_t pal[256 * 3];
     if (ham) { n = (ham >= 8) ? 64 : 16; mr_ham_palette(pal, ham); }
+    else if (ehb) { n = 32; mr_dither_palette_ehb(pal); }
     else {
         n = depth == 4 ? 16 : depth == 5 ? 32 : 256;
         mr_dither_palette_indexed(pal, depth);
@@ -512,6 +514,11 @@ static void *aga_open(int w, int h, const char *title)
     aga_state *s;
     int   scale = (g_aga_scale == 2) ? 2 : 1;
     int   ham   = g_aga_ham;
+    /* EHB wants the same 6-plane depth as HAM6 for an unrelated reason (64
+     * apparent colours vs. hold-and-modify); HAM takes priority if somehow
+     * both are requested, since --ham is the more deliberate, less-common
+     * choice - ehb is simply forced off rather than erroring. */
+    int   ehb   = g_aga_ehb && ham == 0;
     int   akiko = g_aga_akiko && mr_akiko_available();
     int   riva_c2p_mode = (g_aga_c2p == 2) && !akiko;
     int   kalms_c2p_mode = (g_aga_c2p == 3) && !akiko;
@@ -535,6 +542,7 @@ static void *aga_open(int w, int h, const char *title)
         ham = 6;
     }
     depth = ham == 6 ? 6 :
+            ehb ? 6 :
             g_aga_ecs_fast ? 4 :
             g_aga_ecs32 ? 5 :
             (chipset_has_aga() ? 8 : 5);
@@ -585,12 +593,13 @@ static void *aga_open(int w, int h, const char *title)
     modeid = hires ? HIRES_KEY : LORES_KEY;
     if (lace) modeid |= LACE;
     if (ham) modeid |= HAM;
+    if (ehb) modeid |= EXTRA_HALFBRITE;
     (void)title;
 
     s = (aga_state *)calloc(1, sizeof *s);
     if (!s) return NULL;
     s->w = w; s->h = h; s->dw = dw; s->dh = dh;
-    s->ham = ham; s->scale = scale; s->resize = resize;
+    s->ham = ham; s->ehb = ehb; s->scale = scale; s->resize = resize;
     s->depth = depth; s->use_c2p = c2p; s->use_riva_c2p = riva_c2p_mode;
     s->use_akiko = akiko;
     s->kalms_kind = KALMS_NONE;
@@ -609,6 +618,8 @@ static void *aga_open(int w, int h, const char *title)
         s->kalms_kind = KALMS_1X1_8;
 #ifdef MR_KALMS_040
     else if (kalms_c2p_mode && depth == 6)
+        /* The 6-plane Kalms bitmap kernel transposes bits, so its input is
+         * equally valid for HAM6 control bytes and EHB palette indices. */
         s->kalms_kind = KALMS_1X1_6;
 #endif
     /* Akiko converts 32 pixels per batch, so it needs a 32-pixel-aligned x and
@@ -656,7 +667,7 @@ static void *aga_open(int w, int h, const char *title)
         SA_DisplayID, modeid, SA_Type, CUSTOMSCREEN,
         SA_Quiet, TRUE, SA_ShowTitle, FALSE, TAG_END);
     if (!s->scr) { free(s); return NULL; }
-    load_palette(s->scr, ham, depth);
+    load_palette(s->scr, ham, ehb, depth);
 
     s->win = OpenWindowTags(NULL,
         WA_CustomScreen, (ULONG)s->scr,
@@ -746,7 +757,15 @@ static void *aga_open(int w, int h, const char *title)
      * without chipset_has_aga() was downgraded to HAM6 earlier in this
      * function - but the check is repeated explicitly here rather than
      * relied upon implicitly, since it is this line, not the earlier
-     * downgrade, that is the actual copper-eligibility contract. */
+     * downgrade, that is the actual copper-eligibility contract.
+     *
+     * EHB needs no clause here at all - it already passes through the plain
+     * `!s->ham` branch, since s->ehb is tracked as its own field rather than
+     * overloading s->ham. Unlike HAM, this needs no correctness argument
+     * about row-independence: an EHB byte is a flat palette index (plus one
+     * hardware-derived half-brite bit) with no hold-and-modify state at all,
+     * so it's exactly the same "a byte fully determines its own pixel" case
+     * indexed output already was before the HAM extension existed. */
     s->copper_vdouble = g_aga_copper_vdouble && scale == 2 && !resize &&
                         !lace && s->kalms_kind == KALMS_NONE &&
                         (c2p || riva_c2p_mode || akiko) &&
@@ -793,7 +812,8 @@ static void *aga_open(int w, int h, const char *title)
         InitRastPort(&s->temprp);
         s->temprp.BitMap = s->tempbm;
     }
-    s_diag_depth = s->depth; s_diag_ham = s->ham; s_diag_scale = s->scale;
+    s_diag_depth = s->depth; s_diag_ham = s->ham; s_diag_ehb = s->ehb;
+    s_diag_scale = s->scale;
     s_diag_resize = s->resize; s_diag_copper = s->copper_vdouble;
     s_diag_chipset = chipset_has_aga() ? "AGA" :
                      chipset_has_ecs_denise() ? "ECS" : "OCS";
@@ -801,7 +821,8 @@ static void *aga_open(int w, int h, const char *title)
                     (s->kalms_src_width == s->w ? "kalms-2x2" :
                                                   "kalms-2x2-padded") :
                 s->kalms_kind == KALMS_1X1_8_BM ? "kalms-bitmap-040" :
-                s->kalms_kind == KALMS_1X1_6 ? "kalms-ham6" :
+                s->kalms_kind == KALMS_1X1_6 ?
+                    (s->ehb ? "kalms-ehb" : "kalms-ham6") :
                 s->kalms_kind == KALMS_1X1_8 ?
 #ifdef MR_KALMS_040
                                                "kalms-040" :
@@ -973,6 +994,8 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
                               dw, s->dh, dw * 3);
         uint8_t *encoded = s->chunky + aga_chunky_visible_offset(s);
         if (s->ham) mr_ham_encode(s->scaled, dw, s->dh, dw * 3, encoded, pw, s->ham);
+        else if (s->ehb) mr_dither_rgb_ehb(s->scaled, dw, s->dh, dw * 3,
+                                          encoded, pw, 0);
         else mr_dither_rgb_indexed(s->scaled, dw, s->dh, dw * 3,
                                    encoded, pw, 0, s->depth);
         ddy0 = 0; ddh = s->dh;
@@ -997,6 +1020,8 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
                                 ? s->kalms_pad_left : 0);
             if (s->ham) mr_ham_encode(src, w, rows, stride, enc_dst,
                                       enc_stride, s->ham);
+            else if (s->ehb) mr_dither_rgb_ehb(src, w, rows, stride, enc_dst,
+                                               enc_stride, dy0);
             else mr_dither_rgb_indexed(src, w, rows, stride, enc_dst,
                                        enc_stride,
                                        dy0, s->depth);
@@ -1019,6 +1044,7 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
             uint8_t *dst = s->chunky + (size_t)dy0 * pw +
                             aga_chunky_visible_offset(s);
             if (s->ham) mr_ham_encode(src, w, rows, stride, dst, pw, s->ham);
+            else if (s->ehb) mr_dither_rgb_ehb(src, w, rows, stride, dst, pw, dy0);
             else mr_dither_rgb_indexed(src, w, rows, stride, dst, pw,
                                        dy0, s->depth);
             ddy0 = dy0; ddh = rows;

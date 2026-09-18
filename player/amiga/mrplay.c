@@ -1798,7 +1798,7 @@ int main(int argc, char **argv)
                "<file.avi|file.mov|file.ts|file.m2ts|"
                "file.mjpeg|file.m4v> "
                "[--aga] [--ham] [--ham6] [--p96] "
-               "[--2x] [--lace] [--ecs-fast] [--ecs32] [--copper-vdouble] "
+               "[--2x] [--lace] [--ecs-fast] [--ecs32] [--ehb] [--copper-vdouble] "
                "[--loop] "
                "[--wpa|--c2p|--riva-c2p|--kalms-c2p|--direct-c2p] "
                "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
@@ -1840,6 +1840,7 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--lace")) display_set_lace(1);
             else if (!strcmp(argv[i], "--ecs-fast")) display_set_ecs_fast(1);
             else if (!strcmp(argv[i], "--ecs32")) display_set_ecs32(1);
+            else if (!strcmp(argv[i], "--ehb")) display_set_ehb(1);
             else if (!strcmp(argv[i], "--cd32")) display_set_akiko(1);
             else if (!strcmp(argv[i], "--copper-vdouble"))
                 display_set_copper_vdouble(1);
@@ -2315,15 +2316,16 @@ int main(int argc, char **argv)
     if (use_yuv_indexed_queue)
         mr_mpeg2_set_yuv_output(&dec, 1);
     if (want_time) {
-        int diag_depth, diag_ham, diag_scale, diag_resize, diag_copper;
+        int diag_depth, diag_ham, diag_scale, diag_resize, diag_copper, diag_ehb;
         const char *diag_c2p, *diag_chipset;
         display_aga_describe(&diag_depth, &diag_ham, &diag_scale,
                              &diag_resize, &diag_c2p, &diag_chipset,
-                             &diag_copper);
+                             &diag_copper, &diag_ehb);
         if (diag_depth >= 0)
-            printf("AGA path: chipset=%s depth=%d ham=%d scale=%d resize=%d "
-                   "c2p=%s yuv=%s copper=%d%s\n", diag_chipset, diag_depth,
-                   diag_ham, diag_scale, diag_resize, diag_c2p,
+            printf("AGA path: chipset=%s depth=%d ham=%d ehb=%d scale=%d "
+                   "resize=%d c2p=%s yuv=%s copper=%d%s\n", diag_chipset,
+                   diag_depth, diag_ham, diag_ehb, diag_scale, diag_resize,
+                   diag_c2p,
                    use_yuv_indexed_queue ? "supported" : "unsupported",
                    diag_copper,
                    diag_copper && diag_ham ? " (HAM, EXPERIMENTAL)" : "");

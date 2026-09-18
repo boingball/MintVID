@@ -111,6 +111,16 @@ void display_set_ecs_fast(int on);
  * display_set_ham(). */
 void display_set_ecs32(int on);
 
+/* Force Extra Half-Brite: a genuine ECS/OCS chipset feature (no AGA needed,
+ * unlike every other indexed depth above 32 colours in this file), 6
+ * bitplanes for 64 apparent colours - 32 real palette registers plus 32
+ * free half-brightness duplicates the hardware derives from the 6th
+ * bitplane's own bit, no extra palette RAM. Forces the native planar
+ * backend, same as display_set_ham(). Mutually exclusive with HAM6/HAM8 in
+ * practice (both want the same 6-plane depth for different reasons) -
+ * display_set_ham() takes priority if both are ever set, see aga_open(). */
+void display_set_ehb(int on);
+
 /* Opt-in: skip vertically doubling every scale==2 (--2x) frame in software
  * and instead let a copper list, built once when the AGA screen opens,
  * repeat each already-doubled-width chunky/planar row a second time on the
@@ -165,11 +175,12 @@ int display_aga_kalms_timing(unsigned long *conversion_ms);
  * copper reports whether --copper-vdouble is not just requested but actually
  * engaged for this screen (0/1) - see display_set_copper_vdouble() for what
  * "engaged" requires, including the HAM6/HAM8 extension and its experimental
- * status.
+ * status. ehb reports whether Extra Half-Brite is the encoding actually in
+ * effect (0/1) - see display_set_ehb().
  * Every out-parameter is optional (pass NULL to skip it). */
 void display_aga_describe(int *depth, int *ham, int *scale, int *resize,
                           const char **c2p, const char **chipset,
-                          int *copper);
+                          int *copper, int *ehb);
 
 /* Open a display able to show w*h frames: tries RTG (cybergraphics) first, then
  * falls back to AGA. Returns NULL only if neither works. */

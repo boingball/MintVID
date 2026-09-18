@@ -115,6 +115,7 @@ static const char *display_name(mr_display_mode display)
     case MR_DISPLAY_P96: return "p96";
     case MR_DISPLAY_AGA_ECS32: return "ecs32";
     case MR_DISPLAY_AGA_ECS16: return "ecs16";
+    case MR_DISPLAY_AGA_EHB: return "ehb";
     default: return "aga";
     }
 }
@@ -176,6 +177,8 @@ static int append_playback_flags(char *out, size_t cap,
             (!append_option(out, cap, "--aga") || !append_option(out, cap, "--ecs32"))) return 0;
         if (o->display == MR_DISPLAY_AGA_ECS16 &&
             (!append_option(out, cap, "--aga") || !append_option(out, cap, "--ecs-fast"))) return 0;
+        if (o->display == MR_DISPLAY_AGA_EHB &&
+            (!append_option(out, cap, "--aga") || !append_option(out, cap, "--ehb"))) return 0;
         if (o->display == MR_DISPLAY_P96 && !append_option(out, cap, "--p96")) return 0;
         if (o->display != MR_DISPLAY_CGX && o->display != MR_DISPLAY_P96) {
             const char *flag = o->c2p == MR_C2P_AKIKO ? "--cd32" :
@@ -327,6 +330,7 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "p96")) o->display = MR_DISPLAY_P96;
             else if (!strcmp(value, "ecs32")) o->display = MR_DISPLAY_AGA_ECS32;
             else if (!strcmp(value, "ecs16")) o->display = MR_DISPLAY_AGA_ECS16;
+            else if (!strcmp(value, "ehb")) o->display = MR_DISPLAY_AGA_EHB;
             else goto bad;
         } else if (!strcmp(arg, "--c2p")) {
             if (i + 1 >= argc) goto bad;
@@ -482,7 +486,8 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
                  o->display == MR_DISPLAY_HAM6 ? "HAM6" :
                  o->display == MR_DISPLAY_HAM8 ? "HAM8" :
                  o->display == MR_DISPLAY_AGA_ECS32 ? "ECS (32)" :
-                 o->display == MR_DISPLAY_AGA_ECS16 ? "ECS (16)" : "Native planar",
+                 o->display == MR_DISPLAY_AGA_ECS16 ? "ECS (16)" :
+                 o->display == MR_DISPLAY_AGA_EHB ? "ECS (EHB)" : "Native planar",
                  c2p_name(o->c2p), o->laced ? "on" : "off",
                  o->scale_2x ? "on" : "off",
                  o->scale_2x && o->copper_vdouble ? " (copper)" : "",

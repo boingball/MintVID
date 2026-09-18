@@ -113,7 +113,7 @@ enum {
 
 /* Chooser rows are chipset-dependent, so never infer a display mode from a
  * hard-coded row number. This map is populated alongside the labels. */
-static mr_display_mode mode_values[7];
+static mr_display_mode mode_values[8];
 static unsigned mode_count;
 static mr_c2p_mode c2p_values[5];
 static unsigned c2p_count;
@@ -575,6 +575,7 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
                        mode_values[selected] == MR_DISPLAY_HAM8
 #ifdef MR_KALMS_040
                        || mode_values[selected] == MR_DISPLAY_HAM6
+                       || mode_values[selected] == MR_DISPLAY_AGA_EHB
 #endif
                       );
     direct_available = 0;
@@ -1380,12 +1381,15 @@ int main(void)
     if (chipset_has_aga()) {
         if (!add_mode_node(&modes, "AGA (256 colours)", MR_DISPLAY_AGA) ||
             !add_mode_node(&modes, "ECS (32 colours)", MR_DISPLAY_AGA_ECS32) ||
-            !add_mode_node(&modes, "ECS (16 colours)", MR_DISPLAY_AGA_ECS16))
+            !add_mode_node(&modes, "ECS (16 colours)", MR_DISPLAY_AGA_ECS16) ||
+            !add_mode_node(&modes, "ECS (EHB, 64 colours)", MR_DISPLAY_AGA_EHB))
             goto cleanup;
     } else if (!add_mode_node(&modes,
                               chipset_has_ecs_denise() ? "ECS (32 colours)" :
                                                          "OCS (32 colours)",
-                              MR_DISPLAY_AGA))
+                              MR_DISPLAY_AGA) ||
+               !add_mode_node(&modes, "ECS (EHB, 64 colours)",
+                              MR_DISPLAY_AGA_EHB))
         goto cleanup;
     if (!add_mode_node(&modes, "HAM6", MR_DISPLAY_HAM6) ||
         (chipset_has_aga() &&
