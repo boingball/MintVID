@@ -37,4 +37,42 @@ void mr_mpeg2_set_yuv_output(mr_decoder *dec, int enabled);
 void mr_mpeg2_set_input_pts(mr_decoder *dec, int has_pts, uint64_t pts_us);
 int mr_mpeg2_output_pts(mr_decoder *dec, uint64_t *pts_us);
 
+/* libmpeg2's own mpeg2_skip() (vendor/libmpeg2/include/mpeg2.h) skips a
+ * picture's entire macroblock/slice decode - near-zero cost, the same shape
+ * as H.264's IVD_SKIP_B/PB (see CLAUDE.md's "DV decode speed"/H.264 CABAC
+ * notes). MR_MPEG2_SPEED_FAST calls it for every B picture and only B
+ * pictures - never P/I, which remain full references for later pictures -
+ * so this is safe by MPEG-2's own spec design: a B picture is by
+ * definition never referenced by anything, so skipping its reconstruction
+ * cannot corrupt any other picture's decode.
+ *
+ * The display-buffer handoff needs one real check, not just careful
+ * plumbing: mpeg2_parse() returns STATE_SLICE for a skipped picture the
+ * same as for a normally-decoded one - header.c sets mpeg2dec->state to
+ * STATE_SLICE right after the header parse, meaning "ready to decode
+ * slices," not "a slice was decoded" - so display_fbuf already points at
+ * that picture's (in the skipped case, never-written, stale) buffer by
+ * the time pump() sees STATE_SLICE either way. A first version of this
+ * code trusted display_fbuf alone on that basis and produced real,
+ * measured corruption (MAE 13-114 at every one of a real fixture's 32
+ * B-frame positions) - caught by testing, not by re-reading the trace
+ * more carefully; see CLAUDE.md's "MPEG-1/2 B-frame skip" notes for the
+ * full story. The actual fix: libmpeg2 itself already flags this exact
+ * situation (header.c sets PIC_FLAG_SKIP on the picture when
+ * nb_decode_slices came back 0), and mr_mpeg2.c's pump() checks that flag
+ * on display_picture before queuing - not merely present on
+ * STATE_SLICE/STATE_END, but confirmed via PIC_FLAG_SKIP that this
+ * particular picture was actually decoded. Net effect: a skipped B
+ * picture simply never reaches the display queue - fewer frames, never a
+ * corrupted one, verified byte-exact against a full decode by
+ * tests/mr_mpeg2_bskip_check.c on host and real m68k/big-endian alike.
+ * Default is MR_MPEG2_SPEED_QUALITY (decode everything, current
+ * behaviour) - opt-in only. */
+typedef enum {
+    MR_MPEG2_SPEED_QUALITY = 0,  /* decode every picture, including B */
+    MR_MPEG2_SPEED_FAST          /* skip B pictures entirely */
+} mr_mpeg2_speed_mode;
+
+void mr_mpeg2_set_speed_mode(mr_decoder *dec, mr_mpeg2_speed_mode mode);
+
 #endif /* MR_MPEG2_H */

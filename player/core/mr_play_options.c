@@ -228,6 +228,12 @@ static int append_playback_flags(char *out, size_t cap,
     if (!append_option(out, cap, mr_video_quality_prefers_fast(o->h264_performance)
                                  ? "--dv-speed=fast" : "--dv-speed=quality"))
         return 0;
+    /* Same VQ value, same "always explicit" reasoning, for MPEG-1/2's own
+     * B-frame skip (mr_mpeg2_set_speed_mode(), core/mr_mpeg2.h) - see
+     * CLAUDE.md's "MPEG-1/2 B-frame skip" notes. */
+    if (!append_option(out, cap, mr_video_quality_prefers_fast(o->h264_performance)
+                                 ? "--mpeg2-speed=fast" : "--mpeg2-speed=quality"))
+        return 0;
     if (o->no_audio) {
         if (!append_option(out, cap, "--no-audio")) return 0;
     } else {
@@ -356,6 +362,36 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "turbogt") || !strcmp(value, "turbo-gt"))
                 o->h264_performance = MR_H264_PERF_TURBO;
             else goto bad;
+        }
+        /* --dv-speed= is always emitted by append_playback_flags() (see
+         * mr_video_quality_prefers_fast()'s own header) but has no
+         * separate field of its own - it's fully derived from
+         * h264_performance/VQ, so it's accepted here and simply
+         * discarded: whichever VQ choice produced it is already captured
+         * by the --h264-speed= flag parsed above in the same argv, except
+         * on the one path where h264_performance is Auto (--h264-speed=
+         * itself omitted, since Auto already resolves to Turbo at runtime
+         * anyway - see mrplay.c's effective_h264_speed()), where the
+         * struct's own default is functionally equivalent. Recognizing
+         * but ignoring it here (rather than leaving it unrecognized) is
+         * what actually matters: an unrecognized flag falls through to
+         * "invalid playback option" below and refuses to parse an
+         * otherwise-valid inherited argv at all - exactly the iptvgui/
+         * ytgui launch failure this fixes. */
+        else if (!strncmp(arg, "--dv-speed=", 11)) {
+            value = arg + 11;
+            if (strcmp(value, "fast") && strcmp(value, "quality")) goto bad;
+        }
+        /* --mpeg2-speed= is always emitted by append_playback_flags() too
+         * (same mr_video_quality_prefers_fast() derivation as --dv-speed=
+         * above - see CLAUDE.md's "MPEG-1/2 B-frame skip" notes), and has
+         * no separate field here for the identical reason: recognized and
+         * discarded, not acted on, so an inherited iptvgui/ytgui launch
+         * argv carrying it still parses instead of hitting "invalid
+         * playback option" below. */
+        else if (!strncmp(arg, "--mpeg2-speed=", 14)) {
+            value = arg + 14;
+            if (strcmp(value, "fast") && strcmp(value, "quality")) goto bad;
         }
         else if (!strncmp(arg, "--audio-rate=", 13)) {
             value = arg + 13;

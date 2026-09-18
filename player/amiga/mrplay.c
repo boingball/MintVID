@@ -1480,6 +1480,26 @@ static void apply_dv_speed(mr_decoder *dec, int fast, int verbose)
         printf("DV performance: %s\n", fast ? "Fast (DC-only)" : "Quality");
 }
 
+/* MPEG-1/2's own decode-speed lever (see core/mr_mpeg2.h's
+ * mr_mpeg2_set_speed_mode()) - libmpeg2's own mpeg2_skip() API, which
+ * skips a B picture's entire macroblock/slice decode (near-zero cost,
+ * never a P/I, so this can never disturb the reference chain - see
+ * CLAUDE.md's "MPEG-1/2 B-frame skip" notes for the full safety argument
+ * and the real-hardware-under-qemu differential proof). Mirrors
+ * apply_dv_speed()'s shape exactly, including its own no-op guard for
+ * any other codec: called once at decoder open and again after every
+ * mr_decoder_reset(), since mpeg2_open_decoder() always starts a fresh
+ * mpeg2_state at MR_MPEG2_SPEED_QUALITY (skip_b=0, zeroed by calloc). */
+static void apply_mpeg2_speed(mr_decoder *dec, int fast, int verbose)
+{
+    if (!dec || dec->codec != &mr_codec_mpeg2) return;
+    mr_mpeg2_set_speed_mode(dec, fast ? MR_MPEG2_SPEED_FAST
+                                      : MR_MPEG2_SPEED_QUALITY);
+    if (verbose)
+        printf("MPEG-1/2 performance: %s\n",
+              fast ? "Fast (B-frame skip)" : "Quality");
+}
+
 /* Shared by the on-screen Vol -/+ controller commands and the display
  * window's own cursor up/down keys. */
 static void apply_volume_set(int volume)
@@ -1676,6 +1696,7 @@ int main(int argc, char **argv)
     const char *audio_failure = NULL;
     int h264_speed = -1; /* automatic: Turbo - see effective_h264_speed() */
     int dv_speed = 0;    /* 0 = Quality (default, unchanged), 1 = Fast   */
+    int mpeg2_speed = 0; /* 0 = Quality (default, unchanged), 1 = Fast   */
     int audio_low_rate = 0; /* --audio-rate=low: halve the output rate again */
     int no_audio = 0;       /* --no-audio: skip the decoder/Paula entirely   */
     int audio_mono = 0;     /* --audio-mono: decode one channel, not two     */
@@ -1784,6 +1805,7 @@ int main(int argc, char **argv)
                "[--fast-buffer=auto|off|4|8|16] "
                "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+] "
                "[--dv-speed=quality|fast] "
+               "[--mpeg2-speed=quality|fast] "
                "[--audio-rate=normal|low] [--no-audio] [--audio-mono] "
                "[--time] [--live-diag] [--throughput|--no-throughput]\n");
         return mrplay_exit(5);
@@ -1865,6 +1887,15 @@ int main(int argc, char **argv)
                 else if (!strcmp(mode, "fast")) dv_speed = 1;
                 else {
                     printf("invalid DV speed mode: %s\n", mode);
+                    return mrplay_exit(5);
+                }
+            }
+            else if (!strncmp(argv[i], "--mpeg2-speed=", 14)) {
+                const char *mode = argv[i] + 14;
+                if (!strcmp(mode, "quality")) mpeg2_speed = 0;
+                else if (!strcmp(mode, "fast")) mpeg2_speed = 1;
+                else {
+                    printf("invalid MPEG-1/2 speed mode: %s\n", mode);
                     return mrplay_exit(5);
                 }
             }
@@ -2165,6 +2196,7 @@ int main(int argc, char **argv)
      * actually going to print the h264-stages breakdown it feeds. */
     mr_h264_set_timing_enabled(&dec, want_time);
     apply_dv_speed(&dec, dv_speed, want_time);
+    apply_mpeg2_speed(&dec, mpeg2_speed, want_time);
 
     h264_pipeline_diag_enabled = want_time && codec == &mr_codec_h264 &&
         (uint64_t)vi->width * (uint64_t)vi->height >= 1280ULL * 720ULL;
@@ -2971,6 +3003,7 @@ int main(int argc, char **argv)
                         !apply_h264_speed(&dec, h264_speed, 0)) break;
                     mr_h264_set_timing_enabled(&dec, want_time);
                     apply_dv_speed(&dec, dv_speed, 0);
+                    apply_mpeg2_speed(&dec, mpeg2_speed, 0);
                     /* mr_decoder_reset() closes and reopens the codec, so a
                      * fresh h264_state/mpeg2_state comes back with no audio
                      * service hook - reapply, same as every other per-
@@ -3270,6 +3303,7 @@ int main(int argc, char **argv)
              * (off) - reapply, same as apply_h264_speed just above. */
             mr_h264_set_timing_enabled(&dec, want_time);
             apply_dv_speed(&dec, dv_speed, 0);
+            apply_mpeg2_speed(&dec, mpeg2_speed, 0);
             /* ...and with no audio service hook either - reapply, same as
              * every other per-decoder setting reapplied here. */
             mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL,
@@ -3378,6 +3412,7 @@ int main(int argc, char **argv)
              * (off) - reapply, same as apply_h264_speed just above. */
             mr_h264_set_timing_enabled(&dec, want_time);
             apply_dv_speed(&dec, dv_speed, 0);
+            apply_mpeg2_speed(&dec, mpeg2_speed, 0);
             /* ...and with no audio service hook either - reapply, same as
              * every other per-decoder setting reapplied here. */
             mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL,

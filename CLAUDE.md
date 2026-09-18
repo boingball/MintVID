@@ -4974,6 +4974,154 @@ that picking a VQ mode other than Quality genuinely speeds up DV playback
 end to end through the GUI launch path, not just via the CLI flag this
 section's own predecessor already measured under qemu.
 
+## MPEG-1/2 B-frame skip, and a real iptvgui/ytgui launch-failure bug caught along the way
+Two requests in the same message: "is there any other codecs we have that
+could benifit from [the DV speed-mode] settings?" and, once MPEG-1/2 was
+picked, a real-hardware bug report (screenshot) - both `iptvgui` and
+`ytgui` failing to launch with `invalid playback option near
+--dv-speed=fast` and hanging.
+
+**Survey before picking a codec, not a guess.** Cinepak/MSVideo1/MSRLE
+have no DCT/transform stage at all - nothing to degrade. MJPEG/MPEG-4
+Part 2/H.263/WMV/MSMPEG4v2 are each this project's own from-scratch VLC
+decoders with no existing partial-decode/skip mechanism built in - adding
+one would be new decoder work, not wiring up an existing lever, unlike
+DV's `dv_set_quality()` or H.264's `IVD_SKIP_B`/`IVD_SKIP_PB`. MPEG-1/2
+(`vendor/libmpeg2`) does have exactly that existing, unused lever:
+`mpeg2_skip(mpeg2dec_t*, int skip)`, libmpeg2's own public API for
+skipping a picture's macroblock/slice decode entirely - never wired into
+`core/mr_mpeg2.c` before this.
+
+**Same safety argument as H.264's B-skip, real for MPEG-2 by spec design
+rather than assumed**: a B picture is never a reference for any later
+picture in MPEG-1/2 (that's what "B" means), so skipping its decode can
+never corrupt the I/P chain everything else depends on - only I and P
+frames ever get referenced, and those are never touched by
+`MR_MPEG2_SPEED_FAST`. `mr_mpeg2_set_speed_mode(dec, MR_MPEG2_SPEED_FAST)`
+(`core/mr_mpeg2.h`/`.c`) stores a `skip_b` flag on the adapter's own state
+and calls `mpeg2_skip(s->decoder, is_b)` once per picture, right after
+each `STATE_PICTURE`/`STATE_PICTURE_2ND` return - unconditionally, not
+just for B, since libmpeg2 never resets `nb_decode_slices` between
+pictures on its own (only at sequence-header time), so leaving a previous
+B's skip=1 in effect would silently skip the next I/P too.
+
+**The first cut looked complete and was actually broken - caught by
+testing, not by re-reading the code more carefully.** `mpeg2_skip()` was
+being called correctly (confirmed with a temporary debug `fprintf`) and
+`pump()`'s existing display-trigger condition
+(`state == STATE_SLICE || STATE_END || STATE_INVALID_END`) seemed like it
+should naturally exclude a picture whose slices were never processed. It
+didn't: frame count stayed at 50 (unchanged from Quality mode) instead of
+dropping by the B count, and a `--check` run against the ffmpeg reference
+showed MAE spikes of 13-114 at exactly 32 frame positions -
+`ffprobe -show_entries frame=pict_type` confirmed 32 B/5 I/13 P in this
+fixture, an exact match. So skipped B pictures *were* reaching the
+display queue, just with corrupted/stale pixel data, not simply being
+counted wrong.
+
+Root cause, found by reading `vendor/libmpeg2/libmpeg2/header.c`: after a
+picture's header is parsed, `mpeg2dec->state` is set to `STATE_SLICE`
+*before* any slice is actually decoded - it means "ready to decode
+slices," not "a slice was decoded" - so `mpeg2_parse()` returns
+`STATE_SLICE` for a fully-skipped picture exactly the same as for a
+normally-decoded one, with `display_fbuf` already pointing at that
+picture's buffer (in the skipped case, one nothing ever wrote this frame
+into - stale data from whatever decode last used that buffer slot).
+Trusting `display_fbuf` alone, as the first cut did, cannot tell a
+skipped picture from a real one. libmpeg2 itself already flags this exact
+situation, though: `header.c` sets `PIC_FLAG_SKIP` on the picture struct
+whenever `nb_decode_slices` came back 0. `pump()`'s display-trigger
+condition now also requires
+`!(s->info->display_picture && (s->info->display_picture->flags &
+PIC_FLAG_SKIP))` - checking the picture actually about to be displayed,
+not just its buffer pointer. `STATE_INVALID_END` (libmpeg2's own way of
+handing back a final display picture when a stream ends with no explicit
+sequence-end code) needed the identical check, for the same reason.
+
+Verified correct three ways once fixed, not just "frame count now looks
+right": a quick `--ppm` dump + SHA256 subsequence match on host confirmed
+byte-exact correctness at exactly the expected non-B frame indices; a new
+`tests/mr_mpeg2_bskip_check.c` decodes `test_mpeg2.ts` twice (Quality and
+Fast) and asserts every Fast-mode frame is an exact byte match to *some*
+frame of the Quality decode, in order - 50 frames -> 18, 32 B pictures
+dropped, zero mismatches - deliberately *not* a `--check`-against-ffmpeg
+test, since `--check` compares by sequential frame index and a
+frame-dropping mode desyncs that index the moment even one frame is
+skipped (this was tried first and produced a misleading, steadily-growing
+MAE that looked like accumulating corruption but was really just
+index drift against the wrong reference frame); and the same test passes
+bit-for-bit identically cross-built for real m68k/big-endian under qemu
+(`tests/run_m68k_check.sh`), the first time `test_mpeg2.ts` has been
+exercised on m68k at all. `mr_mpeg2.h`'s own header comment on
+`mr_mpeg2_speed_mode` was written before this debugging happened and
+undersells the fix (it describes the display-buffer handoff as safe via
+"pump() only queues on STATE_SLICE/STATE_END" without mentioning the
+`PIC_FLAG_SKIP` check that's the actual reason `STATE_SLICE` alone isn't
+enough) - accurate in the implementation's own comment in `mr_mpeg2.c`,
+just not yet corrected in the header's.
+
+Wired into `amiga/mrplay.c` exactly like DV's own speed lever:
+`apply_mpeg2_speed()` mirrors `apply_dv_speed()`'s shape (no-op for a
+mismatched codec, called at decoder-open and after all three
+`mr_decoder_reset()` sites - seek, `--loop` restart, live/EOF reconnect -
+since `mpeg2_open_decoder()` always starts a fresh state at
+`MR_MPEG2_SPEED_QUALITY`), a new `--mpeg2-speed=quality|fast` CLI flag,
+and `tests/mr_decode.c` gained the matching flag for host-side testing.
+Reuses the same shared "VQ" chooser both GUIs already have for H.264/DV
+(see the GUI VQ chooser section above) - no new gadget, `core/
+mr_play_options.c`'s `append_playback_flags()` emits
+`--mpeg2-speed=fast|quality` unconditionally and explicitly, derived from
+the identical `mr_video_quality_prefers_fast(o->h264_performance)` value
+`--dv-speed=` already uses (Quality picks the codec's own quality mode,
+every other VQ choice - Auto included - picks fast).
+
+**The reported iptvgui/ytgui bug turned out to be the exact same class of
+gap `--mpeg2-speed=` was about to reintroduce if left unfixed - caught
+and fixed for both flags in the same pass.** `append_playback_flags()`
+had already been unconditionally emitting `--dv-speed=` (from the earlier
+DV work), but `mr_play_options_parse()` - the function both `iptvgui` and
+`ytgui` use to re-parse their own inherited launch argv (confirmed via
+grep across `amiga/iptv_gadtools.c`/`iptv_reaction.c`/
+`youtube_gadtools.c`/`youtube_reaction.c`, all four call it) - had never
+been taught the flag. An unrecognized flag makes the whole parse fail
+("invalid playback option"), which is exactly the reported symptom: the
+browser launches `mrplay`/itself with a self-built argv it then can't
+parse back, and hangs waiting for a status port that never reports ready.
+Fixed by adding a recognize-but-discard case for `--dv-speed=` to
+`mr_play_options_parse()` (it carries no information not already present
+in `--h264-speed=`/the struct's own VQ default, so there's nothing to do
+with it but accept it) - and, since `--mpeg2-speed=` was about to be
+emitted unconditionally by the same function for the same reason, its own
+matching parse case was added proactively in the same change, rather than
+waiting to reproduce the identical bug a second time for a second flag.
+User confirmed the report covered `ytgui` too ("ytgui does teh same
+thing") - already covered by construction, since both browsers share this
+one parse function.
+
+`tests/mr_iptv_check.c` gained: direct regression pins for both flags
+(`--dv-speed=fast/quality/bogus`, `--mpeg2-speed=fast/quality/bogus`,
+each checked for accept/accept/reject-with-a-useful-error); a generic
+round-trip test that builds a real `mr_build_iptv_arguments()` string
+from default options, tokenizes it, and re-parses it through
+`mr_play_options_parse()` end to end - a guard against this whole *class*
+of gap (a flag added to the emission side with no matching parse case)
+recurring for some future flag, not just these two; and every existing
+pinned exact-string `mr_build_player_arguments()`/`mr_build_iptv_arguments()`
+assertion elsewhere in the file updated to expect `--mpeg2-speed=`
+alongside the `--dv-speed=` it already expected, in both the fast and
+quality directions.
+
+`make check` (host) and `make check-m68k` (real m68k/big-endian under
+qemu) both pass end to end with the full change in place - the decoder
+logic, the CLI/GUI-launch-string plumbing, and the regression tests all
+verified together, not just the isolated new test in each. `amiga/
+mrplay.c`/`mrgui.c`/`mrgui_gadtools.c` remain Amiga-only and can only be
+reviewed, not compiled or run, on this dev host (see "Validate against
+ffmpeg" above) - the launch-failure fix's actual effect on a real
+iptvgui/ytgui session, and the MPEG-2 Fast mode's real-hardware speedup,
+both still need a real-hardware retest to confirm, the same standing
+caveat as DV's own speed mode before it.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
