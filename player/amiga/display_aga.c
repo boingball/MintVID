@@ -593,7 +593,7 @@ static void *aga_open(int w, int h, const char *title)
     modeid = hires ? HIRES_KEY : LORES_KEY;
     if (lace) modeid |= LACE;
     if (ham) modeid |= HAM;
-    if (ehb) modeid |= EXTRAHALFBRITE;
+    if (ehb) modeid |= EXTRA_HALFBRITE;
     (void)title;
 
     s = (aga_state *)calloc(1, sizeof *s);
