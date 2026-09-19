@@ -1,5 +1,5 @@
 @database "MintVID.guide"
-@$VER: MintVID.guide 1.3 (15.9.2026)
+@$VER: MintVID.guide 1.3 (19.9.2026)
 @author "Darren \"boingball\" Banfi"
 @(c) "2026 Darren Banfi"
 @width 74
@@ -8,7 +8,7 @@
                               MintVID Guide
                               -------------
 
-@{b}MintVID 1.3.1@{ub} - a codec-agnostic video player for accelerated 68k
+@{b}MintVID 1.3.2@{ub} - a codec-agnostic video player for accelerated 68k
 AmigaOS hardware, from 68030-class ECS/AGA systems up to PiStorm/RTG
 machines.
 
@@ -16,7 +16,7 @@ This is the on-Amiga companion to the plain-text MintVID.readme. Pick a
 topic below (click, or press Return on a highlighted link):
 
   @{" Overview "            LINK Overview}
-  @{" What's new in 1.3.1 " LINK WhatsNew}
+  @{" What's new in 1.3.2 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" Video frame policy "   LINK FramePolicy}
@@ -47,7 +47,7 @@ page below also links back here.
 Topics:
 
   @{" Overview "            LINK Overview}
-  @{" What's new in 1.3.1 " LINK WhatsNew}
+  @{" What's new in 1.3.2 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" Video frame policy "   LINK FramePolicy}
@@ -67,50 +67,39 @@ Topics:
 @endnode
 
 
-@node WhatsNew "What's new in 1.3.1"
+@node WhatsNew "What's new in 1.3.2"
 @toc MAIN
-                           What's new in 1.3.1
+                           What's new in 1.3.2
                            -------------------
 
-@{b}MintVID 1.3.1@{ub}
+@{b}MintVID 1.3.2@{ub}
 
-A focused follow-up to 1.3.0, aimed at RTG/Picasso96 systems and a couple
-of real GUI bugs:
+A new-codec-and-stability follow-up to 1.3.1:
 
-  - @{b}P96 hardware video overlay.@{ub} On a board with a real video
-    overlay window (Voodoo3/Permedia/BVision class, typically via Mediator
-    or a PCI/Zorro bridge), the RTG (P96) display now tries to use it
-    automatically - offloading scaling and colourspace conversion to the
-    graphics card instead of the CPU. Confirmed working on real Voodoo3
-    hardware. There is nothing separate to select: P96 falls back to the
-    older direct-write path on its own if a board's driver refuses the
-    hardware overlay.
-  - @{b}P96 now opens windowed, not fullscreen, by default.@{ub} Press
-    @{b}F@{ub} to switch to fullscreen, same as CGX - P96 no longer
-    requires @{i}--fullscreen@{ui} just to open at all. Fullscreen still
-    tries the hardware overlay first, falling back to a software-composited
-    window only if the board refuses it.
-  - @{b}Turbo is now the default H.264 speed@{ub} (was TurboGT). TurboGT's
-    policy has been identical to Turbo's since a correctness fix a few
-    releases back made every degrading H.264 mode use the same
-    all-or-nothing filtering policy - see @{" H.264 performance modes "
-    LINK Controls} for what changed. @{i}--h264-speed=turbogt@{ui} still
-    works, aliased to Turbo, for anyone with it in a script.
-  - Fixed the YouTube-GT browser's Quality and Log controls, which
-    changed the active setting correctly but never visibly updated their
-    own on-screen label.
-  - Fixed the GadTools controller's "Copper 2x" Scale label not showing
-    (the gadget box was too narrow) and a ReAction Scale-chooser greying
-    issue on RTG displays.
-  - @{b}RTG now defaults to P96 over WritePixel.@{ub} Both controllers
-    already picked an RTG display automatically when one was detected, but
-    picked plain WritePixel instead of the faster P96 overlay path - fixed
-    to prefer P96, then WritePixel, then AGA/HAM.
-  - @{b}The controller now remembers your last settings.@{ub} Display
-    mode, C2P, H.264 speed, audio options, Scale and the Video frame
-    policy are saved to @{i}ENVARC:MintVID.settings@{ui} as you change
-    them and restored on the next launch - previously every relaunch
-    reset back to the same defaults.
+  - @{b}DV (IEC 61834/SMPTE 314M) decoder.@{ub} Native support for PAL
+    4:2:0 and NTSC/DVCPRO 4:1:1 camcorder footage, with a Fast (DC-only
+    coefficients) speed mode for roughly 1.9x faster decode on slow
+    targets - see @{" Codec support list " LINK CodecList}.
+  - @{b}Extra Half-Brite (EHB) display mode.@{ub} A new chipset display
+    option for ECS/OCS systems, alongside AGA/HAM6/HAM8/CGX, with an
+    exact two-cube colour quantizer and its own Kalms C2P path.
+  - @{b}MPEG-1/2 Fast speed mode.@{ub} Skips B-picture decode entirely -
+    always safe, since a B picture is never referenced by a later picture
+    in this format.
+  - @{b}Unified Video Quality (VQ) control.@{ub} The H.264 performance
+    chooser in both GUIs (see @{" H.264 performance modes " LINK
+    Controls}) now also drives DV and MPEG-1/2 speed: Quality selects
+    each codec's own full-quality path, every other setting picks fast.
+  - @{b}Real-hardware crash fix.@{ub} A Guru @{i}8000000B@{ui} on pressing
+    Play, on any file - traced to @{i}mrplay@{ui} linking @{i}-lm@{ui}
+    for code that never needed it, which on the real toolchain silently
+    swapped in an FPU-dependent variant of an unrelated shared runtime
+    helper for the whole binary. @{i}-lm@{ui} is no longer linked.
+  - @{b}CGX@{ub} now gets the same native-resolution-or-downscale
+    fullscreen policy P96 already had.
+  - Fixed @{i}iptvgui@{ui}/@{i}ytgui@{ui} failing to launch with "invalid
+    playback option", and the default @{i}CPU=68060@{ui} @{i}mrplay@{ui}
+    build not actually linking MintAMP's accelerated polyphase kernel.
 
 Performance still depends on the exact CPU, source, codec, resolution,
 audio and display mode. A supported format is not automatically a
@@ -209,8 +198,8 @@ out on its own.
 
 @{b}Playing a video@{ub}
 
-Run the controller, choose a movie, and select a display mode: AGA, HAM6,
-HAM8, or CGX. Laced and 2x apply to the three chipset modes; CGX playback
+Run the controller, choose a movie, and select a display mode: AGA, EHB,
+HAM6, HAM8, or CGX. Laced and 2x apply to the chipset modes; CGX playback
 opens a size-gadget window and scales the video as that window is resized.
 The C2P chooser selects the standard graphics.library path, CD32 Akiko
 hardware, or the Kalms converter for chipset playback (it is disabled for
@@ -648,8 +637,9 @@ HTTP(S)/HLS URLs (including live IPTV playlists and YouTube).
 @{b}Video codecs@{ub}: Cinepak, Microsoft Video 1, Microsoft RLE8,
 uncompressed UYVY422, H.263 / H.263+, Motion-JPEG, MPEG-1, MPEG-2 (with
 B-frames), MPEG-4 Part 2 (ISO ASP and Microsoft MP42/DIV2), Windows Media
-Video 7 (WMV1), Windows Media Video 8 (WMV2), and H.264/AVC Baseline/Main/
-High Profile.
+Video 7 (WMV1), Windows Media Video 8 (WMV2), H.264/AVC Baseline/Main/
+High Profile, and DV (IEC 61834/SMPTE 314M, PAL 4:2:0 and NTSC/DVCPRO
+4:1:1).
 
 WMV1's low-bitrate spatial intra/inter prediction mode is deliberately
 rejected rather than approximated. WMV2 IntraX8 (J-frame) coding is also
@@ -708,6 +698,8 @@ ffmpeg and/or real m68k hardware, not a speed guarantee - see
                                     explicitly rejected
   Raw UYVY422 (2vuy/UYVY)           accepted, uncompressed QuickTime/MOV
   H.264 High Profile (avc1)         accepted, libavc, CABAC + B-frames
+  DV (IEC 61834/SMPTE 314M)         accepted, PAL 4:2:0 + NTSC/DVCPRO
+                                    4:1:1, native libdv-derived decoder
   H.261, Indeo 3, Sorenson 1, VP3   not supported (Indeo/Sorenson/VP3
                                     planned)
 
