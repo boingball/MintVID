@@ -5,8 +5,11 @@
  * red/green/blue contribution once per pair removes four multiplications per
  * pixel pair while remaining byte-identical to the original scalar formula.
  *
- * The four remaining multiplications (298*luma, 409*e, -100*d, -208*e) are
- * themselves replaced with 256-entry lookup tables, built once on first use.
+ * The five remaining multiplications (298*luma, 409*e, -100*d, -208*e,
+ * 516*d) are themselves replaced with 256-entry lookup tables, built once on
+ * first use.  The luma table is indexed by the raw Y byte and folds in the
+ * limited-range Y-16 clamp; the chroma tables fold in the three +128 rounding
+ * biases.  That keeps both corrections out of the per-pixel/per-quad loops.
  * A 68030 without a fast integer multiplier spends far more cycles on MULU.L
  * than on a table read, and every coefficient here is applied to an 8-bit
  * input, so the table approach is exact - not an approximation - for every
@@ -59,12 +62,14 @@ static void build_tables(void)
 {
     int i;
     for (i = 0; i < 256; i++) {
+        int y = i - 16;
         int d = i - 128, e = i - 128;
-        g_luma_x298[i] = 298 * i;
-        g_e_x409[i] = 409 * e;
-        g_d_xm100[i] = -100 * d;
+        if (y < 0) y = 0;
+        g_luma_x298[i] = 298 * y;
+        g_e_x409[i] = 409 * e + 128;
+        g_d_xm100[i] = -100 * d + 128;
         g_e_xm208[i] = -208 * e;
-        g_d_x516[i] = 516 * d;
+        g_d_x516[i] = 516 * d + 128;
     }
     g_tables_ready = 1;
 }
@@ -88,9 +93,7 @@ static uint8_t clip8(int value)
 MR_YUV_INLINE void emit_pixel(uint8_t *dst, int luma, int red_add,
                               int green_add, int blue_add, int ri, int bi)
 {
-    int scaled_y;
-    if (luma < 0) luma = 0;
-    scaled_y = g_luma_x298[luma];
+    int scaled_y = g_luma_x298[(unsigned)luma];
     dst[ri] = clip8((scaled_y + red_add) >> 8);
     dst[1]  = clip8((scaled_y + green_add) >> 8);
     dst[bi] = clip8((scaled_y + blue_add) >> 8);
@@ -134,26 +137,26 @@ MR_YUV_INLINE void yuv420_to_packed24(uint8_t *dst, int dst_stride,
 
         for (x = 0; x + 1 < width; x += 2) {
             unsigned uu = su[x >> 1], vv = sv[x >> 1];
-            int red_add = g_e_x409[vv] + 128;
-            int green_add = g_d_xm100[uu] + g_e_xm208[vv] + 128;
-            int blue_add = g_d_x516[uu] + 128;
-            emit_pixel(o0 + x * 3, (int)y0[x] - 16,
+            int red_add = g_e_x409[vv];
+            int green_add = g_d_xm100[uu] + g_e_xm208[vv];
+            int blue_add = g_d_x516[uu];
+            emit_pixel(o0 + x * 3, y0[x],
                        red_add, green_add, blue_add, ri, bi);
-            emit_pixel(o0 + (x + 1) * 3, (int)y0[x + 1] - 16,
+            emit_pixel(o0 + (x + 1) * 3, y0[x + 1],
                        red_add, green_add, blue_add, ri, bi);
-            emit_pixel(o1 + x * 3, (int)y1[x] - 16,
+            emit_pixel(o1 + x * 3, y1[x],
                        red_add, green_add, blue_add, ri, bi);
-            emit_pixel(o1 + (x + 1) * 3, (int)y1[x + 1] - 16,
+            emit_pixel(o1 + (x + 1) * 3, y1[x + 1],
                        red_add, green_add, blue_add, ri, bi);
         }
         if (x < width) {
             unsigned uu = su[x >> 1], vv = sv[x >> 1];
-            int red_add = g_e_x409[vv] + 128;
-            int green_add = g_d_xm100[uu] + g_e_xm208[vv] + 128;
-            int blue_add = g_d_x516[uu] + 128;
-            emit_pixel(o0 + x * 3, (int)y0[x] - 16,
+            int red_add = g_e_x409[vv];
+            int green_add = g_d_xm100[uu] + g_e_xm208[vv];
+            int blue_add = g_d_x516[uu];
+            emit_pixel(o0 + x * 3, y0[x],
                        red_add, green_add, blue_add, ri, bi);
-            emit_pixel(o1 + x * 3, (int)y1[x] - 16,
+            emit_pixel(o1 + x * 3, y1[x],
                        red_add, green_add, blue_add, ri, bi);
         }
         /* Unchanged service cadence: the old loop could only fire on an odd
@@ -169,10 +172,10 @@ MR_YUV_INLINE void yuv420_to_packed24(uint8_t *dst, int dst_stride,
         int x;
         for (x = 0; x < width; x++) {
             unsigned uu = su[x >> 1], vv = sv[x >> 1];
-            emit_pixel(out + x * 3, (int)src_y[x] - 16,
-                       g_e_x409[vv] + 128,
-                       g_d_xm100[uu] + g_e_xm208[vv] + 128,
-                       g_d_x516[uu] + 128, ri, bi);
+            emit_pixel(out + x * 3, src_y[x],
+                       g_e_x409[vv],
+                       g_d_xm100[uu] + g_e_xm208[vv],
+                       g_d_x516[uu], ri, bi);
         }
         if (service && (row & 15) == 15) service(service_opaque);
     }

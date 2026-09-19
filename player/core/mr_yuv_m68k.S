@@ -16,14 +16,17 @@
  * U/V are 4:2:0 subsampled, so each chroma sample pair (uu, vv) is shared
  * by two horizontally-adjacent luma samples AND by two picture rows
  * (chroma row = luma row >> 1). Per pixel:
- *   scaled_y = 298 * (Y - 16), Y-16 clamped to >= 0
+ *   scaled_y = luma_x298[Y], whose table builder folds in
+ *              298 * max(Y - 16, 0)
  *   R = clip8((scaled_y + 409*(V-128)          + 128) >> 8)
  *   G = clip8((scaled_y - 100*(U-128) - 208*(V-128) + 128) >> 8)
  *   B = clip8((scaled_y + 516*(U-128)          + 128) >> 8)
  * All five products are pre-multiplied into 256-entry tables by
  * build_tables() in mr_yuv.c (no fast integer multiplier on 68030 - a
- * table read beats MULU.L/MULS.L for values applied to an 8-bit input);
- * this function only ever indexes those tables, never multiplies.
+ * table read beats MULU.L/MULS.L for values applied to an 8-bit input).
+ * That builder also folds the Y-16 clamp into the luma table and one +128
+ * rounding bias into each channel's chroma table, so neither correction is
+ * repeated in this hot loop.  This function only indexes and adds tables.
  *
  * This walks the picture a ROW PAIR at a time, emitting the whole 2x2 quad
  * a chroma sample covers before moving on. It used to walk single rows,
@@ -104,12 +107,9 @@
 	move.b	%d4,(\disp,%a1,%d7.l)
 	.endm
 
-/* scaled_y = luma_x298[clamp(Y-16, 0, ..)] into d5. */
+/* scaled_y = luma_x298[raw Y] into d5; the table includes Y-16 + clamp. */
 	.macro	MR_YUV_SCALED
-	sub.l	#16,%d6
-	bge.b	8f
-	moveq	#0,%d6
-8:	move.l	(%a5,%d6.l*4),%d5
+	move.l	(%a5,%d6.l*4),%d5
 	.endm
 
 /* One RGB triple of row 0: Y from (%a0)+, R/G/B to (%a1)+. */
@@ -138,7 +138,6 @@
 	clr.l	%d6
 	move.b	(%a2)+,%d6		/* uu */
 	move.l	(%a6,%d6.l*4),%d4	/* d_x516[uu] */
-	add.l	#128,%d4
 	move.l	%d4,8(%sp)		/* blue_add */
 	movea.l	116(%sp),%a4		/* d_xm100 */
 	move.l	(%a4,%d6.l*4),%d4
@@ -146,11 +145,9 @@
 	move.b	(%a3)+,%d6		/* vv */
 	movea.l	120(%sp),%a4		/* e_xm208 */
 	add.l	(%a4,%d6.l*4),%d4
-	add.l	#128,%d4
 	move.l	%d4,4(%sp)		/* green_add */
 	movea.l	112(%sp),%a4		/* e_x409 */
 	move.l	(%a4,%d6.l*4),%d4
-	add.l	#128,%d4
 	move.l	%d4,0(%sp)		/* red_add */
 	.endm
 
