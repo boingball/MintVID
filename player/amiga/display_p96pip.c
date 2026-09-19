@@ -731,6 +731,19 @@ static unsigned char clamp_byte(int v)
     return (unsigned char)v;
 }
 
+/* Never emits a literal 0 or 255 byte - see core/mr_yuv.c's comment on
+ * mr_yuv420_to_y4u2v2() for why (real hardware showed black wrapping to
+ * white when this path emitted the true full-range extremes). Used only
+ * for this backend's own Y4U2V2 encode; the plain clamp_byte() above is
+ * still used everywhere else in this file (window content that isn't
+ * itself packed Y4U2V2). */
+static unsigned char clamp_byte_full(int v)
+{
+    if (v < 1) return 1;
+    if (v > 254) return 254;
+    return (unsigned char)v;
+}
+
 /* Correctness fallback for RGB-only decoders. The performance path never
  * calls this: H.264/MPEG-2 queue RGBFB_Y4U2V2 directly.
  *
@@ -740,15 +753,14 @@ static unsigned char clamp_byte(int v)
  * core/mr_yuv.c's mr_yuv420_to_y4u2v2(), the other producer of this same
  * buffer layout - both must agree).
  *
- * The RGB->YCbCr coefficients below are the ordinary studio-range matrix,
- * matching mr_yuv.c's own mr_yuv420_to_rgb24(). A full-range variant was
- * tried here (and in mr_yuv420_to_y4u2v2()) on the strength of a synthetic
- * colour-bar test showing this path pastel next to a correct WritePixel -
- * but reverted after real video showed severe white/black clipping instead
- * (confirmed via a real-hardware A/B: WritePixel and CGX fullscreen both
- * clean on the same clip, only this backend's own overlay path affected) -
- * see core/mr_yuv.c's comment on mr_yuv420_to_y4u2v2() for the full
- * account. */
+ * The RGB->YCbCr coefficients below are the full-range (PC/JPEG) matrix,
+ * matching mr_yuv420_to_y4u2v2()'s own near-full-range rescale - not the
+ * studio-range one mr_yuv420_to_rgb24() uses. clamp_byte_full() (not the
+ * plain clamp_byte() above) keeps every emitted byte inside [1,254],
+ * matching that function's own MR_YUV_FULL_LO/HI safety margin against
+ * real hardware black-wrapping-to-white at the true numeric extremes - see
+ * core/mr_yuv.c's comment on mr_yuv420_to_y4u2v2() for the full three-round
+ * account this margin exists because of. */
 static int write_rgb_rows(struct BitMap *bm, int y0,
                           const unsigned char *src, int src_stride,
                           int w, int rows, int src_is_bgr)
@@ -778,14 +790,14 @@ static int write_rgb_rows(struct BitMap *bm, int y0,
             int g = (g0 + g1 + 1) >> 1;
             int b = (b0 + b1 + 1) >> 1;
 
-            dst_pair[0] = clamp_byte(
-                ((66 * r0 + 129 * g0 + 25 * b0 + 128) >> 8) + 16);
-            dst_pair[1] = clamp_byte(
-                ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
-            dst_pair[2] = clamp_byte(
-                ((66 * r1 + 129 * g1 + 25 * b1 + 128) >> 8) + 16);
-            dst_pair[3] = clamp_byte(
-                ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
+            dst_pair[0] = clamp_byte_full(
+                (77 * r0 + 150 * g0 + 29 * b0 + 128) >> 8);
+            dst_pair[1] = clamp_byte_full(
+                ((128 * r - 107 * g - 21 * b + 128) >> 8) + 128);
+            dst_pair[2] = clamp_byte_full(
+                (77 * r1 + 150 * g1 + 29 * b1 + 128) >> 8);
+            dst_pair[3] = clamp_byte_full(
+                ((-43 * r - 85 * g + 128 * b + 128) >> 8) + 128);
             src_pixel += 6;
             dst_pair += 4;
         }
