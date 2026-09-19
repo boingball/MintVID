@@ -26,4 +26,16 @@ void mr_yuv420_to_bgr24(uint8_t *dst, int dst_stride,
                         int width, int height,
                         mr_yuv_service_fn service, void *service_opaque);
 
+/* Repack planar 4:2:0 as the packed 4:2:2 byte layout used by RiVA's
+ * Picasso96 PIP path: Y0,U0,Y1,V0 for each horizontal pixel pair.  No colour
+ * conversion is performed; each 4:2:0 chroma row is reused for both of its
+ * luma rows.  Hardware PIP surfaces are pair-based, so width must be even.
+ * Returns non-zero on success. */
+int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
+                        const uint8_t *y_plane, int y_stride,
+                        const uint8_t *u_plane, int u_stride,
+                        const uint8_t *v_plane, int v_stride,
+                        int width, int height,
+                        mr_yuv_service_fn service, void *service_opaque);
+
 #endif /* MR_YUV_H */

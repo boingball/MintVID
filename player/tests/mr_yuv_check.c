@@ -105,6 +105,45 @@ static int run_case(int width, int height, unsigned seed)
     return ok;
 }
 
+static int check_y4u2v2(void)
+{
+    enum { W = 6, H = 3, YS = 8, CS = 4, DS = 15 };
+    static const uint8_t y[H * YS] = {
+        1, 2, 3, 4, 5, 6, 0xee, 0xee,
+        7, 8, 9, 10, 11, 12, 0xee, 0xee,
+        13, 14, 15, 16, 17, 18, 0xee, 0xee
+    };
+    static const uint8_t u[2 * CS] = { 21, 22, 23, 0xee, 31, 32, 33, 0xee };
+    static const uint8_t v[2 * CS] = { 41, 42, 43, 0xee, 51, 52, 53, 0xee };
+    static const uint8_t expected[H][W * 2] = {
+        { 1, 21, 2, 41, 3, 22, 4, 42, 5, 23, 6, 43 },
+        { 7, 21, 8, 41, 9, 22, 10, 42, 11, 23, 12, 43 },
+        { 13, 31, 14, 51, 15, 32, 16, 52, 17, 33, 18, 53 }
+    };
+    uint8_t out[H * DS];
+    int row;
+
+    memset(out, 0xa5, sizeof out);
+    if (!mr_yuv420_to_y4u2v2(out, DS, y, YS, u, CS, v, CS,
+                             W, H, NULL, NULL)) {
+        fprintf(stderr, "Y4U2V2 conversion rejected valid input\n");
+        return 0;
+    }
+    for (row = 0; row < H; row++) {
+        if (memcmp(out + row * DS, expected[row], W * 2) != 0 ||
+            out[row * DS + W * 2] != 0xa5) {
+            fprintf(stderr, "Y4U2V2 mismatch on row %d\n", row);
+            return 0;
+        }
+    }
+    if (mr_yuv420_to_y4u2v2(out, DS, y, YS, u, CS, v, CS,
+                            W - 1, H, NULL, NULL)) {
+        fprintf(stderr, "Y4U2V2 accepted an odd width\n");
+        return 0;
+    }
+    return 1;
+}
+
 static void count_service(void *opaque)
 {
     (*(int *)opaque)++;
@@ -183,6 +222,7 @@ int main(void)
         for (j = 0; j < sizeof heights / sizeof heights[0]; j++)
             if (!run_case(widths[i], heights[j], 0x4d525956U + i * 31 + j))
                 return 1;
+    if (!check_y4u2v2()) return 1;
     memset(y, 16, sizeof y); memset(u, 128, sizeof u); memset(v, 128, sizeof v);
     mr_yuv420_to_rgb24(rgb, 3, y, 1, u, 1, v, 1, 1, 33,
                        count_service, &services);
@@ -193,6 +233,6 @@ int main(void)
 #if defined(MR_M68K_ASM)
     check_yuv_service_clobber();
 #endif
-    puts("YUV420 paired-pixel conversion: byte-exact");
+    puts("YUV420 RGB/BGR and Y4U2V2 conversion: byte-exact");
     return 0;
 }

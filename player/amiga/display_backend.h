@@ -23,6 +23,12 @@ typedef struct {
     void  (*show_bgr)(void *handle, const unsigned char *bgr, int w, int h,
                       int stride, int dy0, int dy1,
                       mr_display_service_fn service, void *service_opaque);
+    /* Optional packed P96 Y4U2V2 input (Y0,U0,Y1,V0 per pixel pair).
+     * Used by the P96 PIP backend so H.264/MPEG-2 can retain YUV all the way
+     * from the decoder to the overlay surface. */
+    void  (*show_yuv422)(void *handle, const unsigned char *yuv, int w, int h,
+                         int stride, int dy0, int dy1,
+                         mr_display_service_fn service, void *service_opaque);
     int   (*timing)(void *handle, mr_display_timing *timing);
     int   (*poll)(void *handle);
     void  (*close)(void *handle);
@@ -62,6 +68,7 @@ typedef struct {
     int   (*supports_yuv_indexed)(void *handle, int src_w, int src_h,
                                   int *dst_w, int *dst_h, int *vscale,
                                   int *indexed_depth, int *ham);
+    int   (*supports_yuv422)(void *handle);
 } display_backend;
 
 extern const display_backend backend_cgx;

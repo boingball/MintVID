@@ -259,3 +259,34 @@ void mr_yuv420_to_bgr24(uint8_t *dst, int dst_stride,
                        v_plane, v_stride, width, height, service,
                        service_opaque, 2, 0);
 }
+
+int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
+                        const uint8_t *y_plane, int y_stride,
+                        const uint8_t *u_plane, int u_stride,
+                        const uint8_t *v_plane, int v_stride,
+                        int width, int height,
+                        mr_yuv_service_fn service, void *service_opaque)
+{
+    int row;
+    if (!dst || !y_plane || !u_plane || !v_plane ||
+        width <= 0 || height <= 0 || (width & 1) ||
+        dst_stride < width * 2)
+        return 0;
+
+    for (row = 0; row < height; row++) {
+        const uint8_t *sy = y_plane + (size_t)row * (size_t)y_stride;
+        const uint8_t *su = u_plane + (size_t)(row >> 1) * (size_t)u_stride;
+        const uint8_t *sv = v_plane + (size_t)(row >> 1) * (size_t)v_stride;
+        uint8_t *out = dst + (size_t)row * (size_t)dst_stride;
+        int x;
+        for (x = 0; x < width; x += 2) {
+            out[0] = sy[x];
+            out[1] = su[x >> 1];
+            out[2] = sy[x + 1];
+            out[3] = sv[x >> 1];
+            out += 4;
+        }
+        if (service && (row & 15) == 15) service(service_opaque);
+    }
+    return 1;
+}

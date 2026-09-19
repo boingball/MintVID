@@ -151,6 +151,20 @@ void display_show_bgr24(amiga_display *d, const unsigned char *bgr,
                         d->service, d->service_opaque);
 }
 
+int display_supports_yuv422(amiga_display *d)
+{
+    return d && d->be->show_yuv422 && d->be->supports_yuv422 &&
+           d->be->supports_yuv422(d->h);
+}
+
+void display_show_yuv422(amiga_display *d, const unsigned char *yuv,
+                         int w, int h, int stride, int dy0, int dy1)
+{
+    if (d && d->be->show_yuv422)
+        d->be->show_yuv422(d->h, yuv, w, h, stride, dy0, dy1,
+                           d->service, d->service_opaque);
+}
+
 void display_set_service(amiga_display *d, mr_display_service_fn fn,
                          void *opaque)
 {

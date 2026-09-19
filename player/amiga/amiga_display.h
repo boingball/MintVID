@@ -202,6 +202,12 @@ int display_supports_bgr24(amiga_display *d);
 void display_show_bgr24(amiga_display *d, const unsigned char *bgr,
                         int w, int h, int stride, int dy0, int dy1);
 
+/* Packed Picasso96 Y4U2V2 path (Y0,U0,Y1,V0 for each horizontal pair).
+ * Only the P96 overlay backend exposes it, and only for even source widths. */
+int display_supports_yuv422(amiga_display *d);
+void display_show_yuv422(amiga_display *d, const unsigned char *yuv,
+                         int w, int h, int stride, int dy0, int dy1);
+
 /* Non-zero when `d` can accept a pre-dithered indexed frame via
  * display_show_indexed() instead of RGB24 via display_show_rgb() - true
  * only for the AGA backend's plain indexed configuration (see
