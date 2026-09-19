@@ -202,6 +202,22 @@ int display_supports_bgr24(amiga_display *d);
 void display_show_bgr24(amiga_display *d, const unsigned char *bgr,
                         int w, int h, int stride, int dy0, int dy1);
 
+/* Packed Picasso96 Y4U2V2 path (Y,chroma,Y,chroma for each horizontal pair -
+ * see core/mr_yuv.c's mr_yuv420_to_y4u2v2() for the real chroma order).
+ * display_supports_yuv422() reports whether the *currently active* backend
+ * implements this natively (only the P96 PIP overlay backend does, and
+ * only for even source widths) - but display_show_yuv422() itself always
+ * works regardless: if the active backend switched away from that overlay
+ * mid-session (display.c's switch_to_cgx_fallback(), see
+ * display_toggle_fullscreen() below), display_show_yuv422() converts to
+ * RGB24 in software and forwards to the new backend's ordinary show(), so
+ * a caller that decided once at startup to feed this format never needs
+ * to unwind that decision just because the display backend changed
+ * underneath it. */
+int display_supports_yuv422(amiga_display *d);
+void display_show_yuv422(amiga_display *d, const unsigned char *yuv,
+                         int w, int h, int stride, int dy0, int dy1);
+
 /* Non-zero when `d` can accept a pre-dithered indexed frame via
  * display_show_indexed() instead of RGB24 via display_show_rgb() - true
  * only for the AGA backend's plain indexed configuration (see
@@ -230,6 +246,13 @@ int display_supports_yuv_indexed(amiga_display *d, int src_w, int src_h,
                                  int *indexed_depth, int *ham);
 void display_set_service(amiga_display *d, mr_display_service_fn fn,
                          void *opaque);
+/* Take the active backend to/from fullscreen. Returns 1 on success, 0 on
+ * failure. A backend that cannot honour fullscreen itself but rolled back
+ * to a working windowed state (display_backend.h's toggle_fullscreen
+ * return value 2, currently only backend_p96pip) is handled transparently
+ * here: this function attempts display.c's CGX fallback and still returns
+ * 1/0 for success/failure of the *overall* request, never leaking the
+ * internal sentinel to callers. */
 int display_rtg_frame_timing(amiga_display *d, mr_display_timing *timing);
 int display_toggle_fullscreen(amiga_display *d);
 
@@ -241,7 +264,14 @@ enum {
     MR_EV_SEEK_FWD,      /* cursor right                                   */
     MR_EV_SEEK_BACK,     /* cursor left                                    */
     MR_EV_VOLUME_UP,     /* cursor up                                      */
-    MR_EV_VOLUME_DOWN    /* cursor down                                    */
+    MR_EV_VOLUME_DOWN,   /* cursor down                                    */
+    /* Internal: a backend's own poll() (e.g. backend_p96pip's F-key
+     * handler) can return this to ask display_poll_event() to perform
+     * display.c's CGX fallback (see display_backend.h's toggle_fullscreen
+     * doc and display.c's switch_to_cgx_fallback()).  display_poll_event()
+     * always handles and consumes it before returning - callers of
+     * display_poll_event() never see this value. */
+    MR_EV_RENDERER_SWITCH
 };
 
 /* Non-blocking: returns the most significant queued input event (QUIT wins). */

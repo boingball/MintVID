@@ -105,6 +105,125 @@ static int run_case(int width, int height, unsigned seed)
     return ok;
 }
 
+/* Chroma order is V-then-U (slots 1 and 3), not the U-then-V the RGBFB_
+ * Y4U2V2 name implies - see mr_yuv.c's mr_yuv420_to_y4u2v2() for why: real
+ * Voodoo3/P96 2.x hardware was confirmed to expect it swapped. Y/Cb/Cr are
+ * also rescaled from studio (limited) range to full (PC/JPEG) range - see
+ * the same function's comment for the real-hardware "pastel overlay vs
+ * correct WritePixel" finding that motivated it. Expected values below are
+ * mr_yuv.c's own studio->full rescale (round((sample-16)*255/219) for
+ * luma, round((sample-128)*255/224)+128 for chroma, both clamped to
+ * 0..255) applied by hand to studio-range test input - not a passthrough
+ * of the raw bytes any more. Test data intentionally spans the studio
+ * range's black floor (16) and white ceiling (235/240), where the rescale
+ * clips, alongside mid-range values, rather than small arbitrary numbers
+ * that would all clip to 0 and not actually exercise the scaling. */
+static int check_y4u2v2(void)
+{
+    enum { W = 6, H = 3, YS = 8, CS = 4, DS = 15 };
+    static const uint8_t y[H * YS] = {
+        16, 50, 100, 150, 200, 235, 0xee, 0xee,
+        20, 60, 110, 160, 210, 235, 0xee, 0xee,
+        24, 70, 120, 170, 220, 235, 0xee, 0xee
+    };
+    static const uint8_t u[2 * CS] = { 16, 128, 240, 0xee, 64, 192, 128, 0xee };
+    static const uint8_t v[2 * CS] = { 240, 128, 16, 0xee, 32, 160, 96, 0xee };
+    static const uint8_t expected[H][W * 2] = {
+        { 0, 255, 40, 0, 98, 128, 156, 128, 214, 0, 255, 255 },
+        { 5, 255, 51, 0, 109, 128, 168, 128, 226, 0, 255, 255 },
+        { 9, 19, 63, 55, 121, 164, 179, 201, 238, 92, 255, 128 }
+    };
+    uint8_t out[H * DS];
+    int row;
+
+    memset(out, 0xa5, sizeof out);
+    if (!mr_yuv420_to_y4u2v2(out, DS, y, YS, u, CS, v, CS,
+                             W, H, NULL, NULL)) {
+        fprintf(stderr, "Y4U2V2 conversion rejected valid input\n");
+        return 0;
+    }
+    for (row = 0; row < H; row++) {
+        if (memcmp(out + row * DS, expected[row], W * 2) != 0 ||
+            out[row * DS + W * 2] != 0xa5) {
+            fprintf(stderr, "Y4U2V2 mismatch on row %d\n", row);
+            return 0;
+        }
+    }
+    if (mr_yuv420_to_y4u2v2(out, DS, y, YS, u, CS, v, CS,
+                            W - 1, H, NULL, NULL)) {
+        fprintf(stderr, "Y4U2V2 accepted an odd width\n");
+        return 0;
+    }
+    return 1;
+}
+
+/* mr_y4u2v2_to_rgb24() is display.c's software fallback for a backend that
+ * switched away from the P96 PIP overlay mid-session (switch_to_cgx_
+ * fallback()) and so has no show_yuv422 of its own. Round-trip planar
+ * 4:2:0 through mr_yuv420_to_y4u2v2() and compare against
+ * mr_yuv420_to_rgb24() run directly on the same source planes - not for
+ * bit-exactness (mr_yuv.h documents why the studio->full->studio-implied
+ * round trip isn't exact: two independently-rounded rescales), but for a
+ * small, bounded per-channel difference. A gross mismatch (chroma
+ * swapped/dropped, wrong matrix) would blow well past this tolerance;
+ * ordinary rounding drift from a double rescale does not. Only exercisable
+ * for even widths, matching the format's own pair-based constraint. */
+static int check_y4u2v2_to_rgb24(void)
+{
+    enum { W = 8, H = 4, TOLERANCE = 3 };
+    /* Sized exactly to the W/2 stride actually passed to every call below -
+     * W and H are both even here, so no padding row/column is needed; an
+     * earlier "+1" on both dimensions (copied from an unrelated padding
+     * convention elsewhere in this file) mismatched the real per-row
+     * stride against the W/2 argument passed to these functions, so both
+     * conversions below silently read one chroma sample off - consistent
+     * between them under an exact memcmp (the same wrong bytes, read the
+     * same wrong way, on both sides), but not once the full-range rescale
+     * made an exact match the wrong bar in the first place. Caught by
+     * that discrepancy, not by inspection. */
+    uint8_t y[H][W], u[H / 2][W / 2], v[H / 2][W / 2];
+    uint8_t packed[H][W * 2], direct[H][W * 3], via_packed[H][W * 3];
+    unsigned seed = 0x59345556U;
+    int row, col, i;
+
+    for (row = 0; row < H; row++)
+        for (col = 0; col < W; col++)
+            /* Studio-range luma only (16-235) - out-of-range bytes are not
+             * real decoder output and would clip asymmetrically against
+             * the tolerance below for no useful reason. */
+            y[row][col] = (uint8_t)(16 + (next_value(&seed) >> 24) % 220);
+    for (row = 0; row < H / 2; row++)
+        for (col = 0; col < W / 2; col++) {
+            u[row][col] = (uint8_t)(16 + (next_value(&seed) >> 24) % 225);
+            v[row][col] = (uint8_t)(16 + (next_value(&seed) >> 24) % 225);
+        }
+
+    mr_yuv420_to_rgb24(&direct[0][0], W * 3, &y[0][0], W, &u[0][0], W / 2,
+                       &v[0][0], W / 2, W, H, NULL, NULL);
+    if (!mr_yuv420_to_y4u2v2(&packed[0][0], W * 2, &y[0][0], W, &u[0][0],
+                             W / 2, &v[0][0], W / 2, W, H, NULL, NULL)) {
+        fprintf(stderr, "Y4U2V2 round-trip: pack step failed\n");
+        return 0;
+    }
+    if (!mr_y4u2v2_to_rgb24(&via_packed[0][0], W * 3, &packed[0][0], W * 2,
+                            W, H)) {
+        fprintf(stderr, "Y4U2V2 round-trip: unpack step failed\n");
+        return 0;
+    }
+    for (i = 0; i < (int)sizeof direct; i++) {
+        int d = (int)((uint8_t *)direct)[i] - (int)((uint8_t *)via_packed)[i];
+        if (d < 0) d = -d;
+        if (d > TOLERANCE) {
+            fprintf(stderr, "Y4U2V2 round-trip: byte %d differs by %d "
+                            "(direct=%d via_packed=%d), exceeds tolerance "
+                            "%d\n", i, d, ((uint8_t *)direct)[i],
+                            ((uint8_t *)via_packed)[i], TOLERANCE);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static void count_service(void *opaque)
 {
     (*(int *)opaque)++;
@@ -142,12 +261,14 @@ static void check_yuv_service_clobber(void)
     int i, services = 0;
 
     for (i = 0; i < 256; i++) {
+        int y = i - 16;
         int d = i - 128, e = i - 128;
-        luma_x298[i] = 298 * i;
-        e_x409[i] = 409 * e;
-        d_xm100[i] = -100 * d;
+        if (y < 0) y = 0;
+        luma_x298[i] = 298 * y;
+        e_x409[i] = 409 * e + 128;
+        d_xm100[i] = -100 * d + 128;
         e_xm208[i] = -208 * e;
-        d_x516[i] = 516 * d;
+        d_x516[i] = 516 * d + 128;
     }
     for (i = 0; i < (int)sizeof yp; i++) yp[i] = (uint8_t)(next_value(&seed) >> 24);
     for (i = 0; i < (int)sizeof up; i++) up[i] = (uint8_t)(next_value(&seed) >> 24);
@@ -183,6 +304,8 @@ int main(void)
         for (j = 0; j < sizeof heights / sizeof heights[0]; j++)
             if (!run_case(widths[i], heights[j], 0x4d525956U + i * 31 + j))
                 return 1;
+    if (!check_y4u2v2()) return 1;
+    if (!check_y4u2v2_to_rgb24()) return 1;
     memset(y, 16, sizeof y); memset(u, 128, sizeof u); memset(v, 128, sizeof v);
     mr_yuv420_to_rgb24(rgb, 3, y, 1, u, 1, v, 1, 1, 33,
                        count_service, &services);
@@ -193,6 +316,6 @@ int main(void)
 #if defined(MR_M68K_ASM)
     check_yuv_service_clobber();
 #endif
-    puts("YUV420 paired-pixel conversion: byte-exact");
+    puts("YUV420 RGB/BGR and Y4U2V2 conversion: byte-exact");
     return 0;
 }

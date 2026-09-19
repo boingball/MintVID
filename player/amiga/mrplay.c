@@ -572,6 +572,9 @@ typedef struct playback_stats {
     uint64_t yuv_rgb_us;
     unsigned long yuv_rgb_max_us;
     unsigned yuv_rgb_frames;
+    uint64_t yuv_overlay_us;
+    unsigned long yuv_overlay_max_us;
+    unsigned yuv_overlay_frames;
     uint64_t micro_rescue_us;
     unsigned long micro_rescue_max_us;
     unsigned micro_rescue_entries, micro_rescue_frames_skipped;
@@ -638,6 +641,7 @@ typedef struct video_presenter {
     int                  use_indexed;
     /* P96 native BGR queue: present with display_show_bgr24(). */
     int                  use_bgr;
+    int                  use_yuv422;
 } video_presenter;
 
 typedef struct scheduler_trace {
@@ -749,6 +753,9 @@ static void present_service_frame(video_presenter *vp)
     else if (vp->use_bgr)
         display_show_bgr24(vp->disp, front->rgb, front->width, front->height,
                            front->stride, front->dirty_y0, front->dirty_y1);
+    else if (vp->use_yuv422)
+        display_show_yuv422(vp->disp, front->rgb, front->width, front->height,
+                            front->stride, front->dirty_y0, front->dirty_y1);
     else
         display_show_rgb(vp->disp, front->rgb, front->width, front->height,
                          front->stride, front->dirty_y0, front->dirty_y1);
@@ -1026,6 +1033,42 @@ static int queue_copy_yuv_rgb24(queued_video *q, const mr_frame *fr,
     return 1;
 }
 
+/* P96 overlay path: retain the decoder's luma/chroma values and only repack
+ * planar 4:2:0 into RiVA's packed Y4U2V2 surface layout. This is a byte
+ * shuffle, not the much more expensive YUV->RGB conversion used by ordinary
+ * RTG backends. */
+static int queue_copy_yuv422(queued_video *q, const mr_frame *fr,
+                             uint64_t pts, uint64_t decoded_at,
+                             mr_yuv_service_fn service,
+                             void *service_opaque)
+{
+    size_t stride, bytes;
+    if (!q || !fr || fr->fmt != MR_PIX_YUV420P ||
+        !fr->data || !fr->u_data || !fr->v_data ||
+        fr->width <= 0 || fr->height <= 0 || (fr->width & 1))
+        return 0;
+    if ((size_t)fr->width > (size_t)-1 / 2u) return 0;
+    stride = (size_t)fr->width * 2u;
+    if ((size_t)fr->height > (size_t)-1 / stride) return 0;
+    bytes = stride * (size_t)fr->height;
+    if (q->capacity < bytes) {
+        unsigned char *p = (unsigned char *)realloc(q->rgb, bytes);
+        if (!p) return 0;
+        q->rgb = p; q->capacity = bytes;
+    }
+    if (!mr_yuv420_to_y4u2v2(q->rgb, (int)stride,
+                              fr->data, fr->stride,
+                              fr->u_data, fr->u_stride,
+                              fr->v_data, fr->v_stride,
+                              fr->width, fr->height,
+                              service, service_opaque))
+        return 0;
+    q->width = fr->width; q->height = fr->height; q->stride = (int)stride;
+    q->dirty_y0 = fr->dirty_y0; q->dirty_y1 = fr->dirty_y1;
+    q->pts_us = pts; q->decoded_at_us = decoded_at;
+    return 1;
+}
+
 /*
  * Same contract as queue_copy(), but for a display that can accept an
  * indexed frame directly (display_supports_indexed() - see display_backend.h
@@ -1137,6 +1180,8 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
                                           st->yuv_indexed_frames);
     unsigned long yr = average_hundredths(st->yuv_rgb_us,
                                           st->yuv_rgb_frames);
+    unsigned long yo = average_hundredths(st->yuv_overlay_us,
+                                          st->yuv_overlay_frames);
     unsigned long ds = average_hundredths(st->display_us, st->presented);
     unsigned long la = average_hundredths(st->latency_us, st->presented);
     unsigned long pf = rate_hundredths(st->presented, elapsed_us);
@@ -1151,6 +1196,7 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            "hls-segment=%lu ms demux=%lu.%02lu ms adecode=%lu.%02lu ms "
            "convert=%lu.%02lu ms scale=%lu.%02lu ms "
            "yuv-indexed=%lu.%02lu/%lu ms yuv-rgb=%lu.%02lu/%lu ms "
+           "yuv-overlay=%lu.%02lu/%lu ms "
            "display=%lu.%02lu/%lu ms "
            "audio-buffered=%lu ms vqueue=%d late=%u dropped=%u "
            "presented=%lu.%02lu fps decoded=%lu.%02lu fps sleep=%lu/%lu ms "
@@ -1163,6 +1209,7 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
            cv / 100, cv % 100, sc / 100, sc % 100,
            yi / 100, yi % 100, st->yuv_indexed_max_us / 1000,
            yr / 100, yr % 100, st->yuv_rgb_max_us / 1000,
+           yo / 100, yo % 100, st->yuv_overlay_max_us / 1000,
            ds / 100, ds % 100, st->display_max_us / 1000,
            audio ? audio_buffered_ms(audio) : 0, depth, st->late, st->dropped,
            pf / 100, pf % 100, df / 100, df % 100,
@@ -2278,13 +2325,19 @@ int main(int argc, char **argv)
         use_yuv_indexed_queue = display_supports_yuv_indexed(
             disp, vi->width, vi->height, &yuv_dst_w, &yuv_dst_h, &yuv_vscale,
             &indexed_depth, &yuv_ham);
+    /* RiVA's P96 2.x-compatible overlay format. Prefer this after AGA's
+     * native indexed route and before either RGB queue: H.264/MPEG-2 then
+     * need only a 4:2:0 -> packed 4:2:2 byte shuffle. */
+    int use_yuv422_queue = !use_yuv_indexed_queue &&
+        (codec == &mr_codec_h264 || codec == &mr_codec_mpeg2) &&
+        display_supports_yuv422(disp);
     /* True for a plain 4-, 5- or 8-plane native indexed configuration (see
      * display_backend.h / aga_supports_indexed()) when the YUV path above
      * doesn't already cover this (non-H.264, or an AGA mode
      * aga_supports_yuv_indexed() itself rejects) session. Queried once: the
      * display mode is fixed for the life of this session, so every queue
      * slot below uses the same format throughout. */
-    int use_indexed_queue = !use_yuv_indexed_queue &&
+    int use_indexed_queue = !use_yuv_indexed_queue && !use_yuv422_queue &&
                             display_supports_indexed(disp, &indexed_depth);
     /* Cinepak's vectors already describe tiny reusable colour tiles. On a
      * native indexed 1:1 display, pre-dither those tiles when their codebook
@@ -2306,14 +2359,15 @@ int main(int argc, char **argv)
      * immediately copying that full frame into the queue.  This is primarily
      * the RTG CGX/P96 path, but is equally correct for an AGA RGB fallback. */
     int use_yuv_rgb_queue = codec == &mr_codec_h264 &&
-                            !use_yuv_indexed_queue && !use_indexed_queue;
+                            !use_yuv_indexed_queue && !use_yuv422_queue &&
+                            !use_indexed_queue;
     int use_yuv_bgr_queue = use_yuv_rgb_queue &&
                             display_supports_bgr24(disp);
-    if (use_yuv_indexed_queue || use_yuv_rgb_queue)
+    if (use_yuv_indexed_queue || use_yuv422_queue || use_yuv_rgb_queue)
         mr_h264_set_yuv_output(&dec, 1);
-    /* Only the indexed route: an RGB display is better served by the adapter's
-     * own emit_rgb() than by handing planes over for the player to convert. */
-    if (use_yuv_indexed_queue)
+    /* MPEG-2 exposes planes for either direct display route; ordinary RGB
+     * displays remain better served by the adapter's own emit_rgb(). */
+    if (use_yuv_indexed_queue || use_yuv422_queue)
         mr_mpeg2_set_yuv_output(&dec, 1);
     if (want_time) {
         int diag_depth, diag_ham, diag_scale, diag_resize, diag_copper, diag_ehb;
@@ -2350,6 +2404,10 @@ int main(int argc, char **argv)
         else if (use_indexed_queue)
             printf("video path: RGB24 %dx%d -> INDEX%d (queue_copy_indexed)\n",
                    vi->width, vi->height, indexed_depth);
+        else if (use_yuv422_queue)
+            printf("video path: YUV420P %dx%d -> Y4U2V2 "
+                   "(P96 overlay direct-to-queue)\n",
+                   vi->width, vi->height);
         else if (use_yuv_bgr_queue)
             printf("video path: YUV420P %dx%d -> BGR24 "
                    "(direct-to-queue; P96 native)\n", vi->width, vi->height);
@@ -2569,6 +2627,8 @@ int main(int argc, char **argv)
          * the queue overrun its RAM budget. */
         size_t frame_bytes = use_yuv_indexed_queue
                             ? (size_t)yuv_dst_w * (size_t)yuv_dst_h
+                            : use_yuv422_queue
+                            ? (size_t)vi->width * (size_t)vi->height * 2u
                             : use_indexed_queue
                             ? (size_t)vi->width * (size_t)vi->height
                             : (size_t)vi->width * (size_t)vi->height * 3;
@@ -2677,6 +2737,7 @@ int main(int argc, char **argv)
          * queue_copy_yuv_indexed()), so one flag covers both. */
         presenter.use_indexed = use_indexed_queue || use_yuv_indexed_queue;
         presenter.use_bgr = use_yuv_bgr_queue;
+        presenter.use_yuv422 = use_yuv422_queue;
         trace.presenter = &presenter;
 
     /* The live-resync term keeps the loop alive on EOF so the reconnect block in
@@ -3014,11 +3075,11 @@ int main(int argc, char **argv)
                                         &trace);
                     mr_mpeg2_set_service(&dec, audio ? service_audio_for_display : NULL,
                                         &trace);
-                    if (use_yuv_indexed_queue || use_yuv_rgb_queue)
+                    if (use_yuv_indexed_queue || use_yuv422_queue ||
+                        use_yuv_rgb_queue)
                         mr_h264_set_yuv_output(&dec, 1);
-                    /* Only the indexed route - see the same pairing at the
-                     * decoder-open site above. */
-                    if (use_yuv_indexed_queue)
+                    /* Reapply MPEG-2 planar output for either direct route. */
+                    if (use_yuv_indexed_queue || use_yuv422_queue)
                         mr_mpeg2_set_yuv_output(&dec, 1);
                     if (use_cinepak_indexed_queue &&
                         !mr_cinepak_set_indexed_output(&dec, indexed_depth))
@@ -3196,6 +3257,10 @@ int main(int argc, char **argv)
                 display_show_bgr24(disp, front->rgb, front->width, front->height,
                                    front->stride, front->dirty_y0,
                                    front->dirty_y1);
+            else if (use_yuv422_queue)
+                display_show_yuv422(disp, front->rgb, front->width,
+                                    front->height, front->stride,
+                                    front->dirty_y0, front->dirty_y1);
             else
                 display_show_rgb(disp, front->rgb, front->width, front->height,
                                  front->stride, front->dirty_y0, front->dirty_y1);
@@ -3312,11 +3377,11 @@ int main(int argc, char **argv)
                                 &trace);
             mr_mpeg2_set_service(&dec, audio ? service_audio_for_display : NULL,
                                 &trace);
-            if (use_yuv_indexed_queue || use_yuv_rgb_queue)
+            if (use_yuv_indexed_queue || use_yuv422_queue ||
+                use_yuv_rgb_queue)
                 mr_h264_set_yuv_output(&dec, 1);
-            /* Only the indexed route - see the same pairing at the
-             * decoder-open site above. */
-            if (use_yuv_indexed_queue)
+            /* Reapply MPEG-2 planar output for either direct route. */
+            if (use_yuv_indexed_queue || use_yuv422_queue)
                 mr_mpeg2_set_yuv_output(&dec, 1);
             if (use_cinepak_indexed_queue &&
                 !mr_cinepak_set_indexed_output(&dec, indexed_depth))
@@ -3421,11 +3486,11 @@ int main(int argc, char **argv)
                                 &trace);
             mr_mpeg2_set_service(&dec, audio ? service_audio_for_display : NULL,
                                 &trace);
-            if (use_yuv_indexed_queue || use_yuv_rgb_queue)
+            if (use_yuv_indexed_queue || use_yuv422_queue ||
+                use_yuv_rgb_queue)
                 mr_h264_set_yuv_output(&dec, 1);
-            /* Only the indexed route - see the same pairing at the
-             * decoder-open site above. */
-            if (use_yuv_indexed_queue)
+            /* Reapply MPEG-2 planar output for either direct route. */
+            if (use_yuv_indexed_queue || use_yuv422_queue)
                 mr_mpeg2_set_yuv_output(&dec, 1);
             if (use_cinepak_indexed_queue &&
                 !mr_cinepak_set_indexed_output(&dec, indexed_depth))
@@ -4012,6 +4077,21 @@ int main(int argc, char **argv)
                                 copy_ok = queue_copy_indexed(tail, &dec.frame,
                                                              pts, decoded_at,
                                                              indexed_depth);
+                            else if (use_yuv422_queue) {
+                                uint64_t yo0 = want_time ? monotonic_us() : 0;
+                                copy_ok = queue_copy_yuv422(
+                                    tail, &dec.frame, pts, decoded_at,
+                                    audio ? service_audio_for_display : NULL,
+                                    &trace);
+                                if (want_time) {
+                                    unsigned long us =
+                                        (unsigned long)(monotonic_us() - yo0);
+                                    stats.yuv_overlay_us += us;
+                                    stats.yuv_overlay_frames++;
+                                    if (us > stats.yuv_overlay_max_us)
+                                        stats.yuv_overlay_max_us = us;
+                                }
+                            }
                             else if (use_yuv_rgb_queue) {
                                 uint64_t yr0 = want_time ? monotonic_us() : 0;
                                 copy_ok = queue_copy_yuv_rgb24(
@@ -4162,7 +4242,7 @@ drain_decoded_output:
      * RGB24. Only ever drains the last frame or two at EOF, so falling
      * back to the ordinary (always-correct) RGB24 conversion here costs
      * nothing worth avoiding. */
-    if (use_yuv_indexed_queue || use_yuv_rgb_queue)
+    if (use_yuv_indexed_queue || use_yuv422_queue || use_yuv_rgb_queue)
         mr_h264_set_yuv_output(&dec, 0);
 
     /* MPEG-4 B-frame/display reordering holds the final anchor until EOF.

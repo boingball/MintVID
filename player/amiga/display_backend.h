@@ -23,6 +23,14 @@ typedef struct {
     void  (*show_bgr)(void *handle, const unsigned char *bgr, int w, int h,
                       int stride, int dy0, int dy1,
                       mr_display_service_fn service, void *service_opaque);
+    /* Optional packed P96 Y4U2V2 input (Y,chroma,Y,chroma per pixel pair -
+     * see core/mr_yuv.c's mr_yuv420_to_y4u2v2() for the real, hardware-
+     * confirmed chroma order, which is the opposite of what the format
+     * name implies). Used by the P96 PIP backend so H.264/MPEG-2 can
+     * retain YUV all the way from the decoder to the overlay surface. */
+    void  (*show_yuv422)(void *handle, const unsigned char *yuv, int w, int h,
+                         int stride, int dy0, int dy1,
+                         mr_display_service_fn service, void *service_opaque);
     int   (*timing)(void *handle, mr_display_timing *timing);
     int   (*poll)(void *handle);
     void  (*close)(void *handle);
@@ -31,7 +39,26 @@ typedef struct {
     void  (*status)(void *handle, const char *text);
     /* Optional: signal bits a caller may Wait() on to wake for backend events. */
     ULONG (*wait_mask)(void *handle);
+    /* Return convention: 0 = failed, state unchanged or rolled back to a
+     * working configuration; 1 = succeeded (now in the requested
+     * fullscreen/windowed state); 2 = failed to enter fullscreen via this
+     * backend's own mechanism, but the previous windowed state was
+     * restored and is working - display.c's display_toggle_fullscreen()
+     * and display_poll_event() both treat this as "retry via ordinary CGX
+     * fullscreen" (see display.c's switch_to_cgx_fallback()). Only ever
+     * returned by a backend whose own fullscreen path can legitimately
+     * fail on real hardware while windowed operation keeps working -
+     * currently just backend_p96pip, see its file header for the real
+     * Voodoo3/P96 2.1 PIPERR_CROPPED/PIPERR_NOTAVAILABLE failure this
+     * exists for. */
     int   (*toggle_fullscreen)(void *handle);
+    /* Optional: report whether `handle` is currently fullscreen (1) or
+     * windowed (0). Only implemented where display.c's switch_to_cgx_
+     * fallback() needs it (currently backend_cgx) - used to notice the
+     * moment a CGX session that only exists because P96 PIP fullscreen
+     * failed goes back to windowed, so the PIP overlay (already proven to
+     * work windowed) can be retried instead of staying on CGX forever. */
+    int   (*is_fullscreen)(void *handle);
     /* Optional: accept one-byte palette indices directly. Returns the active
      * native depth through indexed_depth (4/5/8); false for HAM/scaled modes. */
     int   (*supports_indexed)(void *handle, int *indexed_depth);
@@ -62,6 +89,7 @@ typedef struct {
     int   (*supports_yuv_indexed)(void *handle, int src_w, int src_h,
                                   int *dst_w, int *dst_h, int *vscale,
                                   int *indexed_depth, int *ham);
+    int   (*supports_yuv422)(void *handle);
 } display_backend;
 
 extern const display_backend backend_cgx;

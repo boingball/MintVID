@@ -5,8 +5,11 @@
  * red/green/blue contribution once per pair removes four multiplications per
  * pixel pair while remaining byte-identical to the original scalar formula.
  *
- * The four remaining multiplications (298*luma, 409*e, -100*d, -208*e) are
- * themselves replaced with 256-entry lookup tables, built once on first use.
+ * The five remaining multiplications (298*luma, 409*e, -100*d, -208*e,
+ * 516*d) are themselves replaced with 256-entry lookup tables, built once on
+ * first use.  The luma table is indexed by the raw Y byte and folds in the
+ * limited-range Y-16 clamp; the chroma tables fold in the three +128 rounding
+ * biases.  That keeps both corrections out of the per-pixel/per-quad loops.
  * A 68030 without a fast integer multiplier spends far more cycles on MULU.L
  * than on a table read, and every coefficient here is applied to an 8-bit
  * input, so the table approach is exact - not an approximation - for every
@@ -59,12 +62,14 @@ static void build_tables(void)
 {
     int i;
     for (i = 0; i < 256; i++) {
+        int y = i - 16;
         int d = i - 128, e = i - 128;
-        g_luma_x298[i] = 298 * i;
-        g_e_x409[i] = 409 * e;
-        g_d_xm100[i] = -100 * d;
+        if (y < 0) y = 0;
+        g_luma_x298[i] = 298 * y;
+        g_e_x409[i] = 409 * e + 128;
+        g_d_xm100[i] = -100 * d + 128;
         g_e_xm208[i] = -208 * e;
-        g_d_x516[i] = 516 * d;
+        g_d_x516[i] = 516 * d + 128;
     }
     g_tables_ready = 1;
 }
@@ -88,9 +93,7 @@ static uint8_t clip8(int value)
 MR_YUV_INLINE void emit_pixel(uint8_t *dst, int luma, int red_add,
                               int green_add, int blue_add, int ri, int bi)
 {
-    int scaled_y;
-    if (luma < 0) luma = 0;
-    scaled_y = g_luma_x298[luma];
+    int scaled_y = g_luma_x298[(unsigned)luma];
     dst[ri] = clip8((scaled_y + red_add) >> 8);
     dst[1]  = clip8((scaled_y + green_add) >> 8);
     dst[bi] = clip8((scaled_y + blue_add) >> 8);
@@ -134,26 +137,26 @@ MR_YUV_INLINE void yuv420_to_packed24(uint8_t *dst, int dst_stride,
 
         for (x = 0; x + 1 < width; x += 2) {
             unsigned uu = su[x >> 1], vv = sv[x >> 1];
-            int red_add = g_e_x409[vv] + 128;
-            int green_add = g_d_xm100[uu] + g_e_xm208[vv] + 128;
-            int blue_add = g_d_x516[uu] + 128;
-            emit_pixel(o0 + x * 3, (int)y0[x] - 16,
+            int red_add = g_e_x409[vv];
+            int green_add = g_d_xm100[uu] + g_e_xm208[vv];
+            int blue_add = g_d_x516[uu];
+            emit_pixel(o0 + x * 3, y0[x],
                        red_add, green_add, blue_add, ri, bi);
-            emit_pixel(o0 + (x + 1) * 3, (int)y0[x + 1] - 16,
+            emit_pixel(o0 + (x + 1) * 3, y0[x + 1],
                        red_add, green_add, blue_add, ri, bi);
-            emit_pixel(o1 + x * 3, (int)y1[x] - 16,
+            emit_pixel(o1 + x * 3, y1[x],
                        red_add, green_add, blue_add, ri, bi);
-            emit_pixel(o1 + (x + 1) * 3, (int)y1[x + 1] - 16,
+            emit_pixel(o1 + (x + 1) * 3, y1[x + 1],
                        red_add, green_add, blue_add, ri, bi);
         }
         if (x < width) {
             unsigned uu = su[x >> 1], vv = sv[x >> 1];
-            int red_add = g_e_x409[vv] + 128;
-            int green_add = g_d_xm100[uu] + g_e_xm208[vv] + 128;
-            int blue_add = g_d_x516[uu] + 128;
-            emit_pixel(o0 + x * 3, (int)y0[x] - 16,
+            int red_add = g_e_x409[vv];
+            int green_add = g_d_xm100[uu] + g_e_xm208[vv];
+            int blue_add = g_d_x516[uu];
+            emit_pixel(o0 + x * 3, y0[x],
                        red_add, green_add, blue_add, ri, bi);
-            emit_pixel(o1 + x * 3, (int)y1[x] - 16,
+            emit_pixel(o1 + x * 3, y1[x],
                        red_add, green_add, blue_add, ri, bi);
         }
         /* Unchanged service cadence: the old loop could only fire on an odd
@@ -169,10 +172,10 @@ MR_YUV_INLINE void yuv420_to_packed24(uint8_t *dst, int dst_stride,
         int x;
         for (x = 0; x < width; x++) {
             unsigned uu = su[x >> 1], vv = sv[x >> 1];
-            emit_pixel(out + x * 3, (int)src_y[x] - 16,
-                       g_e_x409[vv] + 128,
-                       g_d_xm100[uu] + g_e_xm208[vv] + 128,
-                       g_d_x516[uu] + 128, ri, bi);
+            emit_pixel(out + x * 3, src_y[x],
+                       g_e_x409[vv],
+                       g_d_xm100[uu] + g_e_xm208[vv],
+                       g_d_x516[uu], ri, bi);
         }
         if (service && (row & 15) == 15) service(service_opaque);
     }
@@ -255,4 +258,167 @@ void mr_yuv420_to_bgr24(uint8_t *dst, int dst_stride,
     yuv420_to_packed24(dst, dst_stride, y_plane, y_stride, u_plane, u_stride,
                        v_plane, v_stride, width, height, service,
                        service_opaque, 2, 0);
+}
+
+/*
+ * A second, independent real-hardware finding about this format, on top of
+ * the swapped chroma order above: a controlled A/B on the same test
+ * pattern (CGX/WritePixel vs the P96 PIP overlay, everything else
+ * unchanged) showed WritePixel's colours correct and saturated, while the
+ * overlay's were washed-out/pastel - lower contrast and saturation, the
+ * textbook symptom of a limited-range (studio, Y:16-235/chroma:16-240)
+ * signal being interpreted as full-range (PC/JPEG, 0-255) by whatever
+ * decodes it. WritePixel's own path (mr_yuv420_to_rgb24() above) already
+ * uses the studio-range formula and looked correct, so the driver's PIP
+ * decode is the one side of this that must be assuming full range.
+ * There is no documented way in the vendored Picasso96.h to tell the PIP
+ * which range to expect, so the fix is on this side: emit full-range
+ * Y/Cb/Cr into the packed buffer instead of passing the studio-range
+ * decoder output straight through, so what a full-range-assuming consumer
+ * sees is actually full-range data. g_y_full[]/g_c_full[] are exact
+ * rescales (studio range -> full range, the algebraic inverse of the
+ * 219/255 and 224/255 studio-encoding scale factors), built once here on
+ * first use, matching every other table in this file's own construction
+ * style. Pure integer arithmetic throughout, per this project's standing
+ * "no FPU in code" rule for anything that might run on real m68k.
+ */
+static int g_y_full[256];
+static int g_c_full[256];
+static int g_full_enc_ready = 0;
+
+static int round_div_signed(int num, int den)
+{
+    if (num >= 0) return (num + den / 2) / den;
+    return -(((-num) + den / 2) / den);
+}
+
+static void build_full_range_encode_tables(void)
+{
+    int i;
+    for (i = 0; i < 256; i++) {
+        int y = round_div_signed((i - 16) * 255, 219);
+        int c = round_div_signed((i - 128) * 255, 224) + 128;
+        if (y < 0) y = 0; else if (y > 255) y = 255;
+        if (c < 0) c = 0; else if (c > 255) c = 255;
+        g_y_full[i] = y;
+        g_c_full[i] = c;
+    }
+    g_full_enc_ready = 1;
+}
+
+int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
+                        const uint8_t *y_plane, int y_stride,
+                        const uint8_t *u_plane, int u_stride,
+                        const uint8_t *v_plane, int v_stride,
+                        int width, int height,
+                        mr_yuv_service_fn service, void *service_opaque)
+{
+    int row;
+    if (!dst || !y_plane || !u_plane || !v_plane ||
+        width <= 0 || height <= 0 || (width & 1) ||
+        dst_stride < width * 2)
+        return 0;
+    if (!g_full_enc_ready) build_full_range_encode_tables();
+
+    /* Real Voodoo3/P96 2.x hardware (the case this format exists for - see
+     * display_p96pip.c's file header) was confirmed on real hardware to
+     * show swapped colour: the format name and libraries/Picasso96.h both
+     * read "Y4U2V2" as Y0,U0,Y1,V0, but the driver's actual chroma order is
+     * the other way round. Slots 1 and 3 below are therefore V then U, not
+     * U then V - matching what the hardware actually consumes, not the
+     * nominal name. mr_y4u2v2_to_rgb24() (the software fallback decode this
+     * format also needs - see display.c's switch_to_cgx_fallback()) and
+     * display_p96pip.c's write_rgb_rows() (the RGB-source encode path) both
+     * use the identical swapped convention, so every producer/consumer of
+     * this buffer agrees. Both also emit full range, not the decoder's own
+     * studio range - see this function's own leading comment above. */
+    for (row = 0; row < height; row++) {
+        const uint8_t *sy = y_plane + (size_t)row * (size_t)y_stride;
+        const uint8_t *su = u_plane + (size_t)(row >> 1) * (size_t)u_stride;
+        const uint8_t *sv = v_plane + (size_t)(row >> 1) * (size_t)v_stride;
+        uint8_t *out = dst + (size_t)row * (size_t)dst_stride;
+        int x;
+        for (x = 0; x < width; x += 2) {
+            out[0] = (uint8_t)g_y_full[sy[x]];
+            out[1] = (uint8_t)g_c_full[sv[x >> 1]];
+            out[2] = (uint8_t)g_y_full[sy[x + 1]];
+            out[3] = (uint8_t)g_c_full[su[x >> 1]];
+            out += 4;
+        }
+        if (service && (row & 15) == 15) service(service_opaque);
+    }
+    return 1;
+}
+
+/* Inverse of the full-range encode tables above, for mr_y4u2v2_to_rgb24()'s
+ * own decode: R = Y + 1.402*(Cr-128), G = Y - 0.344136*(Cb-128) -
+ * 0.714136*(Cr-128), B = Y + 1.772*(Cb-128) - the standard full-range
+ * (not studio-range) YCbCr->RGB matrix, since that is what this buffer now
+ * holds. Y is used directly with no scale (full range needs none, unlike
+ * g_luma_x298's studio-range 298/256 expansion) - only the two chroma
+ * contributions are tabulated. Named _dec_ to keep them visually distinct
+ * from mr_yuv420_to_rgb24()'s own studio-range g_e_x409/g_d_xm100/etc
+ * tables above, which must not be reused here (they assume the wrong
+ * input range entirely). */
+static int g_full_dec_r_cr[256];
+static int g_full_dec_g_cb[256];
+static int g_full_dec_g_cr[256];
+static int g_full_dec_b_cb[256];
+static int g_full_dec_ready = 0;
+
+static void build_full_range_decode_tables(void)
+{
+    int i;
+    for (i = 0; i < 256; i++) {
+        int d = i - 128;
+        g_full_dec_r_cr[i] = 359 * d + 128;
+        g_full_dec_g_cb[i] = -88 * d + 128;
+        g_full_dec_g_cr[i] = -183 * d;
+        g_full_dec_b_cb[i] = 454 * d + 128;
+    }
+    g_full_dec_ready = 1;
+}
+
+int mr_y4u2v2_to_rgb24(uint8_t *dst, int dst_stride,
+                       const uint8_t *src, int src_stride,
+                       int width, int height)
+{
+    int row;
+    if (!dst || !src || width <= 0 || height <= 0 || (width & 1) ||
+        dst_stride < width * 3 || src_stride < width * 2)
+        return 0;
+    if (!g_full_dec_ready) build_full_range_decode_tables();
+
+    /* Software fallback for switch_to_cgx_fallback() (display.c): a
+     * backend that doesn't implement show_yuv422 (CGX/AGA) still needs a
+     * correct picture, so unpack the packed Y4U2V2 buffer back to RGB24
+     * here rather than making the caller re-thread its whole decode-side
+     * format choice mid-session. Unlike planar 4:2:0, this format is
+     * genuinely 4:2:2 (a fresh chroma pair every row), so each row decodes
+     * independently with no chroma-row bookkeeping. Slot 1 is V and slot 3
+     * is U - see mr_yuv420_to_y4u2v2()'s own comment for why - and both are
+     * full range, not studio range - see this file's g_full_dec_* tables
+     * above for why. */
+    for (row = 0; row < height; row++) {
+        const uint8_t *in = src + (size_t)row * (size_t)src_stride;
+        uint8_t *out = dst + (size_t)row * (size_t)dst_stride;
+        int x;
+        for (x = 0; x < width; x += 2) {
+            unsigned vv = in[1], uu = in[3];
+            int red_add = g_full_dec_r_cr[vv];
+            int green_add = g_full_dec_g_cb[uu] + g_full_dec_g_cr[vv];
+            int blue_add = g_full_dec_b_cb[uu];
+            int y0 = in[0], y1 = in[2];
+
+            out[0] = clip8(y0 + (red_add >> 8));
+            out[1] = clip8(y0 + (green_add >> 8));
+            out[2] = clip8(y0 + (blue_add >> 8));
+            out[3] = clip8(y1 + (red_add >> 8));
+            out[4] = clip8(y1 + (green_add >> 8));
+            out[5] = clip8(y1 + (blue_add >> 8));
+            in += 4;
+            out += 6;
+        }
+    }
+    return 1;
 }
