@@ -2,7 +2,7 @@ Short:        Multi-codec video player and streamer
 Author:       Darren Banfi (boingball)
 Uploader:     boingball@gmail.com
 Type:         gfx/show
-Version:      1.3.0
+Version:      1.3.2
 Requires:     68030+; util/libs/AmiSSL-v5-OS3.lha for online features
 Architecture: m68k-amigaos >= 3.0.0
 
@@ -13,30 +13,35 @@ MintVID is a multi-codec video player for accelerated 68k Amigas, from
 It supports native chipset and RTG output, local files, HTTP/HTTPS, HLS,
 IPTV and public YouTube playback.
 
-WHAT'S NEW IN 1.3.0
+WHAT'S NEW IN 1.3.2
 
-  - Speeds up H.264 m68k inverse-transform/reconstruction hot loops by
-    inlining tiny helpers and removing repeated BSR/RTS overhead.
-  - Adds a 68060-only branchless H.264 luma-deblocking primitive while keeping
-    the established shorter implementation for 68030/040.
-  - Enables CPU-aware AAC acceleration by default. The 68030/040 editions use
-    hardware full-result multiplication; MintVID060 uses bit-exact hardware
-    partial products and avoids the 68060's software-emulated register-pair
-    MULS.L form.
-  - Routes H.263, MPEG-2, MPEG-4 Part 2, MP42/DIV2, WMV1 and WMV2 through the
-    shared table-driven/m68k-ASM YUV converter instead of six multiply-heavy
-    scalar output loops.
-  - Lets ytgui and ytgui-GT accept a pasted YouTube video or live URL directly
-    in the search field, so a link found elsewhere can be played without
-    searching for the video again inside MintVID.
-  - Real-A1200 68060 testing confirmed clean stereo AAC and brought the
-    lowest-resolution BBC One H.264/HLS stream close to real time in AGA/HAM8.
-    Turbo+ provides continuous audio with keyframe/slideshow video when the
-    complete stream remains too demanding.
+  - Adds a native DV (IEC 61834/SMPTE 314M) video decoder for camcorder
+    footage - both PAL 4:2:0 and NTSC/DVCPRO 4:1:1 - with a Fast (DC-only)
+    speed mode for roughly 1.9x faster decode on slow targets.
+  - Adds Extra Half-Brite (EHB), a new chipset display mode for ECS/OCS
+    systems alongside AGA/HAM6/HAM8/CGX.
+  - Adds an MPEG-1/2 Fast speed mode that skips B-picture decode entirely
+    (always safe: a B picture is never referenced by a later picture).
+  - Generalises the H.264 performance chooser into a single Video Quality
+    control that also drives DV and MPEG-1/2 speed: Quality selects each
+    codec's full-quality path, every other setting picks fast.
+  - Fixes a real-hardware crash (Guru 8000000B) on pressing Play, on any
+    file - mrplay was linking -lm for code that never needed it, which on
+    the real toolchain silently swapped in an FPU-dependent variant of an
+    unrelated shared runtime helper for the whole binary.
+  - Gives CGX the same native-resolution-or-downscale fullscreen policy
+    P96 already had.
+  - Fixes iptvgui/ytgui failing to launch with "invalid playback option",
+    and the default CPU=68060 mrplay build not actually linking MintAMP's
+    accelerated polyphase kernel.
 
-MintVID 1.3.0 is a release built on the 1.2.x performance work. The WMV7/8 and HLS shutdown fixes from
-1.1.1, plus the TurboGT, Kalms C2P, RTG direct-write, YouTube, RAM-aware
-queueing and audio-rescue work from 1.1.0, remain present.
+MintVID 1.3.2 builds on 1.3.1's P96 hardware video overlay support (a real
+hardware overlay path for Voodoo3/Permedia/BVision-class RTG boards) and
+the retirement of H.264 TurboGT, whose policy had become identical to
+Turbo's; Turbo is now the default H.264 speed and TurboGT remains accepted
+only as a command-line/settings alias. The 1.3.0 H.264/AAC performance
+work, and the WMV7/8, HLS shutdown, Kalms C2P, RTG direct-write, YouTube
+and RAM-aware queueing work from 1.1.x, all remain present.
 
 See CHANGELOG.txt in the release archive, or CHANGELOG.md in the source tree,
 for the detailed list.
@@ -90,8 +95,8 @@ WHAT IT PLAYS
   - Video codecs: Cinepak, Microsoft Video 1, Microsoft RLE8, uncompressed
     UYVY422, H.263 / H.263+, Motion-JPEG, MPEG-1, MPEG-2 (with B-frames),
     MPEG-4 Part 2 (ISO ASP and Microsoft MP42/DIV2), Windows Media Video 7
-    (WMV1), Windows Media Video 8 (WMV2), and H.264/AVC Baseline/Main/High
-    Profile.
+    (WMV1), Windows Media Video 8 (WMV2), H.264/AVC Baseline/Main/High
+    Profile, and DV (IEC 61834/SMPTE 314M, PAL 4:2:0 and NTSC/DVCPRO 4:1:1).
   - Audio to Paula: PCM, MP2, MP3, AAC-LC (raw/ADTS/LATM), and fixed-point
     AC-3 (stereo downmix). MP3/AAC decoding reuses the proven MintAMP/Helix
     code.
@@ -134,25 +139,34 @@ Kalms is the default C2P choice for AGA/HAM playback. If the selected geometry
 or BitMap layout cannot use its CPU-matched converter, MintVID automatically
 falls back to the established graphics.library path. RTG ignores C2P choices.
 
-TurboGT is the default H.264 mode. Auto selects the same policy.
+Turbo is the default H.264 speed. Auto selects the same policy. This one
+chooser is now a general Video Quality (VQ) control: Quality selects each
+codec's own full-quality path, and Balanced/Fast/Turbo/Turbo+ all select
+the fast path for DV and MPEG-1/2 as well as H.264.
 
-  - Quality: full filtering, no deliberate frame skipping.
+  - Quality: full filtering, no deliberate frame skipping. DV decodes full
+    coefficients; MPEG-1/2 decodes every picture including B-frames.
   - Balanced: in-loop deblocking disabled; motion compensation stays exact.
   - Fast: Balanced plus bilinear rather than six-tap interpolation, but
     still keeps every frame.
   - Turbo: Fast policy plus B-frame skipping; preserves the P-frame chain.
+    DV decodes DC-only coefficients (~1.9x faster); MPEG-1/2 skips B-picture
+    decode entirely (always safe - a B picture is never referenced later).
   - Turbo+: skips both P- and B-frames, so only keyframes are decoded and
     shown and that decode stays short enough on a slow CPU to keep audio from
     stuttering between frames. A last-resort keyframe/slideshow mode, not the
     normal fastest setting.
-  - TurboGT: the same policy as Turbo, kept as a selectable name.
 
-Turbo and TurboGT are now the same setting. TurboGT used to differ by
-disabling deblocking on keyframes as well, and every mode from Balanced down
-now does that: leaving some pictures undegraded left the remaining ones being
-deblocked against stale per-macroblock parameters, which was both incorrect
-and slow enough that Fast ran slower than Quality. All modes below Quality
-are substantially faster than in 1.2.0.
+TurboGT was retired in 1.3.1: its policy had been identical to Turbo's
+since a correctness fix forced every degrading H.264 mode onto the same
+all-or-nothing filtering policy, and every mode from Balanced down now
+disables deblocking on keyframes as well as other pictures for the same
+reason - leaving some pictures undegraded left the remaining ones being
+deblocked against stale per-macroblock parameters, which was both
+incorrect and slow enough that Fast ran slower than Quality.
+--h264-speed=turbogt still works from the command line or a saved
+setting, aliased straight to Turbo. All modes below Quality are
+substantially faster than in 1.2.0.
 
 VIDEO FRAME POLICY
 
@@ -176,13 +190,13 @@ the selected policy explicitly.
 
 RECOMMENDED STARTING POINTS
 
-  68030 ECS/AGA: AGA, lace off, 2x off, modest lightweight codecs. Use Skip
-  Frames only when playback falls behind.
+  68030 ECS/AGA: AGA or EHB, lace off, 2x off, modest lightweight codecs.
+  Use Skip Frames only when playback falls behind.
 
-  68040/060 AGA: AGA/HAM, Kalms, lace off, 2x off, TurboGT for H.264. Use
+  68040/060 AGA: AGA/HAM, Kalms, lace off, 2x off, Turbo VQ for H.264. Use
   Turbo+ for audio-first playback and Skip Frames when decode is late.
 
-  68040/060 RTG: CGX/P96, TurboGT, Fast buffer Auto, and a low-resolution
+  68040/060 RTG: CGX/P96, Turbo VQ, Fast buffer Auto, and a low-resolution
   source before increasing quality. PiStorm/Emu68 should use MintVID040.
 
   Live HLS/IPTV: start with All Frames and a low-resolution variant. For direct
