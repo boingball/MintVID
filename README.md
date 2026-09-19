@@ -23,37 +23,39 @@ with native Amiga playback across AGA, HAM and RTG systems.
 Performance scales strongly with CPU, codec, resolution and display mode;
 format support is not a promise of real-time playback on every 68k.
 
-MintVID 1.3.1 adds RTG hardware video overlay support for P96 (Picasso96),
-a P96-first RTG default and persisted controller settings, alongside GUI
-bug fixes and the retirement of the H.264 TurboGT speed mode.
+MintVID 1.3.2 adds a native DV (camcorder) decoder, an Extra Half-Brite
+display mode for ECS/OCS systems, an MPEG-1/2 B-frame skip speed mode, and
+a real-hardware crash fix for a `-lm` link issue that could trap on Play.
 
 ![MintVID playing an LGR YouTube video on AmigaOS](player/amiga/art/MintVID-YouTube.png)
 
-## What's new in 1.3.1
+## What's new in 1.3.2
 
-- **P96 hardware video overlay:** on a board with a real hardware overlay
-  window (Voodoo3/Permedia/BVision class), RTG (P96) display now tries to
-  use it automatically, offloading scaling and colourspace conversion to
-  the graphics card - confirmed working on real Voodoo3 hardware. P96 also
-  now opens windowed by default (press F for fullscreen), instead of
-  requiring `--fullscreen` just to open at all.
-- **H.264 TurboGT retired:** its policy has been identical to Turbo's
-  since a correctness fix forced every degrading H.264 mode onto the same
-  all-or-nothing filtering policy. Turbo is now the default;
-  `--h264-speed=turbogt` still works, aliased to Turbo.
-- **GUI fixes:** the YouTube-GT browser's Quality/Log controls now
-  actually update their own label when clicked; the GadTools controller's
-  "Copper 2x" Scale label is now visible; the ReAction Scale chooser now
-  greys out reliably on RTG (P96) displays.
-- **P96-first RTG default:** both controllers now default to P96 over
-  plain WritePixel when RTG is detected, matching P96's own faster
-  hardware-overlay-first backend.
-- **Remembered settings:** both controllers now save display mode, C2P,
-  H.264 speed, audio options, Scale and the Video frame policy to
-  `ENVARC:MintVID.settings` and restore them on the next launch.
+- **DV (IEC 61834/SMPTE 314M) decoder:** native support for PAL 4:2:0 and
+  NTSC/DVCPRO 4:1:1 camcorder footage, with a Fast (DC-only) speed mode
+  for roughly 1.9x faster decode on slow targets.
+- **Extra Half-Brite (EHB) display mode:** a new chipset display option
+  for ECS/OCS systems, alongside AGA/HAM6/HAM8/CGX, with an exact
+  two-cube colour quantizer and its own Kalms C2P path.
+- **MPEG-1/2 Fast speed mode:** skips B-picture decode entirely (B
+  pictures are never referenced by later pictures, so this is always
+  safe), reusing the same VQ control as H.264/DV.
+- **Unified Video Quality (VQ) control:** the H.264 performance chooser
+  in both GUIs now also drives DV and MPEG-1/2 speed modes - Quality
+  selects each codec's full-quality path, every other setting picks fast.
+- **Real-hardware crash fix:** a Guru `8000000B` on pressing Play, on any
+  file - traced to `mrplay` linking `-lm` for code that never needed it,
+  which on the real toolchain silently swapped in an FPU-dependent
+  variant of an unrelated shared runtime helper for the whole binary.
+- **CGX** now gets the same native-resolution-or-downscale fullscreen
+  policy P96 already had.
+- **GUI/build fixes:** `iptvgui`/`ytgui` no longer fail to launch with
+  "invalid playback option"; the default `CPU=68060 mrplay` build now
+  actually links MintAMP's accelerated polyphase kernel; and source fixes
+  for building with newer host GCC toolchains.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete release notes, including
-the 1.3.0 H.264/AAC/YUV performance work this release builds on.
+the 1.3.1 P96 overlay work this release builds on.
 
 ## Video frame policy
 
@@ -137,6 +139,7 @@ on Aminet for that source and its own GPL-2.0/dual GPL-MIT licensing.
 | MPEG-TS/M2TS MPEG-1/2 or H.264 + AAC/MP2/AC-3 | ✅ ADTS or LATM AAC; 188/192-byte packets; ffmpeg-validated |
 | Matroska/MKV | ✅ H.264/MPEG-4/MPEG-2/MJPEG video; AAC/MP3/MP2/AC-3/PCM audio; common lacing supported |
 | Raw MJPEG + raw MPEG-4 Visual streams | ✅ |
+| DV (IEC 61834/SMPTE 314M) — PAL 4:2:0 and NTSC/DVCPRO 4:1:1 | ✅ native decoder (libdv-derived); ffmpeg-validated; Quality/Fast (DC-only, ~1.9x) speed modes |
 | Amiga RTG / AGA output | ✅ |
 | ReAction + GadTools controllers | ✅ matching file, IPTV and YouTube frontends for modern and OS 3.0 systems |
 | IPTV directory core | ✅ bounded iptv-org JSON/M3U parsing, joining and local filters |
@@ -370,7 +373,7 @@ parsers, playback settings, and status/control protocol:
 
 Keep one complete GUI set beside `mrplay` (or put `mrplay` on the command
 path), run the controller, choose a
-movie and select **AGA**, **HAM6**, **HAM8**, or **CGX**. **Laced** and **2x**
+movie and select **AGA**, **EHB**, **HAM6**, **HAM8**, or **CGX**. **Laced** and **2x**
 apply to the chipset modes, including HAM6 and HAM8. A laced screen is opened
 when the source height after the requested 2x scale exceeds the non-laced
 256-line canvas. Exact 2x eight-plane output, including HAM8, uses the fused

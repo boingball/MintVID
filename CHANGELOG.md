@@ -1,5 +1,71 @@
 # MintVID changelog
 
+## 1.3.2 - 2026-09-19
+
+### Added
+
+- New Extra Half-Brite (EHB) display mode for ECS/OCS systems, selectable
+  alongside AGA/HAM6/HAM8/CGX in both GUIs, with an exact two-cube nearest-
+  colour quantizer and its own Kalms 6-bit-depth C2P path.
+- New DV (IEC 61834/SMPTE 314M) video decoder, covering both PAL 4:2:0 and
+  NTSC/DVCPRO 4:1:1 camcorder footage, built on a decode-only subset of
+  libdv (LGPL-2.1-or-later; see THIRD-PARTY-LICENSES.txt). Adds a Fast
+  (DC-only coefficients) speed mode for roughly 1.9x faster decode on slow
+  targets.
+- New MPEG-1/2 Fast speed mode that skips B-picture decode entirely
+  (B pictures are never referenced by later pictures in this format, so
+  this cannot corrupt the I/P chain).
+- The existing H.264 performance chooser in both GUIs is now a general
+  Video Quality (VQ) control: Quality selects each codec's own full-quality
+  mode, every other setting (Auto included) selects the fast mode for
+  H.264, DV and MPEG-1/2 alike.
+- CGX now gets the same native-resolution-or-downscale fullscreen policy
+  P96 already had, instead of always scaling to the public screen.
+
+### Fixed
+
+- `iptvgui`/`ytgui` failed to launch ("invalid playback option") once the
+  main controller started emitting `--dv-speed=`/`--mpeg2-speed=` in its
+  playback argument string, because the browsers' own argument parser
+  didn't recognise either flag yet.
+- A real-hardware Guru `8000000B` (CPU exception, FPU emulator trap) on
+  pressing Play, on any file, on any display mode - traced to `mrplay`
+  linking `-lm` for no code that actually needed it; on this toolchain, a
+  linked-but-uncalled libm/soft-float reference was enough to make the
+  linker resolve an unrelated shared runtime helper to an FPU-dependent
+  variant for the whole binary. `-lm` is no longer linked at all.
+  GadTools's `update_file_info()` label crashing the same way while just
+  formatting an integer size, from the same root cause on the GUI
+  binaries, is fixed alongside it.
+- Fixed P96 PIP fullscreen/geometry handling: a video-compatible private
+  screen is used for fullscreen instead of the public screen, windowed
+  geometry is preserved correctly when leaving fullscreen with no prior
+  saved size, and per-frame geometry is no longer rebuilt unnecessarily.
+- Fixed a real toolchain link failure (`EXTRAHALFBRITE` vs. the NDK's own
+  `EXTRA_HALFBRITE`) and a Kalms C2P selection bug for EHB, plus a
+  ReAction GUI startup issue.
+- Fixed the default `CPU=68060 mrplay` build never actually linking
+  MintAMP's hand-tuned polyphase asm (`ASM60_GROUPS`'s default
+  `lowrate060`/`poly060` groups were missing their own source-file
+  entry), so 68060 MP3/AAC decode was silently running the portable
+  fallback instead of the accelerated kernel.
+- Source changes for building with newer host GCC (16.2) toolchains
+  (`dos.h`/`alib` compatibility).
+
+### Performance
+
+- H.264 explicit weighted prediction is now skipped when a slice's parsed
+  weights are all trivial (the common case for High-profile encoders that
+  set the capability flag but never use a non-default weight) - measured
+  12-31% fewer decode instructions on affected streams, bit-exact against
+  the previous output.
+- Replaced EHB's 64-way brute-force colour quantizer with an exact
+  two-cube nearest-colour search.
+- The local-disk video queue can now grow with free RAM the same way the
+  network/HLS queue already did, instead of staying fixed at 16 frames -
+  fixes a real-hardware report of smooth playback for a few seconds
+  followed by permanent stepping once the fixed cushion drained.
+
 ## 1.3.1 - 2026-09-15
 
 ### Added
