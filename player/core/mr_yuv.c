@@ -273,6 +273,17 @@ int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
         dst_stride < width * 2)
         return 0;
 
+    /* Real Voodoo3/P96 2.x hardware (the case this format exists for - see
+     * display_p96pip.c's file header) was confirmed on real hardware to
+     * show swapped colour: the format name and libraries/Picasso96.h both
+     * read "Y4U2V2" as Y0,U0,Y1,V0, but the driver's actual chroma order is
+     * the other way round. Slots 1 and 3 below are therefore V then U, not
+     * U then V - matching what the hardware actually consumes, not the
+     * nominal name. mr_y4u2v2_to_rgb24() (the software fallback decode this
+     * format also needs - see display.c's switch_to_cgx_fallback()) and
+     * display_p96pip.c's write_rgb_rows() (the RGB-source encode path) both
+     * use the identical swapped convention, so every producer/consumer of
+     * this buffer agrees. */
     for (row = 0; row < height; row++) {
         const uint8_t *sy = y_plane + (size_t)row * (size_t)y_stride;
         const uint8_t *su = u_plane + (size_t)(row >> 1) * (size_t)u_stride;
@@ -281,12 +292,48 @@ int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
         int x;
         for (x = 0; x < width; x += 2) {
             out[0] = sy[x];
-            out[1] = su[x >> 1];
+            out[1] = sv[x >> 1];
             out[2] = sy[x + 1];
-            out[3] = sv[x >> 1];
+            out[3] = su[x >> 1];
             out += 4;
         }
         if (service && (row & 15) == 15) service(service_opaque);
+    }
+    return 1;
+}
+
+int mr_y4u2v2_to_rgb24(uint8_t *dst, int dst_stride,
+                       const uint8_t *src, int src_stride,
+                       int width, int height)
+{
+    int row;
+    if (!dst || !src || width <= 0 || height <= 0 || (width & 1) ||
+        dst_stride < width * 3 || src_stride < width * 2)
+        return 0;
+    if (!g_tables_ready) build_tables();
+
+    /* Software fallback for switch_to_cgx_fallback() (display.c): a
+     * backend that doesn't implement show_yuv422 (CGX/AGA) still needs a
+     * correct picture, so unpack the packed Y4U2V2 buffer back to RGB24
+     * here rather than making the caller re-thread its whole decode-side
+     * format choice mid-session. Unlike planar 4:2:0, this format is
+     * genuinely 4:2:2 (a fresh chroma pair every row), so each row decodes
+     * independently with no chroma-row bookkeeping. Slot 1 is V and slot 3
+     * is U - see mr_yuv420_to_y4u2v2()'s own comment for why. */
+    for (row = 0; row < height; row++) {
+        const uint8_t *in = src + (size_t)row * (size_t)src_stride;
+        uint8_t *out = dst + (size_t)row * (size_t)dst_stride;
+        int x;
+        for (x = 0; x < width; x += 2) {
+            unsigned vv = in[1], uu = in[3];
+            int red_add = g_e_x409[vv];
+            int green_add = g_d_xm100[uu] + g_e_xm208[vv];
+            int blue_add = g_d_x516[uu];
+            emit_pixel(out, in[0], red_add, green_add, blue_add, 0, 2);
+            emit_pixel(out + 3, in[2], red_add, green_add, blue_add, 0, 2);
+            in += 4;
+            out += 6;
+        }
     }
     return 1;
 }

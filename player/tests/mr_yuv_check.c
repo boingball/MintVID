@@ -105,6 +105,9 @@ static int run_case(int width, int height, unsigned seed)
     return ok;
 }
 
+/* Chroma order is V-then-U (slots 1 and 3), not the U-then-V the RGBFB_
+ * Y4U2V2 name implies - see mr_yuv.c's mr_yuv420_to_y4u2v2() for why: real
+ * Voodoo3/P96 2.x hardware was confirmed to expect it swapped. */
 static int check_y4u2v2(void)
 {
     enum { W = 6, H = 3, YS = 8, CS = 4, DS = 15 };
@@ -116,9 +119,9 @@ static int check_y4u2v2(void)
     static const uint8_t u[2 * CS] = { 21, 22, 23, 0xee, 31, 32, 33, 0xee };
     static const uint8_t v[2 * CS] = { 41, 42, 43, 0xee, 51, 52, 53, 0xee };
     static const uint8_t expected[H][W * 2] = {
-        { 1, 21, 2, 41, 3, 22, 4, 42, 5, 23, 6, 43 },
-        { 7, 21, 8, 41, 9, 22, 10, 42, 11, 23, 12, 43 },
-        { 13, 31, 14, 51, 15, 32, 16, 52, 17, 33, 18, 53 }
+        { 1, 41, 2, 21, 3, 42, 4, 22, 5, 43, 6, 23 },
+        { 7, 41, 8, 21, 9, 42, 10, 22, 11, 43, 12, 23 },
+        { 13, 51, 14, 31, 15, 52, 16, 32, 17, 53, 18, 33 }
     };
     uint8_t out[H * DS];
     int row;
@@ -139,6 +142,50 @@ static int check_y4u2v2(void)
     if (mr_yuv420_to_y4u2v2(out, DS, y, YS, u, CS, v, CS,
                             W - 1, H, NULL, NULL)) {
         fprintf(stderr, "Y4U2V2 accepted an odd width\n");
+        return 0;
+    }
+    return 1;
+}
+
+/* mr_y4u2v2_to_rgb24() is display.c's software fallback for a backend that
+ * switched away from the P96 PIP overlay mid-session (switch_to_cgx_
+ * fallback()) and so has no show_yuv422 of its own. Round-trip planar
+ * 4:2:0 through mr_yuv420_to_y4u2v2() and compare against
+ * mr_yuv420_to_rgb24() run directly on the same source planes: any
+ * disagreement would mean the two functions' swapped-chroma conventions
+ * have drifted apart. Only exercisable for even widths, matching the
+ * format's own pair-based constraint. */
+static int check_y4u2v2_to_rgb24(void)
+{
+    enum { W = 8, H = 4 };
+    uint8_t y[H][W], u[H / 2 + 1][W / 2 + 1], v[H / 2 + 1][W / 2 + 1];
+    uint8_t packed[H][W * 2], direct[H][W * 3], via_packed[H][W * 3];
+    unsigned seed = 0x59345556U;
+    int row, col;
+
+    for (row = 0; row < H; row++)
+        for (col = 0; col < W; col++)
+            y[row][col] = (uint8_t)(next_value(&seed) >> 24);
+    for (row = 0; row < H / 2; row++)
+        for (col = 0; col < W / 2; col++) {
+            u[row][col] = (uint8_t)(next_value(&seed) >> 24);
+            v[row][col] = (uint8_t)(next_value(&seed) >> 24);
+        }
+
+    mr_yuv420_to_rgb24(&direct[0][0], W * 3, &y[0][0], W, &u[0][0], W / 2,
+                       &v[0][0], W / 2, W, H, NULL, NULL);
+    if (!mr_yuv420_to_y4u2v2(&packed[0][0], W * 2, &y[0][0], W, &u[0][0],
+                             W / 2, &v[0][0], W / 2, W, H, NULL, NULL)) {
+        fprintf(stderr, "Y4U2V2 round-trip: pack step failed\n");
+        return 0;
+    }
+    if (!mr_y4u2v2_to_rgb24(&via_packed[0][0], W * 3, &packed[0][0], W * 2,
+                            W, H)) {
+        fprintf(stderr, "Y4U2V2 round-trip: unpack step failed\n");
+        return 0;
+    }
+    if (memcmp(direct, via_packed, sizeof direct) != 0) {
+        fprintf(stderr, "Y4U2V2 round-trip mismatch against direct RGB24\n");
         return 0;
     }
     return 1;
@@ -225,6 +272,7 @@ int main(void)
             if (!run_case(widths[i], heights[j], 0x4d525956U + i * 31 + j))
                 return 1;
     if (!check_y4u2v2()) return 1;
+    if (!check_y4u2v2_to_rgb24()) return 1;
     memset(y, 16, sizeof y); memset(u, 128, sizeof u); memset(v, 128, sizeof v);
     mr_yuv420_to_rgb24(rgb, 3, y, 1, u, 1, v, 1, 1, 33,
                        count_service, &services);

@@ -44,12 +44,32 @@
  *     scaling. This backend always writes native-resolution pixels into the
  *     PIP's own source bitmap and never allocates or fills a scale buffer.
  *
- * The source format is RGBFB_Y4U2V2 (packed Y0,U0,Y1,V0 pairs), matching
- * RiVA's known-working P96 2.x PIP path. Older Voodoo drivers reject the
- * earlier RGBFB_B8G8R8 request with PIPERR_NOTAVAILABLE before a window is
- * opened. H.264 and MPEG-2 therefore stay YUV from decoder to overlay and
- * only repack 4:2:0 to 4:2:2; RGB-only codecs retain a correctness fallback
- * which converts their rows while copying them into the PIP surface.
+ * The source format is RGBFB_Y4U2V2 (packed Y,chroma,Y,chroma pairs),
+ * matching RiVA's known-working P96 2.x PIP path. Older Voodoo drivers
+ * reject the earlier RGBFB_B8G8R8 request with PIPERR_NOTAVAILABLE before a
+ * window is opened. H.264 and MPEG-2 therefore stay YUV from decoder to
+ * overlay and only repack 4:2:0 to 4:2:2; RGB-only codecs retain a
+ * correctness fallback which converts their rows while copying them into
+ * the PIP surface. Real hardware also showed the chroma *order* the format
+ * name implies (Y0,U0,Y1,V0) to be backwards from what the driver actually
+ * consumes - see core/mr_yuv.c's mr_yuv420_to_y4u2v2() and this file's own
+ * write_rgb_rows() for the swapped V-then-U convention both this backend's
+ * producers now use.
+ *
+ * A second real-hardware finding: on at least one Voodoo3/P96 2.1 setup,
+ * neither PIP type can be opened fullscreen on the public screen at all -
+ * p96PIP_OpenTags() returns PIPERR_NOTAVAILABLE for PIPT_VideoWindow and
+ * PIPERR_CROPPED for PIPT_MemoryWindow, even though the same source/dest
+ * geometry opens fine windowed. p96pip_toggle_fullscreen() retries once
+ * with a full-window (non-letterboxed) destination rectangle on CROPPED
+ * before giving up, and reports 2 (not just 0) when entering fullscreen
+ * still fails after that retry - display.c's switch_to_cgx_fallback()
+ * treats that as "give up on PIP fullscreen for this session, fall back to
+ * ordinary CGX fullscreen" rather than leaving repeated F presses restore
+ * the same working-but-windowed PIP forever with no way to actually reach
+ * fullscreen. See display.c for how the fallback keeps this backend's own
+ * YUV422 producers working unmodified through a CGX/AGA backend that has
+ * no show_yuv422 of its own.
  *
  * There is no AmigaOS toolchain, real Voodoo3/overlay-capable board, or P96
  * PIP implementation to test against on this dev host (see CLAUDE.md's
@@ -96,6 +116,13 @@ typedef struct {
     int            dx, dy, dw, dh;  /* aspect-fitted PIP rect within the window */
     int            fullscreen;
     int            hw_overlay;      /* 1 = PIPT_VideoWindow, 0 = MemoryWindow */
+    int            force_full_dest; /* 1 = calculate_geometry() skips aspect
+                                     * fit and fills the whole window - the
+                                     * one-shot PIPERR_CROPPED retry, see
+                                     * p96pip_toggle_fullscreen() */
+    LONG           last_hw_err, last_mem_err; /* most recent open_pip() error
+                                               * per PIP type, for the CROPPED
+                                               * retry and diagnostics */
     int            pending_w, pending_h;
     clock_t        resize_at;
     int            geometry_valid;
@@ -142,12 +169,41 @@ static void fit_within(int w, int h, int max_w, int max_h, int *out_w,
 
 static void calculate_geometry(p96pip_state *s)
 {
-    mr_aspect_rect fit =
-        mr_aspect_fit(s->source_w, s->source_h, s->win_w, s->win_h);
-    s->dx = fit.x;
-    s->dy = fit.y;
-    s->dw = fit.w;
-    s->dh = fit.h;
+    if (s->force_full_dest) {
+        /* One-shot PIPERR_CROPPED retry (see p96pip_toggle_fullscreen()):
+         * fill the whole window instead of the normal aspect-fitted
+         * rectangle, in case the driver's crop check is tripping on the
+         * letterboxed inset rather than on anything about the window or
+         * screen bounds themselves. */
+        s->dx = 0;
+        s->dy = 0;
+        s->dw = s->win_w;
+        s->dh = s->win_h;
+        return;
+    }
+    {
+        mr_aspect_rect fit =
+            mr_aspect_fit(s->source_w, s->source_h, s->win_w, s->win_h);
+        s->dx = fit.x;
+        s->dy = fit.y;
+        s->dw = fit.w;
+        s->dh = fit.h;
+    }
+}
+
+static const char *pip_err_name(LONG err)
+{
+    switch (err) {
+    case PIPERR_NOMEMORY:     return "PIPERR_NOMEMORY";
+    case PIPERR_ATTACHFAIL:   return "PIPERR_ATTACHFAIL";
+    case PIPERR_NOTAVAILABLE: return "PIPERR_NOTAVAILABLE";
+    case PIPERR_OUTOFPENS:    return "PIPERR_OUTOFPENS";
+    case PIPERR_BADDIMENSIONS:return "PIPERR_BADDIMENSIONS";
+    case PIPERR_NOWINDOW:     return "PIPERR_NOWINDOW";
+    case PIPERR_BADALIGNMENT: return "PIPERR_BADALIGNMENT";
+    case PIPERR_CROPPED:      return "PIPERR_CROPPED";
+    default:                  return "unknown";
+    }
 }
 
 static void log_screen_target(const char *label, struct Screen *scr,
@@ -389,8 +445,8 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
         TAG_END);
 
     if (g_display_want_time) {
-        printf("p96pip: p96PIP_OpenTags returned win=%p err=%ld\n",
-               (void *)win, (long)*err);
+        printf("p96pip: p96PIP_OpenTags returned win=%p err=%ld (%s)\n",
+               (void *)win, (long)*err, pip_err_name(*err));
         Flush(Output());
     }
     if (pub_locked)
@@ -472,17 +528,23 @@ static int reopen_pip(p96pip_state *s, const char *reason)
 
     s->win = open_pip(s, PIPT_VideoWindow, &err);
     s->hw_overlay = s->win != NULL;
+    s->last_hw_err = err;
     if (!s->win) {
         if (g_display_want_time) {
-            printf("p96pip: video-window PIP unavailable (error %ld), "
-                   "trying RiVA-compatible memory-window PIP\n", (long)err);
+            printf("p96pip: video-window PIP unavailable (error %ld: %s), "
+                   "trying RiVA-compatible memory-window PIP\n",
+                   (long)err, pip_err_name(err));
             Flush(Output());
         }
         s->win = open_pip(s, PIPT_MemoryWindow, &err);
+        s->last_mem_err = err;
+    } else {
+        s->last_mem_err = 0;
     }
     if (!s->win) {
         if (g_display_want_time) {
-            printf("p96pip: PIP open failed (error %ld)\n", (long)err);
+            printf("p96pip: PIP open failed (error %ld: %s)\n",
+                   (long)err, pip_err_name(err));
             Flush(Output());
         }
         return 0;
@@ -670,7 +732,13 @@ static unsigned char clamp_byte(int v)
 }
 
 /* Correctness fallback for RGB-only decoders. The performance path never
- * calls this: H.264/MPEG-2 queue RGBFB_Y4U2V2 directly. */
+ * calls this: H.264/MPEG-2 queue RGBFB_Y4U2V2 directly.
+ *
+ * dst_pair[1]/[3] are V then U, not the U-then-V the RGBFB_Y4U2V2 name
+ * implies - real hardware confirmed the driver's actual chroma order is
+ * swapped from the nominal one (see this file's own header and
+ * core/mr_yuv.c's mr_yuv420_to_y4u2v2(), the other producer of this same
+ * buffer layout - both must agree). */
 static int write_rgb_rows(struct BitMap *bm, int y0,
                           const unsigned char *src, int src_stride,
                           int w, int rows, int src_is_bgr)
@@ -703,11 +771,11 @@ static int write_rgb_rows(struct BitMap *bm, int y0,
             dst_pair[0] = clamp_byte(
                 ((66 * r0 + 129 * g0 + 25 * b0 + 128) >> 8) + 16);
             dst_pair[1] = clamp_byte(
-                ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
+                ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
             dst_pair[2] = clamp_byte(
                 ((66 * r1 + 129 * g1 + 25 * b1 + 128) >> 8) + 16);
             dst_pair[3] = clamp_byte(
-                ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
+                ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
             src_pixel += 6;
             dst_pair += 4;
         }
@@ -853,7 +921,17 @@ static int p96pip_poll(void *h)
             switch (code) {
             case 0x45: s->quit = 1; break;
             case 0x40: ev = MR_EV_PAUSE; break;
-            case 0x23: p96pip_toggle_fullscreen(s); break;
+            case 0x23:
+                /* p96pip_toggle_fullscreen() returning 2 means it gave up
+                 * on PIP fullscreen and is asking display.c to fall back
+                 * to CGX - surface that up through poll()'s own event
+                 * return rather than swallowing it here, since this
+                 * function has no access to the amiga_display wrapper
+                 * (display.c's switch_to_cgx_fallback() does the actual
+                 * backend swap). */
+                if (p96pip_toggle_fullscreen(s) == 2)
+                    ev = MR_EV_RENDERER_SWITCH;
+                break;
             case 0x4E: ev = MR_EV_SEEK_FWD; break;
             case 0x4F: ev = MR_EV_SEEK_BACK; break;
             case 0x4C: ev = MR_EV_VOLUME_UP; break;
@@ -896,15 +974,17 @@ static int p96pip_toggle_fullscreen(void *h)
     ULONG old_mode_id;
     int old_fullscreen, old_win_w, old_win_h;
     int public_w = 640, public_h = 480;
+    int entering;
 
     if (!s || !s->win) return 0;
     old_fullscreen = s->fullscreen;
+    entering = !old_fullscreen;
     old_win_w = s->win_w;
     old_win_h = s->win_h;
     old_screen = s->screen;
     old_mode_id = s->screen_mode_id;
 
-    if (!s->fullscreen) {
+    if (entering) {
         struct Screen *pub;
         s->have_window_geometry = 1;
         s->window_left = s->win->LeftEdge;
@@ -919,8 +999,15 @@ static int p96pip_toggle_fullscreen(void *h)
             public_h = pub->Height;
             UnlockPubScreen(NULL, pub);
         }
+        if (g_display_want_time) {
+            printf("p96pip-fullscreen: public screen reports %dx%d; "
+                   "current window %dx%d\n", public_w, public_h,
+                   s->win_w, s->win_h);
+            Flush(Output());
+        }
 
         s->fullscreen = 1;
+        s->force_full_dest = 0;
         s->screen = open_video_screen(s, public_w, public_h);
         if (s->screen) {
             s->win_w = s->screen->Width;
@@ -932,6 +1019,26 @@ static int p96pip_toggle_fullscreen(void *h)
         if (reopen_pip(s, "fullscreen-toggle"))
             return 1;
 
+        /* Real Voodoo3/P96 2.1 hardware reports PIPERR_CROPPED for the
+         * normal aspect-fitted (letterboxed) destination rectangle on the
+         * public screen, even though the rectangle is entirely inside the
+         * requested window bounds logged just above. Try once more with a
+         * full-window destination before giving up on this screen size. */
+        if ((s->last_hw_err == PIPERR_CROPPED ||
+             s->last_mem_err == PIPERR_CROPPED) && !s->force_full_dest) {
+            if (g_display_want_time) {
+                printf("p96pip-fullscreen: PIPERR_CROPPED for aspect-fitted "
+                       "dest %d,%d %dx%d inside window %dx%d; retrying with "
+                       "a full-window destination rectangle\n",
+                       s->dx, s->dy, s->dw, s->dh, s->win_w, s->win_h);
+                Flush(Output());
+            }
+            s->force_full_dest = 1;
+            if (reopen_pip(s, "fullscreen-toggle-full-dest"))
+                return 1;
+            s->force_full_dest = 0;
+        }
+
         close_video_screen(&s->screen, "fullscreen open rollback");
         s->screen_mode_id = (ULONG)INVALID_ID;
     } else {
@@ -939,6 +1046,7 @@ static int p96pip_toggle_fullscreen(void *h)
          * so a failed toggle can restore the previous mode. reopen_pip()
          * closes the old PIP before it requests the replacement. */
         s->fullscreen = 0;
+        s->force_full_dest = 0;
         s->screen = NULL;
         s->screen_mode_id = (ULONG)INVALID_ID;
         if (s->have_window_geometry) {
@@ -973,9 +1081,28 @@ static int p96pip_toggle_fullscreen(void *h)
     s->screen_mode_id = old_mode_id;
     s->win_w = old_win_w;
     s->win_h = old_win_h;
-    if (!reopen_pip(s, "fullscreen-rollback"))
+    s->force_full_dest = 0;
+    if (!reopen_pip(s, "fullscreen-rollback")) {
         s->quit = 1;
-    return 0;
+        return 0;
+    }
+
+    /* Entering fullscreen failed even after the CROPPED geometry retry
+     * above, but the previous windowed PIP is back and working. Repeating
+     * the same F keypress would only hit the identical failure again with
+     * no path to a working PIP fullscreen from this backend - tell the
+     * caller (display.c's switch_to_cgx_fallback(), via display_poll_
+     * event()/display_toggle_fullscreen()) to try ordinary CGX fullscreen
+     * instead of leaving the user stuck toggling F forever. Leaving
+     * fullscreen never returns this: going windowed always has a working
+     * fallback (fit_within() against the public screen), so there is
+     * nothing for a caller to recover from in that direction. */
+    if (g_display_want_time && entering) {
+        printf("p96pip-fullscreen: giving up on PIP fullscreen this "
+               "session; recommending CGX fallback\n");
+        Flush(Output());
+    }
+    return entering ? 2 : 0;
 }
 
 static void p96pip_status(void *h, const char *text)

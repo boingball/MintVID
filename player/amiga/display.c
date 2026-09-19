@@ -8,9 +8,14 @@
  */
 #include "amiga_display.h"
 #include "display_backend.h"
+#include "../core/mr_yuv.h"
 
 #include <proto/exec.h>
+#include <proto/dos.h>
+#include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* Single definitions of the shared library bases (the proto inlines and the
  * backends reference these globals). */
@@ -68,6 +73,16 @@ struct amiga_display {
     void                  *h;
     mr_display_service_fn service;
     void                  *service_opaque;
+    /* The size/title display_open() was called with, kept so
+     * switch_to_cgx_fallback() can reopen a different backend with the
+     * same geometry after the original one is closed. */
+    int                    open_w, open_h;
+    char                   open_title[128];
+    /* Scratch RGB24 buffer for display_show_yuv422()'s software fallback -
+     * only allocated the first time the active backend lacks show_yuv422
+     * (see switch_to_cgx_fallback()); NULL otherwise. */
+    unsigned char         *yuv422_fallback_buf;
+    size_t                 yuv422_fallback_cap;
 };
 
 static void close_libs(void)
@@ -124,11 +139,75 @@ amiga_display *display_open(int w, int h, const char *title)
             d->h  = hh;
             d->service = NULL;
             d->service_opaque = NULL;
+            d->open_w = w;
+            d->open_h = h;
+            snprintf(d->open_title, sizeof d->open_title, "%s",
+                     (title && *title) ? title : "MintVID");
+            d->yuv422_fallback_buf = NULL;
+            d->yuv422_fallback_cap = 0;
             return d;
         }
     }
     close_libs();
     return NULL;
+}
+
+/*
+ * A backend's toggle_fullscreen()/poll() can report display_backend.h's
+ * sentinel return value 2 ("this backend's own fullscreen path failed on
+ * real hardware, but it rolled back to a working windowed state") -
+ * currently only backend_p96pip, whose file header documents a real
+ * Voodoo3/P96 2.1 setup where neither PIP type can be opened fullscreen at
+ * all. Rather than leave the caller stuck retrying the same failing PIP
+ * fullscreen path forever, close that backend and open backend_cgx
+ * (ordinary WritePixelArray, no hardware overlay) at the same size/title,
+ * then take *that* fullscreen - CGX has none of the PIP's hardware-overlay
+ * ambitions, so its own toggle_fullscreen() has no equivalent failure mode
+ * to inherit.
+ *
+ * d->be/d->h are updated in place, so every other display_* call already
+ * routes to the new backend automatically with no further caller-side
+ * change - including display_show_yuv422(), whose own software fallback
+ * (see below) is what lets an H.264/MPEG-2 session that chose the YUV422
+ * queue path at startup keep working through a backend that has no
+ * show_yuv422 of its own.
+ *
+ * Returns 1 if the switch (and its fullscreen toggle) succeeded, 0 if CGX
+ * itself could not be opened either - in which case d->be/d->h are left
+ * exactly as they were (the old, now-windowed PIP session), since a caller
+ * that can't get fullscreen at all is still better off with a working
+ * windowed session than none.
+ */
+static int switch_to_cgx_fallback(amiga_display *d)
+{
+    void *hh;
+    const display_backend *old_be;
+    void *old_h;
+
+    if (!d || !CyberGfxBase || d->be == &backend_cgx)
+        return 0;
+
+    printf("display: P96 PIP overlay could not open fullscreen on this "
+           "hardware; falling back to RTG (CGX) fullscreen\n");
+    Flush(Output());
+
+    hh = backend_cgx.open(d->open_w, d->open_h, d->open_title);
+    if (!hh) {
+        printf("display: CGX fallback open failed; keeping the existing "
+               "windowed session\n");
+        Flush(Output());
+        return 0;
+    }
+
+    old_be = d->be;
+    old_h = d->h;
+    d->be = &backend_cgx;
+    d->h = hh;
+    old_be->close(old_h);
+
+    if (backend_cgx.toggle_fullscreen)
+        backend_cgx.toggle_fullscreen(d->h);
+    return 1;
 }
 
 void display_show_rgb(amiga_display *d, const unsigned char *rgb,
@@ -160,9 +239,35 @@ int display_supports_yuv422(amiga_display *d)
 void display_show_yuv422(amiga_display *d, const unsigned char *yuv,
                          int w, int h, int stride, int dy0, int dy1)
 {
-    if (d && d->be->show_yuv422)
+    size_t need;
+    unsigned char *p;
+
+    if (!d || !yuv || w <= 0 || h <= 0) return;
+
+    if (d->be->show_yuv422) {
         d->be->show_yuv422(d->h, yuv, w, h, stride, dy0, dy1,
                            d->service, d->service_opaque);
+        return;
+    }
+
+    /* switch_to_cgx_fallback() moved the active backend away from the P96
+     * PIP overlay mid-session; the new backend (CGX/AGA) has no
+     * show_yuv422 of its own, so unpack to RGB24 here and forward to its
+     * ordinary show() - see amiga_display.h's own doc on this function and
+     * core/mr_yuv.c's mr_y4u2v2_to_rgb24(). The whole frame is converted
+     * (not just [dy0,dy1)) for simplicity: this path only exists as a
+     * last-resort correctness fallback once real hardware overlay is
+     * already unavailable, not a performance-sensitive one. */
+    need = (size_t)w * 3u * (size_t)h;
+    if (d->yuv422_fallback_cap < need) {
+        p = (unsigned char *)realloc(d->yuv422_fallback_buf, need);
+        if (!p) return;
+        d->yuv422_fallback_buf = p;
+        d->yuv422_fallback_cap = need;
+    }
+    if (!mr_y4u2v2_to_rgb24(d->yuv422_fallback_buf, w * 3, yuv, stride, w, h))
+        return;
+    display_show_rgb(d, d->yuv422_fallback_buf, w, h, w * 3, dy0, dy1);
 }
 
 void display_set_service(amiga_display *d, mr_display_service_fn fn,
@@ -202,13 +307,29 @@ int display_rtg_frame_timing(amiga_display *d, mr_display_timing *timing)
 
 int display_toggle_fullscreen(amiga_display *d)
 {
-    return d && d->be->toggle_fullscreen
-         ? d->be->toggle_fullscreen(d->h) : 0;
+    int r;
+    if (!d || !d->be->toggle_fullscreen) return 0;
+    r = d->be->toggle_fullscreen(d->h);
+    if (r == 2)
+        return switch_to_cgx_fallback(d);
+    return r;
 }
 
 int display_poll_event(amiga_display *d)
 {
-    return d ? d->be->poll(d->h) : MR_EV_QUIT;
+    int ev;
+    if (!d) return MR_EV_QUIT;
+    ev = d->be->poll(d->h);
+    if (ev == MR_EV_RENDERER_SWITCH) {
+        /* Whether or not the CGX fallback itself succeeds, the previous
+         * backend is left in a known-working (windowed) state by the
+         * p96pip_toggle_fullscreen() call that produced this event - so
+         * either way there is a working session to keep playing, not a
+         * reason to quit. */
+        switch_to_cgx_fallback(d);
+        return MR_EV_NONE;
+    }
+    return ev;
 }
 
 unsigned long display_wait_mask(amiga_display *d)
@@ -225,6 +346,7 @@ void display_close(amiga_display *d)
 {
     if (!d) return;
     d->be->close(d->h);
+    free(d->yuv422_fallback_buf);
     free(d);
     close_libs();
 }
