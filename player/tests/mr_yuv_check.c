@@ -181,12 +181,14 @@ static void check_yuv_service_clobber(void)
     int i, services = 0;
 
     for (i = 0; i < 256; i++) {
+        int y = i - 16;
         int d = i - 128, e = i - 128;
-        luma_x298[i] = 298 * i;
-        e_x409[i] = 409 * e;
-        d_xm100[i] = -100 * d;
+        if (y < 0) y = 0;
+        luma_x298[i] = 298 * y;
+        e_x409[i] = 409 * e + 128;
+        d_xm100[i] = -100 * d + 128;
         e_xm208[i] = -208 * e;
-        d_x516[i] = 516 * d;
+        d_x516[i] = 516 * d + 128;
     }
     for (i = 0; i < (int)sizeof yp; i++) yp[i] = (uint8_t)(next_value(&seed) >> 24);
     for (i = 0; i < (int)sizeof up; i++) up[i] = (uint8_t)(next_value(&seed) >> 24);
