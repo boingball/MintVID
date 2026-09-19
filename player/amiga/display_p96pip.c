@@ -738,7 +738,15 @@ static unsigned char clamp_byte(int v)
  * implies - real hardware confirmed the driver's actual chroma order is
  * swapped from the nominal one (see this file's own header and
  * core/mr_yuv.c's mr_yuv420_to_y4u2v2(), the other producer of this same
- * buffer layout - both must agree). */
+ * buffer layout - both must agree).
+ *
+ * The RGB->YCbCr coefficients below are the *full*-range (PC/JPEG) matrix,
+ * not the studio-range one mr_yuv.c's own mr_yuv420_to_rgb24() uses (no
+ * +16 luma floor, chroma coefficients scaled for the wider 0-255 span) -
+ * matching mr_yuv420_to_y4u2v2()'s own full-range rescale, for the same
+ * real-hardware reason: a washed-out/pastel overlay picture next to a
+ * correct WritePixel one on identical content. See core/mr_yuv.c's comment
+ * on mr_yuv420_to_y4u2v2() for the full finding. */
 static int write_rgb_rows(struct BitMap *bm, int y0,
                           const unsigned char *src, int src_stride,
                           int w, int rows, int src_is_bgr)
@@ -769,13 +777,13 @@ static int write_rgb_rows(struct BitMap *bm, int y0,
             int b = (b0 + b1 + 1) >> 1;
 
             dst_pair[0] = clamp_byte(
-                ((66 * r0 + 129 * g0 + 25 * b0 + 128) >> 8) + 16);
+                (77 * r0 + 150 * g0 + 29 * b0 + 128) >> 8);
             dst_pair[1] = clamp_byte(
-                ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
+                ((128 * r - 107 * g - 21 * b + 128) >> 8) + 128);
             dst_pair[2] = clamp_byte(
-                ((66 * r1 + 129 * g1 + 25 * b1 + 128) >> 8) + 16);
+                (77 * r1 + 150 * g1 + 29 * b1 + 128) >> 8);
             dst_pair[3] = clamp_byte(
-                ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
+                ((-43 * r - 85 * g + 128 * b + 128) >> 8) + 128);
             src_pixel += 6;
             dst_pair += 4;
         }

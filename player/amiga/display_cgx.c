@@ -1052,6 +1052,16 @@ static void cgx_close(void *h)
     FreeVec(s);
 }
 
+/* display.c's switch_to_cgx_fallback() (see display.c) needs to know when
+ * this backend leaves fullscreen, so it can retry the P96 PIP overlay
+ * backend windowed if that was only ever displaced by a PIP-fullscreen
+ * failure - not queried by anything else in this file. */
+static int cgx_is_fullscreen(void *h)
+{
+    cgx_state *s = (cgx_state *)h;
+    return s ? s->fullscreen : 0;
+}
+
 static ULONG cgx_wait_mask(void *h)
 {
     cgx_state *s = (cgx_state *)h;
@@ -1068,7 +1078,8 @@ const display_backend backend_cgx = {
     .close = cgx_close,
     .status = cgx_status,
     .wait_mask = cgx_wait_mask,
-    .toggle_fullscreen = cgx_toggle_fullscreen
+    .toggle_fullscreen = cgx_toggle_fullscreen,
+    .is_fullscreen = cgx_is_fullscreen
     /* supports_indexed/show_indexed/supports_yuv_indexed left NULL - RTG
      * backends don't implement the AGA-only indexed fast paths. */
 };

@@ -52,6 +52,13 @@ typedef struct {
      * Voodoo3/P96 2.1 PIPERR_CROPPED/PIPERR_NOTAVAILABLE failure this
      * exists for. */
     int   (*toggle_fullscreen)(void *handle);
+    /* Optional: report whether `handle` is currently fullscreen (1) or
+     * windowed (0). Only implemented where display.c's switch_to_cgx_
+     * fallback() needs it (currently backend_cgx) - used to notice the
+     * moment a CGX session that only exists because P96 PIP fullscreen
+     * failed goes back to windowed, so the PIP overlay (already proven to
+     * work windowed) can be retried instead of staying on CGX forever. */
+    int   (*is_fullscreen)(void *handle);
     /* Optional: accept one-byte palette indices directly. Returns the active
      * native depth through indexed_depth (4/5/8); false for HAM/scaled modes. */
     int   (*supports_indexed)(void *handle, int *indexed_depth);

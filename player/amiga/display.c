@@ -83,6 +83,14 @@ struct amiga_display {
      * (see switch_to_cgx_fallback()); NULL otherwise. */
     unsigned char         *yuv422_fallback_buf;
     size_t                 yuv422_fallback_cap;
+    /* Set by switch_to_cgx_fallback() when it moves off backend_p96pip
+     * specifically because that backend's own PIP fullscreen path failed
+     * (not because P96 was never available at all) - the windowed PIP was
+     * proven working right before that failure. display_poll_event()
+     * watches for this backend leaving fullscreen again and, if so, retries
+     * the PIP windowed rather than staying on CGX for the rest of the
+     * session - see maybe_retry_pip_windowed(). */
+    int                    pip_fallback_active;
 };
 
 static void close_libs(void)
@@ -204,10 +212,59 @@ static int switch_to_cgx_fallback(amiga_display *d)
     d->be = &backend_cgx;
     d->h = hh;
     old_be->close(old_h);
+    /* The windowed PIP this replaces was proven working right up until its
+     * own fullscreen attempt failed - remember that so display_poll_event()
+     * can retry it once this CGX session goes back to windowed, instead of
+     * settling for CGX (no hardware overlay) for the rest of the session.
+     * Only meaningful when the backend being replaced was actually the PIP
+     * overlay - a caller that opened this way from something else (there is
+     * currently no other caller) would have nothing proven-working to
+     * retry. */
+    d->pip_fallback_active = (old_be == &backend_p96pip);
 
     if (backend_cgx.toggle_fullscreen)
         backend_cgx.toggle_fullscreen(d->h);
     return 1;
+}
+
+/*
+ * Companion to switch_to_cgx_fallback(): once that fallback's CGX session
+ * goes back to windowed, retry backend_p96pip windowed rather than staying
+ * on CGX (with no hardware overlay) for the rest of the session - the PIP
+ * was working windowed right before its fullscreen attempt failed, so
+ * there is a real, working configuration worth returning to.
+ *
+ * g_display_fullscreen is p96pip_open()'s own "open fullscreen" switch,
+ * driven by the --fullscreen CLI flag at session start - unrelated to the
+ * live F-key fullscreen state this function reacts to, but read by
+ * p96pip_open() regardless, so it is forced to 0 for the duration of this
+ * call (and restored after) to guarantee a windowed reopen regardless of
+ * how the session was originally launched.
+ *
+ * Called at most once per fullscreen-failure episode: d->pip_fallback_
+ * active is cleared unconditionally after this runs, whether or not the
+ * PIP reopen actually succeeds, so a driver that also fails to reopen PIP
+ * windowed a second time is not retried every subsequent poll.
+ */
+static void maybe_retry_pip_windowed(amiga_display *d)
+{
+    void *hh;
+    int saved_fullscreen;
+
+    d->pip_fallback_active = 0;
+    if (!P96Base) return;
+
+    saved_fullscreen = g_display_fullscreen;
+    g_display_fullscreen = 0;
+    hh = backend_p96pip.open(d->open_w, d->open_h, d->open_title);
+    g_display_fullscreen = saved_fullscreen;
+    if (!hh) return;
+
+    printf("display: back to windowed - retrying the P96 PIP overlay\n");
+    Flush(Output());
+    backend_cgx.close(d->h);
+    d->be = &backend_p96pip;
+    d->h = hh;
 }
 
 void display_show_rgb(amiga_display *d, const unsigned char *rgb,
@@ -329,6 +386,16 @@ int display_poll_event(amiga_display *d)
         switch_to_cgx_fallback(d);
         return MR_EV_NONE;
     }
+    /* Every poll is cheap insurance against staying on CGX (no hardware
+     * overlay) longer than necessary: once the fallback CGX session
+     * (entered only because PIP fullscreen failed) goes back to windowed -
+     * via its own F-key handling inside cgx_poll(), which display.c has no
+     * other way to observe - retry the PIP once. See maybe_retry_pip_
+     * windowed()'s own comment for why this is safe to attempt repeatedly
+     * until the flag clears itself. */
+    if (d->pip_fallback_active && d->be == &backend_cgx &&
+        backend_cgx.is_fullscreen && !backend_cgx.is_fullscreen(d->h))
+        maybe_retry_pip_windowed(d);
     return ev;
 }
 
