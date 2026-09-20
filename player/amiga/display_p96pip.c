@@ -50,11 +50,9 @@
  * window is opened. H.264 and MPEG-2 therefore stay YUV from decoder to
  * overlay and only repack 4:2:0 to 4:2:2; RGB-only codecs retain a
  * correctness fallback which converts their rows while copying them into
- * the PIP surface. Real hardware also showed the chroma *order* the format
- * name implies (Y0,U0,Y1,V0) to be backwards from what the driver actually
- * consumes - see core/mr_yuv.c's mr_yuv420_to_y4u2v2() and this file's own
- * write_rgb_rows() for the swapped V-then-U convention both this backend's
- * producers now use.
+ * the PIP surface. The P96 Output Format menu selects YVYU or YUYV to
+ * accommodate differing driver interpretations, with both the packed-YUV
+ * and RGB-only producers using the same saved choice.
  *
  * A second real-hardware finding: on at least one Voodoo3/P96 2.1 setup,
  * neither PIP type can be opened fullscreen on the public screen at all -
@@ -82,6 +80,8 @@
 #include "amiga_display.h"
 #include "display_backend.h"
 #include "mr_aspect.h"
+#include "mr_p96_format.h"
+#include "../core/mr_yuv.h"
 
 #include <stddef.h>
 #include <exec/types.h>
@@ -706,7 +706,14 @@ static void *p96pip_open(int w, int h, const char *title)
 
     if (!P96Base || w <= 0 || h <= 0 || (w & 1)) return NULL;
 
+    /* One setting for both packed YUV producers and the software fallback;
+     * read once at session open, not once per rendered frame. */
+    mr_yuv_set_p96_format(mr_p96_format_load());
     if (g_display_want_time) {
+        printf("p96pip: output format %s (%s)\n",
+               mr_yuv_get_p96_format() ? "YUYV" : "YVYU",
+               mr_yuv_get_p96_format() ? "Voodoo" : "WinUAE");
+        Flush(Output());
         printf("p96pip: p96pip_open entered, source=%dx%d\n", w, h);
         Flush(Output());
     }
@@ -858,11 +865,8 @@ static unsigned char clamp_byte(int v)
 /* Correctness fallback for RGB-only decoders. The performance path never
  * calls this: H.264/MPEG-2 queue RGBFB_Y4U2V2 directly.
  *
- * dst_pair[1]/[3] are V then U, not the U-then-V the RGBFB_Y4U2V2 name
- * implies - real hardware confirmed the driver's actual chroma order is
- * swapped from the nominal one (see this file's own header and
- * core/mr_yuv.c's mr_yuv420_to_y4u2v2(), the other producer of this same
- * buffer layout - both must agree).
+ * dst_pair[1]/[3] are V/U for YVYU and U/V for YUYV. This RGB-only
+ * producer follows the same saved preference as mr_yuv420_to_y4u2v2().
  *
  * The RGB->YCbCr coefficients below are the ordinary studio-range matrix,
  * matching mr_yuv.c's own mr_yuv420_to_rgb24(). A full-range variant was
@@ -875,6 +879,7 @@ static int write_rgb_rows(struct BitMap *bm, int y0,
     struct RenderInfo ri;
     LONG lock;
     int y, bpr;
+    int yuyv = mr_yuv_get_p96_format();
     unsigned char *base;
 
     lock = p96LockBitMap(bm, (UBYTE *)&ri, sizeof ri);
@@ -896,14 +901,16 @@ static int write_rgb_rows(struct BitMap *bm, int y0,
             int r = (r0 + r1 + 1) >> 1;
             int g = (g0 + g1 + 1) >> 1;
             int b = (b0 + b1 + 1) >> 1;
+            int v = clamp_byte(
+                ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
+            int u = clamp_byte(
+                ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
             dst_pair[0] = clamp_byte(
                 ((66 * r0 + 129 * g0 + 25 * b0 + 128) >> 8) + 16);
-            dst_pair[1] = clamp_byte(
-                ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
+            dst_pair[1] = (unsigned char)(yuyv ? u : v);
             dst_pair[2] = clamp_byte(
                 ((66 * r1 + 129 * g1 + 25 * b1 + 128) >> 8) + 16);
-            dst_pair[3] = clamp_byte(
-                ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
+            dst_pair[3] = (unsigned char)(yuyv ? v : u);
             src_pixel += 6;
             dst_pair += 4;
         }

@@ -1,4 +1,5 @@
 #include "mr_gui_menu.h"
+#include "mr_p96_format.h"
 
 #include <intuition/intuition.h>
 #include <libraries/gadtools.h>
@@ -22,12 +23,22 @@ struct Library *GadToolsBase;
 #define MR_MENU_USER_GUIDE ((APTR)1)
 #define MR_MENU_USER_ABOUT ((APTR)2)
 #define MR_MENU_USER_QUIT  ((APTR)3)
+#define MR_MENU_USER_P96_YVYU ((APTR)4)
+#define MR_MENU_USER_P96_YUYV ((APTR)5)
+/* Indices in menu_template: title, Guide, About, P96 parent, two subs. */
+#define MR_P96_YVYU_ITEM 4
+#define MR_P96_YUYV_ITEM 5
 
 static struct NewMenu menu_template[] = {
     {NM_TITLE, (STRPTR)"MintVID", NULL, 0, 0, NULL},
     {NM_ITEM, (STRPTR)"Guide...", (STRPTR)"H", 0, 0, MR_MENU_USER_GUIDE},
     {NM_ITEM, (STRPTR)"About MintVID...", (STRPTR)"?", 0, 0,
      MR_MENU_USER_ABOUT},
+    {NM_ITEM, (STRPTR)"P96 Output Format", NULL, 0, 0, NULL},
+    {NM_SUB, (STRPTR)"YVYU (WinUAE)", NULL, CHECKIT | MENUTOGGLE,
+     1UL << 1, MR_MENU_USER_P96_YVYU},
+    {NM_SUB, (STRPTR)"YUYV (Voodoo)", NULL, CHECKIT | MENUTOGGLE,
+     1UL << 0, MR_MENU_USER_P96_YUYV},
     {NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL},
     {NM_ITEM, (STRPTR)"Quit", (STRPTR)"Q", 0, 0, MR_MENU_USER_QUIT},
     {NM_END, NULL, NULL, 0, 0, NULL}
@@ -44,6 +55,14 @@ int mr_gui_menu_open(mr_gui_menu *menu, struct Window *window)
     }
     if (!GadToolsBase)
         return 0;
+    /* Restore the persisted mutually-exclusive selection on every open. */
+    {
+        int yuyv = mr_p96_format_load();
+        menu_template[MR_P96_YVYU_ITEM].nm_Flags =
+            CHECKIT | MENUTOGGLE | (yuyv ? 0 : CHECKED);
+        menu_template[MR_P96_YUYV_ITEM].nm_Flags =
+            CHECKIT | MENUTOGGLE | (yuyv ? CHECKED : 0);
+    }
     menu->visual_info = GetVisualInfoA(window->WScreen, NULL);
     if (!menu->visual_info)
         goto fail;
@@ -91,6 +110,17 @@ int mr_gui_menu_action(mr_gui_menu *menu, UWORD code)
     if (!item)
         return MR_GUI_MENU_NONE;
     user_data = GTMENUITEM_USERDATA(item);
+    if (user_data == MR_MENU_USER_P96_YVYU ||
+        user_data == MR_MENU_USER_P96_YUYV) {
+        int yuyv = user_data == MR_MENU_USER_P96_YUYV;
+        if (mr_p96_format_save(yuyv)) {
+            /* Keep the selected item checked even if clicked twice. */
+            item->Flags |= CHECKED;
+        } else {
+            printf("MintVID: could not save P96 Output Format preference\n");
+        }
+        return MR_GUI_MENU_NONE;
+    }
     if (user_data == MR_MENU_USER_ABOUT)
         return MR_GUI_MENU_ABOUT;
     if (user_data == MR_MENU_USER_QUIT)

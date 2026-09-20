@@ -6,6 +6,12 @@
 
 typedef void (*mr_yuv_service_fn)(void *opaque);
 
+/* Packed P96 PIP layout selected once when a PIP session opens.
+ * 0 = YVYU (Y0,V0,Y1,U0), 1 = YUYV (Y0,U0,Y1,V0).
+ * Only packed PIP conversion and its CGX fallback use this setting. */
+void mr_yuv_set_p96_format(int yuyv);
+int mr_yuv_get_p96_format(void);
+
 /* Convert planar limited-range YUV420 to packed RGB24. U and V are sampled
  * once for each horizontal pair, matching 4:2:0 chroma geometry. Strides may
  * include padding. The optional service hook runs after every 16 output rows. */
@@ -27,10 +33,9 @@ void mr_yuv420_to_bgr24(uint8_t *dst, int dst_stride,
                         mr_yuv_service_fn service, void *service_opaque);
 
 /* Repack planar 4:2:0 as the packed 4:2:2 byte layout used by RiVA's
- * Picasso96 PIP path: Y0,V0,Y1,U0 for each horizontal pixel pair - real
- * Voodoo3/P96 2.x hardware was confirmed to expect chroma in that order,
- * the opposite of what the RGBFB_Y4U2V2 name and libraries/Picasso96.h's
- * own doc comment suggest. No colour-range rescaling is performed. Legal
+ * Picasso96 PIP path: Y0,V0,Y1,U0 (YVYU) by default, or
+ * Y0,U0,Y1,V0 (YUYV) when configured for a different driver. No
+ * colour-range rescaling is performed. Legal
  * studio samples pass through unchanged; decoder excursions are clamped to
  * Y=16..235 and Cb/Cr=16..240 because old P96 overlays can render values
  * outside those nominal rails as white/black flecks. A studio-to-full
@@ -43,7 +48,7 @@ int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
                         int width, int height,
                         mr_yuv_service_fn service, void *service_opaque);
 
-/* Inverse of mr_yuv420_to_y4u2v2(): unpack the same swapped-chroma packed
+/* Inverse of mr_yuv420_to_y4u2v2(): unpack the selected packed
  * studio-range 4:2:2 layout back to RGB24. Used only as a software fallback
  * when a display backend that doesn't support show_yuv422 has to take over
  * from one that did (see display.c's switch_to_cgx_fallback()). Each row is

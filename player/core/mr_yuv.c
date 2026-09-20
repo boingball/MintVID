@@ -57,6 +57,18 @@ static int g_d_xm100[256];
 static int g_e_xm208[256];
 static int g_d_x516[256];
 static int g_tables_ready = 0;
+/* Session-specific packed P96 PIP byte order; default preserves YVYU. */
+static int g_p96_yuyv = 0;
+
+void mr_yuv_set_p96_format(int yuyv)
+{
+    g_p96_yuyv = yuyv != 0;
+}
+
+int mr_yuv_get_p96_format(void)
+{
+    return g_p96_yuyv;
+}
 
 static void build_tables(void)
 {
@@ -298,29 +310,24 @@ int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
         dst_stride < width * 2)
         return 0;
 
-    /* Real Voodoo3/P96 2.x hardware (the case this format exists for - see
-     * display_p96pip.c's file header) was confirmed on real hardware to
-     * show swapped colour: the format name and libraries/Picasso96.h both
-     * read "Y4U2V2" as Y0,U0,Y1,V0, but the driver's actual chroma order is
-     * the other way round. Slots 1 and 3 below are therefore V then U, not
-     * U then V - matching what the hardware actually consumes, not the
-     * nominal name. mr_y4u2v2_to_rgb24() (the software fallback decode this
-     * format also needs - see display.c's switch_to_cgx_fallback()) and
-     * display_p96pip.c's write_rgb_rows() (the RGB-source encode path) both
-     * use the identical swapped convention, so every producer/consumer of
-     * this buffer agrees. Legal studio-range values pass through unchanged;
-     * only out-of-range ringing is clamped to the nominal rails. */
+    /* PIP hardware/driver versions may interpret the source chroma pair
+     * differently. The preference selects YVYU or YUYV on the packed producer;
+     * the RGB-only producer and software fallback use the same choice.
+     * Only out-of-range Y/Cr/Cb ringing is clamped to studio rails. */
     for (row = 0; row < height; row++) {
         const uint8_t *sy = y_plane + (size_t)row * (size_t)y_stride;
         const uint8_t *su = u_plane + (size_t)(row >> 1) * (size_t)u_stride;
         const uint8_t *sv = v_plane + (size_t)(row >> 1) * (size_t)v_stride;
+        /* Choose the two planes once per row, never inside the pixel loop. */
+        const uint8_t *c1 = g_p96_yuyv ? su : sv;
+        const uint8_t *c3 = g_p96_yuyv ? sv : su;
         uint8_t *out = dst + (size_t)row * (size_t)dst_stride;
         int x;
         for (x = 0; x < width; x += 2) {
             out[0] = clamp_studio_y(sy[x]);
-            out[1] = clamp_studio_c(sv[x >> 1]);
+            out[1] = clamp_studio_c(c1[x >> 1]);
             out[2] = clamp_studio_y(sy[x + 1]);
-            out[3] = clamp_studio_c(su[x >> 1]);
+            out[3] = clamp_studio_c(c3[x >> 1]);
             out += 4;
         }
         if (service && (row & 15) == 15) service(service_opaque);
@@ -333,6 +340,8 @@ int mr_y4u2v2_to_rgb24(uint8_t *dst, int dst_stride,
                        int width, int height)
 {
     int row;
+    const int vi = g_p96_yuyv ? 3 : 1;
+    const int ui = g_p96_yuyv ? 1 : 3;
     if (!dst || !src || width <= 0 || height <= 0 || (width & 1) ||
         dst_stride < width * 3 || src_stride < width * 2)
         return 0;
@@ -344,8 +353,8 @@ int mr_y4u2v2_to_rgb24(uint8_t *dst, int dst_stride,
      * here rather than making the caller re-thread its whole decode-side
      * format choice mid-session. Unlike planar 4:2:0, this format is
      * genuinely 4:2:2 (a fresh chroma pair every row), so each row decodes
-     * independently with no chroma-row bookkeeping. Slot 1 is V and slot 3
-     * is U - see mr_yuv420_to_y4u2v2()'s own comment for why. The packed
+     * independently with no chroma-row bookkeeping. The saved P96
+     * preference defines which packed chroma slot is V/U. The packed
      * samples remain studio-range, so this reuses the normal conversion
      * tables and emit_pixel(). */
     for (row = 0; row < height; row++) {
@@ -353,7 +362,7 @@ int mr_y4u2v2_to_rgb24(uint8_t *dst, int dst_stride,
         uint8_t *out = dst + (size_t)row * (size_t)dst_stride;
         int x;
         for (x = 0; x < width; x += 2) {
-            unsigned vv = in[1], uu = in[3];
+            unsigned vv = in[vi], uu = in[ui];
             int red_add = g_e_x409[vv];
             int green_add = g_d_xm100[uu] + g_e_xm208[vv];
             int blue_add = g_d_x516[uu];
