@@ -387,6 +387,7 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
     struct Window *win;
     ULONG flags, idcmp, screen_tag, relativity;
     LONG pip_width, pip_height;
+    ULONG max_w = (ULONG)-1, max_h = (ULONG)-1;
     int left = 0, top = 0;
     int pub_locked = 0;
 
@@ -426,6 +427,33 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
         relativity = PIPRel_Width | PIPRel_Height;
         pip_width = -(LONG)right_margin;
         pip_height = -(LONG)bottom_margin;
+
+        /* A real-hardware log (--time) on a driver that only ever grants
+         * PIPT_MemoryWindow (PIPT_VideoWindow returning PIPERR_NOTAVAILABLE
+         * on every attempt) showed the window silently reopening smaller
+         * than requested every time - e.g. a drag to 878x545 came back
+         * from sync_content_geometry() as 640x411, with no PIP error code
+         * to flag it. PIPT_MemoryWindow is the unaccelerated, software-
+         * composited fallback with no scaler behind it, so the driver
+         * apparently cannot honour a window bigger than the source frame
+         * and just clamps it - silently, not via a rejected open. That
+         * clamp was being misread as the "final" post-resize size (see
+         * reopen_pip()'s own drift retry), producing exactly the reported
+         * "resizes, then snaps back" symptom: the shrink happens on the
+         * very first open, before any retry even runs.
+         *
+         * Fixed at the source instead of chasing the driver's own return
+         * value after the fact: cap WA_MaxWidth/WA_MaxHeight to the
+         * source frame's own size whenever this open is for
+         * PIPT_MemoryWindow, so Intuition simply refuses to let the user
+         * drag past what this driver can actually deliver - no false
+         * "grew, then reverted" illusion, since it never appears to grow
+         * in the first place. PIPT_VideoWindow (real hardware scaling)
+         * keeps no cap. */
+        if (type == PIPT_MemoryWindow) {
+            max_w = (ULONG)s->source_w;
+            max_h = (ULONG)s->source_h;
+        }
     }
 
     /* P96's PIP API explicitly ignores WA_Width/WA_Height and requires
@@ -453,7 +481,7 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
          * constrained to its opening dimensions, so no real IDCMP_NEWSIZE
          * geometry ever reaches the reopen/debounce path below. */
         WA_MinWidth, (ULONG)160, WA_MinHeight, (ULONG)100,
-        WA_MaxWidth, (ULONG)-1, WA_MaxHeight, (ULONG)-1,
+        WA_MaxWidth, max_w, WA_MaxHeight, max_h,
         WA_IDCMP, idcmp,
         P96PIP_SourceFormat, (ULONG)RGBFB_Y4U2V2,
         P96PIP_SourceWidth, (ULONG)s->source_w,
