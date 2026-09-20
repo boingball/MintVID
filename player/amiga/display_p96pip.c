@@ -519,55 +519,102 @@ static void rebuild_geometry(p96pip_state *s, const char *reason)
  * P96PIP_{Left,Top,Width,Height} are init-only, and a hardware overlay may
  * allow only one live video window. Close the old PIP first so it cannot
  * make its own replacement look unavailable. */
+/*
+ * A real-hardware report: dragging the windowed PIP's size gadget produces
+ * a video rectangle that goes small-and-centred or off-centre relative to
+ * the actual window bounds, and stays wrong until the next fullscreen
+ * round-trip (which happens to fix it). The mechanism: P96PIP_Left/Top/
+ * Width/Height are init-only (see open_pip()'s own comment) - they are
+ * computed by calculate_geometry() from s->win_w/win_h *before* the window
+ * is actually (re)created, and baked into the one p96PIP_OpenTags() call
+ * that opens it. WA_InnerWidth/InnerHeight is only a *request*; the real
+ * resulting window can come back a different size (border/decoration
+ * differences between window states, driver quirks, etc.) - and if it
+ * does, the destination rectangle already sent to the PIP hardware no
+ * longer matches the window that actually exists, silently, until some
+ * *later* reopen_pip() call (the next resize, or a fullscreen toggle)
+ * happens to start from the corrected size and self-heals by coincidence.
+ *
+ * Fixed by checking for that drift directly: after the window opens and
+ * sync_content_geometry() reads back its real content size, if it differs
+ * from what calculate_geometry() used a moment ago, reopen once more with
+ * the corrected size so the rectangle actually baked into the hardware
+ * matches the real window - rather than leaving the mismatch to be found
+ * by chance on some later, unrelated reopen. Bounded to one retry: if the
+ * driver still doesn't converge, this stops trying rather than risking an
+ * unbounded reopen loop.
+ */
 static int reopen_pip(p96pip_state *s, const char *reason)
 {
     LONG err = 0;
+    int attempt;
 
-    close_pip(s);
-    calculate_geometry(s);
+    for (attempt = 0; attempt < 2; attempt++) {
+        int requested_w = s->win_w;
+        int requested_h = s->win_h;
 
-    s->win = open_pip(s, PIPT_VideoWindow, &err);
-    s->hw_overlay = s->win != NULL;
-    s->last_hw_err = err;
-    if (!s->win) {
-        if (g_display_want_time) {
-            printf("p96pip: video-window PIP unavailable (error %ld: %s), "
-                   "trying RiVA-compatible memory-window PIP\n",
-                   (long)err, pip_err_name(err));
-            Flush(Output());
-        }
-        s->win = open_pip(s, PIPT_MemoryWindow, &err);
-        s->last_mem_err = err;
-    } else {
-        s->last_mem_err = 0;
-    }
-    if (!s->win) {
-        if (g_display_want_time) {
-            printf("p96pip: PIP open failed (error %ld: %s)\n",
-                   (long)err, pip_err_name(err));
-            Flush(Output());
-        }
-        return 0;
-    }
-
-    if (g_display_want_time) {
-        printf("p96pip: calling p96PIP_GetTags for source bitmap\n");
-        Flush(Output());
-    }
-    /* p96PIP_GetTagList() returns a count, not a success boolean. Check the
-     * retrieved pointer itself so either convention remains harmless. */
-    p96PIP_GetTags(s->win, P96PIP_SourceBitMap, (ULONG)&s->source_bitmap,
-                   TAG_END);
-    if (!s->source_bitmap) {
-        if (g_display_want_time) {
-            printf("p96pip: could not retrieve source bitmap - closing\n");
-            Flush(Output());
-        }
         close_pip(s);
-        return 0;
+        calculate_geometry(s);
+
+        s->win = open_pip(s, PIPT_VideoWindow, &err);
+        s->hw_overlay = s->win != NULL;
+        s->last_hw_err = err;
+        if (!s->win) {
+            if (g_display_want_time) {
+                printf("p96pip: video-window PIP unavailable (error %ld: "
+                       "%s), trying RiVA-compatible memory-window PIP\n",
+                       (long)err, pip_err_name(err));
+                Flush(Output());
+            }
+            s->win = open_pip(s, PIPT_MemoryWindow, &err);
+            s->last_mem_err = err;
+        } else {
+            s->last_mem_err = 0;
+        }
+        if (!s->win) {
+            if (g_display_want_time) {
+                printf("p96pip: PIP open failed (error %ld: %s)\n",
+                       (long)err, pip_err_name(err));
+                Flush(Output());
+            }
+            return 0;
+        }
+
+        if (g_display_want_time) {
+            printf("p96pip: calling p96PIP_GetTags for source bitmap\n");
+            Flush(Output());
+        }
+        /* p96PIP_GetTagList() returns a count, not a success boolean. Check
+         * the retrieved pointer itself so either convention remains
+         * harmless. */
+        p96PIP_GetTags(s->win, P96PIP_SourceBitMap, (ULONG)&s->source_bitmap,
+                       TAG_END);
+        if (!s->source_bitmap) {
+            if (g_display_want_time) {
+                printf("p96pip: could not retrieve source bitmap - "
+                       "closing\n");
+                Flush(Output());
+            }
+            close_pip(s);
+            return 0;
+        }
+
+        sync_content_geometry(s);
+
+        if (s->win_w == requested_w && s->win_h == requested_h)
+            break;
+
+        if (g_display_want_time) {
+            printf("p96pip: real window %dx%d differs from the %dx%d used "
+                   "for the destination rectangle just opened; %s\n",
+                   s->win_w, s->win_h, requested_w, requested_h,
+                   attempt == 0 ? "reopening once more with the corrected "
+                                  "size"
+                                : "giving up after one retry");
+            Flush(Output());
+        }
     }
 
-    sync_content_geometry(s);
     s->pending_w = s->win_w;
     s->pending_h = s->win_h;
     rebuild_geometry(s, reason);
