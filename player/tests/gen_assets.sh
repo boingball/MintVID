@@ -87,7 +87,7 @@ ffmpeg -v error -i test_h264_high.mp4 -c copy test_h264_aac.mkv -y
 # MPEG-2 Main Profile with B-frame reordering in a transport stream. This also
 # verifies that the decoder drains both delayed reference pictures at EOF.
 ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=25:duration=2 \
-    -c:v mpeg2video -profile:v main -pix_fmt yuv420p \
+    -c:v mpeg2video -profile:v 4 -pix_fmt yuv420p \
     -g 12 -bf 2 -qscale:v 4 -an -f mpegts test_mpeg2.ts -y
 # Early OpenDivX AVI variant: numeric biCompression=4, 'divx' handler, and no
 # VOL header in the bitstream. This reproduces Xmen-OpenDivX-200-slow.avi.

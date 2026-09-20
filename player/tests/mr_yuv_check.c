@@ -105,10 +105,9 @@ static int run_case(int width, int height, unsigned seed)
     return ok;
 }
 
-/* Chroma order is V-then-U (slots 1 and 3), not the U-then-V the RGBFB_
- * Y4U2V2 name implies - see mr_yuv.c's mr_yuv420_to_y4u2v2() for why: real
- * Voodoo3/P96 2.x hardware was confirmed to expect it swapped. Legal studio
- * values pass through byte-for-byte; illegal excursions are clamped to
+/* Test both selectable pair orders: default YVYU has V then U in
+ * slots 1 and 3; YUYV reverses them. Legal studio samples pass through
+ * byte-for-byte; illegal excursions are clamped to
  * Y=16..235 and Cb/Cr=16..240 without rescaling the legal range. */
 static int check_y4u2v2(void)
 {
@@ -128,6 +127,7 @@ static int check_y4u2v2(void)
     uint8_t out[H * DS];
     int row;
 
+    mr_yuv_set_p96_format(0);
     memset(out, 0xa5, sizeof out);
     if (!mr_yuv420_to_y4u2v2(out, DS, y, YS, u, CS, v, CS,
                              W, H, NULL, NULL)) {
@@ -141,6 +141,25 @@ static int check_y4u2v2(void)
             return 0;
         }
     }
+    mr_yuv_set_p96_format(1);
+    memset(out, 0xa5, sizeof out);
+    if (!mr_yuv420_to_y4u2v2(out, DS, y, YS, u, CS, v, CS,
+                             W, H, NULL, NULL)) return 0;
+    for (row = 0; row < H; row++) {
+        int x;
+        for (x = 0; x < W; x += 2) {
+            int off = row * DS + x * 2;
+            if (out[off] != expected[row][x * 2] ||
+                out[off + 1] != expected[row][x * 2 + 3] ||
+                out[off + 2] != expected[row][x * 2 + 2] ||
+                out[off + 3] != expected[row][x * 2 + 1]) {
+                fprintf(stderr, "YUYV pair mismatch row=%d x=%d\n", row, x);
+                mr_yuv_set_p96_format(0);
+                return 0;
+            }
+        }
+    }
+    mr_yuv_set_p96_format(0);
     if (mr_yuv420_to_y4u2v2(out, DS, y, YS, u, CS, v, CS,
                             W - 1, H, NULL, NULL)) {
         fprintf(stderr, "Y4U2V2 accepted an odd width\n");
@@ -172,7 +191,7 @@ static int check_y4u2v2_to_rgb24(void)
     uint8_t y[H][W], u[H / 2][W / 2], v[H / 2][W / 2];
     uint8_t packed[H][W * 2], direct[H][W * 3], via_packed[H][W * 3];
     unsigned seed = 0x59345556U;
-    int row, col;
+    int row, col, format;
 
     for (row = 0; row < H; row++)
         for (col = 0; col < W; col++)
@@ -185,20 +204,29 @@ static int check_y4u2v2_to_rgb24(void)
 
     mr_yuv420_to_rgb24(&direct[0][0], W * 3, &y[0][0], W, &u[0][0], W / 2,
                        &v[0][0], W / 2, W, H, NULL, NULL);
-    if (!mr_yuv420_to_y4u2v2(&packed[0][0], W * 2, &y[0][0], W, &u[0][0],
-                             W / 2, &v[0][0], W / 2, W, H, NULL, NULL)) {
-        fprintf(stderr, "Y4U2V2 round-trip: pack step failed\n");
-        return 0;
+    for (format = 0; format < 2; format++) {
+        mr_yuv_set_p96_format(format);
+        if (!mr_yuv420_to_y4u2v2(&packed[0][0], W * 2, &y[0][0], W,
+                                 &u[0][0], W / 2, &v[0][0], W / 2,
+                                 W, H, NULL, NULL)) {
+            fprintf(stderr, "Y4U2V2 round-trip: pack step failed\n");
+            mr_yuv_set_p96_format(0);
+            return 0;
+        }
+        if (!mr_y4u2v2_to_rgb24(&via_packed[0][0], W * 3,
+                                &packed[0][0], W * 2, W, H)) {
+            fprintf(stderr, "Y4U2V2 round-trip: unpack step failed\n");
+            mr_yuv_set_p96_format(0);
+            return 0;
+        }
+        if (memcmp(direct, via_packed, sizeof direct) != 0) {
+            fprintf(stderr, "Y4U2V2 round-trip mismatch for %s\n",
+                    format ? "YUYV" : "YVYU");
+            mr_yuv_set_p96_format(0);
+            return 0;
+        }
     }
-    if (!mr_y4u2v2_to_rgb24(&via_packed[0][0], W * 3, &packed[0][0], W * 2,
-                            W, H)) {
-        fprintf(stderr, "Y4U2V2 round-trip: unpack step failed\n");
-        return 0;
-    }
-    if (memcmp(direct, via_packed, sizeof direct) != 0) {
-        fprintf(stderr, "Y4U2V2 round-trip mismatch against direct RGB24\n");
-        return 0;
-    }
+    mr_yuv_set_p96_format(0);
     return 1;
 }
 

@@ -34,12 +34,12 @@
 
 #define STRIDE 64
 #define PAD    8
-#define PLANE  (STRIDE * 64)
+#define TEST_PLANE  (STRIDE * 64)
 
-static UWORD8 g_src[PLANE];
-static UWORD8 g_got[PLANE];
-static UWORD8 g_exp[PLANE];
-static UWORD8 g_tmp[PLANE];
+static UWORD8 g_src[TEST_PLANE];
+static UWORD8 g_got[TEST_PLANE];
+static UWORD8 g_exp[TEST_PLANE];
+static UWORD8 g_tmp[TEST_PLANE];
 
 static UWORD32 g_rand = 12345u;
 static UWORD8 next_byte(void)
@@ -51,7 +51,7 @@ static UWORD8 next_byte(void)
 static void fill_source(void)
 {
     int i;
-    for(i = 0; i < PLANE; i++) g_src[i] = next_byte();
+    for(i = 0; i < TEST_PLANE; i++) g_src[i] = next_byte();
 }
 
 /* The sample the decoder passes as pu1_src: inside the plane, with room for

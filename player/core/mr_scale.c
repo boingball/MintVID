@@ -101,6 +101,51 @@ void mr_scale_fit_rect(int w, int h, int max_w, int max_h,
     if (dst_h) *dst_h = dh;
 }
 
+/* For wide downscales, each destination row selects exactly the same source
+ * x positions. Build their byte offsets once per strip/tile instead of
+ * repeating the horizontal DDA (including its carry branch) on every row.
+ * A 512-entry UWORD table uses 1 KiB of stack, never heap/Chip RAM; the
+ * ordinary scaler remains the fallback for upscaling and huge source widths.
+ */
+static void scale_down_rgb24_mapped(const uint8_t *src, int src_stride,
+                                    uint8_t *dst, int dst_w, int dst_h,
+                                    int dst_stride, int rows, int xq, int xr,
+                                    int sx0, int xerr0, int yq, int yr,
+                                    int sy0, int yerr0)
+{
+    uint16_t offsets[512];
+    int x0 = 0, sx = sx0, xerr = xerr0;
+    while (x0 < dst_w) {
+        int cols = dst_w - x0 < 512 ? dst_w - x0 : 512;
+        int x, y, sy = sy0, yerr = yerr0;
+        for (x = 0; x < cols; x++) {
+            offsets[x] = (uint16_t)(sx * 3);
+            sx += xq;
+            xerr += xr;
+            if (xerr >= dst_w) {
+                xerr -= dst_w;
+                sx++;
+            }
+        }
+        for (y = 0; y < rows; y++) {
+            const uint8_t *sr = src + (size_t)sy * src_stride;
+            uint8_t *dr = dst + (size_t)y * dst_stride + (size_t)x0 * 3;
+            for (x = 0; x < cols; x++) {
+                const uint8_t *sp = sr + offsets[x];
+                dr[0] = sp[0]; dr[1] = sp[1]; dr[2] = sp[2];
+                dr += 3;
+            }
+            sy += yq;
+            yerr += yr;
+            if (yerr >= dst_h) {
+                yerr -= dst_h;
+                sy++;
+            }
+        }
+        x0 += cols;
+    }
+}
+
 void mr_scale_resize_rgb24_strip(const uint8_t *src, int w, int h,
                                  int src_stride, uint8_t *dst, int dst_w,
                                  int dst_h, int dst_stride, int y0, int rows)
@@ -142,6 +187,16 @@ void mr_scale_resize_rgb24_strip(const uint8_t *src, int w, int h,
             yerr -= dst_h;
             sy++;
         }
+    }
+
+    /* 16-bit source byte offsets fit when w <= 21845 (3*w <= 65535).
+     * Restrict the table to real wide downscales: tiny and upscaled pictures
+     * keep the lower-stack, original per-pixel path. */
+    if (w > dst_w && h >= dst_h && dst_w >= 512 && w <= 21845) {
+        scale_down_rgb24_mapped(src, src_stride, dst, dst_w, dst_h,
+                                dst_stride, rows, xq, xr, sx0, xerr0,
+                                yq, yr, sy, yerr);
+        return;
     }
 
     for (y = 0; y < rows; y++) {
