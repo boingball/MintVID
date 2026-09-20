@@ -125,8 +125,6 @@ typedef struct {
     LONG           last_hw_err, last_mem_err; /* most recent open_pip() error
                                                * per PIP type, for the CROPPED
                                                * retry and diagnostics */
-    int            pending_w, pending_h;
-    clock_t        resize_at;
     int            geometry_valid;
     int            force_full_redraw;
     mr_display_timing timing;
@@ -172,12 +170,11 @@ static void fit_within(int w, int h, int max_w, int max_h, int *out_w,
 
 static void calculate_geometry(p96pip_state *s)
 {
-    if (s->force_full_dest) {
-        /* One-shot PIPERR_CROPPED retry (see p96pip_toggle_fullscreen()):
-         * fill the whole window instead of the normal aspect-fitted
-         * rectangle, in case the driver's crop check is tripping on the
-         * letterboxed inset rather than on anything about the window or
-         * screen bounds themselves. */
+    if (!s->fullscreen || s->force_full_dest) {
+        /* Match P96PipDemo in ordinary windowed mode: the PIP fills the
+         * entire inner window and its default relative rectangle follows
+         * live Intuition resizing. Fullscreen retains aspect fit, unless
+         * the PIPERR_CROPPED retry explicitly requests full-window fill. */
         s->dx = 0;
         s->dy = 0;
         s->dw = s->win_w;
@@ -379,10 +376,9 @@ static struct Screen *open_video_screen(p96pip_state *s, int target_w,
  * uses PIPRel_Width|PIPRel_Height and encodes the aspect-fit rectangle's
  * right/bottom gaps as negative margins. This is the P96 mechanism that
  * lets its window hook adjust the hardware rectangle while Intuition is
- * resizing the containing window; using absolute dimensions makes affected
- * drivers snap the window back to its original size. The static margins can
- * temporarily stretch the picture during a drag, then the debounced reopen
- * calculates fresh aspect-correct margins for the final window dimensions.
+ * resizing the containing window. A normal windowed PIP uses the demo's
+ * default rectangle (no extra P96PIP geometry tags), fills its inner window,
+ * and stays open during resizing; fullscreen uses explicit aspect fit.
  */
 static struct Window *open_pip(p96pip_state *s, ULONG type,
                                ULONG source_format, LONG *err)
@@ -422,13 +418,9 @@ static struct Window *open_pip(p96pip_state *s, ULONG type,
         left = s->have_window_geometry ? s->window_left : 0;
         top  = s->have_window_geometry ? s->window_top  : 0;
 
-        /* P96's window hook cannot resize a PIP whose destination width and
-         * height were opened as fixed absolute values: Intuition moves the
-         * size gadget, then the window snaps back to the original size. In
-         * relative mode these values are negative right/bottom margins, so
-         * the hardware rectangle can follow the window during the drag.
-         * Once IDCMP_NEWSIZE settles, reopen_pip() recalculates the exact
-         * aspect-fit margins for the final size. */
+        /* When an explicit rectangle is needed, express right/bottom as
+         * relative margins. Native windowed playback uses PIP.c's default
+         * relative full-window rectangle and never reopens for resizing. */
         relativity = PIPRel_Width | PIPRel_Height;
         pip_width = -(LONG)right_margin;
         pip_height = -(LONG)bottom_margin;
@@ -525,19 +517,30 @@ static void close_pip(p96pip_state *s)
     s->source_bitmap = NULL;
 }
 
-/* Black out the window area the PIP rectangle doesn't cover (letterbox /
- * pillarbox bars) - the PIP mechanism only ever draws its own dw x dh
- * rectangle at dx,dy; nothing else in this file touches the rest of the
- * window. A plain graphics.library RectFill on the window's own RastPort
- * works regardless of the underlying screen's depth/format (AGA, ECS, or
- * any RTG mode) since it goes through the normal blitter path, not a direct
- * bitmap lock. */
+/* Paint only fullscreen letterbox bars, never the live windowed PIP.
+ * Filling the whole window used to leave blank/grey areas when the PIP
+ * source rectangle remained at its old size after a resize. */
 static void paint_letterbox(p96pip_state *s)
 {
-    if (!s->win || !s->win->RPort) return;
+    int l, t, r, b;
+    if (!s->win || !s->win->RPort || !s->fullscreen) return;
+    l = s->bl; t = s->bt;
+    r = l + s->win_w - 1;
+    b = t + s->win_h - 1;
     SetAPen(s->win->RPort, 0);
-    RectFill(s->win->RPort, (WORD)s->bl, (WORD)s->bt,
-            (WORD)(s->bl + s->win_w - 1), (WORD)(s->bt + s->win_h - 1));
+    if (s->dy > 0)
+        RectFill(s->win->RPort, (WORD)l, (WORD)t,
+                 (WORD)r, (WORD)(t + s->dy - 1));
+    if (s->dy + s->dh < s->win_h)
+        RectFill(s->win->RPort, (WORD)l, (WORD)(t + s->dy + s->dh),
+                 (WORD)r, (WORD)b);
+    if (s->dx > 0 && s->dh > 0)
+        RectFill(s->win->RPort, (WORD)l, (WORD)(t + s->dy),
+                 (WORD)(l + s->dx - 1), (WORD)(t + s->dy + s->dh - 1));
+    if (s->dx + s->dw < s->win_w && s->dh > 0)
+        RectFill(s->win->RPort, (WORD)(l + s->dx + s->dw),
+                 (WORD)(t + s->dy), (WORD)r,
+                 (WORD)(t + s->dy + s->dh - 1));
 }
 
 static void rebuild_geometry(p96pip_state *s, const char *reason)
@@ -696,8 +699,6 @@ static int reopen_pip(p96pip_state *s, const char *reason)
         }
     }
 
-    s->pending_w = s->win_w;
-    s->pending_h = s->win_h;
     rebuild_geometry(s, reason);
     return 1;
 }
@@ -1060,14 +1061,28 @@ static int p96pip_poll(void *h)
         p96PIP_ReplyIMsg(msg);
         if (cls == IDCMP_CLOSEWINDOW) s->quit = 1;
         else if (cls == IDCMP_NEWSIZE) {
-            /* Content size (border-excluded), matching what s->win_w/win_h
-             * mean everywhere else in this file - not the raw outer
-             * Width/Height. */
-            int cw = s->win->Width  - s->win->BorderLeft - s->win->BorderRight;
-            int ch = s->win->Height - s->win->BorderTop  - s->win->BorderBottom;
-            s->pending_w = cw < 1 ? 1 : cw;
-            s->pending_h = ch < 1 ? 1 : ch;
-            s->resize_at = clock();
+            int old_w = s->win_w, old_h = s->win_h;
+
+            /* P96PipDemo leaves its MemoryWindow open while Intuition
+             * resizes it: P96's window hook scales the source automatically.
+             * Reopening here loses that behaviour and can snap the window
+             * back to its original source size. Read back the real *inner*
+             * dimensions for timing and fullscreen restoration only. */
+            sync_content_geometry(s);
+            s->have_window_geometry = 1;
+            s->window_left = s->win->LeftEdge;
+            s->window_top = s->win->TopEdge;
+            s->window_width = s->win_w;
+            s->window_height = s->win_h;
+            calculate_geometry(s);
+            s->geometry_valid = 1;
+            if (g_display_want_time &&
+                (old_w != s->win_w || old_h != s->win_h)) {
+                printf("p96pip-resize: live MemoryWindow %dx%d -> %dx%d "
+                       "(P96 scaling; no close/reopen)\n",
+                       old_w, old_h, s->win_w, s->win_h);
+                Flush(Output());
+            }
         }
         else if (cls == IDCMP_RAWKEY && !(code & 0x80)) {
             switch (code) {
@@ -1088,31 +1103,6 @@ static int p96pip_poll(void *h)
             case 0x4F: ev = MR_EV_SEEK_BACK; break;
             case 0x4C: ev = MR_EV_VOLUME_UP; break;
             case 0x4D: ev = MR_EV_VOLUME_DOWN; break;
-            }
-        }
-    }
-    if (s->pending_w != s->win_w || s->pending_h != s->win_h) {
-        if (clock() - s->resize_at >= CLOCKS_PER_SEC / 10) {
-            int old_w = s->win_w, old_h = s->win_h;
-            int old_saved_w = s->window_width;
-            int old_saved_h = s->window_height;
-
-            /* Preserve the user's current position before closing the old
-             * PIP, then reopen because its rectangle tags are init-only. */
-            s->have_window_geometry = 1;
-            s->window_left = s->win->LeftEdge;
-            s->window_top = s->win->TopEdge;
-            s->win_w = s->pending_w;
-            s->win_h = s->pending_h;
-            s->window_width = s->win_w;
-            s->window_height = s->win_h;
-            if (!reopen_pip(s, "resize")) {
-                s->win_w = old_w;
-                s->win_h = old_h;
-                s->window_width = old_saved_w;
-                s->window_height = old_saved_h;
-                if (!reopen_pip(s, "resize-rollback"))
-                    s->quit = 1;
             }
         }
     }
