@@ -57,7 +57,7 @@
  * is not native size. Keeping this small means a downscaled 720p/1080p
  * stream never needs a full second RGB24 destination frame resident in Fast
  * RAM - only this many rows of it at once. */
-#define MR_CGX_STRIP_ROWS 32
+#define MR_CGX_STRIP_ROWS 64
 
 /* Native bitmap pixel layouts the private-screen direct-lock path can write
  * directly - see the file header comment. Only ever considered for our own
