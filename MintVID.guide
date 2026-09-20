@@ -1,5 +1,5 @@
 @database "MintVID.guide"
-@$VER: MintVID.guide 1.3 (19.9.2026)
+@$VER: MintVID.guide 1.4 (20.9.2026)
 @author "Darren \"boingball\" Banfi"
 @(c) "2026 Darren Banfi"
 @width 74
@@ -8,7 +8,7 @@
                               MintVID Guide
                               -------------
 
-@{b}MintVID 1.3.2@{ub} - a codec-agnostic video player for accelerated 68k
+@{b}MintVID 1.4.0@{ub} - a codec-agnostic video player for accelerated 68k
 AmigaOS hardware, from 68030-class ECS/AGA systems up to PiStorm/RTG
 machines.
 
@@ -16,7 +16,7 @@ This is the on-Amiga companion to the plain-text MintVID.readme. Pick a
 topic below (click, or press Return on a highlighted link):
 
   @{" Overview "            LINK Overview}
-  @{" What's new in 1.3.2 " LINK WhatsNew}
+  @{" What's new in 1.4.0 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" Video frame policy "   LINK FramePolicy}
@@ -47,7 +47,7 @@ page below also links back here.
 Topics:
 
   @{" Overview "            LINK Overview}
-  @{" What's new in 1.3.2 " LINK WhatsNew}
+  @{" What's new in 1.4.0 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" Video frame policy "   LINK FramePolicy}
@@ -67,39 +67,36 @@ Topics:
 @endnode
 
 
-@node WhatsNew "What's new in 1.3.2"
+@node WhatsNew "What's new in 1.4.0"
 @toc MAIN
-                           What's new in 1.3.2
+                           What's new in 1.4.0
                            -------------------
 
-@{b}MintVID 1.3.2@{ub}
+@{b}MintVID 1.4.0@{ub}
 
-A new-codec-and-stability follow-up to 1.3.1:
+A P96 hardware overlay compatibility follow-up to 1.3.2:
 
-  - @{b}DV (IEC 61834/SMPTE 314M) decoder.@{ub} Native support for PAL
-    4:2:0 and NTSC/DVCPRO 4:1:1 camcorder footage, with a Fast (DC-only
-    coefficients) speed mode for roughly 1.9x faster decode on slow
-    targets - see @{" Codec support list " LINK CodecList}.
-  - @{b}Extra Half-Brite (EHB) display mode.@{ub} A new chipset display
-    option for ECS/OCS systems, alongside AGA/HAM6/HAM8/CGX, with an
-    exact two-cube colour quantizer and its own Kalms C2P path.
-  - @{b}MPEG-1/2 Fast speed mode.@{ub} Skips B-picture decode entirely -
-    always safe, since a B picture is never referenced by a later picture
-    in this format.
-  - @{b}Unified Video Quality (VQ) control.@{ub} The H.264 performance
-    chooser in both GUIs (see @{" H.264 performance modes " LINK
-    Controls}) now also drives DV and MPEG-1/2 speed: Quality selects
-    each codec's own full-quality path, every other setting picks fast.
-  - @{b}Real-hardware crash fix.@{ub} A Guru @{i}8000000B@{ui} on pressing
-    Play, on any file - traced to @{i}mrplay@{ui} linking @{i}-lm@{ui}
-    for code that never needed it, which on the real toolchain silently
-    swapped in an FPU-dependent variant of an unrelated shared runtime
-    helper for the whole binary. @{i}-lm@{ui} is no longer linked.
-  - @{b}CGX@{ub} now gets the same native-resolution-or-downscale
-    fullscreen policy P96 already had.
-  - Fixed @{i}iptvgui@{ui}/@{i}ytgui@{ui} failing to launch with "invalid
-    playback option", and the default @{i}CPU=68060@{ui} @{i}mrplay@{ui}
-    build not actually linking MintAMP's accelerated polyphase kernel.
+  - @{b}The P96 hardware video overlay actually works on real Voodoo3/
+    P96 2.x boards now.@{ub} It opens with the same packed-YUV format
+    (@{i}RGBFB_Y4U2V2@{ui}) the historical RiVA driver path used,
+    instead of a plain RGB request older Voodoo drivers reject outright
+    before a window even opens.
+  - @{b}Real-hardware colour fixes.@{ub} The packed chroma order was the
+    opposite of what the format name implies, and decoder samples that
+    legally stray just outside the nominal studio range (compression
+    ringing near high-contrast edges) could render as solid white or
+    black flecks - both confirmed and fixed against real Voodoo3/P96
+    2.x hardware.
+  - @{b}P96 overlay fullscreen fallback.@{ub} If a board can't open the
+    overlay fullscreen at all (confirmed on real Voodoo3/P96 2.1
+    hardware), MintVID now falls back to ordinary CGX fullscreen
+    automatically instead of leaving playback stuck windowed, and
+    switches back to the hardware overlay again once you return to a
+    windowed view.
+  - @{b}Faster YUV->RGB24 conversion.@{ub} The shared conversion tables
+    used by every RTG display path (overlay or not) were reworked to
+    remove per-pixel branching and redundant rounding additions - about
+    14.7% faster on a 640x360 host benchmark.
 
 Performance still depends on the exact CPU, source, codec, resolution,
 audio and display mode. A supported format is not automatically a

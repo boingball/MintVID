@@ -1,5 +1,53 @@
 # MintVID changelog
 
+## 1.4.0 - 2026-09-20
+
+### Added
+
+- The P96 hardware video overlay (PIP) now opens with `RGBFB_Y4U2V2`,
+  matching the historical RiVA driver path, instead of a plain RGB
+  request that older Voodoo drivers reject outright
+  (`PIPERR_NOTAVAILABLE`) before a window is even opened. H.264/MPEG-2
+  frames are packed directly into this format, skipping the full
+  YUV->RGB24 conversion on this path entirely; other codecs still convert
+  through an RGB fallback.
+- If a board can't open the PIP overlay fullscreen at all (confirmed on
+  real Voodoo3/P96 2.1 hardware, which returns `PIPERR_NOTAVAILABLE` then
+  `PIPERR_CROPPED` for every geometry tried), MintVID now falls back to
+  ordinary CGX fullscreen automatically instead of leaving the session
+  stuck windowed - and switches back to the hardware overlay again once
+  you return to a windowed view, since the overlay itself was working
+  right up until the fullscreen attempt failed.
+
+### Fixed
+
+- The P96 overlay's packed chroma order was the opposite of what the
+  `RGBFB_Y4U2V2` format name and the vendored Picasso96 headers imply -
+  confirmed and fixed against real Voodoo3/P96 2.x hardware, which had
+  been showing incorrect colour.
+- Decoder Y/Cb/Cr samples that legally stray just outside the nominal
+  studio range (compression ringing near high-contrast edges can produce
+  a byte outside Y=16-235/Cb,Cr=16-240 even though every byte value is a
+  legal 0-255 sample) are now clamped back to that range before reaching
+  the overlay. Real hardware could otherwise render such a sample as a
+  solid white or black fleck; two earlier attempts at a wider studio-to-
+  full-range colour rescale were tried and reverted after real-hardware
+  testing showed they either washed out colour or reintroduced worse
+  clipping.
+- P96 PIP geometry logging now reports the real public-screen/window
+  bounds and destination rectangle, and retries once with a full-window
+  (non-letterboxed) destination when the driver reports `PIPERR_CROPPED`.
+
+### Performance
+
+- Reworked the shared YUV420->RGB24/BGR24 conversion tables (used by
+  every RTG display path, not just the new overlay format): the luma
+  table is now indexed directly by the raw Y byte with the limited-range
+  clamp folded in, and each channel's rounding bias is folded into a
+  single chroma table instead of being added per pixel. About 14.7%
+  faster on a 640x360 host benchmark; the same reduction was applied to
+  the hand-written m68k kernel.
+
 ## 1.3.2 - 2026-09-19
 
 ### Added

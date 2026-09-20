@@ -3,11 +3,11 @@
 
 /* Human-facing semantic version and AmigaOS Version-command identity. Amiga
  * $VER strings conventionally use version.revision rather than three-part
- * semantic versions, so the 1.3.x patch line remains Amiga version 1.3 while
+ * semantic versions, so the 1.4.x patch line remains Amiga version 1.4 while
  * MINTVID_VERSION carries the complete release number shown by the GUIs. */
-#define MINTVID_VERSION       "1.3.2"
-#define MINTVID_AMIGA_VERSION "1.3"
-#define MINTVID_VERSION_DATE  "19.9.2026"
+#define MINTVID_VERSION       "1.4.0"
+#define MINTVID_AMIGA_VERSION "1.4"
+#define MINTVID_VERSION_DATE  "20.9.2026"
 
 #if defined(__GNUC__)
 #define MINTVID_VERSION_USED __attribute__((used))
