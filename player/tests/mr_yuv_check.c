@@ -107,22 +107,23 @@ static int run_case(int width, int height, unsigned seed)
 
 /* Chroma order is V-then-U (slots 1 and 3), not the U-then-V the RGBFB_
  * Y4U2V2 name implies - see mr_yuv.c's mr_yuv420_to_y4u2v2() for why: real
- * Voodoo3/P96 2.x hardware was confirmed to expect it swapped. Everything
- * else is a plain byte passthrough: no colour-range conversion. */
+ * Voodoo3/P96 2.x hardware was confirmed to expect it swapped. Legal studio
+ * values pass through byte-for-byte; illegal excursions are clamped to
+ * Y=16..235 and Cb/Cr=16..240 without rescaling the legal range. */
 static int check_y4u2v2(void)
 {
     enum { W = 6, H = 3, YS = 8, CS = 4, DS = 15 };
     static const uint8_t y[H * YS] = {
-        1, 2, 3, 4, 5, 6, 0xee, 0xee,
-        7, 8, 9, 10, 11, 12, 0xee, 0xee,
-        13, 14, 15, 16, 17, 18, 0xee, 0xee
+        0, 15, 16, 235, 236, 255, 0xee, 0xee,
+        17, 18, 100, 200, 234, 235, 0xee, 0xee,
+        1, 16, 17, 234, 235, 254, 0xee, 0xee
     };
-    static const uint8_t u[2 * CS] = { 21, 22, 23, 0xee, 31, 32, 33, 0xee };
-    static const uint8_t v[2 * CS] = { 41, 42, 43, 0xee, 51, 52, 53, 0xee };
+    static const uint8_t u[2 * CS] = { 0, 16, 255, 0xee, 240, 241, 128, 0xee };
+    static const uint8_t v[2 * CS] = { 15, 240, 241, 0xee, 16, 0, 255, 0xee };
     static const uint8_t expected[H][W * 2] = {
-        { 1, 41, 2, 21, 3, 42, 4, 22, 5, 43, 6, 23 },
-        { 7, 41, 8, 21, 9, 42, 10, 22, 11, 43, 12, 23 },
-        { 13, 51, 14, 31, 15, 52, 16, 32, 17, 53, 18, 33 }
+        { 16, 16, 16, 16, 16, 240, 235, 16, 235, 240, 235, 240 },
+        { 17, 16, 18, 16, 100, 240, 200, 16, 234, 240, 235, 240 },
+        { 16, 16, 16, 240, 17, 16, 234, 240, 235, 240, 235, 128 }
     };
     uint8_t out[H * DS];
     int row;
@@ -175,11 +176,11 @@ static int check_y4u2v2_to_rgb24(void)
 
     for (row = 0; row < H; row++)
         for (col = 0; col < W; col++)
-            y[row][col] = (uint8_t)(next_value(&seed) >> 24);
+            y[row][col] = (uint8_t)(16 + (next_value(&seed) >> 24) % 220);
     for (row = 0; row < H / 2; row++)
         for (col = 0; col < W / 2; col++) {
-            u[row][col] = (uint8_t)(next_value(&seed) >> 24);
-            v[row][col] = (uint8_t)(next_value(&seed) >> 24);
+            u[row][col] = (uint8_t)(16 + (next_value(&seed) >> 24) % 225);
+            v[row][col] = (uint8_t)(16 + (next_value(&seed) >> 24) % 225);
         }
 
     mr_yuv420_to_rgb24(&direct[0][0], W * 3, &y[0][0], W, &u[0][0], W / 2,

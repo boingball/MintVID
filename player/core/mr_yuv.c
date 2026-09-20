@@ -261,12 +261,29 @@ void mr_yuv420_to_bgr24(uint8_t *dst, int dst_stride,
 }
 
 /*
- * Keep the decoder's studio-range Y/Cb/Cr bytes unchanged. Expanding them
- * to full range was tested because a synthetic colour pattern looked pale,
- * but real video exposed severe white/black clipping in the P96 overlay.
- * The same failure occurs for streamed and offline files, isolating it to
- * this shared conversion/display path rather than input timing or demuxing.
+ * Keep legal studio-range Y/Cb/Cr bytes unchanged. Expanding them to full
+ * range caused severe white/black clipping in the P96 overlay. Passing all
+ * 0..255 decoder output through unchanged fixed the broad clipping but left
+ * isolated white/black flecks on high-contrast edges: video inverse-transform
+ * ringing may legally reach the byte rails even though nominal studio range
+ * is Y=16..235 and Cb/Cr=16..240, and this old overlay does not saturate those
+ * excursions cleanly. Clamp only samples outside the nominal ranges; there is
+ * still no scale or matrix conversion and every legal sample is unchanged.
  */
+
+MR_YUV_INLINE uint8_t clamp_studio_y(uint8_t value)
+{
+    if (value < 16) return 16;
+    if (value > 235) return 235;
+    return value;
+}
+
+MR_YUV_INLINE uint8_t clamp_studio_c(uint8_t value)
+{
+    if (value < 16) return 16;
+    if (value > 240) return 240;
+    return value;
+}
 
 int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
                         const uint8_t *y_plane, int y_stride,
@@ -291,7 +308,8 @@ int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
      * format also needs - see display.c's switch_to_cgx_fallback()) and
      * display_p96pip.c's write_rgb_rows() (the RGB-source encode path) both
      * use the identical swapped convention, so every producer/consumer of
-     * this buffer agrees. Studio range is passed through unmodified. */
+     * this buffer agrees. Legal studio-range values pass through unchanged;
+     * only out-of-range ringing is clamped to the nominal rails. */
     for (row = 0; row < height; row++) {
         const uint8_t *sy = y_plane + (size_t)row * (size_t)y_stride;
         const uint8_t *su = u_plane + (size_t)(row >> 1) * (size_t)u_stride;
@@ -299,10 +317,10 @@ int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
         uint8_t *out = dst + (size_t)row * (size_t)dst_stride;
         int x;
         for (x = 0; x < width; x += 2) {
-            out[0] = sy[x];
-            out[1] = sv[x >> 1];
-            out[2] = sy[x + 1];
-            out[3] = su[x >> 1];
+            out[0] = clamp_studio_y(sy[x]);
+            out[1] = clamp_studio_c(sv[x >> 1]);
+            out[2] = clamp_studio_y(sy[x + 1]);
+            out[3] = clamp_studio_c(su[x >> 1]);
             out += 4;
         }
         if (service && (row & 15) == 15) service(service_opaque);
