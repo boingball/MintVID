@@ -372,20 +372,21 @@ static struct Screen *open_video_screen(p96pip_state *s, int target_w,
  * size change closes and reopens the PIP rather than trying to update them
  * with p96PIP_SetTags().
  *
- * P96PIP_Relativity is explicitly cleared to 0: the *default*
- * (PIPRel_Width|PIPRel_Height, per libraries/Picasso96.h) interprets
- * P96PIP_Width/Height as a margin *not* covered by the PIP at the window's
- * right/bottom edge, not an absolute size - easy to miss, since
- * P96PIP_Width's own doc comment ("default: inner width of window") reads
- * as if it were already an absolute value. Getting this wrong would not
- * fail to open; it would silently place the video at the wrong size, so it
- * is called out here rather than left to be rediscovered on real hardware.
+ * Fullscreen uses absolute destination dimensions. Windowed mode instead
+ * uses PIPRel_Width|PIPRel_Height and encodes the aspect-fit rectangle's
+ * right/bottom gaps as negative margins. This is the P96 mechanism that
+ * lets its window hook adjust the hardware rectangle while Intuition is
+ * resizing the containing window; using absolute dimensions makes affected
+ * drivers snap the window back to its original size. The static margins can
+ * temporarily stretch the picture during a drag, then the debounced reopen
+ * calculates fresh aspect-correct margins for the final window dimensions.
  */
 static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
 {
     struct Screen *scr;
     struct Window *win;
-    ULONG flags, idcmp, screen_tag;
+    ULONG flags, idcmp, screen_tag, relativity;
+    LONG pip_width, pip_height;
     int left = 0, top = 0;
     int pub_locked = 0;
 
@@ -402,12 +403,29 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
         flags = WFLG_BORDERLESS | WFLG_BACKDROP | WFLG_ACTIVATE |
                 WFLG_RMBTRAP | WFLG_NOCAREREFRESH;
         idcmp = IDCMP_CLOSEWINDOW | IDCMP_RAWKEY;
+        relativity = 0;
+        pip_width = s->dw;
+        pip_height = s->dh;
     } else {
+        int right_margin = s->win_w - s->dx - s->dw;
+        int bottom_margin = s->win_h - s->dy - s->dh;
+
         flags = WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
                 WFLG_SIZEGADGET | WFLG_ACTIVATE | WFLG_NOCAREREFRESH;
         idcmp = IDCMP_CLOSEWINDOW | IDCMP_RAWKEY | IDCMP_NEWSIZE;
         left = s->have_window_geometry ? s->window_left : 0;
         top  = s->have_window_geometry ? s->window_top  : 0;
+
+        /* P96's window hook cannot resize a PIP whose destination width and
+         * height were opened as fixed absolute values: Intuition moves the
+         * size gadget, then the window snaps back to the original size. In
+         * relative mode these values are negative right/bottom margins, so
+         * the hardware rectangle can follow the window during the drag.
+         * Once IDCMP_NEWSIZE settles, reopen_pip() recalculates the exact
+         * aspect-fit margins for the final size. */
+        relativity = PIPRel_Width | PIPRel_Height;
+        pip_width = -(LONG)right_margin;
+        pip_height = -(LONG)bottom_margin;
     }
 
     /* P96's PIP API explicitly ignores WA_Width/WA_Height and requires
@@ -445,9 +463,10 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
          * outer RastPort coordinates. Do not add BorderLeft/BorderTop here:
          * doing so shifts a full-size PIP outside the interior and can make
          * an otherwise valid open look cropped to the driver. */
-        P96PIP_Relativity, (ULONG)0,
+        P96PIP_Relativity, relativity,
         P96PIP_Left, (ULONG)s->dx, P96PIP_Top, (ULONG)s->dy,
-        P96PIP_Width, (ULONG)s->dw, P96PIP_Height, (ULONG)s->dh,
+        P96PIP_Width, (ULONG)pip_width,
+        P96PIP_Height, (ULONG)pip_height,
         P96PIP_ErrorCode, (ULONG)err,
         TAG_END);
 
