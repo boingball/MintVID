@@ -81,6 +81,7 @@
 #include "display_backend.h"
 #include "mr_aspect.h"
 #include "mr_p96_format.h"
+#include "p96_rgb565.h"
 #include "../core/mr_yuv.h"
 
 #include <stddef.h>
@@ -105,6 +106,7 @@
 typedef struct {
     struct Window *win;             /* the PIP's own window (p96PIP_OpenTags) */
     struct BitMap *source_bitmap;   /* P96PIP_SourceBitMap - what we write to */
+    ULONG source_format;         /* actual negotiated overlay pixel format */
     struct Screen *screen;          /* private video-compatible fullscreen mode */
     ULONG          screen_mode_id;
     int            source_w, source_h;
@@ -134,7 +136,8 @@ typedef struct {
     char           title[80];
 } p96pip_state;
 
-static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err);
+static struct Window *open_pip(p96pip_state *s, ULONG type,
+                               ULONG source_format, LONG *err);
 static void close_pip(p96pip_state *s);
 static int close_video_screen(struct Screen **screen, const char *reason);
 static struct Screen *open_video_screen(p96pip_state *s, int target_w,
@@ -381,12 +384,14 @@ static struct Screen *open_video_screen(p96pip_state *s, int target_w,
  * temporarily stretch the picture during a drag, then the debounced reopen
  * calculates fresh aspect-correct margins for the final window dimensions.
  */
-static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
+static struct Window *open_pip(p96pip_state *s, ULONG type,
+                               ULONG source_format, LONG *err)
 {
     struct Screen *scr;
     struct Window *win;
     ULONG flags, idcmp, screen_tag, relativity;
     LONG pip_width, pip_height;
+    int simple_window;
     ULONG max_w = (ULONG)-1, max_h = (ULONG)-1;
     int left = 0, top = 0;
     int pub_locked = 0;
@@ -428,32 +433,10 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
         pip_width = -(LONG)right_margin;
         pip_height = -(LONG)bottom_margin;
 
-        /* A real-hardware log (--time) on a driver that only ever grants
-         * PIPT_MemoryWindow (PIPT_VideoWindow returning PIPERR_NOTAVAILABLE
-         * on every attempt) showed the window silently reopening smaller
-         * than requested every time - e.g. a drag to 878x545 came back
-         * from sync_content_geometry() as 640x411, with no PIP error code
-         * to flag it. PIPT_MemoryWindow is the unaccelerated, software-
-         * composited fallback with no scaler behind it, so the driver
-         * apparently cannot honour a window bigger than the source frame
-         * and just clamps it - silently, not via a rejected open. That
-         * clamp was being misread as the "final" post-resize size (see
-         * reopen_pip()'s own drift retry), producing exactly the reported
-         * "resizes, then snaps back" symptom: the shrink happens on the
-         * very first open, before any retry even runs.
-         *
-         * Fixed at the source instead of chasing the driver's own return
-         * value after the fact: cap WA_MaxWidth/WA_MaxHeight to the
-         * source frame's own size whenever this open is for
-         * PIPT_MemoryWindow, so Intuition simply refuses to let the user
-         * drag past what this driver can actually deliver - no false
-         * "grew, then reverted" illusion, since it never appears to grow
-         * in the first place. PIPT_VideoWindow (real hardware scaling)
-         * keeps no cap. */
-        if (type == PIPT_MemoryWindow) {
-            max_w = (ULONG)s->source_w;
-            max_h = (ULONG)s->source_h;
-        }
+        /* The P96 MemoryWindow source has fixed dimensions, but the
+         * destination may scale in hardware. Do not cap the window
+         * to the source dimensions: P96PipDemo explicitly enlarges
+         * a MemoryWindow on Picasso IV/CVision3D. */
     }
 
     /* P96's PIP API explicitly ignores WA_Width/WA_Height and requires
@@ -467,6 +450,8 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
                s->dx, s->dy, s->dw, s->dh);
         Flush(Output());
     }
+    simple_window = !s->fullscreen && s->dx == 0 && s->dy == 0 &&
+                    s->dw == s->win_w && s->dh == s->win_h;
     *err = 0;
     win = (struct Window *)p96PIP_OpenTags(
         screen_tag, (ULONG)scr,
@@ -483,7 +468,7 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
         WA_MinWidth, (ULONG)160, WA_MinHeight, (ULONG)100,
         WA_MaxWidth, max_w, WA_MaxHeight, max_h,
         WA_IDCMP, idcmp,
-        P96PIP_SourceFormat, (ULONG)RGBFB_Y4U2V2,
+        P96PIP_SourceFormat, source_format,
         P96PIP_SourceWidth, (ULONG)s->source_w,
         P96PIP_SourceHeight, (ULONG)s->source_h,
         P96PIP_Type, type,
@@ -491,10 +476,11 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
          * outer RastPort coordinates. Do not add BorderLeft/BorderTop here:
          * doing so shifts a full-size PIP outside the interior and can make
          * an otherwise valid open look cropped to the driver. */
-        P96PIP_Relativity, relativity,
-        P96PIP_Left, (ULONG)s->dx, P96PIP_Top, (ULONG)s->dy,
-        P96PIP_Width, (ULONG)pip_width,
-        P96PIP_Height, (ULONG)pip_height,
+        simple_window ? TAG_IGNORE : P96PIP_Relativity, relativity,
+        simple_window ? TAG_IGNORE : P96PIP_Left, (ULONG)s->dx,
+        simple_window ? TAG_IGNORE : P96PIP_Top, (ULONG)s->dy,
+        simple_window ? TAG_IGNORE : P96PIP_Width, (ULONG)pip_width,
+        simple_window ? TAG_IGNORE : P96PIP_Height, (ULONG)pip_height,
         P96PIP_ErrorCode, (ULONG)err,
         TAG_END);
 
@@ -610,24 +596,42 @@ static int reopen_pip(p96pip_state *s, const char *reason)
         close_pip(s);
         calculate_geometry(s);
 
-        s->win = open_pip(s, PIPT_VideoWindow, &err);
-        s->hw_overlay = s->win != NULL;
-        s->last_hw_err = err;
-        if (!s->win) {
-            if (g_display_want_time) {
-                printf("p96pip: video-window PIP unavailable (error %ld: "
-                       "%s), trying RiVA-compatible memory-window PIP\n",
-                       (long)err, pip_err_name(err));
-                Flush(Output());
-            }
-            s->win = open_pip(s, PIPT_MemoryWindow, &err);
-            s->last_mem_err = err;
-        } else {
+        /* VideoWindow refers to live video-input hardware, not a decoded
+         * video frame in RAM. Probe the same MemoryWindow formats as the
+         * official P96PipDemo, after retaining RiVA's fast YUV-first mode.
+         * A format is saved only after its open succeeds. */
+        {
+            static const ULONG formats[] = {
+                RGBFB_Y4U2V2, RGBFB_R5G6B5PC, RGBFB_R5G6B5
+            };
+            int format_index;
+            s->win = NULL;
+            s->last_hw_err = 0;
             s->last_mem_err = 0;
+            s->hw_overlay = 0;
+            for (format_index = 0; format_index < 3; ++format_index) {
+                ULONG fmt = formats[format_index];
+                s->win = open_pip(s, PIPT_MemoryWindow, fmt, &err);
+                if (g_display_want_time) {
+                    printf("p96pip: MemoryWindow fmt=%lu %s: %s (err=%ld: %s)\n",
+                           (unsigned long)fmt,
+                           fmt == RGBFB_Y4U2V2 ? "YVYU/YUYV" :
+                           fmt == RGBFB_R5G6B5PC ? "RGB565PC" : "RGB565BE",
+                           s->win ? "opened" : "unavailable",
+                           (long)err, pip_err_name(err));
+                    Flush(Output());
+                }
+                if (s->win) {
+                    s->source_format = fmt;
+                    s->hw_overlay = 1; /* MemoryWindow can use HW overlay. */
+                    break;
+                }
+                s->last_mem_err = err;
+            }
         }
         if (!s->win) {
             if (g_display_want_time) {
-                printf("p96pip: PIP open failed (error %ld: %s)\n",
+                printf("p96pip: all MemoryWindow formats failed (err=%ld: %s)\n",
                        (long)err, pip_err_name(err));
                 Flush(Output());
             }
@@ -770,10 +774,8 @@ static void *p96pip_open(int w, int h, const char *title)
     }
 
     if (g_display_want_time) {
-        printf("p96pip: opened %s, window=%dx%d source=%dx%d\n",
-               s->hw_overlay ? "hardware (PIPT_VideoWindow)" :
-                               "PIPT_MemoryWindow overlay",
-               s->win_w, s->win_h, w, h);
+        printf("p96pip: opened MemoryWindow format=%lu, window=%dx%d source=%dx%d\n",
+               (unsigned long)s->source_format, s->win_w, s->win_h, w, h);
         Flush(Output());
     }
 
@@ -833,7 +835,7 @@ static unsigned long elapsed_us(clock_t begin)
  * strip() needs one: the PIP's source bitmap is always exactly source_w x
  * source_h, and its placement/scaling within the window is handled entirely
  * by P96PIP_Left/Top/Width/Height (set by open_pip()), not by us. */
-static int write_yuv422_rows(struct BitMap *bm, int y0,
+static int write_yuv422_rows(struct BitMap *bm, ULONG format, int y0,
                              const unsigned char *src, int src_stride,
                              int w, int rows)
 {
@@ -849,7 +851,11 @@ static int write_yuv422_rows(struct BitMap *bm, int y0,
     for (y = 0; y < rows; y++) {
         const unsigned char *srow = src + (size_t)y * (size_t)src_stride;
         unsigned char *drow = base + (size_t)y * (size_t)bpr;
-        memcpy(drow, srow, (size_t)w * 2u);
+        if (format == RGBFB_Y4U2V2)
+            memcpy(drow, srow, (size_t)w * 2u);
+        else
+            mr_p96_rgb565_yuv422_row(srow, drow, w,
+                mr_yuv_get_p96_format(), format == RGBFB_R5G6B5PC);
     }
     p96UnlockBitMap(bm, lock);
     return 1;
@@ -872,7 +878,7 @@ static unsigned char clamp_byte(int v)
  * matching mr_yuv.c's own mr_yuv420_to_rgb24(). A full-range variant was
  * tried here (and in mr_yuv420_to_y4u2v2()) but caused severe white/black
  * clipping on real video in the P96 overlay path. */
-static int write_rgb_rows(struct BitMap *bm, int y0,
+static int write_rgb_rows(struct BitMap *bm, ULONG format, int y0,
                           const unsigned char *src, int src_stride,
                           int w, int rows, int src_is_bgr)
 {
@@ -891,6 +897,11 @@ static int write_rgb_rows(struct BitMap *bm, int y0,
             src + (size_t)y * (size_t)src_stride;
         unsigned char *dst_pair = base + (size_t)y * (size_t)bpr;
         int x;
+        if (format != RGBFB_Y4U2V2) {
+            mr_p96_rgb565_rgb24_row(src_pixel, dst_pair, w, src_is_bgr,
+                                      format == RGBFB_R5G6B5PC);
+            continue;
+        }
         for (x = 0; x < w; x += 2) {
             int r0 = src_pixel[src_is_bgr ? 2 : 0];
             int g0 = src_pixel[1];
@@ -946,7 +957,7 @@ static void p96pip_show_packed(void *h, const unsigned char *rgb, int w,
     if (dy1 > hh) dy1 = hh;
     if (dy1 <= dy0) return;
 
-    if (!write_rgb_rows(s->source_bitmap, dy0,
+    if (!write_rgb_rows(s->source_bitmap, s->source_format, dy0,
                         rgb + (size_t)dy0 * (size_t)stride,
                         stride, w, dy1 - dy0, src_is_bgr)) {
         printf("p96pip-error: p96LockBitMap failed - dropped strip\n");
@@ -958,7 +969,10 @@ static void p96pip_show_packed(void *h, const unsigned char *rgb, int w,
         s->timing.src_w = w; s->timing.src_h = hh;
         s->timing.dst_w = s->dw; s->timing.dst_h = s->dh;
         s->timing.src_format = src_is_bgr ? "BGR24" : "RGB24";
-        s->timing.dst_format = "Y4U2V2 (P96 PIP source)";
+        s->timing.dst_format = s->source_format == RGBFB_Y4U2V2
+            ? "Y4U2V2 (P96 PIP source)"
+            : s->source_format == RGBFB_R5G6B5PC
+              ? "RGB565PC (P96 PIP source)" : "RGB565BE (P96 PIP source)";
         s->timing.pixels = (unsigned long)w * (unsigned long)(dy1 - dy0);
         s->timing.bytes = (unsigned long)stride * (unsigned long)(dy1 - dy0);
         s->timing.blit_us = s->timing.total_us = elapsed_us(total);
@@ -1001,7 +1015,7 @@ static void p96pip_show_yuv422(void *h, const unsigned char *yuv, int w,
     if (dy1 > hh) dy1 = hh;
     if (dy1 <= dy0) return;
 
-    if (!write_yuv422_rows(s->source_bitmap, dy0,
+    if (!write_yuv422_rows(s->source_bitmap, s->source_format, dy0,
                            yuv + (size_t)dy0 * (size_t)stride,
                            stride, w, dy1 - dy0)) {
         printf("p96pip-error: p96LockBitMap failed - dropped YUV strip\n");
@@ -1012,7 +1026,10 @@ static void p96pip_show_yuv422(void *h, const unsigned char *yuv, int w,
         s->timing.src_w = w; s->timing.src_h = hh;
         s->timing.dst_w = s->dw; s->timing.dst_h = s->dh;
         s->timing.src_format = "Y4U2V2";
-        s->timing.dst_format = "Y4U2V2 (P96 PIP source)";
+        s->timing.dst_format = s->source_format == RGBFB_Y4U2V2
+            ? "Y4U2V2 (P96 PIP source)"
+            : s->source_format == RGBFB_R5G6B5PC
+              ? "RGB565PC (P96 PIP source)" : "RGB565BE (P96 PIP source)";
         s->timing.pixels = (unsigned long)w * (unsigned long)(dy1 - dy0);
         s->timing.bytes = (unsigned long)stride * (unsigned long)(dy1 - dy0);
         s->timing.blit_us = s->timing.total_us = elapsed_us(total);
