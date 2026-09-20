@@ -454,6 +454,15 @@ endif
 # -Iamiga/include is searched before the toolchain's own system includes, so
 # a P96 SDK already installed there is not shadowed by anything except this
 # exact set of files.
+# -Wno-unused-but-set-parameter: newer GCC (16.x, seen with
+# m68k-amigaos-gcc-16.2) warns on a handful of vendored libavc output
+# pointer parameters (e.g. ih264d_cabac_parse_8x8block's pi2_coeff_block)
+# that get incremented but never dereferenced in that stack frame - dead
+# local-pointer arithmetic, not a correctness bug (the real coefficient
+# writes happen elsewhere), confirmed by reading the vendored source
+# rather than assumed. Not touching vendor/libavc or its mechanically-
+# mirrored vendor/libavc_port/*.c files just to silence a compiler-
+# version-specific warning on dead code that isn't ours.
 CFLAGS  = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wextra \
           -DAMIGA_M68K -DMR_HAVE_H264 -DMR_M68K_ASM=1 \
           -DMR_PL_MPEG_SKIP_AUDIO_TIME=1 \
@@ -462,7 +471,8 @@ CFLAGS  = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wextra 
           $(HTTP_SSL_FLAGS) $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \
           $(LIBMPEG2_FLAGS) -Iamiga/include \
           -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
-          -Wno-unused-but-set-variable -Wno-sign-compare \
+          -Wno-unused-but-set-variable -Wno-unused-but-set-parameter \
+          -Wno-sign-compare \
           -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits
 GUI_CFLAGS = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wextra \
              $(KALMS_CPPFLAGS)

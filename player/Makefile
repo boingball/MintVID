@@ -16,10 +16,19 @@ LIBMPEG2_SRC = $(LIBMPEG2_ROOT)/libmpeg2/alloc.c \
                $(LIBMPEG2_ROOT)/libmpeg2/idct.c \
                $(LIBMPEG2_ROOT)/libmpeg2/motion_comp.c \
                $(LIBMPEG2_ROOT)/libmpeg2/slice.c
+# -Wno-unused-but-set-parameter: vendored libavc leaves a handful of output
+# pointer parameters (e.g. ih264d_cabac_parse_8x8block's pi2_coeff_block)
+# incremented but never dereferenced in the caller-visible frame - dead
+# arithmetic on a local pointer copy, not a correctness bug (the real
+# coefficient writes happen elsewhere), confirmed by reading the vendored
+# source rather than assumed. GCC 16 warns on this; not touching vendor/
+# libavc or its mechanically-mirrored vendor/libavc_port/*.c files to
+# silence a compiler-version-specific warning on dead code that isn't ours.
 CFLAGS  += -DMR_HAVE_H264 $(LIBAVC_FLAGS) $(LIBAVC_GCC_FLAGS) \
            $(LIBMPEG2_FLAGS) \
            -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
-           -Wno-unused-but-set-variable -Wno-sign-compare \
+           -Wno-unused-but-set-variable -Wno-unused-but-set-parameter \
+           -Wno-sign-compare \
            -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits
 CORE     = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
            core/mr_youtube.c \
