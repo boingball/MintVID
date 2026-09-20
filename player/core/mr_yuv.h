@@ -26,4 +26,31 @@ void mr_yuv420_to_bgr24(uint8_t *dst, int dst_stride,
                         int width, int height,
                         mr_yuv_service_fn service, void *service_opaque);
 
+/* Repack planar 4:2:0 as the packed 4:2:2 byte layout used by RiVA's
+ * Picasso96 PIP path: Y0,V0,Y1,U0 for each horizontal pixel pair - real
+ * Voodoo3/P96 2.x hardware was confirmed to expect chroma in that order,
+ * the opposite of what the RGBFB_Y4U2V2 name and libraries/Picasso96.h's
+ * own doc comment suggest. No colour-range rescaling is performed. Legal
+ * studio samples pass through unchanged; decoder excursions are clamped to
+ * Y=16..235 and Cb/Cr=16..240 because old P96 overlays can render values
+ * outside those nominal rails as white/black flecks. A studio-to-full
+ * rescale was tested and caused severe clipping. Hardware PIP surfaces are
+ * pair-based, so width must be even. Returns non-zero on success. */
+int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
+                        const uint8_t *y_plane, int y_stride,
+                        const uint8_t *u_plane, int u_stride,
+                        const uint8_t *v_plane, int v_stride,
+                        int width, int height,
+                        mr_yuv_service_fn service, void *service_opaque);
+
+/* Inverse of mr_yuv420_to_y4u2v2(): unpack the same swapped-chroma packed
+ * studio-range 4:2:2 layout back to RGB24. Used only as a software fallback
+ * when a display backend that doesn't support show_yuv422 has to take over
+ * from one that did (see display.c's switch_to_cgx_fallback()). Each row is
+ * self-contained, so no chroma-row bookkeeping is needed. Returns non-zero
+ * on success. */
+int mr_y4u2v2_to_rgb24(uint8_t *dst, int dst_stride,
+                       const uint8_t *src, int src_stride,
+                       int width, int height);
+
 #endif /* MR_YUV_H */

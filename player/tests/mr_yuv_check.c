@@ -105,6 +105,103 @@ static int run_case(int width, int height, unsigned seed)
     return ok;
 }
 
+/* Chroma order is V-then-U (slots 1 and 3), not the U-then-V the RGBFB_
+ * Y4U2V2 name implies - see mr_yuv.c's mr_yuv420_to_y4u2v2() for why: real
+ * Voodoo3/P96 2.x hardware was confirmed to expect it swapped. Legal studio
+ * values pass through byte-for-byte; illegal excursions are clamped to
+ * Y=16..235 and Cb/Cr=16..240 without rescaling the legal range. */
+static int check_y4u2v2(void)
+{
+    enum { W = 6, H = 3, YS = 8, CS = 4, DS = 15 };
+    static const uint8_t y[H * YS] = {
+        0, 15, 16, 235, 236, 255, 0xee, 0xee,
+        17, 18, 100, 200, 234, 235, 0xee, 0xee,
+        1, 16, 17, 234, 235, 254, 0xee, 0xee
+    };
+    static const uint8_t u[2 * CS] = { 0, 16, 255, 0xee, 240, 241, 128, 0xee };
+    static const uint8_t v[2 * CS] = { 15, 240, 241, 0xee, 16, 0, 255, 0xee };
+    static const uint8_t expected[H][W * 2] = {
+        { 16, 16, 16, 16, 16, 240, 235, 16, 235, 240, 235, 240 },
+        { 17, 16, 18, 16, 100, 240, 200, 16, 234, 240, 235, 240 },
+        { 16, 16, 16, 240, 17, 16, 234, 240, 235, 240, 235, 128 }
+    };
+    uint8_t out[H * DS];
+    int row;
+
+    memset(out, 0xa5, sizeof out);
+    if (!mr_yuv420_to_y4u2v2(out, DS, y, YS, u, CS, v, CS,
+                             W, H, NULL, NULL)) {
+        fprintf(stderr, "Y4U2V2 conversion rejected valid input\n");
+        return 0;
+    }
+    for (row = 0; row < H; row++) {
+        if (memcmp(out + row * DS, expected[row], W * 2) != 0 ||
+            out[row * DS + W * 2] != 0xa5) {
+            fprintf(stderr, "Y4U2V2 mismatch on row %d\n", row);
+            return 0;
+        }
+    }
+    if (mr_yuv420_to_y4u2v2(out, DS, y, YS, u, CS, v, CS,
+                            W - 1, H, NULL, NULL)) {
+        fprintf(stderr, "Y4U2V2 accepted an odd width\n");
+        return 0;
+    }
+    return 1;
+}
+
+/* mr_y4u2v2_to_rgb24() is display.c's software fallback for a backend that
+ * switched away from the P96 PIP overlay mid-session (switch_to_cgx_
+ * fallback()) and so has no show_yuv422 of its own. Round-trip planar
+ * 4:2:0 through mr_yuv420_to_y4u2v2() and compare against
+ * mr_yuv420_to_rgb24() run directly on the same source planes. Since both
+ * are studio-range conversions built from the same tables, this is exact.
+ * Only exercisable for even widths, matching the format's pair constraint. */
+static int check_y4u2v2_to_rgb24(void)
+{
+    enum { W = 8, H = 4 };
+    /* Sized exactly to the W/2 stride actually passed to every call below.
+     * An earlier version of this test declared these with a stray "+1" on
+     * both dimensions (copied from an unrelated padding convention
+     * elsewhere in this file), mismatching the real per-row stride against
+     * the W/2 argument passed to the functions under test - both
+     * conversions below silently read one chroma sample off, consistently
+     * on both sides, which an exact memcmp couldn't catch (the same wrong
+     * bytes, read the same wrong way, on both sides). Caught only once a
+     * range-rescale experiment made the two sides diverge for an unrelated
+     * reason and the divergence was investigated by hand. */
+    uint8_t y[H][W], u[H / 2][W / 2], v[H / 2][W / 2];
+    uint8_t packed[H][W * 2], direct[H][W * 3], via_packed[H][W * 3];
+    unsigned seed = 0x59345556U;
+    int row, col;
+
+    for (row = 0; row < H; row++)
+        for (col = 0; col < W; col++)
+            y[row][col] = (uint8_t)(16 + (next_value(&seed) >> 24) % 220);
+    for (row = 0; row < H / 2; row++)
+        for (col = 0; col < W / 2; col++) {
+            u[row][col] = (uint8_t)(16 + (next_value(&seed) >> 24) % 225);
+            v[row][col] = (uint8_t)(16 + (next_value(&seed) >> 24) % 225);
+        }
+
+    mr_yuv420_to_rgb24(&direct[0][0], W * 3, &y[0][0], W, &u[0][0], W / 2,
+                       &v[0][0], W / 2, W, H, NULL, NULL);
+    if (!mr_yuv420_to_y4u2v2(&packed[0][0], W * 2, &y[0][0], W, &u[0][0],
+                             W / 2, &v[0][0], W / 2, W, H, NULL, NULL)) {
+        fprintf(stderr, "Y4U2V2 round-trip: pack step failed\n");
+        return 0;
+    }
+    if (!mr_y4u2v2_to_rgb24(&via_packed[0][0], W * 3, &packed[0][0], W * 2,
+                            W, H)) {
+        fprintf(stderr, "Y4U2V2 round-trip: unpack step failed\n");
+        return 0;
+    }
+    if (memcmp(direct, via_packed, sizeof direct) != 0) {
+        fprintf(stderr, "Y4U2V2 round-trip mismatch against direct RGB24\n");
+        return 0;
+    }
+    return 1;
+}
+
 static void count_service(void *opaque)
 {
     (*(int *)opaque)++;
@@ -142,12 +239,14 @@ static void check_yuv_service_clobber(void)
     int i, services = 0;
 
     for (i = 0; i < 256; i++) {
+        int y = i - 16;
         int d = i - 128, e = i - 128;
-        luma_x298[i] = 298 * i;
-        e_x409[i] = 409 * e;
-        d_xm100[i] = -100 * d;
+        if (y < 0) y = 0;
+        luma_x298[i] = 298 * y;
+        e_x409[i] = 409 * e + 128;
+        d_xm100[i] = -100 * d + 128;
         e_xm208[i] = -208 * e;
-        d_x516[i] = 516 * d;
+        d_x516[i] = 516 * d + 128;
     }
     for (i = 0; i < (int)sizeof yp; i++) yp[i] = (uint8_t)(next_value(&seed) >> 24);
     for (i = 0; i < (int)sizeof up; i++) up[i] = (uint8_t)(next_value(&seed) >> 24);
@@ -183,6 +282,8 @@ int main(void)
         for (j = 0; j < sizeof heights / sizeof heights[0]; j++)
             if (!run_case(widths[i], heights[j], 0x4d525956U + i * 31 + j))
                 return 1;
+    if (!check_y4u2v2()) return 1;
+    if (!check_y4u2v2_to_rgb24()) return 1;
     memset(y, 16, sizeof y); memset(u, 128, sizeof u); memset(v, 128, sizeof v);
     mr_yuv420_to_rgb24(rgb, 3, y, 1, u, 1, v, 1, 1, 33,
                        count_service, &services);
@@ -193,6 +294,6 @@ int main(void)
 #if defined(MR_M68K_ASM)
     check_yuv_service_clobber();
 #endif
-    puts("YUV420 paired-pixel conversion: byte-exact");
+    puts("YUV420 RGB/BGR and Y4U2V2 conversion: byte-exact");
     return 0;
 }
