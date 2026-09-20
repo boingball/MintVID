@@ -429,6 +429,13 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
         WA_InnerWidth, (ULONG)s->win_w,
         WA_InnerHeight, (ULONG)s->win_h,
         WA_Flags, flags,
+        /* Intuition does not infer useful resize limits merely from
+         * WFLG_SIZEGADGET. Match the ordinary P96/CGX backends: without
+         * explicit min/max tags the gadget can drag while the window stays
+         * constrained to its opening dimensions, so no real IDCMP_NEWSIZE
+         * geometry ever reaches the reopen/debounce path below. */
+        WA_MinWidth, (ULONG)160, WA_MinHeight, (ULONG)100,
+        WA_MaxWidth, (ULONG)-1, WA_MaxHeight, (ULONG)-1,
         WA_IDCMP, idcmp,
         P96PIP_SourceFormat, (ULONG)RGBFB_Y4U2V2,
         P96PIP_SourceWidth, (ULONG)s->source_w,
