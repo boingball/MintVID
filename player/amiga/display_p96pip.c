@@ -627,8 +627,31 @@ static int reopen_pip(p96pip_state *s, const char *reason)
 
         sync_content_geometry(s);
 
-        if (s->win_w == requested_w && s->win_h == requested_h)
-            break;
+        /* Tolerate a small difference instead of demanding exact equality.
+         * Now that windowed mode opens with PIPRel_Width|PIPRel_Height
+         * (see open_pip()'s own comment), the driver's own window hook is
+         * what keeps the overlay rectangle following the window - a few
+         * pixels of border/rounding slack here is normal, not a real drift,
+         * and forcing an exact match risked a spurious extra reopen right
+         * after every single resize (this retry loop and the relative-
+         * margin mechanism were added and tested separately; a real-
+         * hardware report after both landed together showed the window
+         * visibly reopening and reverting shortly after every resize -
+         * consistent with this retry firing on an ordinary few-pixel
+         * mismatch and feeding a slightly-off size back into a second,
+         * untested-in-combination reopen). Only retry for a mismatch large
+         * enough that it cannot plausibly be rounding - the original
+         * failure mode this loop exists for (an absolute-geometry open
+         * landing on a completely different real window size). */
+        {
+            enum { DRIFT_TOLERANCE_PX = 8 };
+            int dw = s->win_w - requested_w;
+            int dh = s->win_h - requested_h;
+            if (dw < 0) dw = -dw;
+            if (dh < 0) dh = -dh;
+            if (dw <= DRIFT_TOLERANCE_PX && dh <= DRIFT_TOLERANCE_PX)
+                break;
+        }
 
         if (g_display_want_time) {
             printf("p96pip: real window %dx%d differs from the %dx%d used "
