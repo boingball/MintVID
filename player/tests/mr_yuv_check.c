@@ -109,15 +109,13 @@ static int run_case(int width, int height, unsigned seed)
  * Y4U2V2 name implies - see mr_yuv.c's mr_yuv420_to_y4u2v2() for why: real
  * Voodoo3/P96 2.x hardware was confirmed to expect it swapped. Y/Cb/Cr are
  * also rescaled from studio (limited) range to near-full range (1..254,
- * not the literal 0..255 PC/JPEG span - real hardware showed black
- * wrapping to solid white when this path emitted the true extremes) - see
- * the same function's comment for the full three-round real-hardware
- * account. Expected values below are mr_yuv.c's own rescale (round(
+ * not the literal 0..255 PC/JPEG span). Expected values below start with
+ * mr_yuv.c's own rescale (round(
  * (sample-16)*253/219)+1 for luma, round((sample-128)*253/224)+128 for
- * chroma, both clamped to 1..254) applied by hand to studio-range test
- * input. Test data intentionally spans the studio range's black floor (16)
- * and white ceiling (235/240), where the rescale clips, alongside
- * mid-range values. */
+ * chroma, both clamped to 1..254), followed by its chroma-dependent safe
+ * luma ceiling where the P96 matrix would otherwise exceed 254. Test data
+ * intentionally spans the studio range's black floor (16), white ceiling
+ * (235/240), and deliberately out-of-gamut combinations. */
 static int check_y4u2v2(void)
 {
     enum { W = 6, H = 3, YS = 8, CS = 4, DS = 15 };
@@ -129,9 +127,9 @@ static int check_y4u2v2(void)
     static const uint8_t u[2 * CS] = { 16, 128, 240, 0xee, 64, 192, 128, 0xee };
     static const uint8_t v[2 * CS] = { 240, 128, 16, 0xee, 32, 160, 96, 0xee };
     static const uint8_t expected[H][W * 2] = {
-        { 1, 254, 40, 1, 98, 128, 156, 128, 214, 1, 254, 254 },
-        { 6, 254, 52, 1, 110, 128, 167, 128, 225, 1, 254, 254 },
-        { 10, 20, 63, 56, 121, 164, 179, 200, 237, 92, 254, 128 }
+        { 1, 254, 40, 1, 98, 128, 156, 128, 31, 1, 31, 254 },
+        { 6, 254, 52, 1, 110, 128, 167, 128, 31, 1, 31, 254 },
+        { 10, 20, 63, 56, 121, 164, 126, 200, 228, 92, 228, 128 }
     };
     uint8_t out[H * DS];
     int row, col;
@@ -145,7 +143,10 @@ static int check_y4u2v2(void)
     for (row = 0; row < H; row++) {
         if (memcmp(out + row * DS, expected[row], W * 2) != 0 ||
             out[row * DS + W * 2] != 0xa5) {
-            fprintf(stderr, "Y4U2V2 mismatch on row %d\n", row);
+            fprintf(stderr, "Y4U2V2 mismatch on row %d:", row);
+            for (col = 0; col < W * 2; col++)
+                fprintf(stderr, " %u", (unsigned)out[row * DS + col]);
+            fputc('\n', stderr);
             return 0;
         }
         /* Never a literal 0 or 255 byte - the whole point of the 1..254
@@ -208,6 +209,63 @@ static int check_y4u2v2_full_range_margin(void)
     return 1;
 }
 
+/* The packed bytes can all be inside 1..254 while P96's later YUV->RGB
+ * matrix still exceeds 255 (bright luma plus a positive chroma term).  The
+ * affected old overlay paths wrap that result to black.  Exercise every U/V
+ * byte combination with the darkest and brightest possible source luma and
+ * verify the un-clamped BT.601 result never crosses the upper safety rail. */
+static int check_y4u2v2_matrix_ceiling(void)
+{
+    enum { W = 512, H = 512 };
+    static uint8_t y[H][W];
+    static uint8_t u[H / 2][W / 2], v[H / 2][W / 2];
+    static uint8_t out[H][W * 2];
+    int row, pair, adjusted = 0;
+
+    for (row = 0; row < H; row++)
+        for (pair = 0; pair < W / 2; pair++) {
+            y[row][pair * 2] = 0;
+            y[row][pair * 2 + 1] = 255;
+        }
+    for (row = 0; row < H / 2; row++)
+        for (pair = 0; pair < W / 2; pair++) {
+            u[row][pair] = (uint8_t)pair;
+            v[row][pair] = (uint8_t)row;
+        }
+
+    if (!mr_yuv420_to_y4u2v2(&out[0][0], W * 2, &y[0][0], W,
+                             &u[0][0], W / 2, &v[0][0], W / 2,
+                             W, H, NULL, NULL)) {
+        fprintf(stderr, "Y4U2V2 matrix-ceiling conversion failed\n");
+        return 0;
+    }
+
+    for (row = 0; row < H; row++)
+        for (pair = 0; pair < W / 2; pair++) {
+            const uint8_t *p = &out[row][pair * 4];
+            int uu = p[3], vv = p[1], pixel;
+            int r_add = (359 * (vv - 128) + 128) >> 8;
+            int g_add = (-88 * (uu - 128) - 183 * (vv - 128) + 128) >> 8;
+            int b_add = (454 * (uu - 128) + 128) >> 8;
+            if (p[2] != 254) adjusted = 1;
+            for (pixel = 0; pixel < 2; pixel++) {
+                int yy = p[pixel * 2];
+                if (yy + r_add > 254 || yy + g_add > 254 ||
+                    yy + b_add > 254) {
+                    fprintf(stderr, "Y4U2V2 matrix overflow at U=%d V=%d "
+                                    "Y=%d: RGB=%d,%d,%d\n", uu, vv, yy,
+                                    yy + r_add, yy + g_add, yy + b_add);
+                    return 0;
+                }
+            }
+        }
+    if (!adjusted) {
+        fprintf(stderr, "Y4U2V2 matrix-ceiling guard was never exercised\n");
+        return 0;
+    }
+    return 1;
+}
+
 /* mr_y4u2v2_to_rgb24() is display.c's software fallback for a backend that
  * switched away from the P96 PIP overlay mid-session (switch_to_cgx_
  * fallback()) and so has no show_yuv422 of its own. Round-trip planar
@@ -236,18 +294,18 @@ static int check_y4u2v2_to_rgb24(void)
     uint8_t y[H][W], u[H / 2][W / 2], v[H / 2][W / 2];
     uint8_t packed[H][W * 2], direct[H][W * 3], via_packed[H][W * 3];
     unsigned seed = 0x59345556U;
-    int row, col, i;
+    int row, col, i, max_diff = 0, max_i = 0;
 
     for (row = 0; row < H; row++)
         for (col = 0; col < W; col++)
-            /* Studio-range luma only (16-235) - out-of-range bytes are not
-             * real decoder output and would clip asymmetrically against
-             * the tolerance below for no useful reason. */
-            y[row][col] = (uint8_t)(16 + (next_value(&seed) >> 24) % 220);
+            /* Keep this round-trip test inside the RGB gamut.  Deliberate
+             * highlight overflow is covered exhaustively by the separate
+             * matrix-ceiling check above. */
+            y[row][col] = (uint8_t)(32 + (next_value(&seed) >> 24) % 168);
     for (row = 0; row < H / 2; row++)
         for (col = 0; col < W / 2; col++) {
-            u[row][col] = (uint8_t)(16 + (next_value(&seed) >> 24) % 225);
-            v[row][col] = (uint8_t)(16 + (next_value(&seed) >> 24) % 225);
+            u[row][col] = (uint8_t)(112 + (next_value(&seed) >> 24) % 33);
+            v[row][col] = (uint8_t)(112 + (next_value(&seed) >> 24) % 33);
         }
 
     mr_yuv420_to_rgb24(&direct[0][0], W * 3, &y[0][0], W, &u[0][0], W / 2,
@@ -265,13 +323,14 @@ static int check_y4u2v2_to_rgb24(void)
     for (i = 0; i < (int)sizeof direct; i++) {
         int d = (int)((uint8_t *)direct)[i] - (int)((uint8_t *)via_packed)[i];
         if (d < 0) d = -d;
-        if (d > TOLERANCE) {
-            fprintf(stderr, "Y4U2V2 round-trip: byte %d differs by %d "
-                            "(direct=%d via_packed=%d), exceeds tolerance "
-                            "%d\n", i, d, ((uint8_t *)direct)[i],
-                            ((uint8_t *)via_packed)[i], TOLERANCE);
-            return 0;
-        }
+        if (d > max_diff) { max_diff = d; max_i = i; }
+    }
+    if (max_diff > TOLERANCE) {
+        fprintf(stderr, "Y4U2V2 round-trip: byte %d differs by %d "
+                        "(direct=%d via_packed=%d), exceeds tolerance %d\n",
+                        max_i, max_diff, ((uint8_t *)direct)[max_i],
+                        ((uint8_t *)via_packed)[max_i], TOLERANCE);
+        return 0;
     }
     return 1;
 }
@@ -358,6 +417,7 @@ int main(void)
                 return 1;
     if (!check_y4u2v2()) return 1;
     if (!check_y4u2v2_full_range_margin()) return 1;
+    if (!check_y4u2v2_matrix_ceiling()) return 1;
     if (!check_y4u2v2_to_rgb24()) return 1;
     memset(y, 16, sizeof y); memset(u, 128, sizeof u); memset(v, 128, sizeof v);
     mr_yuv420_to_rgb24(rgb, 3, y, 1, u, 1, v, 1, 1, 33,

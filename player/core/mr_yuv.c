@@ -261,47 +261,29 @@ void mr_yuv420_to_bgr24(uint8_t *dst, int dst_stride,
 }
 
 /*
- * A studio(limited)->full(PC) range rescale was added here, then reverted,
- * then re-added again with a change - all three real-hardware findings are
- * worth keeping on record since each one narrowed the actual problem:
+ * P96's overlay interprets this packed surface as full-range YUV.  Passing
+ * the decoder's studio-range bytes through directly therefore looked pastel;
+ * expanding them to 0..255 restored the colour but exposed black/white
+ * solarisation in bright real-video detail.  Merely changing the component
+ * clamp to 1..254 improved but did not remove it.
  *
- * 1. A synthetic colour-bar A/B (WritePixel correct/saturated, overlay
- *    pastel on the same pattern) suggested the PIP's own YUV->RGB decode
- *    treats this buffer as full range, so passing studio-range bytes
- *    through unscaled under-saturates. Rescaling studio->full (0..255) at
- *    pack time fixed it.
- * 2. On real video (not a flat synthetic pattern), that same 0..255 rescale
- *    produced large solid white/black blocks - confirmed via a controlled
- *    A/B (WritePixel and CGX fullscreen both clean on the same clip, only
- *    this function's own output affected) to be *worse* than the pastel
- *    colours it fixed, so it was reverted outright back to a plain
- *    passthrough.
- * 3. But the user's own read of finding 2 - "clipping past black and going
- *    solid white" - describes black wrapping to white, not merely
- *    aggressive saturation (an ordinary clamp floors at black, it cannot
- *    produce white from a dark input). That points at the PIP hardware/
- *    driver's own internal YUV decoder not safely handling the true
- *    numeric extremes (0 and 255) of a full-range signal once actually fed
- *    them - a known category of limitation in simpler video-overlay
- *    silicon that expects input to never quite reach the rails, distinct
- *    from finding 1's separate, real range-interpretation mismatch.
- *
- * The fix combining all three: keep the rescale (finding 1 said it was
- * needed, and the user confirmed on their own follow-up that it did fix
- * real video's colours, not just the synthetic pattern), but never emit
- * literal 0 or 255 - clamp to [FULL_LO, FULL_HI] (1..254) instead of the
- * full 0..255 span, trading a fraction of a percent of contrast range for
- * insurance against whatever the hardware does at the true rails. Chroma's
- * neutral value 128 is unaffected (still maps to exactly 128), so grey/
- * neutral colours are untouched; only extreme black/white and fully
- * saturated chroma lose their last count or two of range. This is an
- * empirical workaround for a suspected hardware limitation, not a fully
- * root-caused fix - unconfirmed until a real Voodoo3/WinUAE retest.
+ * The missing distinction is between the packed component rails and the
+ * result of P96's later YUV->RGB matrix.  Y=254 and a positive chroma term
+ * are both individually legal, yet their sum can exceed 255; old overlay
+ * implementations can wrap that intermediate value to black instead of
+ * saturating it.  Keep the near-full 1..254 rescale, then cap each luma at
+ * 254 minus the largest positive BT.601 chroma contribution.  Chroma and all
+ * in-gamut pixels remain byte-for-byte unchanged; only a pixel whose matrix
+ * result would overflow is pulled back to the safe ceiling.
  */
 enum { MR_YUV_FULL_LO = 1, MR_YUV_FULL_HI = 254 };
 
 static int g_y_full[256];
 static int g_c_full[256];
+static int g_full_r_cr[256];
+static int g_full_g_cb[256];
+static int g_full_g_cr[256];
+static int g_full_b_cb[256];
 static int g_full_enc_ready = 0;
 
 static int round_div_signed(int num, int den)
@@ -317,14 +299,37 @@ static void build_full_range_encode_tables(void)
     for (i = 0; i < 256; i++) {
         int y = round_div_signed((i - 16) * SPAN, 219) + MR_YUV_FULL_LO;
         int c = round_div_signed((i - 128) * SPAN, 224) + 128;
+        int d = i - 128;
         if (y < MR_YUV_FULL_LO) y = MR_YUV_FULL_LO;
         else if (y > MR_YUV_FULL_HI) y = MR_YUV_FULL_HI;
         if (c < MR_YUV_FULL_LO) c = MR_YUV_FULL_LO;
         else if (c > MR_YUV_FULL_HI) c = MR_YUV_FULL_HI;
         g_y_full[i] = y;
         g_c_full[i] = c;
+        /* Full-range BT.601 contributions, rounded exactly as the software
+         * fallback below.  The packer uses these to spot a P96 overlay
+         * matrix result that would exceed 254 even though each input byte is
+         * already inside 1..254. */
+        g_full_r_cr[i] = (359 * d + 128) >> 8;
+        g_full_g_cb[i] = -88 * d + 128;
+        g_full_g_cr[i] = -183 * d;
+        g_full_b_cb[i] = (454 * d + 128) >> 8;
     }
     g_full_enc_ready = 1;
+}
+
+MR_YUV_INLINE int full_range_safe_luma_high(int u, int v)
+{
+    int max_add = g_full_r_cr[v];
+    int g = (g_full_g_cb[u] + g_full_g_cr[v]) >> 8;
+    int hi;
+
+    if (g > max_add) max_add = g;
+    if (g_full_b_cb[u] > max_add) max_add = g_full_b_cb[u];
+    hi = MR_YUV_FULL_HI - max_add;
+    if (hi < MR_YUV_FULL_LO) hi = MR_YUV_FULL_LO;
+    else if (hi > MR_YUV_FULL_HI) hi = MR_YUV_FULL_HI;
+    return hi;
 }
 
 int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
@@ -361,10 +366,24 @@ int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
         uint8_t *out = dst + (size_t)row * (size_t)dst_stride;
         int x;
         for (x = 0; x < width; x += 2) {
-            out[0] = (uint8_t)g_y_full[sy[x]];
-            out[1] = (uint8_t)g_c_full[sv[x >> 1]];
-            out[2] = (uint8_t)g_y_full[sy[x + 1]];
-            out[3] = (uint8_t)g_c_full[su[x >> 1]];
+            int src_u = su[x >> 1], src_v = sv[x >> 1];
+            int y0 = g_y_full[sy[x]], y1 = g_y_full[sy[x + 1]];
+            int u = g_c_full[src_u], v = g_c_full[src_v];
+            int y_hi = full_range_safe_luma_high(u, v);
+
+            /* The source bytes already avoid 0 and 255, but the overlay's
+             * subsequent YUV->RGB matrix can still exceed 255: e.g. a luma
+             * of 254 plus positive red chroma.  Old P96/Voodoo paths wrap
+             * that intermediate result to black.  Keep the shared chroma
+             * intact and cap each luma independently at the largest value
+             * for which all three computed RGB channels remain <= 254. */
+            if (y0 > y_hi) y0 = y_hi;
+            if (y1 > y_hi) y1 = y_hi;
+
+            out[0] = (uint8_t)y0;
+            out[1] = (uint8_t)v;
+            out[2] = (uint8_t)y1;
+            out[3] = (uint8_t)u;
             out += 4;
         }
         if (service && (row & 15) == 15) service(service_opaque);

@@ -32,16 +32,12 @@ void mr_yuv420_to_bgr24(uint8_t *dst, int dst_stride,
  * the opposite of what the RGBFB_Y4U2V2 name and libraries/Picasso96.h's
  * own doc comment suggest. Y/Cb/Cr are also rescaled from the decoder's
  * own studio (limited) range to near-full range (1..254, not the literal
- * 0..255 PC/JPEG span) - real hardware went through three rounds on this:
- * a plain studio-range passthrough looked pastel/washed-out via the
- * overlay next to a correct WritePixel; a full 0..255 rescale fixed that
- * but caused severe black-wrapping-to-white clipping on real video
- * (pointing at the PIP hardware/driver's own YUV decoder not safely
- * handling the true numeric extremes of a full-range signal); clamping
- * just short of those extremes keeps the saturation fix without ever
- * emitting a literal 0 or 255 byte. See mr_yuv.c's own comment on this
- * function for the full three-round account. Hardware PIP surfaces are
- * pair-based, so width must be even. Returns non-zero on success. */
+ * 0..255 PC/JPEG span).  Luma is additionally capped against the pair's
+ * positive BT.601 chroma contribution: old P96/Voodoo overlay paths can
+ * wrap a matrix result above 255 to black even though the individual Y/U/V
+ * bytes are below 255.  The cap leaves all in-gamut pixels unchanged.  See
+ * mr_yuv.c for the real-hardware history. Hardware PIP surfaces are pair-
+ * based, so width must be even. Returns non-zero on success. */
 int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
                         const uint8_t *y_plane, int y_stride,
                         const uint8_t *u_plane, int u_stride,
@@ -58,10 +54,10 @@ int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
  * backend changed underneath it. Each row is self-contained (genuine
  * 4:2:2, unlike planar 4:2:0), so no chroma-row bookkeeping is needed.
  * This is pure software with no hardware-extremes concern of its own, so
- * it decodes with the plain 0..255 full-range matrix rather than mirroring
- * the encode side's narrower safety margin - not a bit-exact inverse of
- * the decoder's own original studio-range samples, but within a few LSB,
- * which is fine for this fallback's correctness-not-performance purpose.
+ * it decodes with the plain 0..255 full-range matrix.  It is not a bit-
+ * exact inverse where the encode-side overlay safety cap had to modify an
+ * out-of-gamut highlight, which is fine for this fallback's correctness-
+ * not-performance purpose.
  * Returns non-zero on success. */
 int mr_y4u2v2_to_rgb24(uint8_t *dst, int dst_stride,
                        const uint8_t *src, int src_stride,

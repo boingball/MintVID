@@ -731,17 +731,34 @@ static unsigned char clamp_byte(int v)
     return (unsigned char)v;
 }
 
-/* Never emits a literal 0 or 255 byte - see core/mr_yuv.c's comment on
- * mr_yuv420_to_y4u2v2() for why (real hardware showed black wrapping to
- * white when this path emitted the true full-range extremes). Used only
- * for this backend's own Y4U2V2 encode; the plain clamp_byte() above is
- * still used everywhere else in this file (window content that isn't
- * itself packed Y4U2V2). */
+/* Never emits a literal 0 or 255 byte. Used only for this backend's own
+ * Y4U2V2 encode; the plain clamp_byte() above is still used everywhere else
+ * in this file (window content that isn't itself packed Y4U2V2). */
 static unsigned char clamp_byte_full(int v)
 {
     if (v < 1) return 1;
     if (v > 254) return 254;
     return (unsigned char)v;
+}
+
+/* The packed Y/U/V bytes can all be below 255 while the overlay's following
+ * YUV->RGB matrix still exceeds it.  Keep enough luma headroom for the
+ * largest positive BT.601 chroma contribution so old P96/Voodoo paths do
+ * not wrap a highlight to black. */
+static int p96pip_safe_luma_high(int u, int v)
+{
+    int r_add = (359 * (v - 128) + 128) >> 8;
+    int g_add = (-88 * (u - 128) - 183 * (v - 128) + 128) >> 8;
+    int b_add = (454 * (u - 128) + 128) >> 8;
+    int max_add = r_add;
+    int hi;
+
+    if (g_add > max_add) max_add = g_add;
+    if (b_add > max_add) max_add = b_add;
+    hi = 254 - max_add;
+    if (hi < 1) hi = 1;
+    else if (hi > 254) hi = 254;
+    return hi;
 }
 
 /* Correctness fallback for RGB-only decoders. The performance path never
@@ -755,12 +772,9 @@ static unsigned char clamp_byte_full(int v)
  *
  * The RGB->YCbCr coefficients below are the full-range (PC/JPEG) matrix,
  * matching mr_yuv420_to_y4u2v2()'s own near-full-range rescale - not the
- * studio-range one mr_yuv420_to_rgb24() uses. clamp_byte_full() (not the
- * plain clamp_byte() above) keeps every emitted byte inside [1,254],
- * matching that function's own MR_YUV_FULL_LO/HI safety margin against
- * real hardware black-wrapping-to-white at the true numeric extremes - see
- * core/mr_yuv.c's comment on mr_yuv420_to_y4u2v2() for the full three-round
- * account this margin exists because of. */
+ * studio-range one mr_yuv420_to_rgb24() uses. clamp_byte_full() keeps the
+ * packed components inside [1,254], and p96pip_safe_luma_high() additionally
+ * prevents their later matrix result from crossing the upper rail. */
 static int write_rgb_rows(struct BitMap *bm, int y0,
                           const unsigned char *src, int src_stride,
                           int w, int rows, int src_is_bgr)
@@ -789,15 +803,24 @@ static int write_rgb_rows(struct BitMap *bm, int y0,
             int r = (r0 + r1 + 1) >> 1;
             int g = (g0 + g1 + 1) >> 1;
             int b = (b0 + b1 + 1) >> 1;
+            int yy0, yy1, uu, vv, y_hi;
 
-            dst_pair[0] = clamp_byte_full(
+            yy0 = clamp_byte_full(
                 (77 * r0 + 150 * g0 + 29 * b0 + 128) >> 8);
-            dst_pair[1] = clamp_byte_full(
+            vv = clamp_byte_full(
                 ((128 * r - 107 * g - 21 * b + 128) >> 8) + 128);
-            dst_pair[2] = clamp_byte_full(
+            yy1 = clamp_byte_full(
                 (77 * r1 + 150 * g1 + 29 * b1 + 128) >> 8);
-            dst_pair[3] = clamp_byte_full(
+            uu = clamp_byte_full(
                 ((-43 * r - 85 * g + 128 * b + 128) >> 8) + 128);
+            y_hi = p96pip_safe_luma_high(uu, vv);
+            if (yy0 > y_hi) yy0 = y_hi;
+            if (yy1 > y_hi) yy1 = y_hi;
+
+            dst_pair[0] = (unsigned char)yy0;
+            dst_pair[1] = (unsigned char)vv;
+            dst_pair[2] = (unsigned char)yy1;
+            dst_pair[3] = (unsigned char)uu;
             src_pixel += 6;
             dst_pair += 4;
         }
