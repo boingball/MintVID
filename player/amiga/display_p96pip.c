@@ -372,20 +372,22 @@ static struct Screen *open_video_screen(p96pip_state *s, int target_w,
  * size change closes and reopens the PIP rather than trying to update them
  * with p96PIP_SetTags().
  *
- * P96PIP_Relativity is explicitly cleared to 0: the *default*
- * (PIPRel_Width|PIPRel_Height, per libraries/Picasso96.h) interprets
- * P96PIP_Width/Height as a margin *not* covered by the PIP at the window's
- * right/bottom edge, not an absolute size - easy to miss, since
- * P96PIP_Width's own doc comment ("default: inner width of window") reads
- * as if it were already an absolute value. Getting this wrong would not
- * fail to open; it would silently place the video at the wrong size, so it
- * is called out here rather than left to be rediscovered on real hardware.
+ * Fullscreen uses absolute destination dimensions. Windowed mode instead
+ * uses PIPRel_Width|PIPRel_Height and encodes the aspect-fit rectangle's
+ * right/bottom gaps as negative margins. This is the P96 mechanism that
+ * lets its window hook adjust the hardware rectangle while Intuition is
+ * resizing the containing window; using absolute dimensions makes affected
+ * drivers snap the window back to its original size. The static margins can
+ * temporarily stretch the picture during a drag, then the debounced reopen
+ * calculates fresh aspect-correct margins for the final window dimensions.
  */
 static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
 {
     struct Screen *scr;
     struct Window *win;
-    ULONG flags, idcmp, screen_tag;
+    ULONG flags, idcmp, screen_tag, relativity;
+    LONG pip_width, pip_height;
+    ULONG max_w = (ULONG)-1, max_h = (ULONG)-1;
     int left = 0, top = 0;
     int pub_locked = 0;
 
@@ -402,12 +404,56 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
         flags = WFLG_BORDERLESS | WFLG_BACKDROP | WFLG_ACTIVATE |
                 WFLG_RMBTRAP | WFLG_NOCAREREFRESH;
         idcmp = IDCMP_CLOSEWINDOW | IDCMP_RAWKEY;
+        relativity = 0;
+        pip_width = s->dw;
+        pip_height = s->dh;
     } else {
+        int right_margin = s->win_w - s->dx - s->dw;
+        int bottom_margin = s->win_h - s->dy - s->dh;
+
         flags = WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
                 WFLG_SIZEGADGET | WFLG_ACTIVATE | WFLG_NOCAREREFRESH;
         idcmp = IDCMP_CLOSEWINDOW | IDCMP_RAWKEY | IDCMP_NEWSIZE;
         left = s->have_window_geometry ? s->window_left : 0;
         top  = s->have_window_geometry ? s->window_top  : 0;
+
+        /* P96's window hook cannot resize a PIP whose destination width and
+         * height were opened as fixed absolute values: Intuition moves the
+         * size gadget, then the window snaps back to the original size. In
+         * relative mode these values are negative right/bottom margins, so
+         * the hardware rectangle can follow the window during the drag.
+         * Once IDCMP_NEWSIZE settles, reopen_pip() recalculates the exact
+         * aspect-fit margins for the final size. */
+        relativity = PIPRel_Width | PIPRel_Height;
+        pip_width = -(LONG)right_margin;
+        pip_height = -(LONG)bottom_margin;
+
+        /* A real-hardware log (--time) on a driver that only ever grants
+         * PIPT_MemoryWindow (PIPT_VideoWindow returning PIPERR_NOTAVAILABLE
+         * on every attempt) showed the window silently reopening smaller
+         * than requested every time - e.g. a drag to 878x545 came back
+         * from sync_content_geometry() as 640x411, with no PIP error code
+         * to flag it. PIPT_MemoryWindow is the unaccelerated, software-
+         * composited fallback with no scaler behind it, so the driver
+         * apparently cannot honour a window bigger than the source frame
+         * and just clamps it - silently, not via a rejected open. That
+         * clamp was being misread as the "final" post-resize size (see
+         * reopen_pip()'s own drift retry), producing exactly the reported
+         * "resizes, then snaps back" symptom: the shrink happens on the
+         * very first open, before any retry even runs.
+         *
+         * Fixed at the source instead of chasing the driver's own return
+         * value after the fact: cap WA_MaxWidth/WA_MaxHeight to the
+         * source frame's own size whenever this open is for
+         * PIPT_MemoryWindow, so Intuition simply refuses to let the user
+         * drag past what this driver can actually deliver - no false
+         * "grew, then reverted" illusion, since it never appears to grow
+         * in the first place. PIPT_VideoWindow (real hardware scaling)
+         * keeps no cap. */
+        if (type == PIPT_MemoryWindow) {
+            max_w = (ULONG)s->source_w;
+            max_h = (ULONG)s->source_h;
+        }
     }
 
     /* P96's PIP API explicitly ignores WA_Width/WA_Height and requires
@@ -429,6 +475,13 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
         WA_InnerWidth, (ULONG)s->win_w,
         WA_InnerHeight, (ULONG)s->win_h,
         WA_Flags, flags,
+        /* Intuition does not infer useful resize limits merely from
+         * WFLG_SIZEGADGET. Match the ordinary P96/CGX backends: without
+         * explicit min/max tags the gadget can drag while the window stays
+         * constrained to its opening dimensions, so no real IDCMP_NEWSIZE
+         * geometry ever reaches the reopen/debounce path below. */
+        WA_MinWidth, (ULONG)160, WA_MinHeight, (ULONG)100,
+        WA_MaxWidth, max_w, WA_MaxHeight, max_h,
         WA_IDCMP, idcmp,
         P96PIP_SourceFormat, (ULONG)RGBFB_Y4U2V2,
         P96PIP_SourceWidth, (ULONG)s->source_w,
@@ -438,9 +491,10 @@ static struct Window *open_pip(p96pip_state *s, ULONG type, LONG *err)
          * outer RastPort coordinates. Do not add BorderLeft/BorderTop here:
          * doing so shifts a full-size PIP outside the interior and can make
          * an otherwise valid open look cropped to the driver. */
-        P96PIP_Relativity, (ULONG)0,
+        P96PIP_Relativity, relativity,
         P96PIP_Left, (ULONG)s->dx, P96PIP_Top, (ULONG)s->dy,
-        P96PIP_Width, (ULONG)s->dw, P96PIP_Height, (ULONG)s->dh,
+        P96PIP_Width, (ULONG)pip_width,
+        P96PIP_Height, (ULONG)pip_height,
         P96PIP_ErrorCode, (ULONG)err,
         TAG_END);
 
@@ -519,55 +573,125 @@ static void rebuild_geometry(p96pip_state *s, const char *reason)
  * P96PIP_{Left,Top,Width,Height} are init-only, and a hardware overlay may
  * allow only one live video window. Close the old PIP first so it cannot
  * make its own replacement look unavailable. */
+/*
+ * A real-hardware report: dragging the windowed PIP's size gadget produces
+ * a video rectangle that goes small-and-centred or off-centre relative to
+ * the actual window bounds, and stays wrong until the next fullscreen
+ * round-trip (which happens to fix it). The mechanism: P96PIP_Left/Top/
+ * Width/Height are init-only (see open_pip()'s own comment) - they are
+ * computed by calculate_geometry() from s->win_w/win_h *before* the window
+ * is actually (re)created, and baked into the one p96PIP_OpenTags() call
+ * that opens it. WA_InnerWidth/InnerHeight is only a *request*; the real
+ * resulting window can come back a different size (border/decoration
+ * differences between window states, driver quirks, etc.) - and if it
+ * does, the destination rectangle already sent to the PIP hardware no
+ * longer matches the window that actually exists, silently, until some
+ * *later* reopen_pip() call (the next resize, or a fullscreen toggle)
+ * happens to start from the corrected size and self-heals by coincidence.
+ *
+ * Fixed by checking for that drift directly: after the window opens and
+ * sync_content_geometry() reads back its real content size, if it differs
+ * from what calculate_geometry() used a moment ago, reopen once more with
+ * the corrected size so the rectangle actually baked into the hardware
+ * matches the real window - rather than leaving the mismatch to be found
+ * by chance on some later, unrelated reopen. Bounded to one retry: if the
+ * driver still doesn't converge, this stops trying rather than risking an
+ * unbounded reopen loop.
+ */
 static int reopen_pip(p96pip_state *s, const char *reason)
 {
     LONG err = 0;
+    int attempt;
 
-    close_pip(s);
-    calculate_geometry(s);
+    for (attempt = 0; attempt < 2; attempt++) {
+        int requested_w = s->win_w;
+        int requested_h = s->win_h;
 
-    s->win = open_pip(s, PIPT_VideoWindow, &err);
-    s->hw_overlay = s->win != NULL;
-    s->last_hw_err = err;
-    if (!s->win) {
-        if (g_display_want_time) {
-            printf("p96pip: video-window PIP unavailable (error %ld: %s), "
-                   "trying RiVA-compatible memory-window PIP\n",
-                   (long)err, pip_err_name(err));
-            Flush(Output());
-        }
-        s->win = open_pip(s, PIPT_MemoryWindow, &err);
-        s->last_mem_err = err;
-    } else {
-        s->last_mem_err = 0;
-    }
-    if (!s->win) {
-        if (g_display_want_time) {
-            printf("p96pip: PIP open failed (error %ld: %s)\n",
-                   (long)err, pip_err_name(err));
-            Flush(Output());
-        }
-        return 0;
-    }
-
-    if (g_display_want_time) {
-        printf("p96pip: calling p96PIP_GetTags for source bitmap\n");
-        Flush(Output());
-    }
-    /* p96PIP_GetTagList() returns a count, not a success boolean. Check the
-     * retrieved pointer itself so either convention remains harmless. */
-    p96PIP_GetTags(s->win, P96PIP_SourceBitMap, (ULONG)&s->source_bitmap,
-                   TAG_END);
-    if (!s->source_bitmap) {
-        if (g_display_want_time) {
-            printf("p96pip: could not retrieve source bitmap - closing\n");
-            Flush(Output());
-        }
         close_pip(s);
-        return 0;
+        calculate_geometry(s);
+
+        s->win = open_pip(s, PIPT_VideoWindow, &err);
+        s->hw_overlay = s->win != NULL;
+        s->last_hw_err = err;
+        if (!s->win) {
+            if (g_display_want_time) {
+                printf("p96pip: video-window PIP unavailable (error %ld: "
+                       "%s), trying RiVA-compatible memory-window PIP\n",
+                       (long)err, pip_err_name(err));
+                Flush(Output());
+            }
+            s->win = open_pip(s, PIPT_MemoryWindow, &err);
+            s->last_mem_err = err;
+        } else {
+            s->last_mem_err = 0;
+        }
+        if (!s->win) {
+            if (g_display_want_time) {
+                printf("p96pip: PIP open failed (error %ld: %s)\n",
+                       (long)err, pip_err_name(err));
+                Flush(Output());
+            }
+            return 0;
+        }
+
+        if (g_display_want_time) {
+            printf("p96pip: calling p96PIP_GetTags for source bitmap\n");
+            Flush(Output());
+        }
+        /* p96PIP_GetTagList() returns a count, not a success boolean. Check
+         * the retrieved pointer itself so either convention remains
+         * harmless. */
+        p96PIP_GetTags(s->win, P96PIP_SourceBitMap, (ULONG)&s->source_bitmap,
+                       TAG_END);
+        if (!s->source_bitmap) {
+            if (g_display_want_time) {
+                printf("p96pip: could not retrieve source bitmap - "
+                       "closing\n");
+                Flush(Output());
+            }
+            close_pip(s);
+            return 0;
+        }
+
+        sync_content_geometry(s);
+
+        /* Tolerate a small difference instead of demanding exact equality.
+         * Now that windowed mode opens with PIPRel_Width|PIPRel_Height
+         * (see open_pip()'s own comment), the driver's own window hook is
+         * what keeps the overlay rectangle following the window - a few
+         * pixels of border/rounding slack here is normal, not a real drift,
+         * and forcing an exact match risked a spurious extra reopen right
+         * after every single resize (this retry loop and the relative-
+         * margin mechanism were added and tested separately; a real-
+         * hardware report after both landed together showed the window
+         * visibly reopening and reverting shortly after every resize -
+         * consistent with this retry firing on an ordinary few-pixel
+         * mismatch and feeding a slightly-off size back into a second,
+         * untested-in-combination reopen). Only retry for a mismatch large
+         * enough that it cannot plausibly be rounding - the original
+         * failure mode this loop exists for (an absolute-geometry open
+         * landing on a completely different real window size). */
+        {
+            enum { DRIFT_TOLERANCE_PX = 8 };
+            int dw = s->win_w - requested_w;
+            int dh = s->win_h - requested_h;
+            if (dw < 0) dw = -dw;
+            if (dh < 0) dh = -dh;
+            if (dw <= DRIFT_TOLERANCE_PX && dh <= DRIFT_TOLERANCE_PX)
+                break;
+        }
+
+        if (g_display_want_time) {
+            printf("p96pip: real window %dx%d differs from the %dx%d used "
+                   "for the destination rectangle just opened; %s\n",
+                   s->win_w, s->win_h, requested_w, requested_h,
+                   attempt == 0 ? "reopening once more with the corrected "
+                                  "size"
+                                : "giving up after one retry");
+            Flush(Output());
+        }
     }
 
-    sync_content_geometry(s);
     s->pending_w = s->win_w;
     s->pending_h = s->win_h;
     rebuild_geometry(s, reason);
