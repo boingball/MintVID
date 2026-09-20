@@ -46,6 +46,37 @@ static int check_strip_matches_full(int w, int h, int dst_w, int dst_h,
             break;
         }
     }
+
+    /* Full and strip now share the optimized implementation, so comparing
+     * them alone could miss identical sampling errors. Check actual source
+     * pixels independently using the centre-sampling formula, including the
+     * mapped 512-column tile boundary and the final row/column. */
+    if (ok) {
+        int k;
+        for (k = 0; k < 128; k++) {
+            int x = k == 0 ? 0 : k == 1 ? dst_w - 1 :
+                    k == 2 ? (dst_w > 511 ? 511 : dst_w - 1) :
+                    k == 3 ? (dst_w > 512 ? 512 : dst_w - 1) :
+                             (int)(next_value(&seed) % (unsigned)dst_w);
+            int y = k == 4 ? dst_h - 1 :
+                             (int)(next_value(&seed) % (unsigned)dst_h);
+            /* These test geometries have dimensions <=1920, so the
+             * independent centre numerator fits in unsigned 32-bit. */
+            unsigned sx = ((2u * (unsigned)x + 1u) * (unsigned)w) /
+                          (2u * (unsigned)dst_w);
+            unsigned sy = ((2u * (unsigned)y + 1u) * (unsigned)h) /
+                          (2u * (unsigned)dst_h);
+            if (memcmp(full + (size_t)y * dst_stride + (size_t)x * 3,
+                       src + (size_t)sy * src_stride + (size_t)sx * 3,
+                       3) != 0) {
+                fprintf(stderr,
+                        "centre-sample mismatch: %dx%d -> %dx%d at %d,%d\n",
+                        w, h, dst_w, dst_h, x, y);
+                ok = 0;
+                break;
+            }
+        }
+    }
 done:
     free(src); free(full); free(strip);
     return ok;
@@ -93,6 +124,9 @@ int main(void)
     failed |= !check_strip_matches_full(1920, 1080, 640, 360, 32, 3);
     failed |= !check_strip_matches_full(853, 481, 640, 361, 40, 4);
     failed |= !check_strip_matches_full(7, 5, 3, 11, 4, 5);
+    failed |= !check_strip_matches_full(1280, 720, 1002, 564, 64, 6);
+    failed |= !check_strip_matches_full(1026, 516, 513, 516, 64, 7);
+    failed |= !check_strip_matches_full(1920, 1080, 640, 360, 64, 8);
 
     if (!failed) puts("scale checks passed");
     return failed;
