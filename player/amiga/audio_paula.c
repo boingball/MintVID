@@ -609,11 +609,19 @@ static void audio_worker_entry(void)
         Wait(signals);
     }
     audio_worker_cleanup(a);
+    /* The parent may free this context and unload mrplay as soon as it
+     * receives stopped_sig. Prevent it from running until this NP_Entry
+     * worker has actually returned and DOS removes the task. Match the
+     * HLS worker's final Forbid()/ReplyMsg() handshake; no Permit here. */
+    Forbid();
     a->worker_task = NULL;
     Signal(a->parent_task, 1UL << a->stopped_sig);
     return;
 failed:
     audio_worker_cleanup(a);
+    /* A failed startup also wakes a parent that immediately calls
+     * audio_close() and frees this context: the same exit race applies. */
+    Forbid();
     a->worker_task = NULL;
     a->ready_ok = 0;
     Signal(a->parent_task, 1UL << a->ready_sig);
