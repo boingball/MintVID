@@ -261,76 +261,12 @@ void mr_yuv420_to_bgr24(uint8_t *dst, int dst_stride,
 }
 
 /*
- * P96's overlay interprets this packed surface as full-range YUV.  Passing
- * the decoder's studio-range bytes through directly therefore looked pastel;
- * expanding them to 0..255 restored the colour but exposed black/white
- * solarisation in bright real-video detail.  Merely changing the component
- * clamp to 1..254 improved but did not remove it.
- *
- * The missing distinction is between the packed component rails and the
- * result of P96's later YUV->RGB matrix.  Y=254 and a positive chroma term
- * are both individually legal, yet their sum can exceed 255; old overlay
- * implementations can wrap that intermediate value to black instead of
- * saturating it.  Keep the near-full 1..254 rescale, then cap each luma at
- * 254 minus the largest positive BT.601 chroma contribution.  Chroma and all
- * in-gamut pixels remain byte-for-byte unchanged; only a pixel whose matrix
- * result would overflow is pulled back to the safe ceiling.
+ * Keep the decoder's studio-range Y/Cb/Cr bytes unchanged. Expanding them
+ * to full range was tested because a synthetic colour pattern looked pale,
+ * but real video exposed severe white/black clipping in the P96 overlay.
+ * The same failure occurs for streamed and offline files, isolating it to
+ * this shared conversion/display path rather than input timing or demuxing.
  */
-enum { MR_YUV_FULL_LO = 1, MR_YUV_FULL_HI = 254 };
-
-static int g_y_full[256];
-static int g_c_full[256];
-static int g_full_r_cr[256];
-static int g_full_g_cb[256];
-static int g_full_g_cr[256];
-static int g_full_b_cb[256];
-static int g_full_enc_ready = 0;
-
-static int round_div_signed(int num, int den)
-{
-    if (num >= 0) return (num + den / 2) / den;
-    return -(((-num) + den / 2) / den);
-}
-
-static void build_full_range_encode_tables(void)
-{
-    enum { SPAN = MR_YUV_FULL_HI - MR_YUV_FULL_LO };
-    int i;
-    for (i = 0; i < 256; i++) {
-        int y = round_div_signed((i - 16) * SPAN, 219) + MR_YUV_FULL_LO;
-        int c = round_div_signed((i - 128) * SPAN, 224) + 128;
-        int d = i - 128;
-        if (y < MR_YUV_FULL_LO) y = MR_YUV_FULL_LO;
-        else if (y > MR_YUV_FULL_HI) y = MR_YUV_FULL_HI;
-        if (c < MR_YUV_FULL_LO) c = MR_YUV_FULL_LO;
-        else if (c > MR_YUV_FULL_HI) c = MR_YUV_FULL_HI;
-        g_y_full[i] = y;
-        g_c_full[i] = c;
-        /* Full-range BT.601 contributions, rounded exactly as the software
-         * fallback below.  The packer uses these to spot a P96 overlay
-         * matrix result that would exceed 254 even though each input byte is
-         * already inside 1..254. */
-        g_full_r_cr[i] = (359 * d + 128) >> 8;
-        g_full_g_cb[i] = -88 * d + 128;
-        g_full_g_cr[i] = -183 * d;
-        g_full_b_cb[i] = (454 * d + 128) >> 8;
-    }
-    g_full_enc_ready = 1;
-}
-
-MR_YUV_INLINE int full_range_safe_luma_high(int u, int v)
-{
-    int max_add = g_full_r_cr[v];
-    int g = (g_full_g_cb[u] + g_full_g_cr[v]) >> 8;
-    int hi;
-
-    if (g > max_add) max_add = g;
-    if (g_full_b_cb[u] > max_add) max_add = g_full_b_cb[u];
-    hi = MR_YUV_FULL_HI - max_add;
-    if (hi < MR_YUV_FULL_LO) hi = MR_YUV_FULL_LO;
-    else if (hi > MR_YUV_FULL_HI) hi = MR_YUV_FULL_HI;
-    return hi;
-}
 
 int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
                         const uint8_t *y_plane, int y_stride,
@@ -344,7 +280,6 @@ int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
         width <= 0 || height <= 0 || (width & 1) ||
         dst_stride < width * 2)
         return 0;
-    if (!g_full_enc_ready) build_full_range_encode_tables();
 
     /* Real Voodoo3/P96 2.x hardware (the case this format exists for - see
      * display_p96pip.c's file header) was confirmed on real hardware to
@@ -356,9 +291,7 @@ int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
      * format also needs - see display.c's switch_to_cgx_fallback()) and
      * display_p96pip.c's write_rgb_rows() (the RGB-source encode path) both
      * use the identical swapped convention, so every producer/consumer of
-     * this buffer agrees. Both also emit near-full range (see this
-     * function's own leading comment for why not the literal full 0..255
-     * span). */
+     * this buffer agrees. Studio range is passed through unmodified. */
     for (row = 0; row < height; row++) {
         const uint8_t *sy = y_plane + (size_t)row * (size_t)y_stride;
         const uint8_t *su = u_plane + (size_t)(row >> 1) * (size_t)u_stride;
@@ -366,63 +299,15 @@ int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
         uint8_t *out = dst + (size_t)row * (size_t)dst_stride;
         int x;
         for (x = 0; x < width; x += 2) {
-            int src_u = su[x >> 1], src_v = sv[x >> 1];
-            int y0 = g_y_full[sy[x]], y1 = g_y_full[sy[x + 1]];
-            int u = g_c_full[src_u], v = g_c_full[src_v];
-            int y_hi = full_range_safe_luma_high(u, v);
-
-            /* The source bytes already avoid 0 and 255, but the overlay's
-             * subsequent YUV->RGB matrix can still exceed 255: e.g. a luma
-             * of 254 plus positive red chroma.  Old P96/Voodoo paths wrap
-             * that intermediate result to black.  Keep the shared chroma
-             * intact and cap each luma independently at the largest value
-             * for which all three computed RGB channels remain <= 254. */
-            if (y0 > y_hi) y0 = y_hi;
-            if (y1 > y_hi) y1 = y_hi;
-
-            out[0] = (uint8_t)y0;
-            out[1] = (uint8_t)v;
-            out[2] = (uint8_t)y1;
-            out[3] = (uint8_t)u;
+            out[0] = sy[x];
+            out[1] = sv[x >> 1];
+            out[2] = sy[x + 1];
+            out[3] = su[x >> 1];
             out += 4;
         }
         if (service && (row & 15) == 15) service(service_opaque);
     }
     return 1;
-}
-
-/* Inverse of the full-range (well, near-full: see MR_YUV_FULL_LO/HI above)
- * encode tables, for mr_y4u2v2_to_rgb24()'s own decode: R = Y +
- * 1.402*(Cr-128), G = Y - 0.344136*(Cb-128) - 0.714136*(Cr-128), B = Y +
- * 1.772*(Cb-128) - the standard full-range (not studio-range) YCbCr->RGB
- * matrix, since that is what this buffer now holds. This is pure software
- * (the CGX fallback path only, never the actual overlay hardware, which
- * decodes this buffer itself and is not something this file's own code
- * ever touches) so it uses the plain 0..255 matrix with no equivalent
- * safety margin - there is no hardware-extremes concern to work around on
- * this side. Y is used directly with no scale (full range needs none,
- * unlike g_luma_x298's studio-range 298/256 expansion) - only the two
- * chroma contributions are tabulated. Named _dec_ to keep them visually
- * distinct from mr_yuv420_to_rgb24()'s own studio-range g_e_x409/
- * g_d_xm100/etc tables above, which must not be reused here (they assume
- * the wrong input range entirely). */
-static int g_full_dec_r_cr[256];
-static int g_full_dec_g_cb[256];
-static int g_full_dec_g_cr[256];
-static int g_full_dec_b_cb[256];
-static int g_full_dec_ready = 0;
-
-static void build_full_range_decode_tables(void)
-{
-    int i;
-    for (i = 0; i < 256; i++) {
-        int d = i - 128;
-        g_full_dec_r_cr[i] = 359 * d + 128;
-        g_full_dec_g_cb[i] = -88 * d + 128;
-        g_full_dec_g_cr[i] = -183 * d;
-        g_full_dec_b_cb[i] = 454 * d + 128;
-    }
-    g_full_dec_ready = 1;
 }
 
 int mr_y4u2v2_to_rgb24(uint8_t *dst, int dst_stride,
@@ -433,7 +318,7 @@ int mr_y4u2v2_to_rgb24(uint8_t *dst, int dst_stride,
     if (!dst || !src || width <= 0 || height <= 0 || (width & 1) ||
         dst_stride < width * 3 || src_stride < width * 2)
         return 0;
-    if (!g_full_dec_ready) build_full_range_decode_tables();
+    if (!g_tables_ready) build_tables();
 
     /* Software fallback for switch_to_cgx_fallback() (display.c): a
      * backend that doesn't implement show_yuv422 (CGX/AGA) still needs a
@@ -442,26 +327,20 @@ int mr_y4u2v2_to_rgb24(uint8_t *dst, int dst_stride,
      * format choice mid-session. Unlike planar 4:2:0, this format is
      * genuinely 4:2:2 (a fresh chroma pair every row), so each row decodes
      * independently with no chroma-row bookkeeping. Slot 1 is V and slot 3
-     * is U - see mr_yuv420_to_y4u2v2()'s own comment for why - and both are
-     * (near-)full range, not studio range - see this file's g_full_dec_*
-     * tables above for why. */
+     * is U - see mr_yuv420_to_y4u2v2()'s own comment for why. The packed
+     * samples remain studio-range, so this reuses the normal conversion
+     * tables and emit_pixel(). */
     for (row = 0; row < height; row++) {
         const uint8_t *in = src + (size_t)row * (size_t)src_stride;
         uint8_t *out = dst + (size_t)row * (size_t)dst_stride;
         int x;
         for (x = 0; x < width; x += 2) {
             unsigned vv = in[1], uu = in[3];
-            int red_add = g_full_dec_r_cr[vv];
-            int green_add = g_full_dec_g_cb[uu] + g_full_dec_g_cr[vv];
-            int blue_add = g_full_dec_b_cb[uu];
-            int y0 = in[0], y1 = in[2];
-
-            out[0] = clip8(y0 + (red_add >> 8));
-            out[1] = clip8(y0 + (green_add >> 8));
-            out[2] = clip8(y0 + (blue_add >> 8));
-            out[3] = clip8(y1 + (red_add >> 8));
-            out[4] = clip8(y1 + (green_add >> 8));
-            out[5] = clip8(y1 + (blue_add >> 8));
+            int red_add = g_e_x409[vv];
+            int green_add = g_d_xm100[uu] + g_e_xm208[vv];
+            int blue_add = g_d_x516[uu];
+            emit_pixel(out, in[0], red_add, green_add, blue_add, 0, 2);
+            emit_pixel(out + 3, in[2], red_add, green_add, blue_add, 0, 2);
             in += 4;
             out += 6;
         }

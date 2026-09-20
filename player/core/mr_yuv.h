@@ -30,14 +30,11 @@ void mr_yuv420_to_bgr24(uint8_t *dst, int dst_stride,
  * Picasso96 PIP path: Y0,V0,Y1,U0 for each horizontal pixel pair - real
  * Voodoo3/P96 2.x hardware was confirmed to expect chroma in that order,
  * the opposite of what the RGBFB_Y4U2V2 name and libraries/Picasso96.h's
- * own doc comment suggest. Y/Cb/Cr are also rescaled from the decoder's
- * own studio (limited) range to near-full range (1..254, not the literal
- * 0..255 PC/JPEG span).  Luma is additionally capped against the pair's
- * positive BT.601 chroma contribution: old P96/Voodoo overlay paths can
- * wrap a matrix result above 255 to black even though the individual Y/U/V
- * bytes are below 255.  The cap leaves all in-gamut pixels unchanged.  See
- * mr_yuv.c for the real-hardware history. Hardware PIP surfaces are pair-
- * based, so width must be even. Returns non-zero on success. */
+ * own doc comment suggest. No colour-range conversion is performed: the
+ * P96 overlay accepts the decoder's studio-range samples directly. A
+ * studio-to-full rescale was tested and caused severe white/black clipping
+ * in highlights on both streamed and offline video. Hardware PIP surfaces
+ * are pair-based, so width must be even. Returns non-zero on success. */
 int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
                         const uint8_t *y_plane, int y_stride,
                         const uint8_t *u_plane, int u_stride,
@@ -45,20 +42,12 @@ int mr_yuv420_to_y4u2v2(uint8_t *dst, int dst_stride,
                         int width, int height,
                         mr_yuv_service_fn service, void *service_opaque);
 
-/* Inverse of mr_yuv420_to_y4u2v2(): unpack the same swapped-chroma,
- * near-full-range packed 4:2:2 layout back to RGB24. Used only as a
- * software fallback when a display backend that doesn't support
- * show_yuv422 has to take over from one that did (see display.c's
- * switch_to_cgx_fallback()) - the decode side's YUV output choice, made
- * once at startup, does not need to be undone just because the display
- * backend changed underneath it. Each row is self-contained (genuine
- * 4:2:2, unlike planar 4:2:0), so no chroma-row bookkeeping is needed.
- * This is pure software with no hardware-extremes concern of its own, so
- * it decodes with the plain 0..255 full-range matrix.  It is not a bit-
- * exact inverse where the encode-side overlay safety cap had to modify an
- * out-of-gamut highlight, which is fine for this fallback's correctness-
- * not-performance purpose.
- * Returns non-zero on success. */
+/* Inverse of mr_yuv420_to_y4u2v2(): unpack the same swapped-chroma packed
+ * studio-range 4:2:2 layout back to RGB24. Used only as a software fallback
+ * when a display backend that doesn't support show_yuv422 has to take over
+ * from one that did (see display.c's switch_to_cgx_fallback()). Each row is
+ * self-contained, so no chroma-row bookkeeping is needed. Returns non-zero
+ * on success. */
 int mr_y4u2v2_to_rgb24(uint8_t *dst, int dst_stride,
                        const uint8_t *src, int src_stride,
                        int width, int height);
