@@ -23,39 +23,43 @@ with native Amiga playback across AGA, HAM and RTG systems.
 Performance scales strongly with CPU, codec, resolution and display mode;
 format support is not a promise of real-time playback on every 68k.
 
-MintVID 1.3.2 adds a native DV (camcorder) decoder, an Extra Half-Brite
-display mode for ECS/OCS systems, an MPEG-1/2 B-frame skip speed mode, and
-a real-hardware crash fix for a `-lm` link issue that could trap on Play.
+MintVID 1.4.0 makes the P96 hardware video overlay actually work correctly
+on real Voodoo3/Permedia-class boards: the overlay now uses the same
+packed-YUV format the historical RiVA driver path used, a swapped chroma
+order and a studio-range clamp fix real-hardware colour corruption, and a
+failed PIP fullscreen attempt now falls back to ordinary CGX fullscreen
+automatically instead of leaving playback stuck. A YUV-to-RGB conversion
+table optimization also speeds up every RTG display path, overlay or not.
 
 ![MintVID playing an LGR YouTube video on AmigaOS](player/amiga/art/MintVID-YouTube.png)
 
-## What's new in 1.3.2
+## What's new in 1.4.0
 
-- **DV (IEC 61834/SMPTE 314M) decoder:** native support for PAL 4:2:0 and
-  NTSC/DVCPRO 4:1:1 camcorder footage, with a Fast (DC-only) speed mode
-  for roughly 1.9x faster decode on slow targets.
-- **Extra Half-Brite (EHB) display mode:** a new chipset display option
-  for ECS/OCS systems, alongside AGA/HAM6/HAM8/CGX, with an exact
-  two-cube colour quantizer and its own Kalms C2P path.
-- **MPEG-1/2 Fast speed mode:** skips B-picture decode entirely (B
-  pictures are never referenced by later pictures, so this is always
-  safe), reusing the same VQ control as H.264/DV.
-- **Unified Video Quality (VQ) control:** the H.264 performance chooser
-  in both GUIs now also drives DV and MPEG-1/2 speed modes - Quality
-  selects each codec's full-quality path, every other setting picks fast.
-- **Real-hardware crash fix:** a Guru `8000000B` on pressing Play, on any
-  file - traced to `mrplay` linking `-lm` for code that never needed it,
-  which on the real toolchain silently swapped in an FPU-dependent
-  variant of an unrelated shared runtime helper for the whole binary.
-- **CGX** now gets the same native-resolution-or-downscale fullscreen
-  policy P96 already had.
-- **GUI/build fixes:** `iptvgui`/`ytgui` no longer fail to launch with
-  "invalid playback option"; the default `CPU=68060 mrplay` build now
-  actually links MintAMP's accelerated polyphase kernel; and source fixes
-  for building with newer host GCC toolchains.
+- **P96 hardware overlay actually works on real Voodoo3/P96 2.x boards:**
+  the PIP overlay now opens with `RGBFB_Y4U2V2` (matching the historical
+  RiVA driver path) instead of a plain RGB request older Voodoo drivers
+  reject outright, and H.264/MPEG-2 frames are packed into that format
+  directly, skipping the full YUV->RGB24 conversion entirely on this path.
+- **Real-hardware colour fixes:** the packed chroma order was swapped from
+  what the `RGBFB_Y4U2V2` name implies (found and confirmed on real
+  Voodoo3 hardware), and decoder samples that legally stray just outside
+  the nominal studio range (compression ringing near high-contrast edges)
+  are now clamped back to it - real hardware could otherwise render an
+  out-of-range sample as a solid white or black fleck.
+- **P96 overlay fullscreen fallback:** if a board can't open the PIP
+  overlay fullscreen (confirmed on real Voodoo3/P96 2.1 hardware, which
+  rejects it outright), MintVID now falls back to ordinary CGX fullscreen
+  automatically instead of leaving the session stuck windowed, and
+  switches back to the hardware overlay again once you return to a
+  windowed view.
+- **Faster YUV->RGB24 conversion:** the shared conversion tables used by
+  every RTG display path (not just the new overlay) were reworked to
+  remove per-pixel branching and redundant rounding additions - about
+  14.7% faster on a 640x360 host benchmark.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete release notes, including
-the 1.3.1 P96 overlay work this release builds on.
+the 1.3.2 DV decoder/EHB/MPEG-1/2 work and the original 1.3.1 P96 overlay
+introduction this release builds on.
 
 ## Video frame policy
 
