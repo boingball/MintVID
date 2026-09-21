@@ -58,10 +58,11 @@
  * neither PIP type can be opened fullscreen on the public screen at all -
  * p96PIP_OpenTags() returns PIPERR_NOTAVAILABLE for PIPT_VideoWindow and
  * PIPERR_CROPPED for PIPT_MemoryWindow, even though the same source/dest
- * geometry opens fine windowed. p96pip_toggle_fullscreen() retries once
- * with a full-window (non-letterboxed) destination rectangle on CROPPED
- * before giving up, and reports 2 (not just 0) when entering fullscreen
- * still fails after that retry - display.c's switch_to_cgx_fallback()
+ * geometry opens fine windowed. Both startup fullscreen and
+ * p96pip_toggle_fullscreen() retry progressively smaller/even-aligned
+ * destination rectangles on geometry failures before giving up, and the
+ * toggle reports 2 (not just 0) when entering fullscreen still fails after
+ * those retries - display.c's switch_to_cgx_fallback()
  * treats that as "give up on PIP fullscreen for this session, fall back to
  * ordinary CGX fullscreen" rather than leaving repeated F presses restore
  * the same working-but-windowed PIP forever with no way to actually reach
@@ -118,13 +119,8 @@ typedef struct {
     int            dx, dy, dw, dh;  /* aspect-fitted PIP rect within the window */
     int            fullscreen;
     int            hw_overlay;      /* 1 = PIPT_VideoWindow, 0 = MemoryWindow */
-    int            force_full_dest; /* 1 = calculate_geometry() skips aspect
-                                     * fit and fills the whole window - the
-                                     * one-shot PIPERR_CROPPED retry, see
-                                     * p96pip_toggle_fullscreen() */
-    LONG           last_hw_err, last_mem_err; /* most recent open_pip() error
-                                               * per PIP type, for the CROPPED
-                                               * retry and diagnostics */
+    int            fullscreen_dest_policy; /* progressive overlay-size retry */
+    int            geometry_rejected; /* open failed for geometry/alignment */
     int            geometry_valid;
     int            force_full_redraw;
     mr_display_timing timing;
@@ -133,6 +129,13 @@ typedef struct {
     int            window_left, window_top, window_width, window_height;
     char           title[80];
 } p96pip_state;
+
+enum {
+    P96PIP_DEST_ASPECT = 0,
+    P96PIP_DEST_EVEN,
+    P96PIP_DEST_VGA,
+    P96PIP_DEST_NATIVE
+};
 
 static struct Window *open_pip(p96pip_state *s, ULONG type,
                                ULONG source_format, LONG *err);
@@ -143,6 +146,7 @@ static struct Screen *open_video_screen(p96pip_state *s, int target_w,
 static void sync_content_geometry(p96pip_state *s);
 static void paint_letterbox(p96pip_state *s);
 static void rebuild_geometry(p96pip_state *s, const char *reason);
+static int reopen_fullscreen_pip(p96pip_state *s, const char *reason);
 static int  p96pip_toggle_fullscreen(void *h);
 
 /* Fit a w*h picture inside a bounding box, preserving aspect ratio - only
@@ -170,11 +174,10 @@ static void fit_within(int w, int h, int max_w, int max_h, int *out_w,
 
 static void calculate_geometry(p96pip_state *s)
 {
-    if (!s->fullscreen || s->force_full_dest) {
+    if (!s->fullscreen) {
         /* Match P96PipDemo in ordinary windowed mode: the PIP fills the
          * entire inner window and its default relative rectangle follows
-         * live Intuition resizing. Fullscreen retains aspect fit, unless
-         * the PIPERR_CROPPED retry explicitly requests full-window fill. */
+         * live Intuition resizing. */
         s->dx = 0;
         s->dy = 0;
         s->dw = s->win_w;
@@ -182,12 +185,48 @@ static void calculate_geometry(p96pip_state *s)
         return;
     }
     {
-        mr_aspect_rect fit =
-            mr_aspect_fit(s->source_w, s->source_h, s->win_w, s->win_h);
-        s->dx = fit.x;
-        s->dy = fit.y;
+        int box_w = s->win_w;
+        int box_h = s->win_h;
+        mr_aspect_rect fit;
+
+        /* Keep the fullscreen window, but progressively reduce only the
+         * overlay destination when an older board rejects desktop-sized
+         * scaling with PIPERR_CROPPED. */
+        if (s->fullscreen_dest_policy == P96PIP_DEST_VGA) {
+            if (box_w > 640) box_w = 640;
+            if (box_h > 480) box_h = 480;
+        } else if (s->fullscreen_dest_policy == P96PIP_DEST_NATIVE) {
+            if (box_w > s->source_w) box_w = s->source_w;
+            if (box_h > s->source_h) box_h = s->source_h;
+        }
+
+        fit = mr_aspect_fit(s->source_w, s->source_h, box_w, box_h);
         s->dw = fit.w;
         s->dh = fit.h;
+        if (s->fullscreen_dest_policy != P96PIP_DEST_ASPECT) {
+            /* Packed-YUV overlay/scaler registers commonly require even
+             * destination dimensions and coordinates. Round down so the
+             * adjusted rectangle cannot leave the valid screen area. */
+            if (s->dw > 1 && (s->dw & 1)) --s->dw;
+            if (s->dh > 1 && (s->dh & 1)) --s->dh;
+        }
+        s->dx = (s->win_w - s->dw) / 2;
+        s->dy = (s->win_h - s->dh) / 2;
+        if (s->fullscreen_dest_policy != P96PIP_DEST_ASPECT) {
+            if (s->dx & 1) --s->dx;
+            if (s->dy & 1) --s->dy;
+        }
+    }
+}
+
+static const char *fullscreen_dest_policy_name(int policy)
+{
+    switch (policy) {
+    case P96PIP_DEST_ASPECT: return "aspect-fit";
+    case P96PIP_DEST_EVEN:   return "even-aligned";
+    case P96PIP_DEST_VGA:    return "640-class";
+    case P96PIP_DEST_NATIVE: return "native-size";
+    default:                 return "unknown";
     }
 }
 
@@ -263,10 +302,13 @@ static int close_video_screen(struct Screen **screen, const char *reason)
 }
 
 /*
- * A PIP attaches to a screen; putting a borderless window on the current
- * public screen does not make that screen capable of hosting a hardware
- * video window. Ask Picasso96 for a mode explicitly marked VideoCompatible,
- * trying the public screen's depth first and then the common RTG depths.
+ * Prefer a mode explicitly marked VideoCompatible, trying the public
+ * screen's depth first and then the common RTG depths. Real Voodoo3/P96 2.x
+ * hardware has now shown that this flag is not authoritative: its public
+ * mode reports false while successfully hosting a MemoryWindow overlay.
+ * Therefore make a second pass over ordinary P96 modes if the strict pass
+ * cannot open a private screen, and let the actual PIP open be the final
+ * capability test.
  */
 static struct Screen *open_video_screen(p96pip_state *s, int target_w,
                                         int target_h)
@@ -274,9 +316,9 @@ static struct Screen *open_video_screen(p96pip_state *s, int target_w,
     static const ULONG fallback_depths[] = { 16, 24, 32 };
     ULONG depths[4], preferred_depth = 16;
     struct Screen *pub, *scr;
-    ULONG mode_id, video_compatible;
+    ULONG mode_id, video_compatible, is_p96;
     LONG err;
-    int count = 0, i, j;
+    int count = 0, i, j, relaxed;
 
     pub = LockPubScreen(NULL);
     if (pub) {
@@ -295,68 +337,81 @@ static struct Screen *open_video_screen(p96pip_state *s, int target_w,
             depths[count++] = fallback_depths[i];
     }
 
-    for (i = 0; i < count; i++) {
-        mode_id = p96BestModeIDTags(
-            P96BIDTAG_NominalWidth, (ULONG)target_w,
-            P96BIDTAG_NominalHeight, (ULONG)target_h,
-            P96BIDTAG_Depth, depths[i],
-            P96BIDTAG_VideoCompatible, TRUE,
-            TAG_END);
-        if (mode_id == (ULONG)INVALID_ID) {
+    for (relaxed = 0; relaxed < 2; relaxed++) {
+        for (i = 0; i < count; i++) {
+            mode_id = p96BestModeIDTags(
+                P96BIDTAG_NominalWidth, (ULONG)target_w,
+                P96BIDTAG_NominalHeight, (ULONG)target_h,
+                P96BIDTAG_Depth, depths[i],
+                relaxed ? TAG_IGNORE : P96BIDTAG_VideoCompatible, TRUE,
+                TAG_END);
+            if (mode_id == (ULONG)INVALID_ID) {
+                if (g_display_want_time) {
+                    printf("p96pip-screen: no %smode near %dx%d depth=%lu\n",
+                           relaxed ? "P96 " : "video-compatible ",
+                           target_w, target_h,
+                           (unsigned long)depths[i]);
+                    Flush(Output());
+                }
+                continue;
+            }
+
+            video_compatible =
+                p96GetModeIDAttr(mode_id, P96IDA_VIDEOCOMPATIBLE);
+            is_p96 = p96GetModeIDAttr(mode_id, P96IDA_ISP96);
+            if (!is_p96 || (!relaxed && !video_compatible)) {
+                if (g_display_want_time) {
+                    printf("p96pip-screen: rejected mode=0x%08lx depth=%lu "
+                           "isp96=%lu video-compatible=%lu\n",
+                           (unsigned long)mode_id,
+                           (unsigned long)depths[i],
+                           (unsigned long)is_p96,
+                           (unsigned long)video_compatible);
+                    Flush(Output());
+                }
+                continue;
+            }
+
             if (g_display_want_time) {
-                printf("p96pip-screen: no video-compatible mode near "
-                       "%dx%d depth=%lu\n", target_w, target_h,
-                       (unsigned long)depths[i]);
+                printf("p96pip-screen: trying %smode=0x%08lx depth=%lu "
+                       "video-compatible=%lu\n",
+                       relaxed ? "relaxed P96 " : "video-compatible ",
+                       (unsigned long)mode_id,
+                       (unsigned long)depths[i],
+                       (unsigned long)video_compatible);
                 Flush(Output());
             }
-            continue;
-        }
-
-        video_compatible =
-            p96GetModeIDAttr(mode_id, P96IDA_VIDEOCOMPATIBLE);
-        if (!video_compatible) {
-            if (g_display_want_time) {
-                printf("p96pip-screen: rejected mode=0x%08lx depth=%lu; "
-                       "driver did not mark it video-compatible\n",
-                       (unsigned long)mode_id, (unsigned long)depths[i]);
-                Flush(Output());
+            err = 0;
+            scr = p96OpenScreenTags(
+                P96SA_DisplayID, mode_id,
+                P96SA_Type, CUSTOMSCREEN,
+                P96SA_Title, (ULONG)s->title,
+                P96SA_Quiet, TRUE,
+                P96SA_ShowTitle, FALSE,
+                P96SA_ErrorCode, (ULONG)&err,
+                TAG_END);
+            if (!scr) {
+                if (g_display_want_time) {
+                    printf("p96pip-screen: open failed mode=0x%08lx "
+                           "depth=%lu error=%ld\n",
+                           (unsigned long)mode_id,
+                           (unsigned long)depths[i], (long)err);
+                    Flush(Output());
+                }
+                continue;
             }
-            continue;
-        }
 
-        if (g_display_want_time) {
-            printf("p96pip-screen: trying p96OpenScreenTags mode=0x%08lx "
-                   "depth=%lu\n", (unsigned long)mode_id,
-                   (unsigned long)depths[i]);
-            Flush(Output());
+            s->screen_mode_id = mode_id;
+            log_screen_target(relaxed ? "private-p96-relaxed" :
+                                         "private-video-compatible",
+                              scr, mode_id);
+            return scr;
         }
-        err = 0;
-        scr = p96OpenScreenTags(
-            P96SA_DisplayID, mode_id,
-            P96SA_Type, CUSTOMSCREEN,
-            P96SA_Title, (ULONG)s->title,
-            P96SA_Quiet, TRUE,
-            P96SA_ShowTitle, FALSE,
-            P96SA_ErrorCode, (ULONG)&err,
-            TAG_END);
-        if (!scr) {
-            if (g_display_want_time) {
-                printf("p96pip-screen: open failed mode=0x%08lx depth=%lu "
-                       "error=%ld\n", (unsigned long)mode_id,
-                       (unsigned long)depths[i], (long)err);
-                Flush(Output());
-            }
-            continue;
-        }
-
-        s->screen_mode_id = mode_id;
-        log_screen_target("private-video-compatible", scr, mode_id);
-        return scr;
     }
 
     s->screen_mode_id = (ULONG)INVALID_ID;
     if (g_display_want_time) {
-        printf("p96pip-screen: no private video-compatible P96 mode for "
+        printf("p96pip-screen: no usable private P96 mode for "
                "%dx%d; trying the public screen\n", target_w, target_h);
         Flush(Output());
     }
@@ -592,6 +647,8 @@ static int reopen_pip(p96pip_state *s, const char *reason)
     LONG err = 0;
     int attempt;
 
+    s->geometry_rejected = 0;
+
     for (attempt = 0; attempt < 2; attempt++) {
         int requested_w = s->win_w;
         int requested_h = s->win_h;
@@ -609,8 +666,6 @@ static int reopen_pip(p96pip_state *s, const char *reason)
             };
             int format_index;
             s->win = NULL;
-            s->last_hw_err = 0;
-            s->last_mem_err = 0;
             s->hw_overlay = 0;
             for (format_index = 0; format_index < 3; ++format_index) {
                 ULONG fmt = formats[format_index];
@@ -629,7 +684,10 @@ static int reopen_pip(p96pip_state *s, const char *reason)
                     s->hw_overlay = 1; /* MemoryWindow can use HW overlay. */
                     break;
                 }
-                s->last_mem_err = err;
+                if (err == PIPERR_CROPPED ||
+                    err == PIPERR_BADDIMENSIONS ||
+                    err == PIPERR_BADALIGNMENT)
+                    s->geometry_rejected = 1;
             }
         }
         if (!s->win) {
@@ -703,11 +761,51 @@ static int reopen_pip(p96pip_state *s, const char *reason)
     return 1;
 }
 
+/* A Voodoo3/P96 2.x report proves that a native 540x360 MemoryWindow works
+ * on a 1024x768 public screen while a 1024x683 destination is rejected as
+ * cropped. Use the same progression for --fullscreen startup and live F-key
+ * toggles: preserve the ideal fill first, then try alignment, a conventional
+ * 640-class scaler target, and finally the source's known-good native size. */
+static int reopen_fullscreen_pip(p96pip_state *s, const char *reason)
+{
+    static const int policies[] = {
+        P96PIP_DEST_ASPECT,
+        P96PIP_DEST_EVEN,
+        P96PIP_DEST_VGA,
+        P96PIP_DEST_NATIVE
+    };
+    int i;
+
+    for (i = 0; i < 4; ++i) {
+        s->fullscreen_dest_policy = policies[i];
+        calculate_geometry(s);
+        if (g_display_want_time) {
+            printf("p96pip-fullscreen: trying %s destination %d,%d %dx%d "
+                   "inside %dx%d window\n",
+                   fullscreen_dest_policy_name(s->fullscreen_dest_policy),
+                   s->dx, s->dy, s->dw, s->dh, s->win_w, s->win_h);
+            Flush(Output());
+        }
+        if (reopen_pip(s, reason))
+            return 1;
+
+        /* Only enter the size ladder when the ideal rectangle gets a
+         * geometry/alignment rejection. Once it does, try every smaller
+         * candidate: old drivers are inconsistent about whether their next
+         * unsupported scaler size is CROPPED or merely NOTAVAILABLE. */
+        if (i == 0 && !s->geometry_rejected)
+            break;
+    }
+
+    s->fullscreen_dest_policy = P96PIP_DEST_ASPECT;
+    return 0;
+}
+
 static void *p96pip_open(int w, int h, const char *title)
 {
     p96pip_state *s;
     struct Screen *scr;
-    int screen_w = 0, screen_h = 0;
+    int screen_w = 0, screen_h = 0, opened;
 
     if (!P96Base || w <= 0 || h <= 0 || (w & 1)) return NULL;
 
@@ -757,7 +855,9 @@ static void *p96pip_open(int w, int h, const char *title)
         fit_within(w, h, avail_w, avail_h, &s->win_w, &s->win_h);
     }
 
-    if (!reopen_pip(s, "init")) {
+    opened = s->fullscreen ? reopen_fullscreen_pip(s, "init") :
+                             reopen_pip(s, "init");
+    if (!opened) {
         /* A driver may advertise a VideoCompatible mode yet refuse PIP on
          * it. Preserve the old public-screen attempt before falling through
          * to the other display backends. */
@@ -766,8 +866,9 @@ static void *p96pip_open(int w, int h, const char *title)
             s->screen_mode_id = (ULONG)INVALID_ID;
             s->win_w = screen_w;
             s->win_h = screen_h;
+            opened = reopen_fullscreen_pip(s, "init-public-fallback");
         }
-        if (!reopen_pip(s, "init-public-fallback")) {
+        if (!opened) {
             close_video_screen(&s->screen, "initial open failure");
             FreeVec(s);
             return NULL;
@@ -1115,6 +1216,7 @@ static int p96pip_toggle_fullscreen(void *h)
     struct Screen *old_screen;
     ULONG old_mode_id;
     int old_fullscreen, old_win_w, old_win_h;
+    int old_dest_policy;
     int public_w = 640, public_h = 480;
     int entering;
 
@@ -1125,6 +1227,7 @@ static int p96pip_toggle_fullscreen(void *h)
     old_win_h = s->win_h;
     old_screen = s->screen;
     old_mode_id = s->screen_mode_id;
+    old_dest_policy = s->fullscreen_dest_policy;
 
     if (entering) {
         struct Screen *pub;
@@ -1149,7 +1252,7 @@ static int p96pip_toggle_fullscreen(void *h)
         }
 
         s->fullscreen = 1;
-        s->force_full_dest = 0;
+        s->fullscreen_dest_policy = P96PIP_DEST_ASPECT;
         s->screen = open_video_screen(s, public_w, public_h);
         if (s->screen) {
             s->win_w = s->screen->Width;
@@ -1158,28 +1261,8 @@ static int p96pip_toggle_fullscreen(void *h)
             s->win_w = public_w;
             s->win_h = public_h;
         }
-        if (reopen_pip(s, "fullscreen-toggle"))
+        if (reopen_fullscreen_pip(s, "fullscreen-toggle"))
             return 1;
-
-        /* Real Voodoo3/P96 2.1 hardware reports PIPERR_CROPPED for the
-         * normal aspect-fitted (letterboxed) destination rectangle on the
-         * public screen, even though the rectangle is entirely inside the
-         * requested window bounds logged just above. Try once more with a
-         * full-window destination before giving up on this screen size. */
-        if ((s->last_hw_err == PIPERR_CROPPED ||
-             s->last_mem_err == PIPERR_CROPPED) && !s->force_full_dest) {
-            if (g_display_want_time) {
-                printf("p96pip-fullscreen: PIPERR_CROPPED for aspect-fitted "
-                       "dest %d,%d %dx%d inside window %dx%d; retrying with "
-                       "a full-window destination rectangle\n",
-                       s->dx, s->dy, s->dw, s->dh, s->win_w, s->win_h);
-                Flush(Output());
-            }
-            s->force_full_dest = 1;
-            if (reopen_pip(s, "fullscreen-toggle-full-dest"))
-                return 1;
-            s->force_full_dest = 0;
-        }
 
         close_video_screen(&s->screen, "fullscreen open rollback");
         s->screen_mode_id = (ULONG)INVALID_ID;
@@ -1188,7 +1271,7 @@ static int p96pip_toggle_fullscreen(void *h)
          * so a failed toggle can restore the previous mode. reopen_pip()
          * closes the old PIP before it requests the replacement. */
         s->fullscreen = 0;
-        s->force_full_dest = 0;
+        s->fullscreen_dest_policy = P96PIP_DEST_ASPECT;
         s->screen = NULL;
         s->screen_mode_id = (ULONG)INVALID_ID;
         if (s->have_window_geometry) {
@@ -1223,7 +1306,7 @@ static int p96pip_toggle_fullscreen(void *h)
     s->screen_mode_id = old_mode_id;
     s->win_w = old_win_w;
     s->win_h = old_win_h;
-    s->force_full_dest = 0;
+    s->fullscreen_dest_policy = old_dest_policy;
     if (!reopen_pip(s, "fullscreen-rollback")) {
         s->quit = 1;
         return 0;
