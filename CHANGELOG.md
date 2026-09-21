@@ -35,8 +35,15 @@
   testing showed they either washed out colour or reintroduced worse
   clipping.
 - P96 PIP geometry logging now reports the real public-screen/window
-  bounds and destination rectangle, and retries once with a full-window
-  (non-letterboxed) destination when the driver reports `PIPERR_CROPPED`.
+  bounds and destination rectangle. Fullscreen overlay opening now uses
+  the same progressive retries at startup and from the F key: aspect-fit,
+  even-aligned, 640-class, then native-size. This lets older Voodoo/P96
+  drivers keep their working hardware overlay when they reject a desktop-
+  sized destination with `PIPERR_CROPPED`.
+- P96 private-screen selection now prefers `VideoCompatible` modes but
+  also tests ordinary P96 modes when none are advertised. Real Voodoo3/
+  P96 2.x hardware reports `VideoCompatible=0` on a public mode that
+  nevertheless opens a working MemoryWindow overlay.
 
 ### Performance
 
