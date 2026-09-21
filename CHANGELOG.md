@@ -5,7 +5,8 @@
 ### Added
 
 - YouTube's Low setting now tries the original, combined 144p H.264/AAC HLS
-  offered to some embedded Safari clients. Recorded HLS is marked finite, and
+  offered to some WEB sessions with Safari headers. Recorded HLS is marked
+  finite, and
   unavailable or unreadable HLS falls back to the existing muxed 360p MP4;
   there is no re-encoding or separate audio/video stream. Availability still
   depends on YouTube's response for each video and session.
