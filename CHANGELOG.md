@@ -44,6 +44,11 @@
   also tests ordinary P96 modes when none are advertised. Real Voodoo3/
   P96 2.x hardware reports `VideoCompatible=0` on a public mode that
   nevertheless opens a working MemoryWindow overlay.
+- If a relaxed private P96 screen opens but refuses the MemoryWindow (WinUAE
+  reports `PIPERR_OUTOFPENS` in this case), fullscreen now closes that screen
+  and retries on the public screen before falling back to CGX. Public-screen
+  retries exhaust every destination size even when the driver reports a
+  non-geometry-specific error.
 
 ### Performance
 

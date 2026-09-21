@@ -146,7 +146,8 @@ static struct Screen *open_video_screen(p96pip_state *s, int target_w,
 static void sync_content_geometry(p96pip_state *s);
 static void paint_letterbox(p96pip_state *s);
 static void rebuild_geometry(p96pip_state *s, const char *reason);
-static int reopen_fullscreen_pip(p96pip_state *s, const char *reason);
+static int reopen_fullscreen_pip(p96pip_state *s, const char *reason,
+                                 int exhaust_sizes);
 static int  p96pip_toggle_fullscreen(void *h);
 
 /* Fit a w*h picture inside a bounding box, preserving aspect ratio - only
@@ -766,7 +767,8 @@ static int reopen_pip(p96pip_state *s, const char *reason)
  * cropped. Use the same progression for --fullscreen startup and live F-key
  * toggles: preserve the ideal fill first, then try alignment, a conventional
  * 640-class scaler target, and finally the source's known-good native size. */
-static int reopen_fullscreen_pip(p96pip_state *s, const char *reason)
+static int reopen_fullscreen_pip(p96pip_state *s, const char *reason,
+                                 int exhaust_sizes)
 {
     static const int policies[] = {
         P96PIP_DEST_ASPECT,
@@ -789,11 +791,12 @@ static int reopen_fullscreen_pip(p96pip_state *s, const char *reason)
         if (reopen_pip(s, reason))
             return 1;
 
-        /* Only enter the size ladder when the ideal rectangle gets a
-         * geometry/alignment rejection. Once it does, try every smaller
-         * candidate: old drivers are inconsistent about whether their next
-         * unsupported scaler size is CROPPED or merely NOTAVAILABLE. */
-        if (i == 0 && !s->geometry_rejected)
+        /* A private screen failure should normally fall through quickly to
+         * the public screen. On that public-screen attempt, however, exhaust
+         * every size even when an emulator/driver reports OUTOFPENS or
+         * NOTAVAILABLE rather than a geometry-specific error: the proven
+         * native-size public MemoryWindow may still work. */
+        if (i == 0 && !s->geometry_rejected && !exhaust_sizes)
             break;
     }
 
@@ -855,7 +858,8 @@ static void *p96pip_open(int w, int h, const char *title)
         fit_within(w, h, avail_w, avail_h, &s->win_w, &s->win_h);
     }
 
-    opened = s->fullscreen ? reopen_fullscreen_pip(s, "init") :
+    opened = s->fullscreen ? reopen_fullscreen_pip(s, "init",
+                                                   s->screen ? 0 : 1) :
                              reopen_pip(s, "init");
     if (!opened) {
         /* A driver may advertise a VideoCompatible mode yet refuse PIP on
@@ -866,7 +870,7 @@ static void *p96pip_open(int w, int h, const char *title)
             s->screen_mode_id = (ULONG)INVALID_ID;
             s->win_w = screen_w;
             s->win_h = screen_h;
-            opened = reopen_fullscreen_pip(s, "init-public-fallback");
+            opened = reopen_fullscreen_pip(s, "init-public-fallback", 1);
         }
         if (!opened) {
             close_video_screen(&s->screen, "initial open failure");
@@ -1261,8 +1265,29 @@ static int p96pip_toggle_fullscreen(void *h)
             s->win_w = public_w;
             s->win_h = public_h;
         }
-        if (reopen_fullscreen_pip(s, "fullscreen-toggle"))
+        if (reopen_fullscreen_pip(s, "fullscreen-toggle",
+                                  s->screen ? 0 : 1))
             return 1;
+
+        /* WinUAE can open an ordinary private P96 screen whose mode reports
+         * VideoCompatible=0, but then rejects every MemoryWindow on it with
+         * PIPERR_OUTOFPENS while the same overlay works on the public screen.
+         * Do not let a successfully opened-but-PIP-incompatible private mode
+         * hide the public-screen path. Close it and exhaust the full size
+         * ladder there before recommending CGX. */
+        if (s->screen) {
+            close_video_screen(&s->screen, "private PIP fallback");
+            s->screen_mode_id = (ULONG)INVALID_ID;
+            s->win_w = public_w;
+            s->win_h = public_h;
+            if (g_display_want_time) {
+                printf("p96pip-fullscreen: private-screen PIP unavailable; "
+                       "retrying on public screen\n");
+                Flush(Output());
+            }
+            if (reopen_fullscreen_pip(s, "fullscreen-toggle-public", 1))
+                return 1;
+        }
 
         close_video_screen(&s->screen, "fullscreen open rollback");
         s->screen_mode_id = (ULONG)INVALID_ID;
