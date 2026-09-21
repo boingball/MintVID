@@ -518,6 +518,11 @@ static struct Window *open_pip(p96pip_state *s, ULONG type,
         screen_tag, (ULONG)scr,
         WA_Title, (ULONG)s->title,
         WA_Left, (ULONG)left, WA_Top, (ULONG)top,
+        /* Some P96 implementations do not honour WFLG_BORDERLESS when it
+         * arrives only inside WA_Flags. Pass the dedicated Boolean tag too;
+         * the WinUAE fullscreen test otherwise retained a 14-pixel title
+         * bar even though the flag bit was present. */
+        s->fullscreen ? WA_Borderless : TAG_IGNORE, TRUE,
         WA_InnerWidth, (ULONG)s->win_w,
         WA_InnerHeight, (ULONG)s->win_h,
         WA_Flags, flags,
@@ -600,9 +605,12 @@ static void close_public_fullscreen_backdrop(p96pip_state *s)
  * the PIP API owns and clamps that window.
  *
  * Use an ordinary borderless Intuition window for the black fullscreen host,
- * then centre the successfully opened PIP window above it. The PIP still owns
- * the YUV surface and hardware-assisted presentation; the extra window only
- * hides Workbench and supplies the letterbox area P96 refuses to include.
+ * then apply the same live resize that P96PipDemo and MintVID's windowed path
+ * use. A WinUAE test proved that resizing 640x360 to 994x653 scales inside P96
+ * while MintVID still uploads only the native 640x360 source. If the driver
+ * nevertheless clamps the programmatic resize, centre that smaller PIP above
+ * the host. The extra window therefore remains a safe cover for Workbench and
+ * a fallback source of letterbox area, without adding per-frame work.
  */
 static int open_public_fullscreen_backdrop(p96pip_state *s)
 {
@@ -640,10 +648,25 @@ static int open_public_fullscreen_backdrop(p96pip_state *s)
     }
 
     s->fullscreen_backdrop = backdrop;
-    SetAPen(backdrop->RPort, 0);
-    RectFill(backdrop->RPort, 0, 0,
-             (WORD)(backdrop->Width - 1),
-             (WORD)(backdrop->Height - 1));
+    /* SetAPen(0) selected Workbench's grey background pen in the first test.
+     * p96RectFill takes a true RGB value on this guaranteed-P96 screen, so
+     * zero is unambiguously black and does not depend on the public palette. */
+    p96RectFill(backdrop->RPort, 0, 0,
+                (UWORD)(backdrop->Width - 1),
+                (UWORD)(backdrop->Height - 1), 0);
+
+    /* p96PIP_OpenTags clamps the initial public-screen window to the source
+     * width, but this same WinUAE driver demonstrably permits live resizing
+     * and P96-side scaling afterward. Make the one-off resize now. Relative
+     * PIP margins preserve the 96-pixel top/bottom bars, producing a
+     * 1024x576 overlay inside a borderless 1024x768 window. */
+    ChangeWindowBox(s->win, 0, 0, screen_w, screen_h);
+    WaitTOF();
+    sync_content_geometry(s);
+    calculate_geometry(s);
+    s->geometry_valid = 1;
+    s->force_full_redraw = 1;
+    paint_letterbox(s);
 
     left = (screen_w - s->win->Width) / 2;
     top = (screen_h - s->win->Height) / 2;
@@ -660,8 +683,10 @@ static int open_public_fullscreen_backdrop(p96pip_state *s)
 
     if (g_display_want_time) {
         printf("p96pip-fullscreen: public backdrop=%dx%d, PIP window="
-               "%dx%d at %d,%d\n", screen_w, screen_h,
-               s->win->Width, s->win->Height, left, top);
+               "%dx%d content=%dx%d at %d,%d video=%d,%d %dx%d\n",
+               screen_w, screen_h, s->win->Width, s->win->Height,
+               s->win_w, s->win_h, left, top,
+               s->dx, s->dy, s->dw, s->dh);
         Flush(Output());
     }
     return 1;
@@ -677,20 +702,21 @@ static void paint_letterbox(p96pip_state *s)
     l = s->bl; t = s->bt;
     r = l + s->win_w - 1;
     b = t + s->win_h - 1;
-    SetAPen(s->win->RPort, 0);
     if (s->dy > 0)
-        RectFill(s->win->RPort, (WORD)l, (WORD)t,
-                 (WORD)r, (WORD)(t + s->dy - 1));
+        p96RectFill(s->win->RPort, (UWORD)l, (UWORD)t,
+                    (UWORD)r, (UWORD)(t + s->dy - 1), 0);
     if (s->dy + s->dh < s->win_h)
-        RectFill(s->win->RPort, (WORD)l, (WORD)(t + s->dy + s->dh),
-                 (WORD)r, (WORD)b);
+        p96RectFill(s->win->RPort, (UWORD)l,
+                    (UWORD)(t + s->dy + s->dh),
+                    (UWORD)r, (UWORD)b, 0);
     if (s->dx > 0 && s->dh > 0)
-        RectFill(s->win->RPort, (WORD)l, (WORD)(t + s->dy),
-                 (WORD)(l + s->dx - 1), (WORD)(t + s->dy + s->dh - 1));
+        p96RectFill(s->win->RPort, (UWORD)l, (UWORD)(t + s->dy),
+                    (UWORD)(l + s->dx - 1),
+                    (UWORD)(t + s->dy + s->dh - 1), 0);
     if (s->dx + s->dw < s->win_w && s->dh > 0)
-        RectFill(s->win->RPort, (WORD)(l + s->dx + s->dw),
-                 (WORD)(t + s->dy), (WORD)r,
-                 (WORD)(t + s->dy + s->dh - 1));
+        p96RectFill(s->win->RPort, (UWORD)(l + s->dx + s->dw),
+                    (UWORD)(t + s->dy), (UWORD)r,
+                    (UWORD)(t + s->dy + s->dh - 1), 0);
 }
 
 static void rebuild_geometry(p96pip_state *s, const char *reason)
@@ -1294,13 +1320,17 @@ static int p96pip_poll(void *h)
              * resizes it: P96's window hook scales the source automatically.
              * Reopening here loses that behaviour and can snap the window
              * back to its original source size. Read back the real *inner*
-             * dimensions for timing and fullscreen restoration only. */
+             * dimensions. The fullscreen programmatic resize can generate a
+             * NEWSIZE too, but it must not overwrite the saved windowed
+             * geometry used when F returns to windowed playback. */
             sync_content_geometry(s);
-            s->have_window_geometry = 1;
-            s->window_left = s->win->LeftEdge;
-            s->window_top = s->win->TopEdge;
-            s->window_width = s->win_w;
-            s->window_height = s->win_h;
+            if (!s->fullscreen) {
+                s->have_window_geometry = 1;
+                s->window_left = s->win->LeftEdge;
+                s->window_top = s->win->TopEdge;
+                s->window_width = s->win_w;
+                s->window_height = s->win_h;
+            }
             calculate_geometry(s);
             s->geometry_valid = 1;
             if (g_display_want_time &&

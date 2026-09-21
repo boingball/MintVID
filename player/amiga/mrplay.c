@@ -1761,6 +1761,7 @@ int main(int argc, char **argv)
     size_t fast_buffer_bytes = 0;
     unsigned long free_fast_before = 0;
     const char *media_path = NULL;
+    const char *youtube_page_url = NULL;
     const char *user_agent = NULL;
     const char *referer = NULL;
     char youtube_media[MR_HTTP_URL_MAX];
@@ -1768,6 +1769,7 @@ int main(int argc, char **argv)
     char playing_detail[MR_PLAYER_STATUS_TEXT_MAX];
     mr_youtube_media_kind youtube_kind = MR_YOUTUBE_MEDIA_NONE;
     mr_http_options http_options;
+    mr_http_options youtube_resolver_options;
     int have_http_options = 0;
     media_clock mc;
     memset(&mc, 0, sizeof mc);
@@ -2030,6 +2032,7 @@ int main(int argc, char **argv)
             return mrplay_exit(5);
         }
         http_options = youtube_options;
+        youtube_resolver_options = youtube_options;
         have_http_options = 1;
     }
     if (want_time) {
@@ -2042,6 +2045,7 @@ int main(int argc, char **argv)
     }
     if (mr_youtube_is_url(media_path)) {
         printf("YouTube: resolving...\n");
+        youtube_page_url = media_path;
         player_status(MR_PLAYER_STATE_OPENING, "",
                       "Resolving YouTube media...");
         if (!mr_youtube_resolve_media(media_path,
@@ -2062,11 +2066,13 @@ int main(int argc, char **argv)
         media_path = youtube_media;
         if (youtube_kind == MR_YOUTUBE_MEDIA_HLS)
             printf("YouTube: live HLS manifest found\n");
+        else if (youtube_kind == MR_YOUTUBE_MEDIA_HLS_VOD)
+            printf("YouTube: recorded muxed HLS found; Low selects its lowest variant\n");
         else if (youtube_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P)
             printf("YouTube: progressive 720p MP4 found\n");
         else
             printf("YouTube: progressive 360p MP4 found\n");
-        /* A progressive YouTube URL is a finite MP4.  The GUI enables
+        /* A recorded YouTube URL is finite. The GUI enables
          * --live-resync for IPTV by default, but carrying that policy into a
          * VOD turns its clean EOF into a bogus "Reconnecting..." cycle. */
         if (youtube_kind != MR_YOUTUBE_MEDIA_HLS) {
@@ -2125,6 +2131,26 @@ int main(int argc, char **argv)
 
     dx = mr_demux_open_file_ex(media_path,
                                have_http_options ? &http_options : NULL);
+    if (!dx && youtube_kind == MR_YOUTUBE_MEDIA_HLS_VOD &&
+        youtube_page_url) {
+        printf("YouTube: recorded HLS could not open (%s); retrying muxed 360p MP4\n",
+               mr_source_last_error());
+        player_status(MR_PLAYER_STATE_OPENING, "", "Trying YouTube 360p fallback...");
+        if (mr_youtube_resolve_mp4_fallback(youtube_page_url,
+                                             &youtube_resolver_options,
+                                             youtube_media, sizeof youtube_media,
+                                             &youtube_kind) &&
+            mr_youtube_media_http_options_init(&http_options,
+                                                &youtube_resolver_options)) {
+            /* A progressive MP4 opens on this task; relinquish the HLS
+             * worker's socket/TLS ownership before starting the new source. */
+            hls_fetch_stop();
+            media_path = youtube_media;
+            printf("YouTube: falling back to muxed 360p from %s\n",
+                   mr_youtube_last_client());
+            dx = mr_demux_open_file_ex(media_path, &http_options);
+        }
+    }
     if (dx) {
         size_t actual_buffer = mr_demux_source_buffer_capacity(dx);
         printf("streaming %s from %s\n", mr_demux_container_name(dx),

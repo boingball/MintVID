@@ -281,7 +281,8 @@ mr_source *mr_source_open_ex(const char *path,
                                       sizeof youtube_media, &youtube_kind) ||
             !mr_youtube_media_http_options_init(&youtube_options, options))
             return NULL;
-        if (youtube_kind == MR_YOUTUBE_MEDIA_HLS)
+        if (youtube_kind == MR_YOUTUBE_MEDIA_HLS ||
+            youtube_kind == MR_YOUTUBE_MEDIA_HLS_VOD)
             return mr_hls_source_open_ex(youtube_media, &youtube_options);
         return mr_http_source_open_ex(youtube_media, &youtube_options);
     }

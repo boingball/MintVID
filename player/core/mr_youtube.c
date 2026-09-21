@@ -28,6 +28,11 @@
 #define YOUTUBE_ANDROID_VR_UA \
     "com.google.android.apps.youtube.vr.oculus/1.65.10 " \
     "(Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+#define YOUTUBE_SAFARI_WEB_UA \
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " \
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) " \
+    "Version/15.5 Safari/605.1.15,gzip(gfe)"
+#define YOUTUBE_SAFARI_WEB_VERSION "2.20260708.00.00"
 
 static const char *g_last_client = "";
 static const char *g_last_media_ua = YOUTUBE_BROWSER_UA;
@@ -221,7 +226,8 @@ int mr_youtube_media_http_options_init(mr_http_options *out,
     mr_http_options resolved;
     if (!mr_youtube_http_options_init(&resolved, base)) return 0;
     if (g_last_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P ||
-        g_last_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P) {
+        g_last_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P ||
+        g_last_kind == MR_YOUTUBE_MEDIA_HLS_VOD) {
         if (!mr_http_options_init(out, g_last_media_ua, YOUTUBE_REFERER))
             return 0;
         out->hls_low = resolved.hls_low;
@@ -484,27 +490,57 @@ static int try_player_media(const char *api_url,
                             const mr_http_options *options,
                             const char *json, const char *client,
                             const char *media_ua, char *out, size_t out_size,
-                            int prefer_720p, mr_youtube_media_kind *kind)
+                            int prefer_720p, mr_youtube_media_kind *kind,
+                            int hls_only, int skip_hls)
 {
     char *reply = NULL;
     size_t reply_len = 0;
     int ok;
     if (!mr_http_post_json(api_url, options, json, &reply, &reply_len,
-                           YOUTUBE_PAGE_MAX))
+                           YOUTUBE_PAGE_MAX)) {
+        if (hls_only)
+            printf("YouTube Low: WEB Safari request failed: %s\n",
+                   mr_source_last_error());
         return 0;
+    }
     (void)reply_len;
-    ok = mr_youtube_extract_live_manifest(reply, out, out_size);
+    ok = !skip_hls && mr_youtube_extract_live_manifest(reply, out, out_size);
+    /* Safari HLS is only the recorded-video experiment. Live playlists use
+     * the existing Android path and its sliding-window handling. Require an
+     * explicit VOD flag rather than guessing when YouTube omits details. */
+    if (hls_only && !strstr(reply, "\"isLiveContent\":false")) {
+        char status[48];
+        int has_status = extract_config_string(reply, "status", status,
+                                               sizeof status);
+        printf("YouTube Low: Safari response %s%s%s%s; trying 360p fallback\n",
+               strstr(reply, "\"isLiveContent\":true")
+                   ? "identifies a live video" : "does not identify recorded video",
+               ok ? " (HLS was offered)" : "",
+               has_status ? " playability=" : "",
+               has_status ? status : "");
+        mr_free(reply);
+        return 0;
+    }
     if (ok && !manifest_needs_n_transform(out)) {
+        if (hls_only)
+            printf("YouTube Low: WEB Safari HLS offered; opening lowest variant\n");
         g_last_client = client;
         g_last_media_ua = media_ua;
-        g_last_kind = MR_YOUTUBE_MEDIA_HLS;
+        g_last_kind = hls_only ? MR_YOUTUBE_MEDIA_HLS_VOD : MR_YOUTUBE_MEDIA_HLS;
         *kind = g_last_kind;
         mr_free(reply);
         return 1;
     }
     if (ok) {
+        if (hls_only)
+            printf("YouTube Low: Safari HLS needs an n transform; trying 360p fallback\n");
         mr_free(reply);
         return -1;
+    }
+    if (hls_only) {
+        printf("YouTube Low: Safari supplied no usable HLS manifest; trying 360p fallback\n");
+        mr_free(reply);
+        return 0;
     }
     ok = mr_youtube_extract_progressive(reply, prefer_720p, out, out_size,
                                         kind);
@@ -541,16 +577,16 @@ static void keep_progressive_fallback(const char *client, const char *media_ua,
     *fallback_media_ua = media_ua;
     *fallback_kind = kind;
     *have_fallback = 1;
-    printf("YouTube: %s supplied only muxed 360p; continuing 720p search\n",
+    printf("YouTube: %s supplied muxed 360p; continuing quality search\n",
            client);
 }
 
-int mr_youtube_resolve_media(const char *url,
+static int resolve_media(const char *url,
                              const mr_http_options *options,
                              char *out, size_t out_size,
-                             mr_youtube_media_kind *kind)
+                             mr_youtube_media_kind *kind, int skip_hls)
 {
-    mr_http_options fetch_options, vr_options;
+    mr_http_options fetch_options, vr_options, safari_options;
     char *html = NULL;
     size_t html_len = 0;
     char video_id[12], api_key[80], client_version[64];
@@ -561,7 +597,7 @@ int mr_youtube_resolve_media(const char *url,
     const char *fallback_media_ua = YOUTUBE_BROWSER_UA;
     mr_youtube_media_kind fallback_kind = MR_YOUTUBE_MEDIA_NONE;
     int n, ok, result, saw_n_challenge = 0;
-    int prefer_720p = options_prefer_720p(options);
+    int prefer_720p = skip_hls ? 0 : options_prefer_720p(options);
     g_last_client = "";
     g_last_media_ua = YOUTUBE_BROWSER_UA;
     g_last_kind = MR_YOUTUBE_MEDIA_NONE;
@@ -576,7 +612,7 @@ int mr_youtube_resolve_media(const char *url,
                             YOUTUBE_PAGE_MAX))
         return 0;
     (void)html_len;
-    ok = mr_youtube_extract_live_manifest(html, out, out_size);
+    ok = !skip_hls && mr_youtube_extract_live_manifest(html, out, out_size);
     if (ok && !manifest_needs_n_transform(out)) {
         g_last_client = "watch page";
         g_last_kind = MR_YOUTUBE_MEDIA_HLS;
@@ -587,7 +623,8 @@ int mr_youtube_resolve_media(const char *url,
     if (ok) saw_n_challenge = 1;
     if (mr_youtube_extract_progressive(html, prefer_720p, out, out_size,
                                        kind)) {
-        if (!prefer_720p || *kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P) {
+        if ((!prefer_720p && !(options && options->hls_low && !skip_hls)) ||
+            *kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P) {
             g_last_client = "watch page";
             g_last_kind = *kind;
             mr_free(html);
@@ -623,6 +660,33 @@ int mr_youtube_resolve_media(const char *url,
         mr_source_set_error("YouTube player API URL is too long");
         return 0;
     }
+    /* The WEB client with a Safari identity can expose YouTube's original
+     * muxed H.264/AAC HLS (itag 91 at 144p). Only Low tries this extra request;
+     * ordinary 360p and live playback retain their existing client order. */
+    if (options && options->hls_low && !skip_hls) {
+        printf("YouTube Low: checking WEB Safari for original muxed HLS\n");
+        n = snprintf(json, sizeof json,
+                     "{\"context\":{\"client\":{"
+                     "\"clientName\":\"WEB\","
+                     "\"clientVersion\":\"%s\",\"hl\":\"en\",\"gl\":\"GB\","
+                     "\"userAgent\":\"%s\"}},"
+                     "\"videoId\":\"%s\",\"contentCheckOk\":true,"
+                     "\"racyCheckOk\":true}", YOUTUBE_SAFARI_WEB_VERSION,
+                     YOUTUBE_SAFARI_WEB_UA, video_id);
+        if (n > 0 && (size_t)n < sizeof json &&
+            mr_http_options_init(&safari_options, YOUTUBE_SAFARI_WEB_UA,
+                                 YOUTUBE_REFERER)) {
+            result = try_player_media(api_url, &safari_options, json,
+                                      "WEB (Safari HLS)",
+                                      YOUTUBE_SAFARI_WEB_UA, out,
+                                      out_size, 0, kind, 1, 0);
+            if (result > 0) return 1;
+            if (result < 0) saw_n_challenge = 1;
+        }
+        /* If the watch page already supplied a muxed 360p MP4, reuse it
+         * rather than making another player request when Safari has no HLS. */
+        if (have_fallback) goto use_fallback;
+    }
     /* Streamlink's current live-only YouTube implementation uses this Android
      * profile without a JavaScript challenge solver. Prefer it because its HLS
      * response can avoid the WEB client's /n/ path challenge entirely. */
@@ -642,7 +706,7 @@ int mr_youtube_resolve_media(const char *url,
     }
     result = try_player_media(api_url, &fetch_options, json, "ANDROID",
                               YOUTUBE_ANDROID_UA, out, out_size, prefer_720p,
-                              kind);
+                              kind, 0, skip_hls);
     if (result > 0) return 1;
     if (result == -2)
         keep_progressive_fallback("ANDROID", YOUTUBE_ANDROID_UA, out, *kind,
@@ -672,7 +736,7 @@ int mr_youtube_resolve_media(const char *url,
         return 0;
     result = try_player_media(api_url, &vr_options, json, "ANDROID_VR",
                               YOUTUBE_ANDROID_VR_UA, out, out_size,
-                              prefer_720p, kind);
+                              prefer_720p, kind, 0, skip_hls);
     if (result > 0) return 1;
     if (result == -2)
         keep_progressive_fallback("ANDROID_VR", YOUTUBE_ANDROID_VR_UA, out,
@@ -698,7 +762,7 @@ int mr_youtube_resolve_media(const char *url,
     }
     result = try_player_media(api_url, &fetch_options, json,
                               "WEB_EMBEDDED_PLAYER", YOUTUBE_BROWSER_UA,
-                              out, out_size, prefer_720p, kind);
+                              out, out_size, prefer_720p, kind, 0, skip_hls);
     if (result > 0) return 1;
     if (result == -2)
         keep_progressive_fallback("WEB_EMBEDDED_PLAYER", YOUTUBE_BROWSER_UA,
@@ -719,7 +783,7 @@ int mr_youtube_resolve_media(const char *url,
         return 0;
     result = try_player_media(api_url, &fetch_options, json, "WEB",
                               YOUTUBE_BROWSER_UA, out, out_size, prefer_720p,
-                              kind);
+                              kind, 0, skip_hls);
     if (result > 0) return 1;
     if (result == -2)
         keep_progressive_fallback("WEB", YOUTUBE_BROWSER_UA, out, *kind,
@@ -731,6 +795,7 @@ int mr_youtube_resolve_media(const char *url,
     /* No client offered the requested 720p+ stream. Use the muxed 360p
      * fallback an earlier client already supplied rather than failing or
      * re-fetching everything from scratch. */
+use_fallback:
     if (have_fallback) {
         size_t len = strlen(fallback_media);
         if (len >= out_size) len = out_size - 1;
@@ -740,14 +805,30 @@ int mr_youtube_resolve_media(const char *url,
         g_last_media_ua = fallback_media_ua;
         g_last_kind = fallback_kind;
         *kind = fallback_kind;
-        printf("YouTube: no client offered 720p; using muxed 360p from %s\n",
-               fallback_client);
+        printf("YouTube: using muxed 360p from %s\n", fallback_client);
         return 1;
     }
     mr_source_set_error(saw_n_challenge
         ? "YouTube media URL requires a player n challenge"
         : "YouTube returned no compatible live HLS or muxed MP4");
     return 0;
+}
+
+int mr_youtube_resolve_media(const char *url, const mr_http_options *options,
+                             char *out, size_t out_size,
+                             mr_youtube_media_kind *kind)
+{
+    return resolve_media(url, options, out, out_size, kind, 0);
+}
+
+int mr_youtube_resolve_mp4_fallback(const char *url,
+                                    const mr_http_options *options,
+                                    char *out, size_t out_size,
+                                    mr_youtube_media_kind *kind)
+{
+    return resolve_media(url, options, out, out_size, kind, 1) &&
+           (*kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P ||
+            *kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_720P);
 }
 
 int mr_youtube_resolve_live(const char *url,
