@@ -497,18 +497,28 @@ static int try_player_media(const char *api_url,
     size_t reply_len = 0;
     int ok;
     if (!mr_http_post_json(api_url, options, json, &reply, &reply_len,
-                           YOUTUBE_PAGE_MAX))
+                           YOUTUBE_PAGE_MAX)) {
+        if (hls_only)
+            printf("YouTube Low: embedded Safari request failed: %s\n",
+                   mr_source_last_error());
         return 0;
+    }
     (void)reply_len;
+    ok = !skip_hls && mr_youtube_extract_live_manifest(reply, out, out_size);
     /* Safari HLS is only the recorded-video experiment. Live playlists use
      * the existing Android path and its sliding-window handling. Require an
      * explicit VOD flag rather than guessing when YouTube omits details. */
     if (hls_only && !strstr(reply, "\"isLiveContent\":false")) {
+        printf("YouTube Low: Safari response %s%s; trying 360p fallback\n",
+               strstr(reply, "\"isLiveContent\":true")
+                   ? "identifies a live video" : "does not identify recorded video",
+               ok ? " (HLS was offered)" : "");
         mr_free(reply);
         return 0;
     }
-    ok = !skip_hls && mr_youtube_extract_live_manifest(reply, out, out_size);
     if (ok && !manifest_needs_n_transform(out)) {
+        if (hls_only)
+            printf("YouTube Low: embedded Safari HLS offered; opening lowest variant\n");
         g_last_client = client;
         g_last_media_ua = media_ua;
         g_last_kind = hls_only ? MR_YOUTUBE_MEDIA_HLS_VOD : MR_YOUTUBE_MEDIA_HLS;
@@ -517,10 +527,13 @@ static int try_player_media(const char *api_url,
         return 1;
     }
     if (ok) {
+        if (hls_only)
+            printf("YouTube Low: Safari HLS needs an n transform; trying 360p fallback\n");
         mr_free(reply);
         return -1;
     }
     if (hls_only) {
+        printf("YouTube Low: Safari supplied no usable HLS manifest; trying 360p fallback\n");
         mr_free(reply);
         return 0;
     }
@@ -646,6 +659,7 @@ static int resolve_media(const char *url,
      * H.264/AAC HLS (itag 91 at 144p). Only Low tries this extra request;
      * ordinary 360p and live playback retain their existing client order. */
     if (options && options->hls_low && !skip_hls) {
+        printf("YouTube Low: checking embedded Safari for original muxed HLS\n");
         n = snprintf(json, sizeof json,
                      "{\"context\":{\"client\":{"
                      "\"clientName\":\"WEB_EMBEDDED_PLAYER\","
