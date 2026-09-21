@@ -106,6 +106,7 @@
 
 typedef struct {
     struct Window *win;             /* the PIP's own window (p96PIP_OpenTags) */
+    struct Window *fullscreen_backdrop; /* public-screen black fullscreen host */
     struct BitMap *source_bitmap;   /* P96PIP_SourceBitMap - what we write to */
     ULONG source_format;         /* actual negotiated overlay pixel format */
     struct Screen *screen;          /* private video-compatible fullscreen mode */
@@ -146,6 +147,8 @@ static struct Screen *open_video_screen(p96pip_state *s, int target_w,
 static void sync_content_geometry(p96pip_state *s);
 static void paint_letterbox(p96pip_state *s);
 static void rebuild_geometry(p96pip_state *s, const char *reason);
+static void close_public_fullscreen_backdrop(p96pip_state *s);
+static int open_public_fullscreen_backdrop(p96pip_state *s);
 static int reopen_fullscreen_pip(p96pip_state *s, const char *reason,
                                  int exhaust_sizes);
 static int  p96pip_toggle_fullscreen(void *h);
@@ -428,13 +431,15 @@ static struct Screen *open_video_screen(p96pip_state *s, int target_w,
  * size change closes and reopens the PIP rather than trying to update them
  * with p96PIP_SetTags().
  *
- * Fullscreen uses absolute destination dimensions. Windowed mode instead
- * uses PIPRel_Width|PIPRel_Height and encodes the aspect-fit rectangle's
- * right/bottom gaps as negative margins. This is the P96 mechanism that
- * lets its window hook adjust the hardware rectangle while Intuition is
- * resizing the containing window. A normal windowed PIP uses the demo's
- * default rectangle (no extra P96PIP geometry tags), fills its inner window,
- * and stays open during resizing; fullscreen uses explicit aspect fit.
+ * Both fullscreen and an explicitly fitted window use
+ * PIPRel_Width|PIPRel_Height and encode the rectangle's right/bottom gaps as
+ * negative margins. Besides letting P96 follow live window resizing, this is
+ * required when a fullscreen fallback keeps a small overlay centred in a
+ * screen-sized window: WinUAE's P96 otherwise derives the window extent from
+ * Left+Width/Top+Height and silently shrinks the requested 1024x768 host
+ * window to the overlay's lower-right edge. A normal native-sized windowed
+ * PIP uses the demo's default rectangle (no extra P96PIP geometry tags),
+ * fills its inner window, and stays open during resizing.
  */
 static struct Window *open_pip(p96pip_state *s, ULONG type,
                                ULONG source_format, LONG *err)
@@ -458,12 +463,20 @@ static struct Window *open_pip(p96pip_state *s, ULONG type,
     }
 
     if (s->fullscreen) {
-        flags = WFLG_BORDERLESS | WFLG_BACKDROP | WFLG_ACTIVATE |
+        int right_margin = s->win_w - s->dx - s->dw;
+        int bottom_margin = s->win_h - s->dy - s->dh;
+
+        /* A public-screen fullscreen fallback uses a separate ordinary
+         * black window behind this PIP. Do not make the PIP itself a
+         * BACKDROP window: it must sit above that host and every Workbench
+         * window. A private screen has no sibling windows, so the same flags
+         * are correct there too. */
+        flags = WFLG_BORDERLESS | WFLG_ACTIVATE |
                 WFLG_RMBTRAP | WFLG_NOCAREREFRESH;
         idcmp = IDCMP_CLOSEWINDOW | IDCMP_RAWKEY;
-        relativity = 0;
-        pip_width = s->dw;
-        pip_height = s->dh;
+        relativity = PIPRel_Width | PIPRel_Height;
+        pip_width = -(LONG)right_margin;
+        pip_height = -(LONG)bottom_margin;
     } else {
         int right_margin = s->win_w - s->dx - s->dw;
         int bottom_margin = s->win_h - s->dy - s->dh;
@@ -505,6 +518,11 @@ static struct Window *open_pip(p96pip_state *s, ULONG type,
         screen_tag, (ULONG)scr,
         WA_Title, (ULONG)s->title,
         WA_Left, (ULONG)left, WA_Top, (ULONG)top,
+        /* Some P96 implementations do not honour WFLG_BORDERLESS when it
+         * arrives only inside WA_Flags. Pass the dedicated Boolean tag too;
+         * the WinUAE fullscreen test otherwise retained a 14-pixel title
+         * bar even though the flag bit was present. */
+        s->fullscreen ? WA_Borderless : TAG_IGNORE, TRUE,
         WA_InnerWidth, (ULONG)s->win_w,
         WA_InnerHeight, (ULONG)s->win_h,
         WA_Flags, flags,
@@ -573,6 +591,107 @@ static void close_pip(p96pip_state *s)
     s->source_bitmap = NULL;
 }
 
+static void close_public_fullscreen_backdrop(p96pip_state *s)
+{
+    if (!s || !s->fullscreen_backdrop) return;
+    CloseWindow(s->fullscreen_backdrop);
+    s->fullscreen_backdrop = NULL;
+}
+
+/* A P96 MemoryWindow is not a reliable fullscreen host on a public screen.
+ * WinUAE/P96 accepts a 1024x768 request but returns a 640x552 window: the
+ * source-width overlay plus its 96-pixel top and bottom margins. Keeping
+ * retrying PIP geometry cannot create the missing public-screen area because
+ * the PIP API owns and clamps that window.
+ *
+ * Use an ordinary borderless Intuition window for the black fullscreen host,
+ * then apply the same live resize that P96PipDemo and MintVID's windowed path
+ * use. A WinUAE test proved that resizing 640x360 to 994x653 scales inside P96
+ * while MintVID still uploads only the native 640x360 source. If the driver
+ * nevertheless clamps the programmatic resize, centre that smaller PIP above
+ * the host. The extra window therefore remains a safe cover for Workbench and
+ * a fallback source of letterbox area, without adding per-frame work.
+ */
+static int open_public_fullscreen_backdrop(p96pip_state *s)
+{
+    struct Screen *scr;
+    struct Window *backdrop;
+    int screen_w, screen_h, left, top;
+
+    if (!s || !s->win || !s->fullscreen || s->screen) return 1;
+
+    scr = LockPubScreen(NULL);
+    if (!scr) return 0;
+    screen_w = scr->Width;
+    screen_h = scr->Height;
+
+    close_public_fullscreen_backdrop(s);
+    backdrop = OpenWindowTags(NULL,
+        WA_PubScreen, (ULONG)scr,
+        WA_Title, (ULONG)s->title,
+        WA_Left, 0, WA_Top, 0,
+        WA_Width, (ULONG)screen_w, WA_Height, (ULONG)screen_h,
+        WA_Borderless, TRUE,
+        WA_Flags, WFLG_NOCAREREFRESH | WFLG_RMBTRAP,
+        /* If a click on the black area activates this host, keep the same
+         * fullscreen keyboard controls available as the PIP window. */
+        WA_IDCMP, IDCMP_RAWKEY,
+        TAG_END);
+    UnlockPubScreen(NULL, scr);
+    if (!backdrop) {
+        if (g_display_want_time) {
+            printf("p96pip-fullscreen: could not open public-screen "
+                   "backdrop\n");
+            Flush(Output());
+        }
+        return 0;
+    }
+
+    s->fullscreen_backdrop = backdrop;
+    /* SetAPen(0) selected Workbench's grey background pen in the first test.
+     * p96RectFill takes a true RGB value on this guaranteed-P96 screen, so
+     * zero is unambiguously black and does not depend on the public palette. */
+    p96RectFill(backdrop->RPort, 0, 0,
+                (UWORD)(backdrop->Width - 1),
+                (UWORD)(backdrop->Height - 1), 0);
+
+    /* p96PIP_OpenTags clamps the initial public-screen window to the source
+     * width, but this same WinUAE driver demonstrably permits live resizing
+     * and P96-side scaling afterward. Make the one-off resize now. Relative
+     * PIP margins preserve the 96-pixel top/bottom bars, producing a
+     * 1024x576 overlay inside a borderless 1024x768 window. */
+    ChangeWindowBox(s->win, 0, 0, screen_w, screen_h);
+    WaitTOF();
+    sync_content_geometry(s);
+    calculate_geometry(s);
+    s->geometry_valid = 1;
+    s->force_full_redraw = 1;
+    paint_letterbox(s);
+
+    left = (screen_w - s->win->Width) / 2;
+    top = (screen_h - s->win->Height) / 2;
+    if (left < 0) left = 0;
+    if (top < 0) top = 0;
+    MoveWindow(s->win, (LONG)(left - s->win->LeftEdge),
+               (LONG)(top - s->win->TopEdge));
+
+    /* Opening the host puts it in front temporarily. Restore the intended
+     * order and keyboard focus: Workbench, black host, then live PIP. */
+    WindowToFront(backdrop);
+    WindowToFront(s->win);
+    ActivateWindow(s->win);
+
+    if (g_display_want_time) {
+        printf("p96pip-fullscreen: public backdrop=%dx%d, PIP window="
+               "%dx%d content=%dx%d at %d,%d video=%d,%d %dx%d\n",
+               screen_w, screen_h, s->win->Width, s->win->Height,
+               s->win_w, s->win_h, left, top,
+               s->dx, s->dy, s->dw, s->dh);
+        Flush(Output());
+    }
+    return 1;
+}
+
 /* Paint only fullscreen letterbox bars, never the live windowed PIP.
  * Filling the whole window used to leave blank/grey areas when the PIP
  * source rectangle remained at its old size after a resize. */
@@ -583,20 +702,21 @@ static void paint_letterbox(p96pip_state *s)
     l = s->bl; t = s->bt;
     r = l + s->win_w - 1;
     b = t + s->win_h - 1;
-    SetAPen(s->win->RPort, 0);
     if (s->dy > 0)
-        RectFill(s->win->RPort, (WORD)l, (WORD)t,
-                 (WORD)r, (WORD)(t + s->dy - 1));
+        p96RectFill(s->win->RPort, (UWORD)l, (UWORD)t,
+                    (UWORD)r, (UWORD)(t + s->dy - 1), 0);
     if (s->dy + s->dh < s->win_h)
-        RectFill(s->win->RPort, (WORD)l, (WORD)(t + s->dy + s->dh),
-                 (WORD)r, (WORD)b);
+        p96RectFill(s->win->RPort, (UWORD)l,
+                    (UWORD)(t + s->dy + s->dh),
+                    (UWORD)r, (UWORD)b, 0);
     if (s->dx > 0 && s->dh > 0)
-        RectFill(s->win->RPort, (WORD)l, (WORD)(t + s->dy),
-                 (WORD)(l + s->dx - 1), (WORD)(t + s->dy + s->dh - 1));
+        p96RectFill(s->win->RPort, (UWORD)l, (UWORD)(t + s->dy),
+                    (UWORD)(l + s->dx - 1),
+                    (UWORD)(t + s->dy + s->dh - 1), 0);
     if (s->dx + s->dw < s->win_w && s->dh > 0)
-        RectFill(s->win->RPort, (WORD)(l + s->dx + s->dw),
-                 (WORD)(t + s->dy), (WORD)r,
-                 (WORD)(t + s->dy + s->dh - 1));
+        p96RectFill(s->win->RPort, (UWORD)(l + s->dx + s->dw),
+                    (UWORD)(t + s->dy), (UWORD)r,
+                    (UWORD)(t + s->dy + s->dh - 1), 0);
 }
 
 static void rebuild_geometry(p96pip_state *s, const char *reason)
@@ -759,6 +879,14 @@ static int reopen_pip(p96pip_state *s, const char *reason)
     }
 
     rebuild_geometry(s, reason);
+    if (s->fullscreen && !s->screen) {
+        if (!open_public_fullscreen_backdrop(s)) {
+            close_pip(s);
+            return 0;
+        }
+    } else {
+        close_public_fullscreen_backdrop(s);
+    }
     return 1;
 }
 
@@ -1155,6 +1283,26 @@ static int p96pip_timing(void *h, mr_display_timing *timing)
     *timing = s->timing; return 1;
 }
 
+static int p96pip_rawkey_event(p96pip_state *s, UWORD code)
+{
+    if (code & 0x80) return MR_EV_NONE;
+    switch (code) {
+    case 0x45: s->quit = 1; break;
+    case 0x40: return MR_EV_PAUSE;
+    case 0x23:
+        /* p96pip_toggle_fullscreen() returning 2 means it gave up on PIP
+         * fullscreen and asks display.c to switch to CGX. */
+        if (p96pip_toggle_fullscreen(s) == 2)
+            return MR_EV_RENDERER_SWITCH;
+        break;
+    case 0x4E: return MR_EV_SEEK_FWD;
+    case 0x4F: return MR_EV_SEEK_BACK;
+    case 0x4C: return MR_EV_VOLUME_UP;
+    case 0x4D: return MR_EV_VOLUME_DOWN;
+    }
+    return MR_EV_NONE;
+}
+
 static int p96pip_poll(void *h)
 {
     p96pip_state *s = (p96pip_state *)h;
@@ -1189,26 +1337,24 @@ static int p96pip_poll(void *h)
                 Flush(Output());
             }
         }
-        else if (cls == IDCMP_RAWKEY && !(code & 0x80)) {
-            switch (code) {
-            case 0x45: s->quit = 1; break;
-            case 0x40: ev = MR_EV_PAUSE; break;
-            case 0x23:
-                /* p96pip_toggle_fullscreen() returning 2 means it gave up
-                 * on PIP fullscreen and is asking display.c to fall back
-                 * to CGX - surface that up through poll()'s own event
-                 * return rather than swallowing it here, since this
-                 * function has no access to the amiga_display wrapper
-                 * (display.c's switch_to_cgx_fallback() does the actual
-                 * backend swap). */
-                if (p96pip_toggle_fullscreen(s) == 2)
-                    ev = MR_EV_RENDERER_SWITCH;
-                break;
-            case 0x4E: ev = MR_EV_SEEK_FWD; break;
-            case 0x4F: ev = MR_EV_SEEK_BACK; break;
-            case 0x4C: ev = MR_EV_VOLUME_UP; break;
-            case 0x4D: ev = MR_EV_VOLUME_DOWN; break;
-            }
+        else if (cls == IDCMP_RAWKEY) {
+            int key_ev = p96pip_rawkey_event(s, code);
+            if (key_ev != MR_EV_NONE) ev = key_ev;
+        }
+    }
+
+    /* The ordinary fullscreen host has its own Intuition UserPort. It is
+     * normally behind the active PIP, but clicking a black margin can make
+     * it active; drain its RAWKEY messages so F/ESC/seek/volume still work. */
+    while (s->fullscreen_backdrop && s->fullscreen_backdrop->UserPort &&
+           (msg = (struct IntuiMessage *)
+                  GetMsg(s->fullscreen_backdrop->UserPort))) {
+        ULONG cls = msg->Class;
+        UWORD code = msg->Code;
+        ReplyMsg((struct Message *)msg);
+        if (cls == IDCMP_RAWKEY) {
+            int key_ev = p96pip_rawkey_event(s, code);
+            if (key_ev != MR_EV_NONE) ev = key_ev;
         }
     }
     return s->quit ? MR_EV_QUIT : ev;
@@ -1370,6 +1516,7 @@ static void p96pip_close(void *h)
     p96pip_state *s = (p96pip_state *)h;
     if (!s) return;
     close_pip(s);
+    close_public_fullscreen_backdrop(s);
     close_video_screen(&s->screen, "shutdown");
     FreeVec(s);
 }
@@ -1377,8 +1524,13 @@ static void p96pip_close(void *h)
 static ULONG p96pip_wait_mask(void *h)
 {
     p96pip_state *s = (p96pip_state *)h;
-    if (!s || !s->win || !s->win->UserPort) return 0;
-    return 1UL << s->win->UserPort->mp_SigBit;
+    ULONG mask = 0;
+    if (!s) return 0;
+    if (s->win && s->win->UserPort)
+        mask |= 1UL << s->win->UserPort->mp_SigBit;
+    if (s->fullscreen_backdrop && s->fullscreen_backdrop->UserPort)
+        mask |= 1UL << s->fullscreen_backdrop->UserPort->mp_SigBit;
+    return mask;
 }
 
 const display_backend backend_p96pip = {
