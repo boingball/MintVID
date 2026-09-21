@@ -106,6 +106,7 @@
 
 typedef struct {
     struct Window *win;             /* the PIP's own window (p96PIP_OpenTags) */
+    struct Window *fullscreen_backdrop; /* public-screen black fullscreen host */
     struct BitMap *source_bitmap;   /* P96PIP_SourceBitMap - what we write to */
     ULONG source_format;         /* actual negotiated overlay pixel format */
     struct Screen *screen;          /* private video-compatible fullscreen mode */
@@ -146,6 +147,8 @@ static struct Screen *open_video_screen(p96pip_state *s, int target_w,
 static void sync_content_geometry(p96pip_state *s);
 static void paint_letterbox(p96pip_state *s);
 static void rebuild_geometry(p96pip_state *s, const char *reason);
+static void close_public_fullscreen_backdrop(p96pip_state *s);
+static int open_public_fullscreen_backdrop(p96pip_state *s);
 static int reopen_fullscreen_pip(p96pip_state *s, const char *reason,
                                  int exhaust_sizes);
 static int  p96pip_toggle_fullscreen(void *h);
@@ -428,13 +431,15 @@ static struct Screen *open_video_screen(p96pip_state *s, int target_w,
  * size change closes and reopens the PIP rather than trying to update them
  * with p96PIP_SetTags().
  *
- * Fullscreen uses absolute destination dimensions. Windowed mode instead
- * uses PIPRel_Width|PIPRel_Height and encodes the aspect-fit rectangle's
- * right/bottom gaps as negative margins. This is the P96 mechanism that
- * lets its window hook adjust the hardware rectangle while Intuition is
- * resizing the containing window. A normal windowed PIP uses the demo's
- * default rectangle (no extra P96PIP geometry tags), fills its inner window,
- * and stays open during resizing; fullscreen uses explicit aspect fit.
+ * Both fullscreen and an explicitly fitted window use
+ * PIPRel_Width|PIPRel_Height and encode the rectangle's right/bottom gaps as
+ * negative margins. Besides letting P96 follow live window resizing, this is
+ * required when a fullscreen fallback keeps a small overlay centred in a
+ * screen-sized window: WinUAE's P96 otherwise derives the window extent from
+ * Left+Width/Top+Height and silently shrinks the requested 1024x768 host
+ * window to the overlay's lower-right edge. A normal native-sized windowed
+ * PIP uses the demo's default rectangle (no extra P96PIP geometry tags),
+ * fills its inner window, and stays open during resizing.
  */
 static struct Window *open_pip(p96pip_state *s, ULONG type,
                                ULONG source_format, LONG *err)
@@ -458,12 +463,20 @@ static struct Window *open_pip(p96pip_state *s, ULONG type,
     }
 
     if (s->fullscreen) {
-        flags = WFLG_BORDERLESS | WFLG_BACKDROP | WFLG_ACTIVATE |
+        int right_margin = s->win_w - s->dx - s->dw;
+        int bottom_margin = s->win_h - s->dy - s->dh;
+
+        /* A public-screen fullscreen fallback uses a separate ordinary
+         * black window behind this PIP. Do not make the PIP itself a
+         * BACKDROP window: it must sit above that host and every Workbench
+         * window. A private screen has no sibling windows, so the same flags
+         * are correct there too. */
+        flags = WFLG_BORDERLESS | WFLG_ACTIVATE |
                 WFLG_RMBTRAP | WFLG_NOCAREREFRESH;
         idcmp = IDCMP_CLOSEWINDOW | IDCMP_RAWKEY;
-        relativity = 0;
-        pip_width = s->dw;
-        pip_height = s->dh;
+        relativity = PIPRel_Width | PIPRel_Height;
+        pip_width = -(LONG)right_margin;
+        pip_height = -(LONG)bottom_margin;
     } else {
         int right_margin = s->win_w - s->dx - s->dw;
         int bottom_margin = s->win_h - s->dy - s->dh;
@@ -571,6 +584,87 @@ static void close_pip(p96pip_state *s)
     p96PIP_Close(s->win);
     s->win = NULL;
     s->source_bitmap = NULL;
+}
+
+static void close_public_fullscreen_backdrop(p96pip_state *s)
+{
+    if (!s || !s->fullscreen_backdrop) return;
+    CloseWindow(s->fullscreen_backdrop);
+    s->fullscreen_backdrop = NULL;
+}
+
+/* A P96 MemoryWindow is not a reliable fullscreen host on a public screen.
+ * WinUAE/P96 accepts a 1024x768 request but returns a 640x552 window: the
+ * source-width overlay plus its 96-pixel top and bottom margins. Keeping
+ * retrying PIP geometry cannot create the missing public-screen area because
+ * the PIP API owns and clamps that window.
+ *
+ * Use an ordinary borderless Intuition window for the black fullscreen host,
+ * then centre the successfully opened PIP window above it. The PIP still owns
+ * the YUV surface and hardware-assisted presentation; the extra window only
+ * hides Workbench and supplies the letterbox area P96 refuses to include.
+ */
+static int open_public_fullscreen_backdrop(p96pip_state *s)
+{
+    struct Screen *scr;
+    struct Window *backdrop;
+    int screen_w, screen_h, left, top;
+
+    if (!s || !s->win || !s->fullscreen || s->screen) return 1;
+
+    scr = LockPubScreen(NULL);
+    if (!scr) return 0;
+    screen_w = scr->Width;
+    screen_h = scr->Height;
+
+    close_public_fullscreen_backdrop(s);
+    backdrop = OpenWindowTags(NULL,
+        WA_PubScreen, (ULONG)scr,
+        WA_Title, (ULONG)s->title,
+        WA_Left, 0, WA_Top, 0,
+        WA_Width, (ULONG)screen_w, WA_Height, (ULONG)screen_h,
+        WA_Borderless, TRUE,
+        WA_Flags, WFLG_NOCAREREFRESH | WFLG_RMBTRAP,
+        /* If a click on the black area activates this host, keep the same
+         * fullscreen keyboard controls available as the PIP window. */
+        WA_IDCMP, IDCMP_RAWKEY,
+        TAG_END);
+    UnlockPubScreen(NULL, scr);
+    if (!backdrop) {
+        if (g_display_want_time) {
+            printf("p96pip-fullscreen: could not open public-screen "
+                   "backdrop\n");
+            Flush(Output());
+        }
+        return 0;
+    }
+
+    s->fullscreen_backdrop = backdrop;
+    SetAPen(backdrop->RPort, 0);
+    RectFill(backdrop->RPort, 0, 0,
+             (WORD)(backdrop->Width - 1),
+             (WORD)(backdrop->Height - 1));
+
+    left = (screen_w - s->win->Width) / 2;
+    top = (screen_h - s->win->Height) / 2;
+    if (left < 0) left = 0;
+    if (top < 0) top = 0;
+    MoveWindow(s->win, (LONG)(left - s->win->LeftEdge),
+               (LONG)(top - s->win->TopEdge));
+
+    /* Opening the host puts it in front temporarily. Restore the intended
+     * order and keyboard focus: Workbench, black host, then live PIP. */
+    WindowToFront(backdrop);
+    WindowToFront(s->win);
+    ActivateWindow(s->win);
+
+    if (g_display_want_time) {
+        printf("p96pip-fullscreen: public backdrop=%dx%d, PIP window="
+               "%dx%d at %d,%d\n", screen_w, screen_h,
+               s->win->Width, s->win->Height, left, top);
+        Flush(Output());
+    }
+    return 1;
 }
 
 /* Paint only fullscreen letterbox bars, never the live windowed PIP.
@@ -759,6 +853,14 @@ static int reopen_pip(p96pip_state *s, const char *reason)
     }
 
     rebuild_geometry(s, reason);
+    if (s->fullscreen && !s->screen) {
+        if (!open_public_fullscreen_backdrop(s)) {
+            close_pip(s);
+            return 0;
+        }
+    } else {
+        close_public_fullscreen_backdrop(s);
+    }
     return 1;
 }
 
@@ -1155,6 +1257,26 @@ static int p96pip_timing(void *h, mr_display_timing *timing)
     *timing = s->timing; return 1;
 }
 
+static int p96pip_rawkey_event(p96pip_state *s, UWORD code)
+{
+    if (code & 0x80) return MR_EV_NONE;
+    switch (code) {
+    case 0x45: s->quit = 1; break;
+    case 0x40: return MR_EV_PAUSE;
+    case 0x23:
+        /* p96pip_toggle_fullscreen() returning 2 means it gave up on PIP
+         * fullscreen and asks display.c to switch to CGX. */
+        if (p96pip_toggle_fullscreen(s) == 2)
+            return MR_EV_RENDERER_SWITCH;
+        break;
+    case 0x4E: return MR_EV_SEEK_FWD;
+    case 0x4F: return MR_EV_SEEK_BACK;
+    case 0x4C: return MR_EV_VOLUME_UP;
+    case 0x4D: return MR_EV_VOLUME_DOWN;
+    }
+    return MR_EV_NONE;
+}
+
 static int p96pip_poll(void *h)
 {
     p96pip_state *s = (p96pip_state *)h;
@@ -1189,26 +1311,24 @@ static int p96pip_poll(void *h)
                 Flush(Output());
             }
         }
-        else if (cls == IDCMP_RAWKEY && !(code & 0x80)) {
-            switch (code) {
-            case 0x45: s->quit = 1; break;
-            case 0x40: ev = MR_EV_PAUSE; break;
-            case 0x23:
-                /* p96pip_toggle_fullscreen() returning 2 means it gave up
-                 * on PIP fullscreen and is asking display.c to fall back
-                 * to CGX - surface that up through poll()'s own event
-                 * return rather than swallowing it here, since this
-                 * function has no access to the amiga_display wrapper
-                 * (display.c's switch_to_cgx_fallback() does the actual
-                 * backend swap). */
-                if (p96pip_toggle_fullscreen(s) == 2)
-                    ev = MR_EV_RENDERER_SWITCH;
-                break;
-            case 0x4E: ev = MR_EV_SEEK_FWD; break;
-            case 0x4F: ev = MR_EV_SEEK_BACK; break;
-            case 0x4C: ev = MR_EV_VOLUME_UP; break;
-            case 0x4D: ev = MR_EV_VOLUME_DOWN; break;
-            }
+        else if (cls == IDCMP_RAWKEY) {
+            int key_ev = p96pip_rawkey_event(s, code);
+            if (key_ev != MR_EV_NONE) ev = key_ev;
+        }
+    }
+
+    /* The ordinary fullscreen host has its own Intuition UserPort. It is
+     * normally behind the active PIP, but clicking a black margin can make
+     * it active; drain its RAWKEY messages so F/ESC/seek/volume still work. */
+    while (s->fullscreen_backdrop && s->fullscreen_backdrop->UserPort &&
+           (msg = (struct IntuiMessage *)
+                  GetMsg(s->fullscreen_backdrop->UserPort))) {
+        ULONG cls = msg->Class;
+        UWORD code = msg->Code;
+        ReplyMsg((struct Message *)msg);
+        if (cls == IDCMP_RAWKEY) {
+            int key_ev = p96pip_rawkey_event(s, code);
+            if (key_ev != MR_EV_NONE) ev = key_ev;
         }
     }
     return s->quit ? MR_EV_QUIT : ev;
@@ -1370,6 +1490,7 @@ static void p96pip_close(void *h)
     p96pip_state *s = (p96pip_state *)h;
     if (!s) return;
     close_pip(s);
+    close_public_fullscreen_backdrop(s);
     close_video_screen(&s->screen, "shutdown");
     FreeVec(s);
 }
@@ -1377,8 +1498,13 @@ static void p96pip_close(void *h)
 static ULONG p96pip_wait_mask(void *h)
 {
     p96pip_state *s = (p96pip_state *)h;
-    if (!s || !s->win || !s->win->UserPort) return 0;
-    return 1UL << s->win->UserPort->mp_SigBit;
+    ULONG mask = 0;
+    if (!s) return 0;
+    if (s->win && s->win->UserPort)
+        mask |= 1UL << s->win->UserPort->mp_SigBit;
+    if (s->fullscreen_backdrop && s->fullscreen_backdrop->UserPort)
+        mask |= 1UL << s->fullscreen_backdrop->UserPort->mp_SigBit;
+    return mask;
 }
 
 const display_backend backend_p96pip = {
