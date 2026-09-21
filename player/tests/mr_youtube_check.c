@@ -6,6 +6,53 @@
 #include <string.h>
 
 static int failures;
+static int mock_mode, mock_gets, mock_safari, mock_android;
+
+static int fake_youtube(const char *url, const mr_http_options *options,
+                        const char *post_json, unsigned char **out,
+                        size_t *out_len, size_t max_size)
+{
+    const char *body = NULL;
+    (void)max_size;
+    if (!post_json && strstr(url, "youtube.com/watch?")) {
+        mock_gets++;
+        body = (mock_mode == 3 || mock_mode == 4)
+            ? "{\"INNERTUBE_API_KEY\":\"testkey\","
+              "\"INNERTUBE_CLIENT_VERSION\":\"2.test\","
+              "\"streamingData\":{\"formats\":[{\"itag\":18,"
+              "\"mimeType\":\"video/mp4; codecs=\\\"avc1.42001E, "
+              "mp4a.40.2\\\"\",\"url\":\"https://r1.googlevideo.com/"
+              "watch-mp4\"}]}}"
+            : "{\"INNERTUBE_API_KEY\":\"testkey\","
+              "\"INNERTUBE_CLIENT_VERSION\":\"2.test\"}";
+    } else if (post_json && strstr(post_json, "WEB_EMBEDDED_PLAYER") &&
+               strstr(post_json, "Safari/605.1.15") &&
+               strstr(options->user_agent, "Safari/605.1.15")) {
+        mock_safari++;
+        if (mock_mode == 2)
+            body = "{\"videoDetails\":{\"isLiveContent\":true},"
+                   "\"streamingData\":{\"hlsManifestUrl\":\"https://"
+                   "manifest.googlevideo.com/vod/index.m3u8\"}}";
+        else if (mock_mode == 1 || mock_mode == 4)
+            body = "{\"videoDetails\":{\"isLiveContent\":false}}";
+        else
+            body = "{\"videoDetails\":{\"isLiveContent\":false},"
+                   "\"streamingData\":{\"hlsManifestUrl\":\"https://"
+                   "manifest.googlevideo.com/vod/index.m3u8\"}}";
+    } else if (post_json && strstr(post_json, "\"clientName\":\"ANDROID\"")) {
+        mock_android++;
+        body = "{\"streamingData\":{\"formats\":[{\"itag\":18,"
+               "\"mimeType\":\"video/mp4; codecs=\\\"avc1.42001E, "
+               "mp4a.40.2\\\"\",\"url\":\"https://r1.googlevideo.com/"
+               "mp4\"}]}}";
+    }
+    if (!body) return 0;
+    *out_len = strlen(body);
+    *out = (unsigned char *)mr_alloc(*out_len + 1);
+    if (!*out) return 0;
+    memcpy(*out, body, *out_len + 1);
+    return 1;
+}
 
 static void expect(int condition, const char *name)
 {
@@ -166,6 +213,72 @@ int main(int argc, char **argv)
            "truncated progressive output rejected");
     expect(!strcmp(mr_youtube_last_client(), ""),
            "client diagnostic empty before a successful resolution");
+
+    mr_http_set_fetch_override(fake_youtube);
+    expect(mr_http_options_init(&base_options, NULL, NULL),
+           "resolver mock options initialised");
+    base_options.hls_low = 1;
+    mock_mode = mock_gets = mock_safari = mock_android = 0;
+    expect(mr_youtube_resolve_media(
+               "https://www.youtube.com/watch?v=EvsLqQS_80E",
+               &base_options, out, sizeof out, &media_kind) &&
+           media_kind == MR_YOUTUBE_MEDIA_HLS_VOD &&
+           strstr(out, "/vod/index.m3u8") &&
+           mock_gets == 1 && mock_safari == 1 && mock_android == 0 &&
+           mr_youtube_media_http_options_init(&youtube_options,
+                                               &base_options) &&
+           strstr(youtube_options.user_agent, "Safari/605.1.15"),
+           "Low selects original muxed recorded HLS with Safari headers");
+    mock_gets = mock_safari = mock_android = 0;
+    expect(mr_youtube_resolve_mp4_fallback(
+               "https://www.youtube.com/watch?v=EvsLqQS_80E",
+               &base_options, out, sizeof out, &media_kind) &&
+           media_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P &&
+           mock_gets == 1 && mock_safari == 0 && mock_android == 1,
+           "failed HLS retry skips Safari and finds original muxed MP4");
+    mock_mode = 1;
+    mock_gets = mock_safari = mock_android = 0;
+    expect(mr_youtube_resolve_media(
+               "https://www.youtube.com/watch?v=EvsLqQS_80E",
+               &base_options, out, sizeof out, &media_kind) &&
+           media_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P &&
+           mock_gets == 1 && mock_safari == 1 && mock_android == 1,
+           "missing recorded HLS falls back to Android 360p");
+    mock_mode = 2;
+    mock_gets = mock_safari = mock_android = 0;
+    expect(mr_youtube_resolve_media(
+               "https://www.youtube.com/watch?v=EvsLqQS_80E",
+               &base_options, out, sizeof out, &media_kind) &&
+           media_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P &&
+           mock_android == 1,
+           "Safari live HLS is not classified as recorded video");
+    mock_mode = 3;
+    mock_gets = mock_safari = mock_android = 0;
+    expect(mr_youtube_resolve_media(
+               "https://www.youtube.com/watch?v=EvsLqQS_80E",
+               &base_options, out, sizeof out, &media_kind) &&
+           media_kind == MR_YOUTUBE_MEDIA_HLS_VOD &&
+           mock_safari == 1 && mock_android == 0,
+           "watch-page MP4 does not prevent Low from trying 144p HLS");
+    mock_mode = 4;
+    mock_gets = mock_safari = mock_android = 0;
+    expect(mr_youtube_resolve_media(
+               "https://www.youtube.com/watch?v=EvsLqQS_80E",
+               &base_options, out, sizeof out, &media_kind) &&
+           media_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P &&
+           !strcmp(out, "https://r1.googlevideo.com/watch-mp4") &&
+           mock_safari == 1 && mock_android == 0,
+           "Low reuses the watch-page MP4 when Safari HLS is unavailable");
+    base_options.hls_low = 0;
+    base_options.hls_max_height = 360;
+    mock_mode = mock_gets = mock_safari = mock_android = 0;
+    expect(mr_youtube_resolve_media(
+               "https://www.youtube.com/watch?v=EvsLqQS_80E",
+               &base_options, out, sizeof out, &media_kind) &&
+           media_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P &&
+           mock_gets == 1 && mock_safari == 0 && mock_android == 1,
+           "360p setting retains existing Android request order");
+    mr_http_set_fetch_override(NULL);
 
     if (failures) return 1;
     puts("YouTube resolver checks passed");

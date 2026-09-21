@@ -4,6 +4,11 @@
 
 ### Added
 
+- YouTube's Low setting now tries the original, combined 144p H.264/AAC HLS
+  offered to some embedded Safari clients. Recorded HLS is marked finite, and
+  unavailable or unreadable HLS falls back to the existing muxed 360p MP4;
+  there is no re-encoding or separate audio/video stream. Availability still
+  depends on YouTube's response for each video and session.
 - The P96 hardware video overlay (PIP) now opens with `RGBFB_Y4U2V2`,
   matching the historical RiVA driver path, instead of a plain RGB
   request that older Voodoo drivers reject outright

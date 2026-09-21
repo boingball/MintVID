@@ -30,7 +30,8 @@ typedef enum mr_youtube_media_kind {
     MR_YOUTUBE_MEDIA_NONE = 0,
     MR_YOUTUBE_MEDIA_HLS,
     MR_YOUTUBE_MEDIA_PROGRESSIVE_360P,
-    MR_YOUTUBE_MEDIA_PROGRESSIVE_720P
+    MR_YOUTUBE_MEDIA_PROGRESSIVE_720P,
+    MR_YOUTUBE_MEDIA_HLS_VOD
 } mr_youtube_media_kind;
 
 /* Name and kind used by the most recent successful resolution. */
@@ -57,6 +58,12 @@ int mr_youtube_resolve_media(const char *url,
                              const struct mr_http_options *options,
                              char *out, size_t out_size,
                              mr_youtube_media_kind *kind);
+
+/* Retry a recorded HLS failure with the original muxed MP4, skipping HLS. */
+int mr_youtube_resolve_mp4_fallback(const char *url,
+                                    const struct mr_http_options *options,
+                                    char *out, size_t out_size,
+                                    mr_youtube_media_kind *kind);
 
 /* Download a public YouTube watch page and resolve its signed live manifest. */
 int mr_youtube_resolve_live(const char *url,
