@@ -57,6 +57,11 @@
   margins. Public-screen fullscreen therefore uses a separate borderless black
   1024x768 Intuition window, centres the accepted PIP above it, and keeps both
   in front of Workbench instead of marking the PIP as a backdrop window.
+- After opening that safe host, fullscreen now live-resizes the PIP window to
+  the public screen. WinUAE proved this invokes P96-side scaling while MintVID
+  continues uploading only the native 640x360 frame, so a 1024x576 picture has
+  no ongoing CPU scaling or 1024x768 copy cost. Dedicated borderless and true-
+  black P96 fill paths also remove the stray title bar and grey letterbox.
 
 ### Performance
 
