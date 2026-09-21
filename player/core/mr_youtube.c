@@ -28,11 +28,11 @@
 #define YOUTUBE_ANDROID_VR_UA \
     "com.google.android.apps.youtube.vr.oculus/1.65.10 " \
     "(Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
-#define YOUTUBE_EMBEDDED_SAFARI_UA \
+#define YOUTUBE_SAFARI_WEB_UA \
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " \
     "AppleWebKit/605.1.15 (KHTML, like Gecko) " \
     "Version/15.5 Safari/605.1.15,gzip(gfe)"
-#define YOUTUBE_EMBEDDED_SAFARI_VERSION "2.20260708.00.00"
+#define YOUTUBE_SAFARI_WEB_VERSION "2.20260708.00.00"
 
 static const char *g_last_client = "";
 static const char *g_last_media_ua = YOUTUBE_BROWSER_UA;
@@ -499,7 +499,7 @@ static int try_player_media(const char *api_url,
     if (!mr_http_post_json(api_url, options, json, &reply, &reply_len,
                            YOUTUBE_PAGE_MAX)) {
         if (hls_only)
-            printf("YouTube Low: embedded Safari request failed: %s\n",
+            printf("YouTube Low: WEB Safari request failed: %s\n",
                    mr_source_last_error());
         return 0;
     }
@@ -509,16 +509,21 @@ static int try_player_media(const char *api_url,
      * the existing Android path and its sliding-window handling. Require an
      * explicit VOD flag rather than guessing when YouTube omits details. */
     if (hls_only && !strstr(reply, "\"isLiveContent\":false")) {
-        printf("YouTube Low: Safari response %s%s; trying 360p fallback\n",
+        char status[48];
+        int has_status = extract_config_string(reply, "status", status,
+                                               sizeof status);
+        printf("YouTube Low: Safari response %s%s%s%s; trying 360p fallback\n",
                strstr(reply, "\"isLiveContent\":true")
                    ? "identifies a live video" : "does not identify recorded video",
-               ok ? " (HLS was offered)" : "");
+               ok ? " (HLS was offered)" : "",
+               has_status ? " playability=" : "",
+               has_status ? status : "");
         mr_free(reply);
         return 0;
     }
     if (ok && !manifest_needs_n_transform(out)) {
         if (hls_only)
-            printf("YouTube Low: embedded Safari HLS offered; opening lowest variant\n");
+            printf("YouTube Low: WEB Safari HLS offered; opening lowest variant\n");
         g_last_client = client;
         g_last_media_ua = media_ua;
         g_last_kind = hls_only ? MR_YOUTUBE_MEDIA_HLS_VOD : MR_YOUTUBE_MEDIA_HLS;
@@ -655,26 +660,25 @@ static int resolve_media(const char *url,
         mr_source_set_error("YouTube player API URL is too long");
         return 0;
     }
-    /* The embedded Safari identity can expose YouTube's original muxed
-     * H.264/AAC HLS (itag 91 at 144p). Only Low tries this extra request;
+    /* The WEB client with a Safari identity can expose YouTube's original
+     * muxed H.264/AAC HLS (itag 91 at 144p). Only Low tries this extra request;
      * ordinary 360p and live playback retain their existing client order. */
     if (options && options->hls_low && !skip_hls) {
-        printf("YouTube Low: checking embedded Safari for original muxed HLS\n");
+        printf("YouTube Low: checking WEB Safari for original muxed HLS\n");
         n = snprintf(json, sizeof json,
                      "{\"context\":{\"client\":{"
-                     "\"clientName\":\"WEB_EMBEDDED_PLAYER\","
+                     "\"clientName\":\"WEB\","
                      "\"clientVersion\":\"%s\",\"hl\":\"en\",\"gl\":\"GB\","
-                     "\"userAgent\":\"%s\"},"
-                     "\"thirdParty\":{\"embedUrl\":\"https://www.reddit.com/\"}},"
+                     "\"userAgent\":\"%s\"}},"
                      "\"videoId\":\"%s\",\"contentCheckOk\":true,"
-                     "\"racyCheckOk\":true}", YOUTUBE_EMBEDDED_SAFARI_VERSION,
-                     YOUTUBE_EMBEDDED_SAFARI_UA, video_id);
+                     "\"racyCheckOk\":true}", YOUTUBE_SAFARI_WEB_VERSION,
+                     YOUTUBE_SAFARI_WEB_UA, video_id);
         if (n > 0 && (size_t)n < sizeof json &&
-            mr_http_options_init(&safari_options, YOUTUBE_EMBEDDED_SAFARI_UA,
+            mr_http_options_init(&safari_options, YOUTUBE_SAFARI_WEB_UA,
                                  YOUTUBE_REFERER)) {
             result = try_player_media(api_url, &safari_options, json,
-                                      "WEB_EMBEDDED_PLAYER (Safari HLS)",
-                                      YOUTUBE_EMBEDDED_SAFARI_UA, out,
+                                      "WEB (Safari HLS)",
+                                      YOUTUBE_SAFARI_WEB_UA, out,
                                       out_size, 0, kind, 1, 0);
             if (result > 0) return 1;
             if (result < 0) saw_n_challenge = 1;

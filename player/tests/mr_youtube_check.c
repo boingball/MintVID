@@ -25,7 +25,8 @@ static int fake_youtube(const char *url, const mr_http_options *options,
               "watch-mp4\"}]}}"
             : "{\"INNERTUBE_API_KEY\":\"testkey\","
               "\"INNERTUBE_CLIENT_VERSION\":\"2.test\"}";
-    } else if (post_json && strstr(post_json, "WEB_EMBEDDED_PLAYER") &&
+    } else if (post_json && strstr(post_json, "\"clientName\":\"WEB\"") &&
+               !strstr(post_json, "thirdParty") &&
                strstr(post_json, "Safari/605.1.15") &&
                strstr(options->user_agent, "Safari/605.1.15")) {
         mock_safari++;
@@ -35,6 +36,8 @@ static int fake_youtube(const char *url, const mr_http_options *options,
                    "manifest.googlevideo.com/vod/index.m3u8\"}}";
         else if (mock_mode == 1 || mock_mode == 4)
             body = "{\"videoDetails\":{\"isLiveContent\":false}}";
+        else if (mock_mode == 5)
+            body = "{\"playabilityStatus\":{\"status\":\"ERROR\"}}";
         else
             body = "{\"videoDetails\":{\"isLiveContent\":false},"
                    "\"streamingData\":{\"hlsManifestUrl\":\"https://"
@@ -252,6 +255,14 @@ int main(int argc, char **argv)
            media_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P &&
            mock_android == 1,
            "Safari live HLS is not classified as recorded video");
+    mock_mode = 5;
+    mock_gets = mock_safari = mock_android = 0;
+    expect(mr_youtube_resolve_media(
+               "https://www.youtube.com/watch?v=EvsLqQS_80E",
+               &base_options, out, sizeof out, &media_kind) &&
+           media_kind == MR_YOUTUBE_MEDIA_PROGRESSIVE_360P &&
+           mock_safari == 1 && mock_android == 1,
+           "Safari playability errors fall back to Android 360p");
     mock_mode = 3;
     mock_gets = mock_safari = mock_android = 0;
     expect(mr_youtube_resolve_media(
