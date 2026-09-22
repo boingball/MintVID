@@ -5250,3 +5250,32 @@ hardware yet.
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
+
+## AAC reduced-size IMDCT (decimated output)
+AAC used to be decoded at full rate and then decimated by dropping samples
+(`emit_pcm_stride()`), which aliases everything above the new Nyquist. Helix
+now has `AACSetOutputDecimation(h, 2|4)` (boingball/ESP8266Audio branch
+`claude/aac-decimated-imdct`, pinned through MintAMP's branch of the same
+name, compiled only with `-DAAC_ENABLE_DECIM`, which every MintVID build line
+sets). It runs the IMDCT at 1/2 or 1/4 size on the lowest part of the
+spectrum and emits band-limited PCM at the lower rate directly.
+`aac_apply_decim()` in `audio/mr_audio_decode.c` turns it on whenever the
+adapter's stride is 2 or 4, and falls back to dropping samples if Helix
+refuses.
+
+The tables come from `gen_decim_tabs.py` next to the Helix sources.
+`--check` reproduces the existing 128/1024 tables bit for bit. Output is a
+constant (d-1)/2-input-sample time offset from the full-rate decode.
+
+Measured under qemu (instruction counts, 2 s of 48 kHz stereo):
+- 68060: −41% at 1/2 rate, −63% at 1/4 rate.
+- 68040: −31% at 1/2 rate, −47% at 1/4 rate.
+
+m68k output is bit-exact with the host. `tests/mr_aac_decim_check.c`
+(`make check-audio`) compares against ffmpeg's decode, ideally resampled:
+- 70/56 dB in-band SNR, 25/21 dB overall.
+- Dropping samples scores 4/−2 dB overall on the same fixture.
+
+PNS, dequant and stereo processing still run on the discarded upper band.
+TNS filters across frequency, so skipping them needs care, and it has not
+been done. Real-hardware speed is still unconfirmed.

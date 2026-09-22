@@ -225,7 +225,7 @@ $CC_CABAC_PROFILE -o "$BUILD/mr_decode_cabac_profile.m68k" tests/mr_decode.c \
 # audio adapter - no container or H.264 tier to cross-build.
 echo "== building mr_ac3_check.m68k =="
 MINTAMP_ROOT=vendor/MintAMP
-MINTAMP_FLAGS="-DAMIGA_M68K -DMR_HOST_BUILD -DARDUINO -DESP8266 \
+MINTAMP_FLAGS="-DAMIGA_M68K -DMR_HOST_BUILD -DARDUINO -DESP8266 -DAAC_ENABLE_DECIM \
     -I$MINTAMP_ROOT/pub -I$MINTAMP_ROOT/real -I$MINTAMP_ROOT/decoders/aac \
     -I$MINTAMP_ROOT/decoders/aac-arduino-shim -Ivendor/liba52"
 MINTAMP_SRC="$MINTAMP_ROOT/mp3dec.c $MINTAMP_ROOT/mp3tabs.c \
