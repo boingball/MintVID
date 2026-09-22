@@ -631,12 +631,13 @@ static void audio_worker_entry(void)
     if (OpenDevice((CONST_STRPTR)"audio.device", 0,
                    (struct IORequest *)a->owner, 0) != 0) goto failed;
     a->opened = 1;
-    /* Official audio.device stereo combinations always have one left
-     * channel (1 or 2) and one right channel (0 or 3). The allocation key
-     * stays on every request, but each CMD_WRITE gets one channel bit. */
+    /* The Hardware Reference Manual maps channels 0/3 to the left jack and
+     * 1/2 to the right jack. The audio.device wiki states the reverse, but
+     * a real left/right playback test confirmed the hardware mapping. Keep
+     * the shared allocation key and send each CMD_WRITE to one channel. */
     mask = (ULONG)a->owner->ioa_Request.io_Unit & 15u;
-    channel[LEFT] = mask & (2u | 4u);
-    channel[RIGHT] = mask & (1u | 8u);
+    channel[LEFT] = mask & (1u | 8u);
+    channel[RIGHT] = mask & (2u | 4u);
     if (!channel[LEFT] || !channel[RIGHT]) goto failed;
     for (i = 0; i < NBUF; i++) {
         for (side = 0; side < SIDES; side++) {
