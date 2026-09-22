@@ -119,6 +119,7 @@ typedef struct {
                                      * sync_content_geometry()) */
     int            dx, dy, dw, dh;  /* aspect-fitted PIP rect within the window */
     int            fullscreen;
+    int            riva_fullscreen; /* public-screen, default PIP geometry */
     int            hw_overlay;      /* 1 = PIPT_VideoWindow, 0 = MemoryWindow */
     int            fullscreen_dest_policy; /* progressive overlay-size retry */
     int            geometry_rejected; /* open failed for geometry/alignment */
@@ -178,10 +179,9 @@ static void fit_within(int w, int h, int max_w, int max_h, int *out_w,
 
 static void calculate_geometry(p96pip_state *s)
 {
-    if (!s->fullscreen) {
-        /* Match P96PipDemo in ordinary windowed mode: the PIP fills the
-         * entire inner window and its default relative rectangle follows
-         * live Intuition resizing. */
+    if (!s->fullscreen || s->riva_fullscreen) {
+        /* In windowed and RiVA-style fullscreen modes the PIP uses its
+         * default full-window destination rectangle. */
         s->dx = 0;
         s->dy = 0;
         s->dw = s->win_w;
@@ -449,6 +449,9 @@ static struct Window *open_pip(p96pip_state *s, ULONG type,
     ULONG flags, idcmp, screen_tag, relativity;
     LONG pip_width, pip_height;
     int simple_window;
+    int riva = s->fullscreen && !s->screen && s->riva_fullscreen;
+    ULONG request_w = riva ? (ULONG)s->source_w * 10u : (ULONG)s->win_w;
+    ULONG request_h = riva ? (ULONG)s->source_h * 10u : (ULONG)s->win_h;
     ULONG max_w = (ULONG)-1, max_h = (ULONG)-1;
     int left = 0, top = 0;
     int pub_locked = 0;
@@ -500,10 +503,9 @@ static struct Window *open_pip(p96pip_state *s, ULONG type,
          * a MemoryWindow on Picasso IV/CVision3D. */
     }
 
-    /* P96's PIP API explicitly ignores WA_Width/WA_Height and requires
-     * WA_InnerWidth/WA_InnerHeight. Use the inner-size tags for both modes;
-     * fullscreen is borderless, so its inner and outer dimensions are equal.
-     * This also keeps s->win_w/win_h in content-area units everywhere. */
+    /* The normal path uses inner-size tags to keep the content geometry
+     * consistent. RiVA 0.54 used WA_Width/Height with a 10x zoom request;
+     * retain that exact distinction for the public-screen experiment. */
     if (g_display_want_time) {
         printf("p96pip: calling p96PIP_OpenTags type=%lu win=%dx%d "
                "source=%dx%d dest=%d,%d %dx%d\n", (unsigned long)type,
@@ -511,28 +513,36 @@ static struct Window *open_pip(p96pip_state *s, ULONG type,
                s->dx, s->dy, s->dw, s->dh);
         Flush(Output());
     }
-    simple_window = !s->fullscreen && s->dx == 0 && s->dy == 0 &&
-                    s->dw == s->win_w && s->dh == s->win_h;
+    simple_window = riva || (!s->fullscreen && s->dx == 0 && s->dy == 0 &&
+                             s->dw == s->win_w && s->dh == s->win_h);
     *err = 0;
     win = (struct Window *)p96PIP_OpenTags(
         screen_tag, (ULONG)scr,
-        WA_Title, (ULONG)s->title,
+        WA_Title, riva ? 0 : (ULONG)s->title,
         WA_Left, (ULONG)left, WA_Top, (ULONG)top,
         /* Some P96 implementations do not honour WFLG_BORDERLESS when it
          * arrives only inside WA_Flags. Pass the dedicated Boolean tag too;
          * the WinUAE fullscreen test otherwise retained a 14-pixel title
          * bar even though the flag bit was present. */
         s->fullscreen ? WA_Borderless : TAG_IGNORE, TRUE,
-        WA_InnerWidth, (ULONG)s->win_w,
-        WA_InnerHeight, (ULONG)s->win_h,
-        WA_Flags, flags,
+        riva ? WA_Width : WA_InnerWidth, request_w,
+        riva ? WA_Height : WA_InnerHeight, request_h,
+        riva ? WA_DragBar : TAG_IGNORE, FALSE,
+        riva ? WA_CloseGadget : TAG_IGNORE, FALSE,
+        riva ? WA_DepthGadget : TAG_IGNORE, FALSE,
+        riva ? WA_SizeGadget : TAG_IGNORE, FALSE,
+        riva ? WA_Activate : TAG_IGNORE, TRUE,
+        riva ? WA_RMBTrap : TAG_IGNORE, TRUE,
+        riva ? TAG_IGNORE : WA_Flags, flags,
         /* Intuition does not infer useful resize limits merely from
          * WFLG_SIZEGADGET. Match the ordinary P96/CGX backends: without
          * explicit min/max tags the gadget can drag while the window stays
          * constrained to its opening dimensions, so no real IDCMP_NEWSIZE
          * geometry ever reaches the reopen/debounce path below. */
-        WA_MinWidth, (ULONG)160, WA_MinHeight, (ULONG)100,
-        WA_MaxWidth, max_w, WA_MaxHeight, max_h,
+        riva ? TAG_IGNORE : WA_MinWidth, (ULONG)160,
+        riva ? TAG_IGNORE : WA_MinHeight, (ULONG)100,
+        riva ? TAG_IGNORE : WA_MaxWidth, max_w,
+        riva ? TAG_IGNORE : WA_MaxHeight, max_h,
         WA_IDCMP, idcmp,
         P96PIP_SourceFormat, source_format,
         P96PIP_SourceWidth, (ULONG)s->source_w,
@@ -660,8 +670,10 @@ static int open_public_fullscreen_backdrop(p96pip_state *s)
      * and P96-side scaling afterward. Make the one-off resize now. Relative
      * PIP margins preserve the 96-pixel top/bottom bars, producing a
      * 1024x576 overlay inside a borderless 1024x768 window. */
-    ChangeWindowBox(s->win, 0, 0, screen_w, screen_h);
-    WaitTOF();
+    if (!s->riva_fullscreen) {
+        ChangeWindowBox(s->win, 0, 0, screen_w, screen_h);
+        WaitTOF();
+    }
     sync_content_geometry(s);
     calculate_geometry(s);
     s->geometry_valid = 1;
@@ -840,6 +852,10 @@ static int reopen_pip(p96pip_state *s, const char *reason)
         }
 
         sync_content_geometry(s);
+        /* RiVA asks for 10x the source size and lets P96 constrain it.
+         * A size mismatch is expected, so do not reopen with the clamped
+         * size: that would undo the very fullscreen request being tested. */
+        if (s->riva_fullscreen) break;
 
         /* Tolerate a small difference instead of demanding exact equality.
          * Now that windowed mode opens with PIPRel_Width|PIPRel_Height
@@ -905,6 +921,49 @@ static int reopen_fullscreen_pip(p96pip_state *s, const char *reason,
         P96PIP_DEST_NATIVE
     };
     int i;
+
+    /* RiVA 0.54's Enter-key path reopens a borderless MemoryWindow with a
+     * 10x requested size, no title/gadgets and default PIP destination tags.
+     * Try that only on the public screen; retain the existing private-screen
+     * and progressive public-screen paths for boards that reject it. */
+    if (!s->screen && s->source_w <= 6553 && s->source_h <= 6553) {
+        int screen_w = s->win_w, screen_h = s->win_h;
+        mr_aspect_rect expected = mr_aspect_fit(s->source_w, s->source_h,
+                                                screen_w, screen_h);
+        s->riva_fullscreen = 1;
+        if (g_display_want_time) {
+            printf("p96pip-fullscreen: trying RiVA-style MemoryWindow "
+                   "request=%dx%d on public %dx%d\n",
+                   s->source_w * 10, s->source_h * 10,
+                   screen_w, screen_h);
+            Flush(Output());
+        }
+        if (reopen_pip(s, "riva-public-fullscreen")) {
+            int border = s->win->BorderLeft | s->win->BorderRight |
+                         s->win->BorderTop | s->win->BorderBottom;
+            if (g_display_want_time) {
+                printf("p96pip-fullscreen: RiVA-style result outer=%dx%d "
+                       "inner=%dx%d border=%d expected=%dx%d\n",
+                       s->win->Width, s->win->Height, s->win_w, s->win_h,
+                       border, expected.w, expected.h);
+                Flush(Output());
+            }
+            if (!border && s->win_w >= expected.w * 3 / 4 &&
+                s->win_h >= expected.h * 3 / 4 &&
+                s->win->Width <= screen_w && s->win->Height <= screen_h)
+                return 1;
+        }
+        close_public_fullscreen_backdrop(s);
+        close_pip(s);
+        s->riva_fullscreen = 0;
+        s->win_w = screen_w;
+        s->win_h = screen_h;
+        if (g_display_want_time) {
+            printf("p96pip-fullscreen: RiVA-style window unavailable or "
+                   "clamped; trying existing size ladder\n");
+            Flush(Output());
+        }
+    }
 
     for (i = 0; i < 4; ++i) {
         s->fullscreen_dest_policy = policies[i];
@@ -1041,17 +1100,37 @@ static int reopen_for_size(p96pip_state *s, int w, int h)
 {
     int old_w = s->source_w;
     int old_h = s->source_h;
+    int old_win_w = s->win_w, old_win_h = s->win_h;
+    int old_riva = s->riva_fullscreen;
+    int opened;
 
     if (w <= 0 || h <= 0 || (w & 1)) return 0;
 
     s->source_w = w;
     s->source_h = h;
-    if (reopen_pip(s, "frame-size-change"))
+    if (old_riva) {
+        struct Screen *pub = LockPubScreen(NULL);
+        if (pub) {
+            s->win_w = pub->Width;
+            s->win_h = pub->Height;
+            UnlockPubScreen(NULL, pub);
+        }
+        s->riva_fullscreen = 0;
+        /* Revalidate the oversized request against the new source aspect;
+         * if it no longer fits, retain the progressive fullscreen fallback. */
+        opened = reopen_fullscreen_pip(s, "frame-size-change", 1);
+    } else {
+        opened = reopen_pip(s, "frame-size-change");
+    }
+    if (opened)
         return 1;
 
     /* Keep the backend usable if a transient/invalid source size is refused. */
     s->source_w = old_w;
     s->source_h = old_h;
+    s->win_w = old_win_w;
+    s->win_h = old_win_h;
+    s->riva_fullscreen = old_riva;
     if (!reopen_pip(s, "frame-size-rollback"))
         s->quit = 1;
     return 0;
@@ -1370,12 +1449,14 @@ static int p96pip_toggle_fullscreen(void *h)
     struct Screen *old_screen;
     ULONG old_mode_id;
     int old_fullscreen, old_win_w, old_win_h;
+    int old_riva_fullscreen;
     int old_dest_policy;
     int public_w = 640, public_h = 480;
     int entering;
 
     if (!s || !s->win) return 0;
     old_fullscreen = s->fullscreen;
+    old_riva_fullscreen = s->riva_fullscreen;
     entering = !old_fullscreen;
     old_win_w = s->win_w;
     old_win_h = s->win_h;
@@ -1446,6 +1527,7 @@ static int p96pip_toggle_fullscreen(void *h)
          * so a failed toggle can restore the previous mode. reopen_pip()
          * closes the old PIP before it requests the replacement. */
         s->fullscreen = 0;
+        s->riva_fullscreen = 0;
         s->fullscreen_dest_policy = P96PIP_DEST_ASPECT;
         s->screen = NULL;
         s->screen_mode_id = (ULONG)INVALID_ID;
@@ -1477,6 +1559,7 @@ static int p96pip_toggle_fullscreen(void *h)
 
     /* Restore the previous mode if the requested PIP cannot be opened. */
     s->fullscreen = old_fullscreen;
+    s->riva_fullscreen = old_riva_fullscreen;
     s->screen = old_screen;
     s->screen_mode_id = old_mode_id;
     s->win_w = old_win_w;
