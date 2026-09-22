@@ -557,6 +557,25 @@ int main(void) {
       assert(strstr(summary, "RTG (P96)"));
     }
     {
+      /* The fullscreen GUI choice must survive browser inheritance. */
+      char *inherited[] = {"iptvgui", "--display", "p96-fullscreen"};
+      char args[4096], summary[160], error[128];
+      mr_play_options parsed;
+      mr_play_options_default(&parsed);
+      assert(mr_play_options_parse(&parsed, 3, inherited, error,
+                                   sizeof(error)));
+      assert(parsed.display == MR_DISPLAY_P96_FULLSCREEN);
+      assert(mr_build_player_arguments(args, sizeof(args), &parsed,
+                                       launch.url, NULL, NULL));
+      assert(strstr(args, "--p96 --fullscreen"));
+      assert(!strstr(args, "--aga") && !strstr(args, "--kalms-c2p"));
+      mr_play_options_summary(&parsed, summary, sizeof(summary));
+      assert(strstr(summary, "RTG (P96 Fullscreen)"));
+      assert(mr_build_iptv_arguments(args, sizeof(args), &parsed));
+      assert(strstr(args, "--display p96-fullscreen"));
+      assert(!strstr(args, "--c2p"));
+    }
+    {
       char *inherited[] = {"iptvgui", "--display", "ecs32"};
       char summary[160], args[4096], error[128];
       mr_play_options parsed;

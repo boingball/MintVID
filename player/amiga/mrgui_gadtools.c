@@ -79,8 +79,8 @@ typedef struct gt_app {
     struct FileRequester *requester;
     mr_master_options_port *master;
     mr_gui_menu menu;
-    mr_display_mode modes[8];
-    STRPTR mode_labels[9];
+    mr_display_mode modes[9];
+    STRPTR mode_labels[10];
     unsigned mode_count;
     mr_c2p_mode c2p_modes[5];
     STRPTR c2p_labels[6];
@@ -358,7 +358,8 @@ static void update_mode_controls(gt_app *app, int output_changed)
     ULONG selected = gad_value(app, app->mode, GTCY_Active);
     ULONG disabled = selected < app->mode_count &&
                      (app->modes[selected] == MR_DISPLAY_CGX ||
-                      app->modes[selected] == MR_DISPLAY_P96);
+                      app->modes[selected] == MR_DISPLAY_P96 ||
+                      app->modes[selected] == MR_DISPLAY_P96_FULLSCREEN);
     ULONG selected_c2p = gad_value(app, app->c2p, GTCY_Active);
     mr_c2p_mode selected_c2p_mode = selected_c2p < app->c2p_count
                                   ? app->c2p_modes[selected_c2p]
@@ -1000,8 +1001,10 @@ static int build_window(gt_app *app)
     if (screen_is_rtg(app->screen)) {
         app->mode_labels[app->mode_count] = (STRPTR)"Display: RTG (WritePixel)";
         app->modes[app->mode_count++] = MR_DISPLAY_CGX;
-        app->mode_labels[app->mode_count] = (STRPTR)"Display: RTG (P96)";
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: P96 (Windowed)";
         app->modes[app->mode_count++] = MR_DISPLAY_P96;
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: P96 (Fullscreen)";
+        app->modes[app->mode_count++] = MR_DISPLAY_P96_FULLSCREEN;
         /* P96 (with its own hardware-overlay-first backend chain - see
          * amiga/display_p96pip.c) is the fastest choice when available,
          * ahead of plain WritePixel and AGA/HAM - default to it rather

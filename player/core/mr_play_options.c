@@ -113,6 +113,7 @@ static const char *display_name(mr_display_mode display)
     case MR_DISPLAY_HAM8: return "ham8";
     case MR_DISPLAY_CGX: return "cgx";
     case MR_DISPLAY_P96: return "p96";
+    case MR_DISPLAY_P96_FULLSCREEN: return "p96-fullscreen";
     case MR_DISPLAY_AGA_ECS32: return "ecs32";
     case MR_DISPLAY_AGA_ECS16: return "ecs16";
     case MR_DISPLAY_AGA_EHB: return "ehb";
@@ -157,7 +158,8 @@ static int append_playback_flags(char *out, size_t cap,
     if (explicit) {
         if (!append_option(out, cap, "--display") ||
             !append_option(out, cap, display_name(o->display))) return 0;
-        if (o->display != MR_DISPLAY_CGX && o->display != MR_DISPLAY_P96) {
+        if (o->display != MR_DISPLAY_CGX && o->display != MR_DISPLAY_P96 &&
+            o->display != MR_DISPLAY_P96_FULLSCREEN) {
             if (!append_option(out, cap, "--c2p") ||
                 !append_option(out, cap, c2p_name(o->c2p)) ||
                 !append_option(out, cap, o->laced ? "--laced" : "--no-laced") ||
@@ -179,8 +181,13 @@ static int append_playback_flags(char *out, size_t cap,
             (!append_option(out, cap, "--aga") || !append_option(out, cap, "--ecs-fast"))) return 0;
         if (o->display == MR_DISPLAY_AGA_EHB &&
             (!append_option(out, cap, "--aga") || !append_option(out, cap, "--ehb"))) return 0;
-        if (o->display == MR_DISPLAY_P96 && !append_option(out, cap, "--p96")) return 0;
-        if (o->display != MR_DISPLAY_CGX && o->display != MR_DISPLAY_P96) {
+        if ((o->display == MR_DISPLAY_P96 ||
+             o->display == MR_DISPLAY_P96_FULLSCREEN) &&
+            !append_option(out, cap, "--p96")) return 0;
+        if (o->display == MR_DISPLAY_P96_FULLSCREEN &&
+            !append_option(out, cap, "--fullscreen")) return 0;
+        if (o->display != MR_DISPLAY_CGX && o->display != MR_DISPLAY_P96 &&
+            o->display != MR_DISPLAY_P96_FULLSCREEN) {
             const char *flag = o->c2p == MR_C2P_AKIKO ? "--cd32" :
                                o->c2p == MR_C2P_KALMS ? "--kalms-c2p" :
                                o->c2p == MR_C2P_RIVA ? "--riva-c2p" :
@@ -328,6 +335,7 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "ham8")) o->display = MR_DISPLAY_HAM8;
             else if (!strcmp(value, "cgx") || !strcmp(value, "rtg")) o->display = MR_DISPLAY_CGX;
             else if (!strcmp(value, "p96")) o->display = MR_DISPLAY_P96;
+            else if (!strcmp(value, "p96-fullscreen")) o->display = MR_DISPLAY_P96_FULLSCREEN;
             else if (!strcmp(value, "ecs32")) o->display = MR_DISPLAY_AGA_ECS32;
             else if (!strcmp(value, "ecs16")) o->display = MR_DISPLAY_AGA_ECS16;
             else if (!strcmp(value, "ehb")) o->display = MR_DISPLAY_AGA_EHB;
@@ -474,9 +482,12 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
            o->h264_performance == MR_H264_PERF_TURBO ? "Turbo" :
            o->h264_performance == MR_H264_PERF_TURBO_PLUS ? "Turbo+" : "Auto";
     audio = audio_policy_text(o);
-    if (o->display == MR_DISPLAY_CGX || o->display == MR_DISPLAY_P96)
+    if (o->display == MR_DISPLAY_CGX || o->display == MR_DISPLAY_P96 ||
+        o->display == MR_DISPLAY_P96_FULLSCREEN)
         snprintf(out, cap, "Playback: RTG (%s) / %s / H264 %s / Audio %s / Fast buffer %s%s / Video %s",
-                 o->display == MR_DISPLAY_P96 ? "P96" : "WritePixel",
+                 o->display == MR_DISPLAY_P96 ? "P96" :
+                 o->display == MR_DISPLAY_P96_FULLSCREEN ? "P96 Fullscreen" :
+                 "WritePixel",
                  hls, h264, audio, fast_buffer_text(o),
                  o->live_resync ? " / Live-resync" : "",
                  o->throughput ? "All Frames" : "Skip Frames");
