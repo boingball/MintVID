@@ -1713,6 +1713,26 @@ static int service_player_during_io(void *opaque)
     return ev == MR_EV_QUIT || deferred_player_event == MR_EV_QUIT;
 }
 
+/* TS scanning and codec sub-calls accept a void service hook, unlike HTTP's
+ * cancellable hook. Poll input there as well: a long run of TS packets or
+ * decoded pictures can keep the scheduler's top-of-loop ESC check out of
+ * reach. The event remains deferred until the current packet returns. */
+static void service_player_during_packet(void *opaque)
+{
+    static unsigned calls_until_poll;
+    scheduler_trace *trace = (scheduler_trace *)opaque;
+    /* The H.264/YUV service hook can fire dozens of times per frame. Keep
+     * Paula serviced on every call without doing Intuition polling on every
+     * eight-row conversion strip on a 50 MHz 68060. */
+    if (calls_until_poll) {
+        calls_until_poll--;
+        if (trace && trace->audio) service_audio_for_display(opaque);
+        return;
+    }
+    calls_until_poll = 7;
+    (void)service_player_during_io(opaque);
+}
+
 /*
  * Wait hook for the HLS live-playlist re-fetch loop (mr_hls_set_wait).
  *
@@ -2660,9 +2680,9 @@ int main(int argc, char **argv)
     trace.audio = audio; trace.enabled = want_time; trace.live_diag = live_diag;
     trace.phase = "startup"; trace.phase_started_us = monotonic_us();
     display_set_service(disp, audio ? service_audio_for_display : NULL, &trace);
-    mr_demux_set_service(dx, audio ? service_audio_for_display : NULL, &trace);
-    mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL, &trace);
-    mr_mpeg2_set_service(&dec, audio ? service_audio_for_display : NULL, &trace);
+    mr_demux_set_service(dx, service_player_during_io, &trace);
+    mr_h264_set_service(&dec, service_player_during_packet, &trace);
+    mr_mpeg2_set_service(&dec, service_player_during_packet, &trace);
     /* Off by default: mr_ts_next_packet() (several clock() reads per
      * 188/192-byte TS packet) and mr_source_read_at()/the HLS playlist and
      * segment fetch timers (two clock() reads per source read) only ever
@@ -3245,10 +3265,8 @@ int main(int argc, char **argv)
                      * fresh h264_state/mpeg2_state comes back with no audio
                      * service hook - reapply, same as every other per-
                      * decoder setting reapplied here. */
-                    mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL,
-                                        &trace);
-                    mr_mpeg2_set_service(&dec, audio ? service_audio_for_display : NULL,
-                                        &trace);
+                    mr_h264_set_service(&dec, service_player_during_packet, &trace);
+                    mr_mpeg2_set_service(&dec, service_player_during_packet, &trace);
                     if (use_yuv_indexed_queue || use_yuv422_queue ||
                         use_yuv_rgb_queue)
                         mr_h264_set_yuv_output(&dec, 1);
@@ -3547,10 +3565,8 @@ int main(int argc, char **argv)
             apply_mpeg2_speed(&dec, mpeg2_speed, 0);
             /* ...and with no audio service hook either - reapply, same as
              * every other per-decoder setting reapplied here. */
-            mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL,
-                                &trace);
-            mr_mpeg2_set_service(&dec, audio ? service_audio_for_display : NULL,
-                                &trace);
+            mr_h264_set_service(&dec, service_player_during_packet, &trace);
+            mr_mpeg2_set_service(&dec, service_player_during_packet, &trace);
             if (use_yuv_indexed_queue || use_yuv422_queue ||
                 use_yuv_rgb_queue)
                 mr_h264_set_yuv_output(&dec, 1);
@@ -3646,6 +3662,9 @@ int main(int argc, char **argv)
                 break;                          /* different shape: stop cleanly */
             }
             vi = nvi;
+            /* Reopened demuxers do not inherit the TS service hook. */
+            mr_demux_set_service(dx, service_player_during_io, &trace);
+            mr_demux_set_timing_enabled(dx, want_time);
             if (mr_decoder_reset(&dec) != MR_OK ||
                 !apply_h264_speed(&dec, h264_speed, 0)) break;
             /* mr_decoder_reset() closes and reopens the codec, so a fresh
@@ -3656,10 +3675,8 @@ int main(int argc, char **argv)
             apply_mpeg2_speed(&dec, mpeg2_speed, 0);
             /* ...and with no audio service hook either - reapply, same as
              * every other per-decoder setting reapplied here. */
-            mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL,
-                                &trace);
-            mr_mpeg2_set_service(&dec, audio ? service_audio_for_display : NULL,
-                                &trace);
+            mr_h264_set_service(&dec, service_player_during_packet, &trace);
+            mr_mpeg2_set_service(&dec, service_player_during_packet, &trace);
             if (use_yuv_indexed_queue || use_yuv422_queue ||
                 use_yuv_rgb_queue)
                 mr_h264_set_yuv_output(&dec, 1);
@@ -3766,6 +3783,7 @@ int main(int argc, char **argv)
                 if (network_source) presenter.released = 1;
                 mr_status next = mr_demux_next_packet(dx, &pkt);
                 presenter.released = 0;
+                if (deferred_player_event == MR_EV_QUIT) { quit = 1; break; }
                 if (want_time) {
                     uint64_t blocked = monotonic_us() - a;
                     stats.demux_us += blocked; stats.refill_block_us += blocked;

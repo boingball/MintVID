@@ -23,6 +23,12 @@ static uint8_t *packet(uint8_t *p, unsigned pid, int start)
     return p + 4;
 }
 
+static int request_stop(void *opaque)
+{
+    ++*(int *)opaque;
+    return 1;
+}
+
 int main(void)
 {
     uint8_t stream[188 * 4];
@@ -91,6 +97,25 @@ int main(void)
     if (mr_ts_next_packet(&ts, &pkt) != MR_OK || !pkt.is_video) {
         fprintf(stderr, "missing video PES\n");
         return 1;
+    }
+    /* A live TS may scan indefinitely without delivering a selected PID.
+     * Stopping from the service hook must end this demux call promptly. */
+    {
+        uint8_t unrelated[188 * 32];
+        int calls = 0;
+        unsigned i;
+        for (i = 0; i < 32; i++)
+            packet(unrelated + i * 188, 0x1fff, 0);
+        ts.buf = unrelated;
+        ts.len = sizeof unrelated;
+        ts.cursor = 0;
+        ts.service = request_stop;
+        ts.service_opaque = &calls;
+        if (mr_ts_next_packet(&ts, &pkt) != MR_EAGAIN || calls != 1 ||
+            ts.cursor >= ts.len) {
+            fprintf(stderr, "TS service stop did not abort the scan\n");
+            return 1;
+        }
     }
     mr_ts_close(&ts);
     return 0;
