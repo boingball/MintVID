@@ -62,7 +62,10 @@ typedef enum mr_h264_speed_mode {
     MR_H264_SPEED_BALANCED,
     MR_H264_SPEED_FAST,
     MR_H264_SPEED_TURBO,
-    MR_H264_SPEED_TURBO_PLUS
+    MR_H264_SPEED_TURBO_PLUS,
+    /* Turbo's decode policy; the player additionally drops late P/B access
+     * units with mr_h264_set_drop_nonsync(). */
+    MR_H264_SPEED_SMOOSH
 } mr_h264_speed_mode;
 void mr_h264_set_service(mr_decoder *dec, mr_h264_service_fn fn, void *opaque);
 void mr_h264_set_quit(mr_decoder *dec, mr_h264_quit_fn fn, void *opaque);
@@ -75,6 +78,17 @@ void mr_h264_frame_timing(mr_decoder *dec, mr_h264_timing *timing);
  * would read the result anyway. */
 void mr_h264_set_timing_enabled(mr_decoder *dec, int enabled);
 void mr_h264_set_skip_output(mr_decoder *dec, int skip);
+/* Smoosh ("datamosh") frame dropping, for the next mr_decoder_decode() call
+ * only - pass it before every decode, like mr_h264_set_input_pts(). When
+ * set, an access unit with no keyframe (IDR, I or SI slice) and no SPS/PPS
+ * is not given to libavc at all and the call returns MR_SKIPPED. Later
+ * P pictures then predict from a stale reference, so the picture smears
+ * until the next keyframe restores it exactly. That is the whole point: on
+ * a stream with no B-frames (YouTube's 360p itag 18 is Baseline) every
+ * P picture is a reference, so this is the only way to shed decode work
+ * without freezing the picture until the next keyframe. Anything the
+ * classifier cannot parse is treated as a keyframe and decoded. */
+void mr_h264_set_drop_nonsync(mr_decoder *dec, int drop);
 /* Off by default. When enabled, decoded frames come back as
  * MR_PIX_YUV420P (dec->frame.data/stride = Y, u_data/u_stride = Cb,
  * v_data/v_stride = Cr) instead of MR_PIX_RGB24 - no RGB24 buffer is

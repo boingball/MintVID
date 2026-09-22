@@ -71,6 +71,21 @@ void mr_play_options_default(mr_play_options *o)
      * file) instead, since neither --throughput nor --no-throughput is
      * passed unless something built the command line through this file. */
     o->throughput = 1;
+    o->skip_trigger_ms = MR_SKIP_TRIGGER_DEFAULT_MS;
+}
+
+int mr_display_is_rtg(mr_display_mode display)
+{
+    return display == MR_DISPLAY_CGX || display == MR_DISPLAY_P96 ||
+           display == MR_DISPLAY_P96_FULLSCREEN ||
+           display == MR_DISPLAY_RTG_HALF;
+}
+
+static unsigned clamp_skip_trigger(unsigned ms)
+{
+    if (ms < MR_SKIP_TRIGGER_MIN_MS) return MR_SKIP_TRIGGER_MIN_MS;
+    if (ms > MR_SKIP_TRIGGER_MAX_MS) return MR_SKIP_TRIGGER_MAX_MS;
+    return ms;
 }
 
 static int append_text(char *out, size_t cap, const char *text)
@@ -114,6 +129,7 @@ static const char *display_name(mr_display_mode display)
     case MR_DISPLAY_CGX: return "cgx";
     case MR_DISPLAY_P96: return "p96";
     case MR_DISPLAY_P96_FULLSCREEN: return "p96-fullscreen";
+    case MR_DISPLAY_RTG_HALF: return "rtg-half";
     case MR_DISPLAY_AGA_ECS32: return "ecs32";
     case MR_DISPLAY_AGA_ECS16: return "ecs16";
     case MR_DISPLAY_AGA_EHB: return "ehb";
@@ -158,8 +174,7 @@ static int append_playback_flags(char *out, size_t cap,
     if (explicit) {
         if (!append_option(out, cap, "--display") ||
             !append_option(out, cap, display_name(o->display))) return 0;
-        if (o->display != MR_DISPLAY_CGX && o->display != MR_DISPLAY_P96 &&
-            o->display != MR_DISPLAY_P96_FULLSCREEN) {
+        if (!mr_display_is_rtg(o->display)) {
             if (!append_option(out, cap, "--c2p") ||
                 !append_option(out, cap, c2p_name(o->c2p)) ||
                 !append_option(out, cap, o->laced ? "--laced" : "--no-laced") ||
@@ -186,8 +201,9 @@ static int append_playback_flags(char *out, size_t cap,
             !append_option(out, cap, "--p96")) return 0;
         if (o->display == MR_DISPLAY_P96_FULLSCREEN &&
             !append_option(out, cap, "--fullscreen")) return 0;
-        if (o->display != MR_DISPLAY_CGX && o->display != MR_DISPLAY_P96 &&
-            o->display != MR_DISPLAY_P96_FULLSCREEN) {
+        if (o->display == MR_DISPLAY_RTG_HALF &&
+            !append_option(out, cap, "--rtg-half")) return 0;
+        if (!mr_display_is_rtg(o->display)) {
             const char *flag = o->c2p == MR_C2P_AKIKO ? "--cd32" :
                                o->c2p == MR_C2P_KALMS ? "--kalms-c2p" :
                                o->c2p == MR_C2P_RIVA ? "--riva-c2p" :
@@ -228,7 +244,9 @@ static int append_playback_flags(char *out, size_t cap,
                            o->h264_performance == MR_H264_PERF_TURBO
                          ? "--h264-speed=turbo" :
                            o->h264_performance == MR_H264_PERF_TURBO_PLUS
-                         ? "--h264-speed=turbo+" : "--h264-speed=fast";
+                         ? "--h264-speed=turbo+" :
+                           o->h264_performance == MR_H264_PERF_SMOOSH
+                         ? "--h264-speed=smoosh" : "--h264-speed=fast";
         if (!append_option(out, cap, mode)) return 0;
     }
     /* Always explicit, like --throughput below: a GUI-launched session's
@@ -258,6 +276,11 @@ static int append_playback_flags(char *out, size_t cap,
     if (!append_option(out, cap,
                        o->throughput ? "--throughput" : "--no-throughput"))
         return 0;
+    /* Always explicit too, so the GUI's "Skip after" choice reaches mrplay
+     * (and survives an IPTV/YouTube browser's re-parse) unchanged. */
+    snprintf(number, sizeof(number), "--skip-trigger=%u",
+             clamp_skip_trigger(o->skip_trigger_ms));
+    if (!append_option(out, cap, number)) return 0;
     return 1;
 }
 
@@ -336,6 +359,7 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "cgx") || !strcmp(value, "rtg")) o->display = MR_DISPLAY_CGX;
             else if (!strcmp(value, "p96")) o->display = MR_DISPLAY_P96;
             else if (!strcmp(value, "p96-fullscreen")) o->display = MR_DISPLAY_P96_FULLSCREEN;
+            else if (!strcmp(value, "rtg-half")) o->display = MR_DISPLAY_RTG_HALF;
             else if (!strcmp(value, "ecs32")) o->display = MR_DISPLAY_AGA_ECS32;
             else if (!strcmp(value, "ecs16")) o->display = MR_DISPLAY_AGA_ECS16;
             else if (!strcmp(value, "ehb")) o->display = MR_DISPLAY_AGA_EHB;
@@ -368,6 +392,8 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "turbo")) o->h264_performance = MR_H264_PERF_TURBO;
             else if (!strcmp(value, "turbo+") || !strcmp(value, "turbo-plus"))
                 o->h264_performance = MR_H264_PERF_TURBO_PLUS;
+            else if (!strcmp(value, "smoosh"))
+                o->h264_performance = MR_H264_PERF_SMOOSH;
             /* TurboGT is a retired name, kept accepted here for scripts/
              * saved settings from before it collapsed onto Turbo's own
              * policy - see CLAUDE.md's H.264 TurboGT retirement notes. */
@@ -416,6 +442,12 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
         else if (!strcmp(arg, "--audio-stereo")) o->mono_audio = 0;
         else if (!strcmp(arg, "--throughput")) o->throughput = 1;
         else if (!strcmp(arg, "--no-throughput")) o->throughput = 0;
+        else if (!strncmp(arg, "--skip-trigger=", 15)) {
+            unsigned ms;
+            if (!parse_uint(arg + 15, &ms) || ms < MR_SKIP_TRIGGER_MIN_MS ||
+                ms > MR_SKIP_TRIGGER_MAX_MS) goto bad;
+            o->skip_trigger_ms = ms;
+        }
         else if (!strncmp(arg, "--fast-buffer=", 14)) {
             value = arg + 14;
             if (!strcmp(value, "auto")) o->fast_buffer = MR_FAST_BUFFER_AUTO;
@@ -472,7 +504,7 @@ static const char *fast_buffer_text(const mr_play_options *o)
 
 void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
 {
-    char hls[24];
+    char hls[24], video[32];
     const char *h264, *audio;
     if (!out || !cap || !o) return;
     hls_policy_text(o, hls, sizeof hls);
@@ -480,17 +512,24 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
            o->h264_performance == MR_H264_PERF_BALANCED ? "Balanced" :
            o->h264_performance == MR_H264_PERF_FAST ? "Fast" :
            o->h264_performance == MR_H264_PERF_TURBO ? "Turbo" :
-           o->h264_performance == MR_H264_PERF_TURBO_PLUS ? "Turbo+" : "Auto";
+           o->h264_performance == MR_H264_PERF_TURBO_PLUS ? "Turbo+" :
+           o->h264_performance == MR_H264_PERF_SMOOSH ? "Smoosh" : "Auto";
     audio = audio_policy_text(o);
-    if (o->display == MR_DISPLAY_CGX || o->display == MR_DISPLAY_P96 ||
-        o->display == MR_DISPLAY_P96_FULLSCREEN)
+    if (o->throughput)
+        snprintf(video, sizeof video, "All Frames");
+    else {
+        unsigned ms = clamp_skip_trigger(o->skip_trigger_ms);
+        snprintf(video, sizeof video, "Skip Frames after %u.%us",
+                 ms / 1000u, (ms % 1000u) / 100u);
+    }
+    if (mr_display_is_rtg(o->display))
         snprintf(out, cap, "Playback: RTG (%s) / %s / H264 %s / Audio %s / Fast buffer %s%s / Video %s",
                  o->display == MR_DISPLAY_P96 ? "P96" :
                  o->display == MR_DISPLAY_P96_FULLSCREEN ? "P96 Fullscreen" :
+                 o->display == MR_DISPLAY_RTG_HALF ? "Half" :
                  "WritePixel",
                  hls, h264, audio, fast_buffer_text(o),
-                 o->live_resync ? " / Live-resync" : "",
-                 o->throughput ? "All Frames" : "Skip Frames");
+                 o->live_resync ? " / Live-resync" : "", video);
     else
         snprintf(out, cap,
                  "Playback: %s / %s / Lace %s / 2x %s%s / %s / H264 %s / Audio %s / Fast buffer %s%s / Video %s",
@@ -504,6 +543,5 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
                  o->scale_2x && o->copper_vdouble ? " (copper)" : "",
                  hls, h264, audio,
                  fast_buffer_text(o),
-                 o->live_resync ? " / Live-resync" : "",
-                 o->throughput ? "All Frames" : "Skip Frames");
+                 o->live_resync ? " / Live-resync" : "", video);
 }

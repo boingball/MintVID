@@ -63,6 +63,72 @@ static void reference_convert(uint8_t *dst, int dst_stride,
     }
 }
 
+/* Spec for the half-size converters, written independently of the table
+ * code: 2x2 rounded luma average, the block's own chroma sample. */
+static void reference_convert_half(uint8_t *dst, int dst_stride,
+                                   const uint8_t *yp, int ys,
+                                   const uint8_t *up, int us,
+                                   const uint8_t *vp, int vs,
+                                   int width, int height, int bgr)
+{
+    int y, x;
+    for (y = 0; y < height / 2; y++) {
+        uint8_t *out = dst + y * dst_stride;
+        for (x = 0; x < width / 2; x++) {
+            const uint8_t *b = yp + (2 * y) * ys + 2 * x;
+            int c = (((int)b[0] + b[1] + b[ys] + b[ys + 1] + 2) >> 2) - 16;
+            int d = (int)up[y * us + x] - 128;
+            int e = (int)vp[y * vs + x] - 128;
+            uint8_t r, g, bl;
+            if (c < 0) c = 0;
+            r = reference_clip((298 * c + 409 * e + 128) >> 8);
+            g = reference_clip((298 * c - 100 * d - 208 * e + 128) >> 8);
+            bl = reference_clip((298 * c + 516 * d + 128) >> 8);
+            out[x * 3 + 0] = bgr ? bl : r;
+            out[x * 3 + 1] = g;
+            out[x * 3 + 2] = bgr ? r : bl;
+        }
+    }
+}
+
+static unsigned next_value(unsigned *state);
+
+static int run_half_case(int width, int height, unsigned seed)
+{
+    int ys = width + 3, cs = (width + 1) / 2 + 2, ds = (width / 2) * 3 + 5;
+    size_t yn = (size_t)ys * height, cn = (size_t)cs * ((height + 1) / 2);
+    size_t dn = (size_t)ds * (height / 2 + 1);
+    uint8_t *yp = (uint8_t *)malloc(yn), *up = (uint8_t *)malloc(cn);
+    uint8_t *vp = (uint8_t *)malloc(cn), *expected = (uint8_t *)malloc(dn);
+    uint8_t *actual = (uint8_t *)malloc(dn);
+    size_t i;
+    int ok, bgr;
+    if (!yp || !up || !vp || !expected || !actual) return 0;
+    for (i = 0; i < yn; i++) yp[i] = (uint8_t)(next_value(&seed) >> 24);
+    for (i = 0; i < cn; i++) up[i] = (uint8_t)(next_value(&seed) >> 24);
+    for (i = 0; i < cn; i++) vp[i] = (uint8_t)(next_value(&seed) >> 24);
+    ok = 1;
+    for (bgr = 0; bgr < 2 && ok; bgr++) {
+        memset(expected, 0xa5, dn);
+        memset(actual, 0xa5, dn);
+        reference_convert_half(expected, ds, yp, ys, up, cs, vp, cs,
+                               width, height, bgr);
+        if (bgr)
+            mr_yuv420_to_bgr24_half(actual, ds, yp, ys, up, cs, vp, cs,
+                                    width, height, NULL, NULL);
+        else
+            mr_yuv420_to_rgb24_half(actual, ds, yp, ys, up, cs, vp, cs,
+                                    width, height, NULL, NULL);
+        /* Byte-exact including the untouched padding bytes, so an
+         * off-by-one write past floor(w/2)/floor(h/2) fails too. */
+        ok = memcmp(expected, actual, dn) == 0;
+        if (!ok) fprintf(stderr, "YUV half %s mismatch at %dx%d\n",
+                         bgr ? "BGR" : "RGB", width, height);
+    }
+    free(yp); free(up); free(vp); free(expected); free(actual);
+    return ok;
+}
+
 static unsigned next_value(unsigned *state)
 {
     *state = *state * 1664525U + 1013904223U;
@@ -310,6 +376,24 @@ int main(void)
         for (j = 0; j < sizeof heights / sizeof heights[0]; j++)
             if (!run_case(widths[i], heights[j], 0x4d525956U + i * 31 + j))
                 return 1;
+    for (i = 0; i < sizeof widths / sizeof widths[0]; i++)
+        for (j = 0; j < sizeof heights / sizeof heights[0]; j++)
+            if (widths[i] >= 2 && heights[j] >= 2 &&
+                !run_half_case(widths[i], heights[j],
+                               0x48414c46U + i * 17 + j))
+                return 1;
+    if (!run_half_case(640, 360, 0x68616c66U)) return 1;
+    /* Service cadence: every 8 output rows (16 source rows). 34 source rows
+     * -> 17 output rows -> 2 calls. */
+    services = 0;
+    memset(y, 16, sizeof y); memset(u, 128, sizeof u); memset(v, 128, sizeof v);
+    mr_yuv420_to_rgb24_half(rgb, 3, y, 0, u, 0, v, 0, 2, 34,
+                            count_service, &services);
+    if (services != 2) {
+        fprintf(stderr, "half service count %d, expected 2\n", services);
+        return 1;
+    }
+    services = 0;
     if (!check_y4u2v2()) return 1;
     if (!check_y4u2v2_to_rgb24()) return 1;
     memset(y, 16, sizeof y); memset(u, 128, sizeof u); memset(v, 128, sizeof v);
@@ -322,6 +406,6 @@ int main(void)
 #if defined(MR_M68K_ASM)
     check_yuv_service_clobber();
 #endif
-    puts("YUV420 RGB/BGR and Y4U2V2 conversion: byte-exact");
+    puts("YUV420 RGB/BGR (full and half size) and Y4U2V2 conversion: byte-exact");
     return 0;
 }

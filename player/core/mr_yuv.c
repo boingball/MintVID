@@ -273,6 +273,77 @@ void mr_yuv420_to_bgr24(uint8_t *dst, int dst_stride,
 }
 
 /*
+ * Half-size conversion for the RTG "Half" display mode. Each output pixel is
+ * one 2x2 luma block (rounded average) plus the 4:2:0 chroma sample that
+ * already covers exactly that block, so no chroma is shared or interpolated
+ * and the colour math is the same table-driven formula as above. Compared
+ * with converting the full picture this computes one output pixel per four
+ * source pixels and writes a quarter of the bytes - the conversion itself
+ * and the WritePixelArray blit that follows both shrink by about 4x. A
+ * trailing odd source column/row is dropped (the output is floor(w/2) x
+ * floor(h/2)); the service hook runs every 8 output rows, i.e. every 16
+ * source rows, matching the full-size converter's cadence.
+ */
+MR_YUV_INLINE void yuv420_to_packed24_half(uint8_t *dst, int dst_stride,
+                                           const uint8_t *y_plane, int y_stride,
+                                           const uint8_t *u_plane, int u_stride,
+                                           const uint8_t *v_plane, int v_stride,
+                                           int width, int height,
+                                           mr_yuv_service_fn service,
+                                           void *service_opaque, int ri, int bi)
+{
+    int out_w = width >> 1, out_h = height >> 1, row;
+
+    for (row = 0; row < out_h; row++) {
+        const uint8_t *y0 = y_plane + (size_t)(row * 2) * y_stride;
+        const uint8_t *y1 = y0 + y_stride;
+        const uint8_t *su = u_plane + (size_t)row * u_stride;
+        const uint8_t *sv = v_plane + (size_t)row * v_stride;
+        uint8_t *o = dst + (size_t)row * dst_stride;
+        int x;
+        for (x = 0; x < out_w; x++) {
+            unsigned uu = su[x], vv = sv[x];
+            int luma = ((int)y0[2 * x] + y0[2 * x + 1] +
+                        y1[2 * x] + y1[2 * x + 1] + 2) >> 2;
+            emit_pixel(o, luma, g_e_x409[vv],
+                       g_d_xm100[uu] + g_e_xm208[vv], g_d_x516[uu], ri, bi);
+            o += 3;
+        }
+        if (service && (row & 7) == 7) service(service_opaque);
+    }
+}
+
+void mr_yuv420_to_rgb24_half(uint8_t *dst, int dst_stride,
+                             const uint8_t *y_plane, int y_stride,
+                             const uint8_t *u_plane, int u_stride,
+                             const uint8_t *v_plane, int v_stride,
+                             int width, int height,
+                             mr_yuv_service_fn service, void *service_opaque)
+{
+    if (!dst || !y_plane || !u_plane || !v_plane || width < 2 || height < 2)
+        return;
+    if (!g_tables_ready) build_tables();
+    yuv420_to_packed24_half(dst, dst_stride, y_plane, y_stride, u_plane,
+                            u_stride, v_plane, v_stride, width, height,
+                            service, service_opaque, 0, 2);
+}
+
+void mr_yuv420_to_bgr24_half(uint8_t *dst, int dst_stride,
+                             const uint8_t *y_plane, int y_stride,
+                             const uint8_t *u_plane, int u_stride,
+                             const uint8_t *v_plane, int v_stride,
+                             int width, int height,
+                             mr_yuv_service_fn service, void *service_opaque)
+{
+    if (!dst || !y_plane || !u_plane || !v_plane || width < 2 || height < 2)
+        return;
+    if (!g_tables_ready) build_tables();
+    yuv420_to_packed24_half(dst, dst_stride, y_plane, y_stride, u_plane,
+                            u_stride, v_plane, v_stride, width, height,
+                            service, service_opaque, 2, 0);
+}
+
+/*
  * Keep legal studio-range Y/Cb/Cr bytes unchanged. Expanding them to full
  * range caused severe white/black clipping in the P96 overlay. Passing all
  * 0..255 decoder output through unchanged fixed the broad clipping but left

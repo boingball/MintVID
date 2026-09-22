@@ -108,13 +108,34 @@ enum {
     G_IPTV,
     G_YOUTUBE,
     G_VOLUME,
-    G_PLAYLIST
+    G_PLAYLIST,
+    G_SKIP_AFTER
 };
 
 /* Chooser rows are chipset-dependent, so never infer a display mode from a
  * hard-coded row number. This map is populated alongside the labels. */
-static mr_display_mode mode_values[9];
+static mr_display_mode mode_values[10];
 static unsigned mode_count;
+/* "Skip after" chooser (--skip-trigger=). Kept file-level rather than
+ * threaded through every read_play_options() caller's argument list, since
+ * there is exactly one of it for the life of the window. Row i is
+ * skip_after_ms[i]; update_skip_after() greys it out whenever it would have
+ * no effect (Video: All Frames, or VQ Smoosh). */
+static Object *g_skip_after;
+static const unsigned skip_after_ms[] = {200, 500, 700, 1000, 1500, 2000};
+#define SKIP_AFTER_ROWS (sizeof skip_after_ms / sizeof skip_after_ms[0])
+
+static ULONG skip_after_row(unsigned ms)
+{
+    ULONG i, best = 2;
+    unsigned best_diff = ~0u;
+    for (i = 0; i < SKIP_AFTER_ROWS; i++) {
+        unsigned diff = ms > skip_after_ms[i] ? ms - skip_after_ms[i]
+                                              : skip_after_ms[i] - ms;
+        if (diff < best_diff) { best_diff = diff; best = i; }
+    }
+    return best;
+}
 static mr_c2p_mode c2p_values[5];
 static unsigned c2p_count;
 static int add_chooser_node(struct List *list, const char *text);
@@ -381,7 +402,7 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
      * keeps row 2 from ever landing here when it wouldn't actually engage. */
     options->scale_2x = selected_scale >= 1;
     options->copper_vdouble = selected_scale == 2;
-    options->h264_performance = selected_h264 <= MR_H264_PERF_TURBO_PLUS
+    options->h264_performance = selected_h264 <= MR_H264_PERF_SMOOSH
                               ? (mr_h264_performance)selected_h264
                               : MR_H264_PERF_AUTO;
     options->audio_rate = selected_audio_rate == 1
@@ -394,7 +415,30 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
     /* Video rows are fixed, like Scale: 0=All Frames (throughput on), 1=Skip
      * Frames (throughput off) - see where video_modes is built in main(). */
     options->throughput = selected_video_mode == 0;
+    if (g_skip_after) {
+        ULONG row = 2;
+        GetAttr(CHOOSER_Selected, g_skip_after, &row);
+        options->skip_trigger_ms = row < SKIP_AFTER_ROWS
+                                 ? skip_after_ms[row]
+                                 : MR_SKIP_TRIGGER_DEFAULT_MS;
+    }
     mr_saved_options_save(options);
+}
+
+/* "Skip after" only matters under Video: Skip Frames - see mrgui_gadtools.c's
+ * update_skip_after(), which this mirrors. */
+static void update_skip_after(Object *h264, Object *video_mode,
+                              struct Window *window)
+{
+    ULONG selected_h264 = 0, selected_video_mode = 0;
+    if (!g_skip_after) return;
+    GetAttr(CHOOSER_Selected, h264, &selected_h264);
+    GetAttr(CHOOSER_Selected, video_mode, &selected_video_mode);
+    SetGadgetAttrs((struct Gadget *)g_skip_after, window, NULL,
+                   GA_Disabled, (selected_video_mode == 0 ||
+                                 selected_h264 == MR_H264_PERF_SMOOSH)
+                                ? TRUE : FALSE,
+                   TAG_DONE);
 }
 
 static void publish_play_options(mr_master_options_port *master_options,
@@ -561,9 +605,7 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
     selected = 0;
     GetAttr(CHOOSER_Selected, mode, &selected);
     disable_chipset_options = selected < mode_count &&
-                              (mode_values[selected] == MR_DISPLAY_CGX ||
-                               mode_values[selected] == MR_DISPLAY_P96 ||
-                               mode_values[selected] == MR_DISPLAY_P96_FULLSCREEN)
+                              mr_display_is_rtg(mode_values[selected])
                             ? TRUE : FALSE;
 
     selected_c2p = 0;
@@ -1284,6 +1326,8 @@ int main(void)
     struct List c2p_modes;
     struct List h264_modes;
     struct List scale_modes;
+    struct List skip_after_modes;
+    Object *skip_after_label;
     struct List audio_rate_modes;
     struct List fast_buffer_modes;
     struct List video_modes;
@@ -1301,7 +1345,7 @@ int main(void)
     int have_saved_options;
     ULONG initial_c2p, initial_h264, initial_laced, initial_scale;
     ULONG initial_audio_rate, initial_fast_buffer, initial_no_audio;
-    ULONG initial_mono_audio, initial_video_mode;
+    ULONG initial_mono_audio, initial_video_mode, initial_skip_after;
 
     window_object = NULL;
     timermask = 0;
@@ -1362,6 +1406,11 @@ int main(void)
     scale_modes.lh_Head = (struct Node *)&scale_modes.lh_Tail;
     scale_modes.lh_Tail = NULL;
     scale_modes.lh_TailPred = (struct Node *)&scale_modes.lh_Head;
+    skip_after_modes.lh_Head = (struct Node *)&skip_after_modes.lh_Tail;
+    skip_after_modes.lh_Tail = NULL;
+    skip_after_modes.lh_TailPred = (struct Node *)&skip_after_modes.lh_Head;
+    skip_after_label = NULL;
+    g_skip_after = NULL;
     audio_rate_modes.lh_Head = (struct Node *)&audio_rate_modes.lh_Tail;
     audio_rate_modes.lh_Tail = NULL;
     audio_rate_modes.lh_TailPred = (struct Node *)&audio_rate_modes.lh_Head;
@@ -1396,6 +1445,9 @@ int main(void)
         (chipset_has_aga() &&
          !add_mode_node(&modes, "HAM8", MR_DISPLAY_HAM8)) ||
         (have_rtg && !add_mode_node(&modes, "RTG (WritePixel)", MR_DISPLAY_CGX)) ||
+        /* Half-resolution WritePixel for boards with no working P96
+         * overlay (PiStorm): a quarter of the YUV->RGB and blit work. */
+        (have_rtg && !add_mode_node(&modes, "RTG (Half)", MR_DISPLAY_RTG_HALF)) ||
         (have_rtg && !add_mode_node(&modes, "P96 (Windowed)", MR_DISPLAY_P96)) ||
         (have_rtg && !add_mode_node(&modes, "P96 (Fullscreen)",
                                     MR_DISPLAY_P96_FULLSCREEN)))
@@ -1427,7 +1479,15 @@ int main(void)
         !add_chooser_node(&h264_modes, "Balanced") ||
         !add_chooser_node(&h264_modes, "Fast") ||
         !add_chooser_node(&h264_modes, "Turbo") ||
-        !add_chooser_node(&h264_modes, "Turbo+"))
+        !add_chooser_node(&h264_modes, "Turbo+") ||
+        !add_chooser_node(&h264_modes, "Smoosh"))
+        goto cleanup;
+    if (!add_chooser_node(&skip_after_modes, "0.2s") ||
+        !add_chooser_node(&skip_after_modes, "0.5s") ||
+        !add_chooser_node(&skip_after_modes, "0.7s") ||
+        !add_chooser_node(&skip_after_modes, "1.0s") ||
+        !add_chooser_node(&skip_after_modes, "1.5s") ||
+        !add_chooser_node(&skip_after_modes, "2.0s"))
         goto cleanup;
     /* Rows are fixed, unlike mode/c2p - no value-array indirection needed;
      * read_play_options() and update_mode_controls() both hard-code
@@ -1474,7 +1534,7 @@ int main(void)
     initial_c2p = have_saved_options ? c2p_row(saved_options.c2p)
                                      : c2p_row(MR_C2P_KALMS);
     initial_h264 = have_saved_options &&
-                   saved_options.h264_performance <= MR_H264_PERF_TURBO_PLUS
+                   saved_options.h264_performance <= MR_H264_PERF_SMOOSH
                  ? (ULONG)saved_options.h264_performance
                  : (ULONG)MR_H264_PERF_TURBO;
     initial_laced = have_saved_options && saved_options.laced ? TRUE : FALSE;
@@ -1494,6 +1554,9 @@ int main(void)
                         ? TRUE : FALSE;
     initial_video_mode = have_saved_options && !saved_options.throughput
                         ? 1 : 0;
+    initial_skip_after = skip_after_row(have_saved_options
+                                        ? saved_options.skip_trigger_ms
+                                        : MR_SKIP_TRIGGER_DEFAULT_MS);
 
     /* Seed the embedded file requester's starting drawer from the last one
      * used, saved via mr_last_dir_save() in update_file_info() below.
@@ -1587,6 +1650,15 @@ int main(void)
                                      CHOOSER_Labels, (ULONG)&video_modes,
                                      CHOOSER_Selected, initial_video_mode,
                                      TAG_DONE);
+    g_skip_after = (Object *)NewObject(CHOOSER_GetClass(), NULL,
+                                       GA_ID, G_SKIP_AFTER,
+                                       GA_RelVerify, TRUE,
+                                       CHOOSER_Labels, (ULONG)&skip_after_modes,
+                                       CHOOSER_Selected, initial_skip_after,
+                                       TAG_DONE);
+    skip_after_label = (Object *)NewObject(LABEL_GetClass(), NULL,
+                                           LABEL_Text, (ULONG)"Skip after",
+                                           TAG_DONE);
     info = (Object *)NewObject(STRING_GetClass(), NULL,
                                GA_ReadOnly, TRUE,
                                STRINGA_TextVal, (ULONG)"No file selected",
@@ -1622,7 +1694,7 @@ int main(void)
 
     if (!file || !mode || !c2p || !h264 || !lace || !scale ||
         !audio_rate || !fast_buffer || !no_audio || !mono_audio ||
-        !video_mode || !info ||
+        !video_mode || !g_skip_after || !skip_after_label || !info ||
         !file_label || !display_label || !c2p_label || !h264_label ||
         !scale_label || !audio_rate_label || !fast_buffer_label ||
         !video_mode_label)
@@ -1667,6 +1739,8 @@ int main(void)
                                           CHILD_WeightedWidth, 0,
                                           LAYOUT_AddChild, (ULONG)video_mode,
                                           CHILD_Label, (ULONG)video_mode_label,
+                                          LAYOUT_AddChild, (ULONG)g_skip_after,
+                                          CHILD_Label, (ULONG)skip_after_label,
                                           TAG_DONE);
     if (!controls_bottom)
         goto cleanup;
@@ -1824,6 +1898,7 @@ int main(void)
     mr_gui_menu_open(&app_menu, window);
 
     update_mode_controls(mode, c2p, lace, scale, window, TRUE);
+    update_skip_after(h264, video_mode, window);
     master_options = mr_master_options_open();
     publish_play_options(master_options, mode, c2p, h264, lace, scale,
                          audio_rate, fast_buffer, no_audio, mono_audio,
@@ -1896,12 +1971,19 @@ int main(void)
                     break;
 
                 case G_H264:
+                case G_VIDEO_MODE:
+                    update_skip_after(h264, video_mode, window);
+                    publish_play_options(master_options, mode, c2p, h264,
+                                         lace, scale, audio_rate, fast_buffer,
+                                         no_audio, mono_audio, video_mode);
+                    break;
+
                 case G_LACE:
                 case G_AUDIO_RATE:
                 case G_FAST_BUFFER:
                 case G_NO_AUDIO:
                 case G_MONO_AUDIO:
-                case G_VIDEO_MODE:
+                case G_SKIP_AFTER:
                     publish_play_options(master_options, mode, c2p, h264,
                                          lace, scale, audio_rate, fast_buffer,
                                          no_audio, mono_audio, video_mode);
@@ -2014,6 +2096,8 @@ cleanup:
                 if (audio_rate_label) DisposeObject(audio_rate_label);
                 if (fast_buffer_label) DisposeObject(fast_buffer_label);
                 if (video_mode_label) DisposeObject(video_mode_label);
+                if (g_skip_after) DisposeObject(g_skip_after);
+                if (skip_after_label) DisposeObject(skip_after_label);
             }
         }
 
@@ -2053,6 +2137,8 @@ cleanup:
     free_chooser_nodes(&audio_rate_modes);
     free_chooser_nodes(&fast_buffer_modes);
     free_chooser_nodes(&video_modes);
+    free_chooser_nodes(&skip_after_modes);
+    g_skip_after = NULL;
     close_reaction_classes();
     return status;
 }

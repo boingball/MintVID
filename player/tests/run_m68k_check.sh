@@ -607,6 +607,17 @@ $CC -o "$BUILD/mr_mpeg2_bskip_check.m68k" tests/mr_mpeg2_bskip_check.c \
     -Wl,--wrap=ih264d_update_qp -lm
 echo "[MPEG-2 B-frame skip (mr_mpeg2_set_speed_mode Fast), real m68k/big-endian]"
 run "$BUILD/mr_mpeg2_bskip_check.m68k"
+echo "== building mr_h264_smoosh_check.m68k =="
+$CC -o "$BUILD/mr_h264_smoosh_check.m68k" tests/mr_h264_smoosh_check.c \
+    $CORE $LIBAVC_SRC \
+    -Wl,--wrap=ih264d_decode_bin \
+    -Wl,--wrap=ih264d_mvpred_nonmbaff \
+    -Wl,--wrap=ih264d_mvpred_nonmbaffB \
+    -Wl,--wrap=ih264d_parse_residual4x4_cabac \
+    -Wl,--wrap=ih264d_read_coeff4x4_cabac \
+    -Wl,--wrap=ih264d_update_qp -lm
+echo "[H.264 Smoosh keyframe classifier + datamosh drops, real m68k/big-endian]"
+run "$BUILD/mr_h264_smoosh_check.m68k"
 echo "[MPEG-4 Part 2 Simple Profile, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_mp4v_sp.avi \
     --check tests/assets/ref_mp4v_sp

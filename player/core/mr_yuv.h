@@ -32,6 +32,25 @@ void mr_yuv420_to_bgr24(uint8_t *dst, int dst_stride,
                         int width, int height,
                         mr_yuv_service_fn service, void *service_opaque);
 
+/* Half-resolution variants for the RTG "Half" display mode: write a
+ * (width/2) x (height/2) packed picture where each pixel is the rounded
+ * average of one 2x2 luma block with that block's own 4:2:0 chroma sample.
+ * width/height are the *source* dimensions (>= 2); an odd trailing
+ * column/row is dropped. Same colour formula and clipping as the full-size
+ * converters; the service hook runs every 8 output rows. */
+void mr_yuv420_to_rgb24_half(uint8_t *dst, int dst_stride,
+                             const uint8_t *y_plane, int y_stride,
+                             const uint8_t *u_plane, int u_stride,
+                             const uint8_t *v_plane, int v_stride,
+                             int width, int height,
+                             mr_yuv_service_fn service, void *service_opaque);
+void mr_yuv420_to_bgr24_half(uint8_t *dst, int dst_stride,
+                             const uint8_t *y_plane, int y_stride,
+                             const uint8_t *u_plane, int u_stride,
+                             const uint8_t *v_plane, int v_stride,
+                             int width, int height,
+                             mr_yuv_service_fn service, void *service_opaque);
+
 /* Repack planar 4:2:0 as the packed 4:2:2 byte layout used by RiVA's
  * Picasso96 PIP path: Y0,V0,Y1,U0 (YVYU) by default, or
  * Y0,U0,Y1,V0 (YUYV) when configured for a different driver. No

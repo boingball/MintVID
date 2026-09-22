@@ -67,6 +67,11 @@ typedef struct {
     void     *quit_opaque;
     mr_h264_timing timing;
     int       skip_output;
+    /* Smoosh: when set for the next mr_decoder_decode() call, an access
+     * unit that carries no keyframe (no IDR, I or SI slice) and no
+     * parameter set is dropped here, before libavc ever sees it - see
+     * mr_h264_set_drop_nonsync(). */
+    int       drop_nonsync;
     /* The frame-skip mode mr_h264_set_speed_mode() last selected for the
      * current H.264 performance setting (IVD_SKIP_NONE/B/PB - Quality/
      * Balanced/Fast ask for NONE, Turbo for B, Turbo+ for PB).
@@ -347,6 +352,125 @@ static uint32_t read_nal_size(const uint8_t *p, unsigned bytes)
     unsigned i;
     for (i = 0; i < bytes; i++) n = (n << 8) | p[i];
     return n;
+}
+
+/* Minimal RBSP bit reader for the first two slice-header fields. Skips
+ * emulation-prevention bytes (00 00 03) the same way a real parser does,
+ * although first_mb_in_slice/slice_type almost never contain one. */
+typedef struct {
+    const uint8_t *p;
+    uint32_t len, pos, zeros;
+    unsigned cur, bits;
+} h264_rbsp_reader;
+
+static int rbsp_bit(h264_rbsp_reader *r)
+{
+    if (!r->bits) {
+        uint8_t b;
+        if (r->pos >= r->len) return -1;
+        b = r->p[r->pos++];
+        if (r->zeros >= 2 && b == 3) {
+            r->zeros = 0;
+            if (r->pos >= r->len) return -1;
+            b = r->p[r->pos++];
+        }
+        r->zeros = b ? 0 : r->zeros + 1;
+        r->cur = b;
+        r->bits = 8;
+    }
+    r->bits--;
+    return (int)((r->cur >> r->bits) & 1u);
+}
+
+/* ue(v); returns -1 on truncation or an implausibly long prefix. */
+static long rbsp_ue(h264_rbsp_reader *r)
+{
+    int zeros = 0, i, b;
+    unsigned long v = 0;
+    while ((b = rbsp_bit(r)) == 0)
+        if (++zeros > 24) return -1;
+    if (b < 0) return -1;
+    for (i = 0; i < zeros; i++) {
+        b = rbsp_bit(r);
+        if (b < 0) return -1;
+        v = (v << 1) | (unsigned long)b;
+    }
+    return (long)(((1ul << zeros) - 1ul) + v);
+}
+
+/* Classifies one NAL for Smoosh: 2 = keyframe/parameter set (never drop),
+ * 1 = an ordinary P/B slice (droppable), 0 = anything else (SEI, AUD...). */
+static int nal_sync_class(const uint8_t *nal, uint32_t n)
+{
+    unsigned type;
+    h264_rbsp_reader r;
+    long slice_type;
+    if (!n) return 0;
+    type = nal[0] & 0x1fu;
+    if (type == 5 || type == 7 || type == 8) return 2;
+    if (type != 1) return 0;
+    memset(&r, 0, sizeof r);
+    r.p = nal + 1;
+    r.len = n - 1u;
+    if (rbsp_ue(&r) < 0) return 2;          /* first_mb_in_slice */
+    slice_type = rbsp_ue(&r);
+    /* Unreadable header: let libavc decide rather than guess. */
+    if (slice_type < 0) return 2;
+    slice_type %= 5;
+    return (slice_type == 2 || slice_type == 4) ? 2 : 1;  /* I / SI */
+}
+
+/* Non-zero when this access unit may be dropped by Smoosh: it has at least
+ * one ordinary P/B slice and nothing that would make it a keyframe or change
+ * decoder parameters. Anything unparseable counts as a keyframe - dropping
+ * too little only costs speed, dropping a keyframe costs the whole GOP. */
+static int h264_au_droppable(const h264_state *s, const uint8_t *data,
+                             uint32_t len)
+{
+    int have_slice = 0;
+    if (s->input_annexb) {
+        uint32_t i = 0, start = 0;
+        int in_nal = 0;
+        while (i + 2 < len) {
+            if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) {
+                if (in_nal) {
+                    uint32_t end = i;
+                    int c;
+                    while (end > start && data[end - 1] == 0) end--;
+                    c = nal_sync_class(data + start, end - start);
+                    if (c == 2) return 0;
+                    if (c == 1) have_slice = 1;
+                }
+                i += 3;
+                start = i;
+                in_nal = 1;
+                continue;
+            }
+            i++;
+        }
+        if (in_nal && start < len) {
+            int c = nal_sync_class(data + start, len - start);
+            if (c == 2) return 0;
+            if (c == 1) have_slice = 1;
+        }
+    } else {
+        uint32_t p = 0;
+        unsigned nls = s->nal_length_size;
+        if (nls < 1 || nls > 4) return 0;
+        while (p < len) {
+            uint32_t n;
+            int c;
+            if (len - p < nls) return 0;
+            n = read_nal_size(data + p, nls);
+            p += nls;
+            if (!n || n > len - p) return 0;
+            c = nal_sync_class(data + p, n);
+            if (c == 2) return 0;
+            if (c == 1) have_slice = 1;
+            p += n;
+        }
+    }
+    return have_slice;
 }
 
 /* Convert one MP4 sample (one AVCC access unit) to Annex B. */
@@ -749,6 +873,17 @@ static mr_status h264_decode(mr_decoder *dec,
     s->output_pts_valid = 0;
     memset(&s->timing, 0, sizeof s->timing);
 
+    /* Smoosh: skip an ordinary P/B access unit outright. libavc then decodes
+     * the next surviving picture against whatever reference it last had -
+     * visibly smeared ("datamoshed") motion until the next keyframe, which
+     * resynchronises everything exactly. The pending PTS belonged to the
+     * dropped picture, so forget it rather than pinning it to the next one. */
+    if (s->drop_nonsync && h264_au_droppable(s, data, len)) {
+        s->pending_input_pts_set = 0;
+        s->pending_input_has_pts = 0;
+        return MR_SKIPPED;
+    }
+
     /* input_mark/call_mark/rgb_mark/stage-profile bookkeeping below only
      * ever populate s->timing, which nothing reads unless
      * mr_h264_set_timing_enabled() was turned on (mrplay.c does that under
@@ -951,6 +1086,14 @@ static mr_status h264_decode(mr_decoder *dec,
     return ret == IV_SUCCESS ? MR_EAGAIN : MR_EFORMAT;
 }
 
+void mr_h264_set_drop_nonsync(mr_decoder *dec, int drop)
+{
+    h264_state *s;
+    if (!dec || dec->codec != &mr_codec_h264 || !dec->priv) return;
+    s = (h264_state *)dec->priv;
+    s->drop_nonsync = drop != 0;
+}
+
 void mr_h264_set_skip_output(mr_decoder *dec, int skip)
 {
     h264_state *s;
@@ -1120,7 +1263,12 @@ int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode)
         in.i4_degrade_pics = 4;
         break;
     case MR_H264_SPEED_TURBO:
-        /* Fast's cheap filtering plus decoder-level B-picture skipping. */
+    case MR_H264_SPEED_SMOOSH:
+        /* Fast's cheap filtering plus decoder-level B-picture skipping.
+         * Smoosh decodes with exactly Turbo's policy; its P-picture drops
+         * are decided per packet by the caller (mr_h264_set_drop_nonsync()),
+         * not by libavc's frame-skip modes, which can only skip whole runs
+         * up to the next IDR. */
         mc = MR_MC_QUALITY_BILINEAR;
         skip_mode = IVD_SKIP_B;
         in.i4_degrade_type = (1 << 1) | (1 << 3);

@@ -5122,6 +5122,98 @@ iptvgui/ytgui session, and the MPEG-2 Fast mode's real-hardware speedup,
 both still need a real-hardware retest to confirm, the same standing
 caveat as DV's own speed mode before it.
 
+## YouTube below 360p, Smoosh, RTG Half, and the Skip Frames trigger
+A real PiStorm log (YouTube 360p, Turbo, P96 overlay refused with
+`PIPERR_OUTOFPENS` so it fell back to CGX) and a real A1200/68060 log (same
+source, AGA, Turbo+) prompted three requests: a lower YouTube quality, a VQ
+mode between Turbo and Turbo+, and a cheaper RTG path.
+
+**YouTube has no MintVID-playable format below 360p any more.** Probed
+live from this dev host against `youtubei.googleapis.com` (youtube.com and
+googlevideo.com are blocked here, the API host is not) with every client
+identity yt-dlp 2026.08.19 uses: WEB with the Safari UA returns
+UNPLAYABLE - yt-dlp's own source documents that since 2026.07 its muxed
+144p-1080p HLS (itags 91-96) is "only returned with some logged-in or
+trusted sessions"; ANDROID offers muxed itag 18 (360p) only, with 144p
+existing solely as video-only adaptive itag 160 behind a signatureCipher;
+IOS returns video-only/audio-only adaptive formats and a `demuxed=1` HLS,
+both of which yt-dlp marks as needing a GVS PO token, and which would need
+two simultaneous HTTPS connections that the AmiSSL design rules out.
+yt-dlp also notes ANDROID_VR 1.65.10 has been 403'd for every format since
+2026.08.17 (MintVID still tries it as a fallback). Nothing was changed in
+the resolver.
+
+**Why Turbo and Turbo+ are so far apart on YouTube: itag 18 is H.264
+Baseline (`avc1.42001E`).** No B-frames, so Turbo's `IVD_SKIP_B` skips
+nothing, and every P picture is a reference, so the only clean choices are
+"decode everything" or "keyframes only". The "Skip Frames" micro-rescue
+escalation (`IVD_SKIP_PB` until the next IDR) is the clean middle ground:
+bursts of motion, then a freeze.
+
+**Smoosh (`--h264-speed=smoosh`, `MR_H264_PERF_SMOOSH`, GUI "VQ: Smoosh")
+is the deliberately unclean one.** Turbo's decode policy, plus: an ordinary
+P/B access unit more than one frame period late (the same
+`mono_media_clock_us - (pts + container_pts_adjust_us) > period_us` signal
+as `pts_late`) is never handed to libavc
+(`mr_h264_set_drop_nonsync()`, returns `MR_SKIPPED`). The next surviving P
+picture predicts from a stale reference, so motion smears ("datamosh")
+until the next keyframe restores the picture exactly. The classifier
+(`h264_au_droppable()` in `core/mr_h264.c`) walks both AVCC and Annex-B
+NALs and never drops an IDR, an I/SI slice (first two slice-header ue(v)
+fields, emulation-prevention aware) or anything carrying SPS/PPS; anything
+it cannot parse counts as a keyframe. Smoosh applies regardless of "All
+Frames", and disables micro-rescue's entry (its `IVD_SKIP_PB` escalation
+would freeze the very thing Smoosh keeps moving). Live-resync's
+reference-only catch-up clears the drop flag. An earlier ad-hoc host
+experiment (dropping 1-in-2..1-in-5 P frames of a 640x360 Baseline clip)
+measured MAE 30-78 against ffmpeg until the next keyframe - visibly
+smeared, which is the point; it is not a quality mode.
+
+`tests/mr_h264_smoosh_check.c` (host + `check-m68k`, also clean under
+ASan/UBSan) pins it differentially against our own full decode on a new
+3-keyframe Baseline fixture (`test_h264_gop.mp4` and its TS remux, so both
+input paths) and on the High-profile B-frame fixtures: dropping everything
+droppable leaves exactly the keyframes, byte-identical; a 2-in-3 drop
+pattern really drops pictures and every keyframe afterwards is byte-exact
+again. Baseline decodes with zero libavc errors under drops; the B-frame
+streams get one refused picture (a P whose references were dropped -
+mrplay logs `h264-decode-error` and carries on) and still resynchronise at
+the next keyframe.
+
+**RTG (Half) (`--rtg-half`, `MR_DISPLAY_RTG_HALF`).** The PiStorm log
+showed `yuv-rgb=57 ms` against `vdecode=72 ms` per frame: the CPU colour
+conversion for the CGX fallback cost nearly as much as decoding. Half mode
+opens the window at (w/2)x(h/2) and converts straight to that size with
+`mr_yuv420_to_rgb24_half()`/`_bgr24_half()` (rounded 2x2 luma average plus
+that block's own 4:2:0 chroma sample, same table formula as the full-size
+converter), so both conversion and blit shrink ~4x; under qemu-m68k at
+640x360 it measured 1.25-1.41 ms/frame against 3.44-3.74 ms for the
+full-size converter (instruction count only - the 4x smaller write
+traffic, which qemu does not model, should add to that on hardware).
+Byte-exact against an independent reference in `tests/mr_yuv_check.c`,
+including padding bytes and odd sizes. H.264 only; it engages only when
+the opened backend is an RGB RTG one - a P96 overlay (YUV, board-scaled)
+or an AGA screen is closed and reopened at full size. Enlarging the half
+window, or F for fullscreen, goes through CGX's CPU scaler and gives some
+of the saving back.
+
+**Skip Frames trigger (`--skip-trigger=200..2000`, GUI "Skip after").**
+`MICRO_RESCUE_ENTRY_US` (700 ms) is now only the default; the exit
+threshold is `min(200 ms, trigger/2)` (`skip_trigger_exit_us()`) so a
+0.2 s trigger cannot flap. `mr_play_options.skip_trigger_ms` is always
+emitted (clamped) and re-parsed like `--throughput`, and both GUIs grey
+the chooser out under "All Frames" or VQ Smoosh, where it has no effect.
+`mr_play_options` grew a field, so a previously saved
+`ENVARC:MintVID.settings` is discarded once (the size check in
+`mr_saved_options.h`), falling back to defaults.
+
+The ReAction GUI keeps the new chooser in a file-level `g_skip_after`
+instead of threading another `Object *` through every
+`read_play_options()` caller. `mrplay.c`, `mrgui.c` and `mrgui_gadtools.c`
+cannot be compiled on this dev host (CI's real AmigaOS `build` job is the
+compile check); none of Smoosh, RTG Half or the trigger has run on real
+hardware yet.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.

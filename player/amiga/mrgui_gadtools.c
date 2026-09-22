@@ -52,7 +52,7 @@ enum {
     G_FILE = 1, G_BROWSE, G_MODE, G_C2P, G_H264, G_LACE, G_SCALE,
     G_AUDIO_RATE, G_FAST_BUFFER, G_NO_AUDIO, G_MONO_AUDIO, G_VIDEO_MODE,
     G_PLAY, G_PAUSE, G_STOP, G_FAST, G_IPTV, G_YOUTUBE, G_VOLUME, G_INFO,
-    G_PLAYLIST
+    G_PLAYLIST, G_SKIP_AFTER
 };
 
 typedef struct gt_app {
@@ -62,7 +62,7 @@ typedef struct gt_app {
     struct Gadget *gadgets;
     struct Gadget *file, *mode, *c2p, *h264, *lace, *scale, *info;
     struct Gadget *audio_rate, *fast_buffer, *no_audio, *mono_audio;
-    struct Gadget *video_mode, *volume;
+    struct Gadget *video_mode, *volume, *skip_after;
     struct Gadget *iptv;
     struct Window *plWin;
     struct Gadget *plGadgets, *plGadContext, *plGadList;
@@ -79,8 +79,8 @@ typedef struct gt_app {
     struct FileRequester *requester;
     mr_master_options_port *master;
     mr_gui_menu menu;
-    mr_display_mode modes[9];
-    STRPTR mode_labels[10];
+    mr_display_mode modes[10];
+    STRPTR mode_labels[11];
     unsigned mode_count;
     mr_c2p_mode c2p_modes[5];
     STRPTR c2p_labels[6];
@@ -101,7 +101,7 @@ typedef struct gt_app {
 static STRPTR h264_labels[] = {(STRPTR)"VQ: Auto", (STRPTR)"VQ: Quality",
                               (STRPTR)"VQ: Balanced", (STRPTR)"VQ: Fast",
                               (STRPTR)"VQ: Turbo", (STRPTR)"VQ: Turbo+",
-                              NULL};
+                              (STRPTR)"VQ: Smoosh", NULL};
 /* Fixed, unlike mode_labels/c2p_labels - no value-array indirection needed:
  * read_options()/update_mode_controls() both hard-code 0=None, 1=2x,
  * 2=Copper 2x to match this exact order. GadTools cycle gadgets don't
@@ -122,6 +122,31 @@ static STRPTR audio_rate_labels[] = {(STRPTR)"Audio: Normal",
  * regression All Frames fixes. */
 static STRPTR video_labels[] = {(STRPTR)"Video: All Frames",
                                (STRPTR)"Video: Skip Frames", NULL};
+/* "Skip after": how far a "Video: Skip Frames" session may fall behind
+ * before it starts skipping (--skip-trigger=). Row i is skip_after_ms[i];
+ * 0.7s (row 2) is mrplay's long-standing default. Only meaningful with
+ * Skip Frames, so update_skip_after() greys it out otherwise. */
+static STRPTR skip_after_labels[] = {(STRPTR)"Skip after: 0.2s",
+                                    (STRPTR)"Skip after: 0.5s",
+                                    (STRPTR)"Skip after: 0.7s",
+                                    (STRPTR)"Skip after: 1.0s",
+                                    (STRPTR)"Skip after: 1.5s",
+                                    (STRPTR)"Skip after: 2.0s", NULL};
+static const unsigned skip_after_ms[] = {200, 500, 700, 1000, 1500, 2000};
+#define SKIP_AFTER_ROWS (sizeof skip_after_ms / sizeof skip_after_ms[0])
+
+static ULONG skip_after_row(unsigned ms)
+{
+    ULONG i, best = 2;
+    unsigned best_diff = ~0u;
+    for (i = 0; i < SKIP_AFTER_ROWS; i++) {
+        unsigned diff = ms > skip_after_ms[i] ? ms - skip_after_ms[i]
+                                              : skip_after_ms[i] - ms;
+        if (diff < best_diff) { best_diff = diff; best = i; }
+    }
+    return best;
+}
+
 static STRPTR fast_buffer_labels[] = {(STRPTR)"Fast buffer: Auto",
                                      (STRPTR)"Fast buffer: Off",
                                      (STRPTR)"Fast buffer: 4 MB",
@@ -325,7 +350,7 @@ static void read_options(gt_app *app, mr_play_options *options)
                                                : MR_DISPLAY_AGA;
     options->c2p = c2p < app->c2p_count
                  ? app->c2p_modes[c2p] : MR_C2P_STANDARD;
-    options->h264_performance = h264 <= MR_H264_PERF_TURBO_PLUS
+    options->h264_performance = h264 <= MR_H264_PERF_SMOOSH
                               ? (mr_h264_performance)h264
                               : MR_H264_PERF_AUTO;
     options->laced = gad_value(app, app->lace, GTCB_Checked) != 0;
@@ -343,7 +368,25 @@ static void read_options(gt_app *app, mr_play_options *options)
     options->mono_audio = gad_value(app, app->mono_audio, GTCB_Checked) != 0;
     options->throughput =
         gad_value(app, app->video_mode, GTCY_Active) == 0;
+    {
+        ULONG row = gad_value(app, app->skip_after, GTCY_Active);
+        options->skip_trigger_ms = row < SKIP_AFTER_ROWS
+                                 ? skip_after_ms[row]
+                                 : MR_SKIP_TRIGGER_DEFAULT_MS;
+    }
     mr_saved_options_save(options);
+}
+
+/* "Skip after" only changes anything under Video: Skip Frames - All Frames
+ * never skips for lateness, and VQ Smoosh drops late pictures itself. */
+static void update_skip_after(gt_app *app)
+{
+    ULONG all_frames = gad_value(app, app->video_mode, GTCY_Active) == 0;
+    ULONG smoosh = gad_value(app, app->h264, GTCY_Active) ==
+                   MR_H264_PERF_SMOOSH;
+    GT_SetGadgetAttrs(app->skip_after, app->window, NULL,
+                     GA_Disabled, (all_frames || smoosh) ? TRUE : FALSE,
+                     TAG_DONE);
 }
 
 static void publish_options(gt_app *app)
@@ -357,9 +400,7 @@ static void update_mode_controls(gt_app *app, int output_changed)
 {
     ULONG selected = gad_value(app, app->mode, GTCY_Active);
     ULONG disabled = selected < app->mode_count &&
-                     (app->modes[selected] == MR_DISPLAY_CGX ||
-                      app->modes[selected] == MR_DISPLAY_P96 ||
-                      app->modes[selected] == MR_DISPLAY_P96_FULLSCREEN);
+                     mr_display_is_rtg(app->modes[selected]);
     ULONG selected_c2p = gad_value(app, app->c2p, GTCY_Active);
     mr_c2p_mode selected_c2p_mode = selected_c2p < app->c2p_count
                                   ? app->c2p_modes[selected_c2p]
@@ -967,7 +1008,7 @@ static int build_window(gt_app *app)
     int have_saved_options;
     ULONG initial_c2p, initial_h264, initial_laced, initial_scale;
     ULONG initial_audio_rate, initial_fast_buffer, initial_no_audio;
-    ULONG initial_mono_audio, initial_video_mode;
+    ULONG initial_mono_audio, initial_video_mode, initial_skip_after;
 
     app->screen = LockPubScreen(NULL);
     if (!app->screen)
@@ -1001,6 +1042,10 @@ static int build_window(gt_app *app)
     if (screen_is_rtg(app->screen)) {
         app->mode_labels[app->mode_count] = (STRPTR)"Display: RTG (WritePixel)";
         app->modes[app->mode_count++] = MR_DISPLAY_CGX;
+        /* Half-resolution WritePixel for boards with no working P96
+         * overlay (PiStorm): a quarter of the YUV->RGB and blit work. */
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: RTG (Half)";
+        app->modes[app->mode_count++] = MR_DISPLAY_RTG_HALF;
         app->mode_labels[app->mode_count] = (STRPTR)"Display: P96 (Windowed)";
         app->modes[app->mode_count++] = MR_DISPLAY_P96;
         app->mode_labels[app->mode_count] = (STRPTR)"Display: P96 (Fullscreen)";
@@ -1045,7 +1090,7 @@ static int build_window(gt_app *app)
     initial_c2p = have_saved_options ? c2p_row(app, saved_options.c2p)
                                      : c2p_row(app, MR_C2P_KALMS);
     initial_h264 = have_saved_options &&
-                   saved_options.h264_performance <= MR_H264_PERF_TURBO_PLUS
+                   saved_options.h264_performance <= MR_H264_PERF_SMOOSH
                  ? (ULONG)saved_options.h264_performance
                  : (ULONG)MR_H264_PERF_TURBO;
     initial_laced = have_saved_options && saved_options.laced ? TRUE : FALSE;
@@ -1065,6 +1110,9 @@ static int build_window(gt_app *app)
                         ? TRUE : FALSE;
     initial_video_mode = have_saved_options && !saved_options.throughput
                         ? 1 : 0;
+    initial_skip_after = skip_after_row(have_saved_options
+                                        ? saved_options.skip_trigger_ms
+                                        : MR_SKIP_TRIGGER_DEFAULT_MS);
 
     g = app->gadgets;
     app->file = g = add_gadget(app, g, STRING_KIND, G_FILE, 8, 20, 535, 15,
@@ -1111,6 +1159,12 @@ static int build_window(gt_app *app)
      * and widened to fit "Scale: Copper 2x" comfortably. */
     app->scale = g = add_gadget(app, g, CYCLE_KIND, G_SCALE, 196, 92, 180, 16,
         "", GTCY_Labels, (ULONG)scale_labels);
+    /* Same row, in the free space after Scale (384..624): the Skip Frames
+     * trigger. "Skip after: 2.0s" is 16 topaz characters (128px) plus the
+     * cycle glyph, so 176px leaves the same margin the 180px cycles above
+     * give their longest labels. */
+    app->skip_after = g = add_gadget(app, g, CYCLE_KIND, G_SKIP_AFTER, 384, 92,
+        176, 16, "", GTCY_Labels, (ULONG)skip_after_labels);
 
     /* VLC-style lower strip: media buttons stay flush left, the volume
      * slider follows them, and IPTV/YouTube sit before Playlist in the
@@ -1169,6 +1223,9 @@ static int build_window(gt_app *app)
                          GTCY_Active, initial_fast_buffer, TAG_DONE);
         GT_SetGadgetAttrs(app->video_mode, app->window, NULL,
                          GTCY_Active, initial_video_mode, TAG_DONE);
+        GT_SetGadgetAttrs(app->skip_after, app->window, NULL,
+                         GTCY_Active, initial_skip_after, TAG_DONE);
+        update_skip_after(app);
     }
     return app->window != NULL;
 }
@@ -1289,10 +1346,13 @@ int main(void)
                     update_mode_controls(&app, FALSE);
                     publish_options(&app);
                     break;
-                case G_H264: case G_LACE:
+                case G_H264: case G_VIDEO_MODE:
+                    update_skip_after(&app);
+                    publish_options(&app); break;
+                case G_LACE:
                 case G_AUDIO_RATE: case G_FAST_BUFFER:
                 case G_NO_AUDIO: case G_MONO_AUDIO:
-                case G_VIDEO_MODE:
+                case G_SKIP_AFTER:
                     publish_options(&app); break;
                 default: break;
                 }
