@@ -5207,6 +5207,21 @@ the chooser out under "All Frames" or VQ Smoosh, where it has no effect.
 `ENVARC:MintVID.settings` is discarded once (the size check in
 `mr_saved_options.h`), falling back to defaults.
 
+**First real-hardware report (A1200/68060, IPTV BBC One 192x108 AAC-LC,
+AGA + Kalms, `--throughput`): Smoosh keeps the picture moving at near real
+time, but playback periodically "disconnected, buffered, reconnected".**
+That cycle is live-resync, not the network (segments 2-5 each arrived in
+3-4 ms): 24 Paula starvations in ~13 s, audio-rescue episodes mostly
+exiting on their time limit, the audio clock stalling, and after 4 s of
+that `mono_media_clock_us > audio_media_clock_us + LIVE_RESYNC_BEHIND_US`
+fired the flush-and-refill. Rescue itself was still fully decoding every
+video packet it read past (~50 ms each at 192x108 here). Under Smoosh only,
+the drop condition now also covers `rescue_active` and an audio cushion
+below `AUDIO_RESCUE_ENTRY_MS` (audio first, video takes what is left), and
+the live-resync fast-forward drops non-keyframes too instead of decoding
+every reference, shortening the "Buffering..." gap. The final `--time`
+line reports how many drops were for audio. Not yet retested on hardware.
+
 The ReAction GUI keeps the new chooser in a file-level `g_skip_after`
 instead of threading another `Object *` through every
 `read_play_options()` caller. `mrplay.c`, `mrgui.c` and `mrgui_gadtools.c`

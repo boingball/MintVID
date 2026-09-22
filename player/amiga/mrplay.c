@@ -2338,8 +2338,8 @@ int main(int argc, char **argv)
      * only way to keep the picture moving while shedding decode work. */
     int smoosh_mode = dec.codec == &mr_codec_h264 &&
                       effective_h264_speed(h264_speed) == MR_H264_SPEED_SMOOSH;
-    unsigned long smoosh_dropped = 0;
-    int smoosh_drop_req = 0;
+    unsigned long smoosh_dropped = 0, smoosh_audio_dropped = 0;
+    int smoosh_drop_req = 0, smoosh_audio_drop = 0;
 
     /* No-ops for a non-H.264 codec (mr_h264_set_timing_enabled checks
      * dec->codec internally) - only worth turning on when --time is
@@ -3104,7 +3104,11 @@ int main(int argc, char **argv)
             display_set_status(disp, "Buffering...");
             qcount = 0; qhead = 0;               /* stale pictures, far behind */
             mr_h264_set_skip_output(&dec, 1);    /* reference-only: fast/no RGB */
-            mr_h264_set_drop_nonsync(&dec, 0);   /* keep references intact  */
+            /* Normally keep every reference intact through the catch-up.
+             * Smoosh already accepts smeared pictures, so skip everything
+             * but keyframes here too: the fast-forward then costs almost no
+             * decode time and the "Buffering..." gap shrinks accordingly. */
+            mr_h264_set_drop_nonsync(&dec, smoosh_mode);
             for (;;) {
                 uint64_t r0, rdt;
                 mr_status ns;
@@ -3983,12 +3987,25 @@ int main(int argc, char **argv)
                      * governs showing decoded frames; Smoosh decides which
                      * frames are worth decoding at all). Before
                      * playback_started there is no clock to be late against,
-                     * so the startup queue fills normally. */
-                    smoosh_drop_req = smoosh_mode &&
-                        playback_started && pkt.has_pts &&
-                        (int64_t)mono_media_clock_us -
+                     * so the startup queue fills normally.
+                     *
+                     * Audio comes first as well: while audio-rescue is
+                     * running, or the Paula cushion is under the rescue entry
+                     * level, every droppable video packet is dropped. A real
+                     * A1200/68060 BBC One log showed why: rescue kept fully
+                     * decoding the video packets it read past (~50 ms each),
+                     * most episodes ended on their time limit rather than a
+                     * refilled buffer, the audio clock stalled, and after
+                     * 4 s of that live-resync fired - the "disconnect,
+                     * Buffering..., reconnect" cycle. */
+                    smoosh_audio_drop = smoosh_mode && playback_started &&
+                        (rescue_active ||
+                         (audio && audio_ms < AUDIO_RESCUE_ENTRY_MS));
+                    smoosh_drop_req = smoosh_audio_drop ||
+                        (smoosh_mode && playback_started && pkt.has_pts &&
+                         (int64_t)mono_media_clock_us -
                             ((int64_t)pkt.pts_us + container_pts_adjust_us) >
-                            (int64_t)period_us;
+                            (int64_t)period_us);
                     mr_h264_set_drop_nonsync(&dec, smoosh_drop_req);
                     mr_h264_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
                     mr_mpeg2_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
@@ -4071,6 +4088,7 @@ int main(int argc, char **argv)
                         decoded_index++;
                         stats.dropped++;
                         if (smoosh_drop_req) smoosh_dropped++;
+                        if (smoosh_audio_drop) smoosh_audio_dropped++;
                     }
                     if (decode_status == MR_EFORMAT) {
                         printf("h264-decode-error: packet %lu len=%lu\n",
@@ -4453,8 +4471,9 @@ drain_decoded_output:
                (unsigned long)(total_display_us / 1000),
                enc_ms, blit_ms);
         if (smoosh_mode)
-            printf("smoosh: %lu late P/B access units dropped before decode\n",
-                   smoosh_dropped);
+            printf("smoosh: %lu P/B access units dropped before decode "
+                   "(%lu of them to protect audio)\n",
+                   smoosh_dropped, smoosh_audio_dropped);
         if (display_aga_kalms_timing(&blit_ms))
             printf("Kalms conversion: %lu ms\n", blit_ms);
     }
