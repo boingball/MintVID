@@ -1,12 +1,10 @@
 name: Apply P96 startup-mode split (temporary)
-
 on:
   push:
-    branches: [codex/p96-startup-mode-split]
-
+    branches:
+      - codex/p96-startup-mode-split
 permissions:
   contents: write
-
 jobs:
   apply:
     if: github.event.head_commit.message == 'Trigger P96 source changes'
@@ -15,90 +13,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: true
-      - name: Apply source changes and validate each replacement
-        shell: bash
+      - name: Apply source changes and validate
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          def change(file, old, new, count=1):
-              path = Path(file)
-              source = path.read_text()
-              actual = source.count(old)
-              if actual != count:
-                  raise RuntimeError(f'{file}: expected {count} occurrences of {old!r}, found {actual}')
-              path.write_text(source.replace(old, new))
-
-          h = 'player/core/mr_play_options.h'
-          change(h, '    MR_DISPLAY_AGA_EHB\n} mr_display_mode;',
-                    '    MR_DISPLAY_AGA_EHB,\n    /* Fullscreen P96 startup; append to preserve existing saved enum values. */\n    MR_DISPLAY_P96_FULLSCREEN\n} mr_display_mode;')
-
-          c = 'player/core/mr_play_options.c'
-          change(c, '    case MR_DISPLAY_P96: return "p96";',
-                    '    case MR_DISPLAY_P96: return "p96";\n    case MR_DISPLAY_P96_FULLSCREEN: return "p96-fullscreen";')
-          change(c, 'o->display != MR_DISPLAY_CGX && o->display != MR_DISPLAY_P96)',
-                    'o->display != MR_DISPLAY_CGX && o->display != MR_DISPLAY_P96 &&\n            o->display != MR_DISPLAY_P96_FULLSCREEN)', 2)
-          change(c, 'if (o->display == MR_DISPLAY_P96 && !append_option(out, cap, "--p96")) return 0;',
-                    'if ((o->display == MR_DISPLAY_P96 ||\n             o->display == MR_DISPLAY_P96_FULLSCREEN) &&\n            !append_option(out, cap, "--p96")) return 0;\n        if (o->display == MR_DISPLAY_P96_FULLSCREEN &&\n            !append_option(out, cap, "--fullscreen")) return 0;')
-          change(c, 'else if (!strcmp(value, "p96")) o->display = MR_DISPLAY_P96;',
-                    'else if (!strcmp(value, "p96")) o->display = MR_DISPLAY_P96;\n            else if (!strcmp(value, "p96-fullscreen")) o->display = MR_DISPLAY_P96_FULLSCREEN;')
-          change(c, 'if (o->display == MR_DISPLAY_CGX || o->display == MR_DISPLAY_P96)',
-                    'if (o->display == MR_DISPLAY_CGX || o->display == MR_DISPLAY_P96 ||\n        o->display == MR_DISPLAY_P96_FULLSCREEN)')
-          change(c, 'o->display == MR_DISPLAY_P96 ? "P96" : "WritePixel",',
-                    'o->display == MR_DISPLAY_P96 ? "P96" :\n                 o->display == MR_DISPLAY_P96_FULLSCREEN ? "P96 Fullscreen" :\n                 "WritePixel",')
-
-          r = 'player/amiga/mrgui.c'
-          change(r, 'static mr_display_mode mode_values[8];',
-                    'static mr_display_mode mode_values[9];')
-          change(r, 'mode_values[selected] == MR_DISPLAY_P96)',
-                    'mode_values[selected] == MR_DISPLAY_P96 ||\n                               mode_values[selected] == MR_DISPLAY_P96_FULLSCREEN)')
-          change(r, '(have_rtg && !add_mode_node(&modes, "RTG (P96)", MR_DISPLAY_P96)))',
-                    '(have_rtg && !add_mode_node(&modes, "P96 (Windowed)", MR_DISPLAY_P96)) ||\n        (have_rtg && !add_mode_node(&modes, "P96 (Fullscreen)",\n                                    MR_DISPLAY_P96_FULLSCREEN)))')
-
-          g = 'player/amiga/mrgui_gadtools.c'
-          change(g, 'mr_display_mode modes[8];', 'mr_display_mode modes[9];')
-          change(g, 'STRPTR mode_labels[9];', 'STRPTR mode_labels[10];')
-          change(g, 'app->modes[selected] == MR_DISPLAY_P96);',
-                    'app->modes[selected] == MR_DISPLAY_P96 ||\n                      app->modes[selected] == MR_DISPLAY_P96_FULLSCREEN);')
-          change(g, 'app->mode_labels[app->mode_count] = (STRPTR)"Display: RTG (P96)";\n        app->modes[app->mode_count++] = MR_DISPLAY_P96;',
-                    'app->mode_labels[app->mode_count] = (STRPTR)"Display: P96 (Windowed)";\n        app->modes[app->mode_count++] = MR_DISPLAY_P96;\n        app->mode_labels[app->mode_count] = (STRPTR)"Display: P96 (Fullscreen)";\n        app->modes[app->mode_count++] = MR_DISPLAY_P96_FULLSCREEN;')
-
-          t = 'player/tests/mr_iptv_check.c'
-          anchor = '''      assert(strstr(summary, "RTG (P96)"));
-    }
-    {
-      char *inherited[] = {"iptvgui", "--display", "ecs32"};'''
-          addition = '''      assert(strstr(summary, "RTG (P96)"));
-    }
-    {
-      /* The fullscreen GUI choice must survive browser inheritance and
-       * select the private-screen P96 attempt, never unclipped window writes. */
-      char *inherited[] = {"iptvgui", "--display", "p96-fullscreen"};
-      char args[4096], summary[160], error[128];
-      mr_play_options parsed;
-      mr_play_options_default(&parsed);
-      assert(mr_play_options_parse(&parsed, 3, inherited, error,
-                                   sizeof(error)));
-      assert(parsed.display == MR_DISPLAY_P96_FULLSCREEN);
-      assert(mr_build_player_arguments(args, sizeof(args), &parsed,
-                                       launch.url, NULL, NULL));
-      assert(strstr(args, "--p96 --fullscreen"));
-      assert(!strstr(args, "--aga") && !strstr(args, "--kalms-c2p"));
-      mr_play_options_summary(&parsed, summary, sizeof(summary));
-      assert(strstr(summary, "RTG (P96 Fullscreen)"));
-      assert(mr_build_iptv_arguments(args, sizeof(args), &parsed));
-      assert(strstr(args, "--display p96-fullscreen"));
-      assert(!strstr(args, "--c2p"));
-    }
-    {
-      char *inherited[] = {"iptvgui", "--display", "ecs32"};'''
-          change(t, anchor, addition)
-          PY
+          python3 player/tests/apply_p96_gui_split.py
           git diff --check
           gcc -std=c99 -Wall -Wextra -c player/core/mr_play_options.c -o /tmp/mr_play_options.o
-      - name: Commit changed source to PR branch
-        shell: bash
+      - name: Commit split to branch
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
