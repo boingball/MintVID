@@ -4,8 +4,8 @@
  * A compact Paula (audio.device) PCM sink, modelled on MintAMP's proven
  * streaming/teardown patterns but self-contained. The player feeds it source
  * PCM (as the demuxer delivers it); the backend converts to Paula's signed
- * 8-bit mono and double-buffers it out. Its played-milliseconds counter is the
- * A/V master clock.
+ * 8-bit left/right channels and double-buffers both. Mono is heard in both
+ * speakers. Its played-milliseconds counter is the A/V master clock.
  *
  * MP2, MP3 and AAC decode to PCM before feeding this same sink.  MP3/AAC use
  * MintAMP/libhelix through the packet adapter in player/audio/.
