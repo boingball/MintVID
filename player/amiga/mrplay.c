@@ -1733,6 +1733,16 @@ static void service_player_during_packet(void *opaque)
     (void)service_player_during_io(opaque);
 }
 
+/* The codec probes this between libavc sub-calls. Once the service hook has
+ * consumed ESC (or the controller's stop signal), it must see the deferred
+ * quit as well, rather than decoding the rest of a long access unit first. */
+static int player_h264_quit(void *opaque)
+{
+    (void)opaque;
+    return deferred_player_event == MR_EV_QUIT ||
+        (SetSignal(0, 0) & (SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F)) != 0;
+}
+
 /*
  * Wait hook for the HLS live-playlist re-fetch loop (mr_hls_set_wait).
  *
@@ -2682,6 +2692,7 @@ int main(int argc, char **argv)
     display_set_service(disp, audio ? service_audio_for_display : NULL, &trace);
     mr_demux_set_service(dx, service_player_during_io, &trace);
     mr_h264_set_service(&dec, service_player_during_packet, &trace);
+    mr_h264_set_quit(&dec, player_h264_quit, NULL);
     mr_mpeg2_set_service(&dec, service_player_during_packet, &trace);
     /* Off by default: mr_ts_next_packet() (several clock() reads per
      * 188/192-byte TS packet) and mr_source_read_at()/the HLS playlist and
@@ -3266,6 +3277,7 @@ int main(int argc, char **argv)
                      * service hook - reapply, same as every other per-
                      * decoder setting reapplied here. */
                     mr_h264_set_service(&dec, service_player_during_packet, &trace);
+                    mr_h264_set_quit(&dec, player_h264_quit, NULL);
                     mr_mpeg2_set_service(&dec, service_player_during_packet, &trace);
                     if (use_yuv_indexed_queue || use_yuv422_queue ||
                         use_yuv_rgb_queue)
@@ -3566,6 +3578,7 @@ int main(int argc, char **argv)
             /* ...and with no audio service hook either - reapply, same as
              * every other per-decoder setting reapplied here. */
             mr_h264_set_service(&dec, service_player_during_packet, &trace);
+            mr_h264_set_quit(&dec, player_h264_quit, NULL);
             mr_mpeg2_set_service(&dec, service_player_during_packet, &trace);
             if (use_yuv_indexed_queue || use_yuv422_queue ||
                 use_yuv_rgb_queue)
@@ -3676,6 +3689,7 @@ int main(int argc, char **argv)
             /* ...and with no audio service hook either - reapply, same as
              * every other per-decoder setting reapplied here. */
             mr_h264_set_service(&dec, service_player_during_packet, &trace);
+            mr_h264_set_quit(&dec, player_h264_quit, NULL);
             mr_mpeg2_set_service(&dec, service_player_during_packet, &trace);
             if (use_yuv_indexed_queue || use_yuv422_queue ||
                 use_yuv_rgb_queue)
