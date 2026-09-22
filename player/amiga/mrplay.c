@@ -2481,7 +2481,7 @@ int main(int argc, char **argv)
                 audio = audio_open(mr_audio_decoder_rate(audio_dec),
                                    (int)mr_audio_decoder_channels(audio_dec), 16);
             if (audio && audio_dec)
-                printf("audio: Paula out, %u Hz (%s, %u ch)\n",
+                printf("audio: Paula stereo pair, %u Hz (%s, %u decoded ch)\n",
                        mr_audio_decoder_rate(audio_dec),
                        mr_audio_decoder_name(audio_dec),
                        mr_audio_decoder_channels(audio_dec));
@@ -2506,7 +2506,7 @@ int main(int argc, char **argv)
                 audio = audio_open(mr_audio_decoder_rate(audio_dec),
                                    (int)mr_audio_decoder_channels(audio_dec), 16);
             if (audio && audio_dec)
-                printf("audio: Paula out, %u Hz (%s, %u ch)\n",
+                printf("audio: Paula stereo pair, %u Hz (%s, %u decoded ch)\n",
                        mr_audio_decoder_rate(audio_dec),
                        mr_audio_decoder_name(audio_dec),
                        mr_audio_decoder_channels(audio_dec));
