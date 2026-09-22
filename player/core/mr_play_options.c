@@ -233,7 +233,9 @@ static int append_playback_flags(char *out, size_t cap,
     fast_buffer = o->fast_buffer == MR_FAST_BUFFER_OFF ? "off" :
                   o->fast_buffer == MR_FAST_BUFFER_4MB ? "4" :
                   o->fast_buffer == MR_FAST_BUFFER_8MB ? "8" :
-                  o->fast_buffer == MR_FAST_BUFFER_16MB ? "16" : "auto";
+                  o->fast_buffer == MR_FAST_BUFFER_16MB ? "16" :
+                  o->fast_buffer == MR_FAST_BUFFER_32MB ? "32" :
+                  o->fast_buffer == MR_FAST_BUFFER_64MB ? "64" : "auto";
     snprintf(number, sizeof(number), "--fast-buffer=%s", fast_buffer);
     if (!append_option(out, cap, number)) return 0;
     if (o->h264_performance != MR_H264_PERF_AUTO) {
@@ -455,6 +457,8 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "4")) o->fast_buffer = MR_FAST_BUFFER_4MB;
             else if (!strcmp(value, "8")) o->fast_buffer = MR_FAST_BUFFER_8MB;
             else if (!strcmp(value, "16")) o->fast_buffer = MR_FAST_BUFFER_16MB;
+            else if (!strcmp(value, "32")) o->fast_buffer = MR_FAST_BUFFER_32MB;
+            else if (!strcmp(value, "64")) o->fast_buffer = MR_FAST_BUFFER_64MB;
             else goto bad;
         }
         else if (!strncmp(arg, "--hls-max-width=", 16)) {
@@ -498,6 +502,8 @@ static const char *fast_buffer_text(const mr_play_options *o)
     case MR_FAST_BUFFER_4MB: return "4 MB";
     case MR_FAST_BUFFER_8MB: return "8 MB";
     case MR_FAST_BUFFER_16MB: return "16 MB";
+    case MR_FAST_BUFFER_32MB: return "32 MB";
+    case MR_FAST_BUFFER_64MB: return "64 MB";
     default: return "Auto";
     }
 }

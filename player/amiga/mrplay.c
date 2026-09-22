@@ -1485,7 +1485,9 @@ static size_t requested_fast_buffer(mr_fast_buffer_mode mode,
     unsigned long reserve = mode == MR_FAST_BUFFER_AUTO
                           ? FAST_BUFFER_AUTO_RESERVE
                           : FAST_BUFFER_FIXED_RESERVE;
-    size_t wanted = mode == MR_FAST_BUFFER_16MB ? 16UL * 1024 * 1024 :
+    size_t wanted = mode == MR_FAST_BUFFER_64MB ? 64UL * 1024 * 1024 :
+                    mode == MR_FAST_BUFFER_32MB ? 32UL * 1024 * 1024 :
+                    mode == MR_FAST_BUFFER_16MB ? 16UL * 1024 * 1024 :
                     mode == MR_FAST_BUFFER_8MB ? 8UL * 1024 * 1024 :
                     mode == MR_FAST_BUFFER_4MB ? 4UL * 1024 * 1024 : 0;
     size_t budget;
@@ -1935,7 +1937,7 @@ int main(int argc, char **argv)
                "[--loop] "
                "[--wpa|--c2p|--riva-c2p|--kalms-c2p|--direct-c2p] "
                "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
-               "[--fast-buffer=auto|off|4|8|16] "
+               "[--fast-buffer=auto|off|4|8|16|32|64] "
                "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+|smoosh] "
                "[--skip-trigger=200..2000] [--rtg-half] "
                "[--dv-speed=quality|fast] "
@@ -2070,6 +2072,8 @@ int main(int argc, char **argv)
                 else if (!strcmp(mode, "4")) fast_buffer = MR_FAST_BUFFER_4MB;
                 else if (!strcmp(mode, "8")) fast_buffer = MR_FAST_BUFFER_8MB;
                 else if (!strcmp(mode, "16")) fast_buffer = MR_FAST_BUFFER_16MB;
+                else if (!strcmp(mode, "32")) fast_buffer = MR_FAST_BUFFER_32MB;
+                else if (!strcmp(mode, "64")) fast_buffer = MR_FAST_BUFFER_64MB;
                 else {
                     printf("invalid Fast buffer size: %s\n", mode);
                     return mrplay_exit(5);

@@ -248,17 +248,19 @@ mrplay --hls-max-width=640 --hls-max-height=360 \
 mrplay --fast-buffer=8 "DH0:Videos/movie.avi"
 ```
 
-`--fast-buffer=auto|off|4|8|16` adds a Fast RAM read-ahead window for local
+`--fast-buffer=auto|off|4|8|16|32|64` adds a Fast RAM read-ahead window for local
 files and direct/progressive HTTP media. Local playback gives that memory to
 stdio so sequential demuxing crosses AmigaDOS far less often; HTTP playback
 uses it as a rewind/read-ahead cache and absorbs data already waiting on the
 socket while the CPU is decoding. `off` retains the small normal file buffer
 and HTTP's existing 4 MB compatibility cache. `auto` selects 16, 8, or 4 MB
 from the largest available Fast RAM block while leaving 24 MB free for the
-decoder, display, TLS, audio, and frame queue. A fixed size is an explicit
-override but still leaves an 8 MB floor and steps down safely if necessary.
-HLS does not allocate a second copy: its background worker already downloads
-the next complete segment into RAM.
+decoder, display, TLS, audio, and frame queue. Auto remains capped at 16 MB;
+32 and 64 MB are explicit choices for machines with abundant Fast RAM. A fixed
+size still leaves an 8 MB floor and steps down safely if necessary. HLS does
+not allocate a second copy: its background worker downloads complete segments
+into RAM and looks ahead to the next one. Playback starts without waiting for
+64 MB of media to arrive; the HLS segments are decoded as they are consumed.
 
 Plain HTTP is present in the normal Amiga build. HTTPS uses
 `amisslmaster.library`/AmiSSL v5 and must be enabled when compiling:
