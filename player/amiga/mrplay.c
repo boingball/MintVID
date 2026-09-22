@@ -213,6 +213,12 @@ static uint64_t skip_trigger_exit_us(unsigned long entry_us)
     uint64_t half = (uint64_t)entry_us / 2u;
     return half < MICRO_RESCUE_EXIT_US ? half : MICRO_RESCUE_EXIT_US;
 }
+/* Smoosh drops late (or audio-starving) P/B pictures, but never more than
+ * this long in a row - see smoosh_last_decode_us. */
+#define SMOOSH_MAX_DROP_RUN_US 1000000ULL
+/* How often the scheduler reads input on its own when no frame is queued -
+ * see last_idle_poll_us. */
+#define IDLE_EVENT_POLL_US       40000ULL
 #define MICRO_RESCUE_MAX_US    2500000ULL  /* bail to the existing catastrophic
                                              * path if shedding output alone
                                              * hasn't recovered within this   */
@@ -2340,6 +2346,10 @@ int main(int argc, char **argv)
                       effective_h264_speed(h264_speed) == MR_H264_SPEED_SMOOSH;
     unsigned long smoosh_dropped = 0, smoosh_audio_dropped = 0;
     int smoosh_drop_req = 0, smoosh_audio_drop = 0;
+    /* When Smoosh last let a video packet through to libavc; see
+     * SMOOSH_MAX_DROP_RUN_US. */
+    uint64_t smoosh_last_decode_us = 0;
+    uint64_t last_idle_poll_us = 0;
 
     /* No-ops for a non-H.264 codec (mr_h264_set_timing_enabled checks
      * dec->codec internally) - only worth turning on when --time is
@@ -2890,6 +2900,27 @@ int main(int argc, char **argv)
         uint64_t audio_elapsed_raw_us = 0;
         uint64_t audio_media_clock_us = 0;
         uint64_t mono_media_clock_us = now - mono_base_us;
+
+        /* Input must stay live even when no frame is waiting to be shown.
+         * The presentation block below is the scheduler's normal event
+         * point, but it only runs with a queued, due frame - and Smoosh
+         * can legitimately keep the queue empty for a long stretch (every
+         * P picture dropped to protect audio on a long-GOP stream). A real
+         * A1200 YouTube session ended up exactly there: playback stalled
+         * and ESC was never read, although the mouse still moved. Read
+         * fresh input here with the same defer-and-let-the-scheduler-act
+         * rule service_player_during_io() uses, acting on quit at once. */
+        if (!front && disp && now - last_idle_poll_us >= IDLE_EVENT_POLL_US) {
+            int ev = control_signal_event(disp);
+            last_idle_poll_us = now;
+            if (ev == MR_EV_NONE) ev = display_poll_event(disp);
+            if (ev == MR_EV_VOLUME_UP) { apply_volume_step(8); ev = MR_EV_NONE; }
+            else if (ev == MR_EV_VOLUME_DOWN) { apply_volume_step(-8); ev = MR_EV_NONE; }
+            if (ev != MR_EV_NONE &&
+                (deferred_player_event == MR_EV_NONE || ev == MR_EV_QUIT))
+                deferred_player_event = ev;
+            if (deferred_player_event == MR_EV_QUIT) { quit = 1; break; }
+        }
 
         /* Micro-rescue's unconditional safety timeout - see
          * MICRO_RESCUE_ENTRY_US's declaration above for the full
@@ -4006,6 +4037,15 @@ int main(int argc, char **argv)
                          (int64_t)mono_media_clock_us -
                             ((int64_t)pkt.pts_us + container_pts_adjust_us) >
                             (int64_t)period_us);
+                    /* Never drop everything: if nothing has reached the
+                     * decoder for SMOOSH_MAX_DROP_RUN_US, let this packet
+                     * through whatever audio or lateness say, so the
+                     * picture keeps (smeared) moving at >= ~1 fps instead
+                     * of waiting for a keyframe that on YouTube can be
+                     * many seconds away. */
+                    if (smoosh_drop_req && smoosh_last_decode_us &&
+                        now - smoosh_last_decode_us > SMOOSH_MAX_DROP_RUN_US)
+                        smoosh_drop_req = smoosh_audio_drop = 0;
                     mr_h264_set_drop_nonsync(&dec, smoosh_drop_req);
                     mr_h264_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
                     mr_mpeg2_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
@@ -4089,6 +4129,8 @@ int main(int argc, char **argv)
                         stats.dropped++;
                         if (smoosh_drop_req) smoosh_dropped++;
                         if (smoosh_audio_drop) smoosh_audio_dropped++;
+                    } else if (smoosh_mode) {
+                        smoosh_last_decode_us = monotonic_us();
                     }
                     if (decode_status == MR_EFORMAT) {
                         printf("h264-decode-error: packet %lu len=%lu\n",

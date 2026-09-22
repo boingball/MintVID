@@ -5222,6 +5222,24 @@ the live-resync fast-forward drops non-keyframes too instead of decoding
 every reference, shortening the "Buffering..." gap. The final `--time`
 line reports how many drops were for audio. Not yet retested on hardware.
 
+**That audio-first rule exposed a latent input bug: a YouTube session under
+Smoosh stalled and ESC stopped working (the mouse still moved).** The main
+loop only read input in audio-rescue, live-resync/reconnect and the
+presentation block, and the presentation block needs a queued, due frame.
+Dropping every P picture to protect audio on a long-GOP YouTube stream can
+keep the queue empty indefinitely, so nothing read ESC. Two fixes: the loop
+now polls input itself (every `IDLE_EVENT_POLL_US`, 40 ms) whenever no
+frame is queued, reading fresh events with the same defer rule
+`service_player_during_io()` already uses (quit acted on at once, anything
+else left in `deferred_player_event` for the normal handler); and Smoosh
+never drops for longer than `SMOOSH_MAX_DROP_RUN_US` (1 s) in a row, so the
+picture keeps moving at >= ~1 fps whatever audio or lateness say. The
+matching IPTV log (audio drops working: 90 of 170 drops were for audio)
+also showed one unexplained ~4 s scheduler gap before a live-resync
+(`audio-gap=4121 ms`, previous phase `cgx-prepare/transfer`, no network
+block or long decode reported) - not diagnosed; the pre-change log had a
+7.3 s `longest-service-gap` too, so it is not new with these changes.
+
 The ReAction GUI keeps the new chooser in a file-level `g_skip_after`
 instead of threading another `Object *` through every
 `read_play_options()` caller. `mrplay.c`, `mrgui.c` and `mrgui_gadtools.c`
