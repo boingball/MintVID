@@ -40,9 +40,9 @@ typedef struct mr_http_options {
     unsigned hls_max_width;
     unsigned hls_max_height;
     unsigned hls_max_fps;
-    /* Optional local/progressive-HTTP read-ahead storage. On classic Amiga
-     * builds this is allocated specifically from Fast RAM. Zero keeps each
-     * backend's small/default buffer. HLS already buffers complete segments. */
+    /* Local/progressive HTTP read-ahead capacity, or a ceiling for compressed
+     * HLS segment lookahead. HLS allocates only the fetched segments, never
+     * this full amount up front. Zero keeps the legacy one-segment hint. */
     size_t source_buffer_bytes;
 } mr_http_options;
 

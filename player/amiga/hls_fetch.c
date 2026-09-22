@@ -105,7 +105,7 @@
  * one direction or the other). Kept small deliberately: RAM for a typical
  * live segment (tens to a few hundred KB) is cheap, but this is still a
  * fixed array below (g_slots[]), not a dynamic queue. */
-#define HLS_FETCH_LOOKAHEAD_DEPTH 3
+#define HLS_FETCH_LOOKAHEAD_DEPTH 8
 
 /* main <-> worker request (reused; one in flight at a time) */
 typedef struct {
@@ -168,6 +168,8 @@ static int              g_active;
 static int              g_stopping;         /* suppress lookahead promotion
                                              * while joining the worker      */
 static int              g_verbose;
+static size_t           g_prefetch_budget; /* zero: legacy one-segment hint */
+static int              g_prefetch_blocked; /* undersized speculative fetch */
 static unsigned         g_generation;
 static hls_fetch_service_fn g_service;
 static void             *g_service_opaque;
@@ -275,17 +277,29 @@ static void hls_fetch_free_slots(void)
 static void hls_fetch_pump(void)
 {
     int i, best = -1;
-    if (g_stopping || g_busy) return;      /* no promotion while stopping     */
-    for (i = 0; i < HLS_FETCH_LOOKAHEAD_DEPTH; i++)
+    size_t ready = 0, max_size = HLS_FETCH_HINT_MAX;
+    if (g_stopping || g_busy || g_prefetch_blocked) return;
+    for (i = 0; i < HLS_FETCH_LOOKAHEAD_DEPTH; i++) {
+        if (g_slots[i].state == HLS_SLOT_READY)
+            ready += g_slots[i].len;
         if (g_slots[i].state == HLS_SLOT_PENDING &&
             (best < 0 || g_slots[i].seq < g_slots[best].seq))
             best = i;
+    }
     if (best < 0) return;
+    /* Limit each speculative download to the remaining RAM budget. If a
+     * segment exceeds it, playback fetches it on demand at the normal 24 MB
+     * cap. Never reserve the full selected buffer in advance. */
+    if (g_prefetch_budget) {
+        if (ready >= g_prefetch_budget) return;
+        if (max_size > g_prefetch_budget - ready)
+            max_size = g_prefetch_budget - ready;
+    }
     g_slots[best].state = HLS_SLOT_INFLIGHT;
     g_inflight_slot = best;
     hls_fetch_send(g_slots[best].url,
                   g_slots[best].has_opts ? &g_slots[best].opts : NULL,
-                  NULL, HLS_FETCH_HINT_MAX);
+                  NULL, max_size);
 }
 
 /* Non-blocking: pull a completed reply into the matching lookahead slot (if
@@ -311,6 +325,15 @@ static void hls_fetch_reclaim(void)
         }
         if (slot >= 0) {
             hls_fetch_slot *s = &g_slots[slot];
+            /* A speculative fetch may have hit the remaining byte budget.
+             * Discard that failure so the needed segment can be fetched
+             * normally instead of surfacing a buffer-size error. */
+            if (!g_req.ok && g_req.max_size < HLS_FETCH_HINT_MAX) {
+                if (g_req.buf) mr_free(g_req.buf);
+                s->state = HLS_SLOT_EMPTY;
+                g_prefetch_blocked = 1;
+                continue;
+            }
             s->state = HLS_SLOT_READY;
             s->buf = g_req.buf;
             s->len = g_req.len;
@@ -479,6 +502,10 @@ static int hls_fetch_override(const char *url, const mr_http_options *options,
      * PENDING here, so this has to wait it out rather than skip past it. */
     s = hls_fetch_find_slot(url);
     while (s && (s->state == HLS_SLOT_PENDING || s->state == HLS_SLOT_INFLIGHT)) {
+        if (s->state == HLS_SLOT_PENDING && !g_busy) {
+            s->state = HLS_SLOT_EMPTY;
+            break;
+        }
         if (!hls_fetch_wait_busy()) return 0;      /* abort requested        */
         s = hls_fetch_find_slot(url);              /* reclaim() may have
                                                      * moved/freed it above   */
@@ -490,15 +517,16 @@ static int hls_fetch_override(const char *url, const mr_http_options *options,
         else mr_source_set_error(s->error);
         s->state = HLS_SLOT_EMPTY;
         s->buf = NULL;
+        g_prefetch_blocked = 0;
+        hls_fetch_pump();                  /* freed room for another hint   */
         return r;
     }
-
     /* Untracked (never hinted - e.g. the playlist, which is always fetched
      * on demand, or a segment the lookahead window hadn't reached yet), or
      * its slot fell through above (a stale-generation flush raced it): fall
      * back to the original direct, blocking single-fetch path. */
     r = hls_fetch_take_ready(url, out, out_len);
-    if (r >= 0) { g_hits++; return r; }
+    if (r >= 0) { g_hits++; g_prefetch_blocked = 0; hls_fetch_pump(); return r; }
     hls_fetch_free_ready();                /* stale or mismatched: drop it  */
 
     if (g_busy) {
@@ -518,7 +546,7 @@ static int hls_fetch_override(const char *url, const mr_http_options *options,
     hls_fetch_send(url, options, post_json, max_size);
     if (!hls_fetch_wait_busy()) return 0;
     r = hls_fetch_take_ready(url, out, out_len);
-    if (r >= 0) return r;
+    if (r >= 0) { g_prefetch_blocked = 0; hls_fetch_pump(); return r; }
     hls_fetch_free_ready();                /* can't happen, but stay safe   */
     return 0;
 }
@@ -528,6 +556,7 @@ static void hls_fetch_hint(const char *url, const mr_http_options *options)
     int i, slot = -1;
     if (!g_active || !url) return;
     hls_fetch_reclaim();
+    if (options) g_prefetch_budget = options->source_buffer_bytes;
     if (hls_fetch_find_slot(url)) return;  /* already queued/fetching/ready */
     for (i = 0; i < HLS_FETCH_LOOKAHEAD_DEPTH; i++)
         if (g_slots[i].state == HLS_SLOT_EMPTY) { slot = i; break; }
@@ -540,6 +569,11 @@ static void hls_fetch_hint(const char *url, const mr_http_options *options)
     g_slots[slot].seq = g_next_seq++;
     g_slots[slot].state = HLS_SLOT_PENDING;
     hls_fetch_pump();
+}
+
+void hls_fetch_poll(void)
+{
+    if (g_active && !g_stopping) hls_fetch_reclaim();
 }
 
 /* ---- lifecycle (main task) ------------------------------------------------ */
@@ -557,7 +591,16 @@ void hls_fetch_set_service(hls_fetch_service_fn fn, void *opaque)
 
 void hls_fetch_cancel(void)
 {
+    int i;
     g_generation++;
+    g_prefetch_blocked = 0;
+    hls_fetch_free_ready();
+    for (i = 0; i < HLS_FETCH_LOOKAHEAD_DEPTH; i++) {
+        if (g_slots[i].state == HLS_SLOT_READY && g_slots[i].buf)
+            mr_free(g_slots[i].buf);
+        if (g_slots[i].state != HLS_SLOT_INFLIGHT)
+            g_slots[i].state = HLS_SLOT_EMPTY;
+    }
     /* Also kick a worker that might be wedged inside connect_socket()'s
      * masked gethostbyname() resolving the very host being cancelled -
      * without this the generation bump above only takes effect once that
@@ -584,6 +627,8 @@ int hls_fetch_start(int verbose)
     g_busy = 0; g_have_ready = 0; g_ready_buf = NULL;
     hls_fetch_free_slots();
     g_next_seq = 0;
+    g_prefetch_budget = 0;
+    g_prefetch_blocked = 0;
     g_hits = g_misses = g_worst_wait_ms = 0;
     g_worker_port = NULL;
 

@@ -2194,15 +2194,13 @@ int main(int argc, char **argv)
      * was already false). */
     if (!mr_source_is_hls(media_path))
         hls_fetch_stop();
-    else if (mr_http_fetch_override_active() ||
-             http_options.hls_buffer_segments)
-        http_options.source_buffer_bytes = 0; /* complete segments are buffered */
 
     if (fast_buffer_option_seen) {
-        if (mr_source_is_hls(media_path) &&
+        if (fast_buffer_bytes && mr_source_is_hls(media_path) &&
             (mr_http_fetch_override_active() ||
              http_options.hls_buffer_segments))
-            printf("Fast buffer: HLS uses background whole-segment buffering\n");
+            printf("Fast buffer: HLS compressed-segment lookahead (%lu MB budget)\n",
+                   (unsigned long)(fast_buffer_bytes / (1024UL * 1024UL)));
         else if (fast_buffer_bytes)
             printf("Fast buffer: %lu MB in Fast RAM (%lu MB free before open)\n",
                    (unsigned long)(fast_buffer_bytes / (1024UL * 1024UL)),
@@ -2252,7 +2250,7 @@ int main(int argc, char **argv)
         printf("streaming %s from %s\n", mr_demux_container_name(dx),
                !strncmp(media_path, "http://", 7) ||
                !strncmp(media_path, "https://", 8) ? "network" : "disk");
-        if (http_options.source_buffer_bytes) {
+        if (http_options.source_buffer_bytes && !mr_source_is_hls(media_path)) {
             if (mr_demux_source_is_cached(dx))
                 printf("Fast buffer: whole file cached in Fast RAM (%lu KB)\n",
                        (unsigned long)((actual_buffer + 1023) / 1024));
@@ -2384,6 +2382,7 @@ int main(int argc, char **argv)
      * SMOOSH_MAX_DROP_RUN_US. */
     uint64_t smoosh_last_decode_us = 0;
     uint64_t last_idle_poll_us = 0;
+    uint64_t last_hls_poll_us = 0;
 
     /* No-ops for a non-H.264 codec (mr_h264_set_timing_enabled checks
      * dec->codec internally) - only worth turning on when --time is
@@ -2961,6 +2960,13 @@ int main(int argc, char **argv)
                 (deferred_player_event == MR_EV_NONE || ev == MR_EV_QUIT))
                 deferred_player_event = ev;
             if (deferred_player_event == MR_EV_QUIT) { quit = 1; break; }
+        }
+        /* The worker's replies do not wake the player loop. Reclaim them
+         * while decoding so queued segment downloads continue in the
+         * background instead of waiting until the next segment boundary. */
+        if (hls_fetch_active() && now - last_hls_poll_us >= 20000ULL) {
+            last_hls_poll_us = now;
+            hls_fetch_poll();
         }
 
         /* Micro-rescue's unconditional safety timeout - see

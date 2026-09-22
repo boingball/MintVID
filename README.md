@@ -257,10 +257,15 @@ and HTTP's existing 4 MB compatibility cache. `auto` selects 16, 8, or 4 MB
 from the largest available Fast RAM block while leaving 24 MB free for the
 decoder, display, TLS, audio, and frame queue. Auto remains capped at 16 MB;
 32 and 64 MB are explicit choices for machines with abundant Fast RAM. A fixed
-size still leaves an 8 MB floor and steps down safely if necessary. HLS does
-not allocate a second copy: its background worker downloads complete segments
-into RAM and looks ahead to the next one. Playback starts without waiting for
-64 MB of media to arrive; the HLS segments are decoded as they are consumed.
+size still leaves an 8 MB floor and steps down safely if necessary. For IPTV
+and YouTube HLS, the selected size bounds compressed segment lookahead rather
+than allocating an extra HTTP cache: one network worker tops up the queued
+segments while playback decodes from RAM. Recorded streams queue up to eight
+segments ahead; live streams queue up to three known segments to stay close to
+the broadcast. The queue starts filling as soon as the first segment opens;
+playback does not wait for the selected amount to arrive. Segments are fetched
+serially and the total is capped by the selected byte budget. At the live
+edge the playlist must advertise a new segment before it can be downloaded.
 
 Plain HTTP is present in the normal Amiga build. HTTPS uses
 `amisslmaster.library`/AmiSSL v5 and must be enabled when compiling:
@@ -281,9 +286,9 @@ Live HLS (`.m3u8`) playback on constrained hardware has a few extra controls.
 The AmiSSL library, TLS context, and TLS session are initialised once and reused
 across segments, so each segment boundary reconnects with an abbreviated
 handshake instead of the full per-segment bring-up. Since 1.1.1, compressed
-lookahead intentionally hints only the next segment: this is the stable 1.0.0
-scheduling policy, combined with the newer no-abandon worker shutdown and
-AmiSSL lifecycle hardening.
+lookahead normally hints only the next segment. Selecting a Fast buffer
+enables a RAM-bounded queue of up to three known segments for live streams,
+combined with the no-abandon worker shutdown and AmiSSL lifecycle hardening.
 
 - `--net-queue=N` — request a decoded-frame read-ahead target for network
   playback. The default scheduling target is 1 frame and the hard ceiling is
@@ -420,7 +425,7 @@ is starving the audio FIFO.
 The **Fast buffer** chooser is available in both ReAction and GadTools editions
 and defaults to Auto. It applies to ordinary **Play**, IPTV, and YouTube
 launches. Direct/progressive online media receives the same 4/8/16 MB rolling
-cache as local playback; HLS continues to use its complete-segment background
+cache as local playback; HLS uses its compressed-segment background
 buffer instead. The selected size is allocated with `MEMF_FAST`, never Chip
 RAM, and `mrplay` prints the chosen or reduced size at startup for hardware
 comparisons.
