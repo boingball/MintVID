@@ -2909,8 +2909,14 @@ int main(int argc, char **argv)
          * A1200 YouTube session ended up exactly there: playback stalled
          * and ESC was never read, although the mouse still moved. Read
          * fresh input here with the same defer-and-let-the-scheduler-act
-         * rule service_player_during_io() uses, acting on quit at once. */
-        if (!front && disp && now - last_idle_poll_us >= IDLE_EVENT_POLL_US) {
+         * rule service_player_during_io() uses, acting on quit at once.
+         * Not only when the queue is empty: a second retest still lost
+         * ESC, most likely with a frame queued whose deadline never
+         * arrives because the audio clock had stalled - the presentation
+         * block never runs then either. A queued event is handed to the
+         * presentation block first (player_event() drains
+         * deferred_player_event), so polling here too never loses one. */
+        if (disp && now - last_idle_poll_us >= IDLE_EVENT_POLL_US) {
             int ev = control_signal_event(disp);
             last_idle_poll_us = now;
             if (ev == MR_EV_NONE) ev = display_poll_event(disp);
