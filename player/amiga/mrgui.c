@@ -113,7 +113,7 @@ enum {
 
 /* Chooser rows are chipset-dependent, so never infer a display mode from a
  * hard-coded row number. This map is populated alongside the labels. */
-static mr_display_mode mode_values[8];
+static mr_display_mode mode_values[9];
 static unsigned mode_count;
 static mr_c2p_mode c2p_values[5];
 static unsigned c2p_count;
@@ -562,7 +562,8 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
     GetAttr(CHOOSER_Selected, mode, &selected);
     disable_chipset_options = selected < mode_count &&
                               (mode_values[selected] == MR_DISPLAY_CGX ||
-                               mode_values[selected] == MR_DISPLAY_P96)
+                               mode_values[selected] == MR_DISPLAY_P96 ||
+                               mode_values[selected] == MR_DISPLAY_P96_FULLSCREEN)
                             ? TRUE : FALSE;
 
     selected_c2p = 0;
@@ -1395,7 +1396,9 @@ int main(void)
         (chipset_has_aga() &&
          !add_mode_node(&modes, "HAM8", MR_DISPLAY_HAM8)) ||
         (have_rtg && !add_mode_node(&modes, "RTG (WritePixel)", MR_DISPLAY_CGX)) ||
-        (have_rtg && !add_mode_node(&modes, "RTG (P96)", MR_DISPLAY_P96)))
+        (have_rtg && !add_mode_node(&modes, "P96 (Windowed)", MR_DISPLAY_P96)) ||
+        (have_rtg && !add_mode_node(&modes, "P96 (Fullscreen)",
+                                    MR_DISPLAY_P96_FULLSCREEN)))
         goto cleanup;
     /* P96 (with its own hardware-overlay-first backend chain - see
      * amiga/display_p96pip.c) is the fastest choice when available, ahead

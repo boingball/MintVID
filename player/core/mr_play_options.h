@@ -41,7 +41,9 @@ typedef enum {
      * free half-brightness duplicates the hardware derives itself. See
      * core/mr_dither.h's mr_dither_rgb_ehb()/mr_dither_palette_ehb() and
      * amiga/display_aga.c's EHB section. */
-    MR_DISPLAY_AGA_EHB
+    MR_DISPLAY_AGA_EHB,
+    /* Fullscreen P96 startup; append to preserve existing saved enum values. */
+    MR_DISPLAY_P96_FULLSCREEN
 } mr_display_mode;
 
 typedef enum {
