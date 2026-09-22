@@ -43,7 +43,12 @@ typedef enum {
      * amiga/display_aga.c's EHB section. */
     MR_DISPLAY_AGA_EHB,
     /* Fullscreen P96 startup; append to preserve existing saved enum values. */
-    MR_DISPLAY_P96_FULLSCREEN
+    MR_DISPLAY_P96_FULLSCREEN,
+    /* RTG WritePixel (CGX) at half resolution: H.264 is converted straight
+     * to a (w/2)x(h/2) RGB picture - a quarter of the colour conversion and
+     * blit work, for RTG boards without a working P96 overlay (PiStorm).
+     * Passes --rtg-half; see mrplay.c's rtg_half_active. */
+    MR_DISPLAY_RTG_HALF
 } mr_display_mode;
 
 typedef enum {
@@ -58,13 +63,23 @@ typedef enum {
     MR_C2P_DIRECT
 } mr_c2p_mode;
 
+/* "Skip after" range for --skip-trigger= (see mrplay.c's micro-rescue):
+ * how far a Skip Frames session may fall behind before it sheds frames. */
+#define MR_SKIP_TRIGGER_MIN_MS      200u
+#define MR_SKIP_TRIGGER_MAX_MS     2000u
+#define MR_SKIP_TRIGGER_DEFAULT_MS  700u
+
 typedef enum {
     MR_H264_PERF_AUTO = 0,
     MR_H264_PERF_QUALITY,
     MR_H264_PERF_BALANCED,
     MR_H264_PERF_FAST,
     MR_H264_PERF_TURBO,
-    MR_H264_PERF_TURBO_PLUS
+    MR_H264_PERF_TURBO_PLUS,
+    /* Turbo plus datamosh-style dropping of late P/B pictures - see
+     * core/mr_h264.h's mr_h264_set_drop_nonsync(). Appended so saved
+     * settings keep their existing values. */
+    MR_H264_PERF_SMOOSH
 } mr_h264_performance;
 
 /* Paula output rate policy. NORMAL keeps the existing >28kHz halving
@@ -130,7 +145,16 @@ typedef struct mr_play_options {
      * that lateness check, trading a frozen picture during a stall for
      * staying closer to real-time sync once decode catches back up. */
     int throughput;
+    /* GUI "Skip after" (--skip-trigger=): how many ms a "Skip Frames"
+     * session may fall behind before it starts shedding frames, clamped to
+     * MR_SKIP_TRIGGER_MIN_MS..MR_SKIP_TRIGGER_MAX_MS. No effect with
+     * "All Frames" (throughput) or Smoosh, which never escalate. */
+    unsigned skip_trigger_ms;
 } mr_play_options;
+
+/* The display modes that play through an RTG window rather than a native
+ * Amiga screen (no C2P, lace or 2x options apply). */
+int mr_display_is_rtg(mr_display_mode display);
 
 void mr_play_options_default(mr_play_options *options);
 int mr_play_options_parse(mr_play_options *options, int argc, char **argv,

@@ -270,7 +270,9 @@ MINTAMP_MP3 = $(MINTAMP_ROOT)/mp3dec.c $(MINTAMP_ROOT)/mp3tabs.c \
 MINTAMP_AAC_ALL = $(wildcard $(MINTAMP_ROOT)/decoders/aac/*.c)
 MINTAMP_AAC = $(filter-out $(wildcard $(MINTAMP_ROOT)/decoders/aac/sbr*.c), \
                            $(MINTAMP_AAC_ALL))
-MINTAMP_FLAGS = -DAMIGA_M68K -DARDUINO -DESP8266 \
+# AAC_ENABLE_DECIM: Helix's reduced-size IMDCT (AACSetOutputDecimation), used
+# by audio/mr_audio_decode.c whenever it decimates AAC output.
+MINTAMP_FLAGS = -DAMIGA_M68K -DARDUINO -DESP8266 -DAAC_ENABLE_DECIM \
                 -I$(MINTAMP_ROOT)/pub -I$(MINTAMP_ROOT)/real \
                 -I$(MINTAMP_ROOT)/decoders/aac \
                 -I$(MINTAMP_ROOT)/decoders/aac-arduino-shim \

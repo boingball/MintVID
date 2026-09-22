@@ -225,7 +225,7 @@ $CC_CABAC_PROFILE -o "$BUILD/mr_decode_cabac_profile.m68k" tests/mr_decode.c \
 # audio adapter - no container or H.264 tier to cross-build.
 echo "== building mr_ac3_check.m68k =="
 MINTAMP_ROOT=vendor/MintAMP
-MINTAMP_FLAGS="-DAMIGA_M68K -DMR_HOST_BUILD -DARDUINO -DESP8266 \
+MINTAMP_FLAGS="-DAMIGA_M68K -DMR_HOST_BUILD -DARDUINO -DESP8266 -DAAC_ENABLE_DECIM \
     -I$MINTAMP_ROOT/pub -I$MINTAMP_ROOT/real -I$MINTAMP_ROOT/decoders/aac \
     -I$MINTAMP_ROOT/decoders/aac-arduino-shim -Ivendor/liba52"
 MINTAMP_SRC="$MINTAMP_ROOT/mp3dec.c $MINTAMP_ROOT/mp3tabs.c \
@@ -607,6 +607,17 @@ $CC -o "$BUILD/mr_mpeg2_bskip_check.m68k" tests/mr_mpeg2_bskip_check.c \
     -Wl,--wrap=ih264d_update_qp -lm
 echo "[MPEG-2 B-frame skip (mr_mpeg2_set_speed_mode Fast), real m68k/big-endian]"
 run "$BUILD/mr_mpeg2_bskip_check.m68k"
+echo "== building mr_h264_smoosh_check.m68k =="
+$CC -o "$BUILD/mr_h264_smoosh_check.m68k" tests/mr_h264_smoosh_check.c \
+    $CORE $LIBAVC_SRC \
+    -Wl,--wrap=ih264d_decode_bin \
+    -Wl,--wrap=ih264d_mvpred_nonmbaff \
+    -Wl,--wrap=ih264d_mvpred_nonmbaffB \
+    -Wl,--wrap=ih264d_parse_residual4x4_cabac \
+    -Wl,--wrap=ih264d_read_coeff4x4_cabac \
+    -Wl,--wrap=ih264d_update_qp -lm
+echo "[H.264 Smoosh keyframe classifier + datamosh drops, real m68k/big-endian]"
+run "$BUILD/mr_h264_smoosh_check.m68k"
 echo "[MPEG-4 Part 2 Simple Profile, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_mp4v_sp.avi \
     --check tests/assets/ref_mp4v_sp

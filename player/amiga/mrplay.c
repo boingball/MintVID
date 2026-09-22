@@ -205,6 +205,20 @@ void __chkabort(void) { }
                                              * shedding conversion+display    */
 #define MICRO_RESCUE_EXIT_US    200000ULL  /* resume full output once back
                                              * under this                     */
+/* The entry threshold is the GUI's "Skip after" choice (--skip-trigger=);
+ * keep the recovery exit comfortably below it so a low trigger cannot
+ * flap straight back out on the very next packet. */
+static uint64_t skip_trigger_exit_us(unsigned long entry_us)
+{
+    uint64_t half = (uint64_t)entry_us / 2u;
+    return half < MICRO_RESCUE_EXIT_US ? half : MICRO_RESCUE_EXIT_US;
+}
+/* Smoosh drops late (or audio-starving) P/B pictures, but never more than
+ * this long in a row - see smoosh_last_decode_us. */
+#define SMOOSH_MAX_DROP_RUN_US 1000000ULL
+/* How often the scheduler reads input on its own when no frame is queued -
+ * see last_idle_poll_us. */
+#define IDLE_EVENT_POLL_US       40000ULL
 #define MICRO_RESCUE_MAX_US    2500000ULL  /* bail to the existing catastrophic
                                              * path if shedding output alone
                                              * hasn't recovered within this   */
@@ -1007,24 +1021,42 @@ static int queue_copy(queued_video *q, const mr_frame *fr, uint64_t pts,
  * (qcount is not incremented) until this function returns. */
 static int queue_copy_yuv_rgb24(queued_video *q, const mr_frame *fr,
                                 uint64_t pts, uint64_t decoded_at, int bgr,
-                                mr_yuv_service_fn service,
+                                int half, mr_yuv_service_fn service,
                                 void *service_opaque)
 {
     size_t stride, bytes;
+    int out_w, out_h;
     if (!q || !fr || fr->fmt != MR_PIX_YUV420P ||
         !fr->data || !fr->u_data || !fr->v_data ||
         fr->width <= 0 || fr->height <= 0)
         return 0;
-    if ((size_t)fr->width > (size_t)-1 / 3u) return 0;
-    stride = (size_t)fr->width * 3u;
-    if ((size_t)fr->height > (size_t)-1 / stride) return 0;
-    bytes = stride * (size_t)fr->height;
+    /* RTG Half: one output pixel per 2x2 source block - see
+     * mr_yuv420_to_rgb24_half(). */
+    out_w = half ? fr->width / 2 : fr->width;
+    out_h = half ? fr->height / 2 : fr->height;
+    if (out_w <= 0 || out_h <= 0) return 0;
+    if ((size_t)out_w > (size_t)-1 / 3u) return 0;
+    stride = (size_t)out_w * 3u;
+    if ((size_t)out_h > (size_t)-1 / stride) return 0;
+    bytes = stride * (size_t)out_h;
     if (q->capacity < bytes) {
         unsigned char *p = (unsigned char *)realloc(q->rgb, bytes);
         if (!p) return 0;
         q->rgb = p; q->capacity = bytes;
     }
-    if (bgr)
+    if (half && bgr)
+        mr_yuv420_to_bgr24_half(q->rgb, (int)stride,
+                                fr->data, fr->stride,
+                                fr->u_data, fr->u_stride,
+                                fr->v_data, fr->v_stride,
+                                fr->width, fr->height, service, service_opaque);
+    else if (half)
+        mr_yuv420_to_rgb24_half(q->rgb, (int)stride,
+                                fr->data, fr->stride,
+                                fr->u_data, fr->u_stride,
+                                fr->v_data, fr->v_stride,
+                                fr->width, fr->height, service, service_opaque);
+    else if (bgr)
         mr_yuv420_to_bgr24(q->rgb, (int)stride,
                            fr->data, fr->stride,
                            fr->u_data, fr->u_stride,
@@ -1036,8 +1068,10 @@ static int queue_copy_yuv_rgb24(queued_video *q, const mr_frame *fr,
                            fr->u_data, fr->u_stride,
                            fr->v_data, fr->v_stride,
                            fr->width, fr->height, service, service_opaque);
-    q->width = fr->width; q->height = fr->height; q->stride = (int)stride;
-    q->dirty_y0 = fr->dirty_y0; q->dirty_y1 = fr->dirty_y1;
+    q->width = out_w; q->height = out_h; q->stride = (int)stride;
+    q->dirty_y0 = half ? fr->dirty_y0 / 2 : fr->dirty_y0;
+    q->dirty_y1 = half ? (fr->dirty_y1 + 1) / 2 : fr->dirty_y1;
+    if (q->dirty_y1 > out_h) q->dirty_y1 = out_h;
     q->pts_us = pts; q->decoded_at_us = decoded_at;
     return 1;
 }
@@ -1488,7 +1522,8 @@ static mr_h264_speed_mode effective_h264_speed(int requested)
         requested == MR_H264_SPEED_BALANCED ||
         requested == MR_H264_SPEED_FAST ||
         requested == MR_H264_SPEED_TURBO ||
-        requested == MR_H264_SPEED_TURBO_PLUS)
+        requested == MR_H264_SPEED_TURBO_PLUS ||
+        requested == MR_H264_SPEED_SMOOSH)
         return (mr_h264_speed_mode)requested;
     /* Auto follows the release's throughput-first default: Turbo preserves
      * the P-frame reference chain, unlike Turbo+, while skipping B pictures
@@ -1504,7 +1539,8 @@ static int apply_h264_speed(mr_decoder *dec, int requested, int verbose)
     const char *name;
     if (!dec || dec->codec != &mr_codec_h264) return 1;
     mode = effective_h264_speed(requested);
-    name = mode == MR_H264_SPEED_TURBO_PLUS ? "Turbo+ (PB-skip, keyframes only)" :
+    name = mode == MR_H264_SPEED_SMOOSH ? "Smoosh (Turbo + late P-frames dropped, datamosh)" :
+           mode == MR_H264_SPEED_TURBO_PLUS ? "Turbo+ (PB-skip, keyframes only)" :
            mode == MR_H264_SPEED_TURBO ? "Turbo (B-skip, bilinear MC)" :
            mode == MR_H264_SPEED_FAST ? "Fast (bilinear MC)" :
            mode == MR_H264_SPEED_BALANCED ? "Balanced" : "Quality";
@@ -1677,6 +1713,36 @@ static int service_player_during_io(void *opaque)
     return ev == MR_EV_QUIT || deferred_player_event == MR_EV_QUIT;
 }
 
+/* TS scanning and codec sub-calls accept a void service hook, unlike HTTP's
+ * cancellable hook. Poll input there as well: a long run of TS packets or
+ * decoded pictures can keep the scheduler's top-of-loop ESC check out of
+ * reach. The event remains deferred until the current packet returns. */
+static void service_player_during_packet(void *opaque)
+{
+    static unsigned calls_until_poll;
+    scheduler_trace *trace = (scheduler_trace *)opaque;
+    /* The H.264/YUV service hook can fire dozens of times per frame. Keep
+     * Paula serviced on every call without doing Intuition polling on every
+     * eight-row conversion strip on a 50 MHz 68060. */
+    if (calls_until_poll) {
+        calls_until_poll--;
+        if (trace && trace->audio) service_audio_for_display(opaque);
+        return;
+    }
+    calls_until_poll = 7;
+    (void)service_player_during_io(opaque);
+}
+
+/* The codec probes this between libavc sub-calls. Once the service hook has
+ * consumed ESC (or the controller's stop signal), it must see the deferred
+ * quit as well, rather than decoding the rest of a long access unit first. */
+static int player_h264_quit(void *opaque)
+{
+    (void)opaque;
+    return deferred_player_event == MR_EV_QUIT ||
+        (SetSignal(0, 0) & (SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F)) != 0;
+}
+
 /*
  * Wait hook for the HLS live-playlist re-fetch loop (mr_hls_set_wait).
  *
@@ -1751,6 +1817,15 @@ int main(int argc, char **argv)
     int audio_unavailable = 0;
     const char *audio_failure = NULL;
     int h264_speed = -1; /* automatic: Turbo - see effective_h264_speed() */
+    /* --skip-trigger=MS: how far behind (ms) a "Skip Frames" session may
+     * fall before micro-rescue starts shedding output and escalates H.264
+     * to keyframes-only until the next IDR. MICRO_RESCUE_ENTRY_US is the
+     * default; see skip_trigger_exit_us() for the matching exit. */
+    unsigned long skip_trigger_us = (unsigned long)MICRO_RESCUE_ENTRY_US;
+    /* --rtg-half: H.264 on an RTG window is converted to RGB at half width
+     * and half height (mr_yuv420_to_rgb24_half()) and the window opens at
+     * that size - a quarter of the conversion and blit work. */
+    int rtg_half = 0;
     int dv_speed = 0;    /* 0 = Quality (default, unchanged), 1 = Fast   */
     int mpeg2_speed = 0; /* 0 = Quality (default, unchanged), 1 = Fast   */
     int audio_low_rate = 0; /* --audio-rate=low: halve the output rate again */
@@ -1861,7 +1936,8 @@ int main(int argc, char **argv)
                "[--wpa|--c2p|--riva-c2p|--kalms-c2p|--direct-c2p] "
                "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
                "[--fast-buffer=auto|off|4|8|16] "
-               "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+] "
+               "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+|smoosh] "
+               "[--skip-trigger=200..2000] [--rtg-half] "
                "[--dv-speed=quality|fast] "
                "[--mpeg2-speed=quality|fast] "
                "[--audio-rate=normal|low] [--no-audio] [--audio-mono] "
@@ -1886,6 +1962,7 @@ int main(int argc, char **argv)
             }
             else if (!strcmp(argv[i], "--aga"))  display_set_force_aga(1);
             else if (!strcmp(argv[i], "--p96"))  display_set_force_p96(1);
+            else if (!strcmp(argv[i], "--rtg-half")) rtg_half = 1;
             else if (!strcmp(argv[i], "--ham"))  display_set_ham(8);
             else if (!strcmp(argv[i], "--ham6")) display_set_ham(6);
             else if (!strcmp(argv[i], "--2x"))   display_set_scale(2);
@@ -1920,6 +1997,19 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--live-resync")) live_resync = 1;
             else if (!strcmp(argv[i], "--live-diag")) live_diag = 1;
             else if (!strcmp(argv[i], "--throughput")) throughput_flag = 1;
+            else if (!strncmp(argv[i], "--skip-trigger=", 15)) {
+                char *end;
+                unsigned long ms = strtoul(argv[i] + 15, &end, 10);
+                if (*end || ms < MR_SKIP_TRIGGER_MIN_MS ||
+                    ms > MR_SKIP_TRIGGER_MAX_MS) {
+                    printf("invalid --skip-trigger (%lu..%lu ms): %s\n",
+                           (unsigned long)MR_SKIP_TRIGGER_MIN_MS,
+                           (unsigned long)MR_SKIP_TRIGGER_MAX_MS,
+                           argv[i] + 15);
+                    return mrplay_exit(5);
+                }
+                skip_trigger_us = ms * 1000UL;
+            }
             else if (!strcmp(argv[i], "--no-throughput")) throughput_flag = 0;
             else if (!strncmp(argv[i], "--h264-speed=", 13)) {
                 const char *mode = argv[i] + 13;
@@ -1930,6 +2020,8 @@ int main(int argc, char **argv)
                 else if (!strcmp(mode, "turbo")) h264_speed = MR_H264_SPEED_TURBO;
                 else if (!strcmp(mode, "turbo+") || !strcmp(mode, "turbo-plus"))
                     h264_speed = MR_H264_SPEED_TURBO_PLUS;
+                else if (!strcmp(mode, "smoosh"))
+                    h264_speed = MR_H264_SPEED_SMOOSH;
                 /* TurboGT is a retired name, kept accepted for scripts/saved
                  * settings from before it collapsed onto Turbo's own policy -
                  * see CLAUDE.md's H.264 TurboGT retirement notes. */
@@ -2273,6 +2365,21 @@ int main(int argc, char **argv)
         mr_decoder_close(&dec); mr_demux_close(dx);
         free(buf); return mrplay_exit(10);
     }
+    /* VQ "Smoosh": decode with Turbo's policy, and additionally never hand
+     * libavc an ordinary P/B access unit that is already more than a frame
+     * period late (mr_h264_set_drop_nonsync(), core/mr_h264.h). Keyframes
+     * are always decoded. The pictures in between then predict from a stale
+     * reference - smeared "datamosh" motion that heals at the next
+     * keyframe - which on a stream with no B-frames (YouTube 360p) is the
+     * only way to keep the picture moving while shedding decode work. */
+    int smoosh_mode = dec.codec == &mr_codec_h264 &&
+                      effective_h264_speed(h264_speed) == MR_H264_SPEED_SMOOSH;
+    unsigned long smoosh_dropped = 0, smoosh_audio_dropped = 0;
+    int smoosh_drop_req = 0, smoosh_audio_drop = 0;
+    /* When Smoosh last let a video packet through to libavc; see
+     * SMOOSH_MAX_DROP_RUN_US. */
+    uint64_t smoosh_last_decode_us = 0;
+    uint64_t last_idle_poll_us = 0;
 
     /* No-ops for a non-H.264 codec (mr_h264_set_timing_enabled checks
      * dec->codec internally) - only worth turning on when --time is
@@ -2319,7 +2426,29 @@ int main(int argc, char **argv)
      * call, not stuck in an unflushed stdio buffer the crash never lets run
      * to the flush that used to be the only one on this path. */
     Flush(Output());
-    disp = display_open(vi->width, vi->height, "MintVID");
+    /* RTG Half: open the window at half size up front; the H.264 RGB queue
+     * then fills it with mr_yuv420_to_rgb24_half(). Only an RTG backend that
+     * takes RGB (CGX, or P96's direct-lock fallback) can use that: a P96
+     * overlay takes YUV and scales on the board anyway, and a native AGA
+     * screen has its own indexed paths, so either of those is reopened at
+     * full size and plays normally. */
+    int rtg_half_active = rtg_half && codec == &mr_codec_h264 &&
+                          vi->width >= 4 && vi->height >= 4;
+    disp = display_open(rtg_half_active ? vi->width / 2 : vi->width,
+                        rtg_half_active ? vi->height / 2 : vi->height,
+                        "MintVID");
+    if (disp && rtg_half_active &&
+        (strncmp(display_backend_name(disp), "RTG", 3) != 0 ||
+         display_supports_yuv422(disp))) {
+        printf("rtg-half: %s display does not use the RGB path; "
+               "opening full size\n", display_backend_name(disp));
+        display_close(disp);
+        rtg_half_active = 0;
+        disp = display_open(vi->width, vi->height, "MintVID");
+    }
+    if (rtg_half && !rtg_half_active && codec != &mr_codec_h264)
+        printf("rtg-half: only H.264 has a half-size path; "
+               "playing at full size\n");
     if (!disp) { printf("cannot open a display (RTG or AGA)\n");
                  player_status(MR_PLAYER_STATE_ERROR, codec->name,
                                "cannot open a display (RTG or AGA)");
@@ -2396,6 +2525,7 @@ int main(int argc, char **argv)
     int use_yuv_rgb_queue = codec == &mr_codec_h264 &&
                             !use_yuv_indexed_queue && !use_yuv422_queue &&
                             !use_indexed_queue;
+    if (!use_yuv_rgb_queue) rtg_half_active = 0;
     int use_yuv_bgr_queue = use_yuv_rgb_queue &&
                             display_supports_bgr24(disp);
     if (use_yuv_indexed_queue || use_yuv422_queue || use_yuv_rgb_queue)
@@ -2446,6 +2576,11 @@ int main(int argc, char **argv)
         else if (use_yuv_bgr_queue)
             printf("video path: YUV420P %dx%d -> BGR24 "
                    "(direct-to-queue; P96 native)\n", vi->width, vi->height);
+        else if (use_yuv_rgb_queue && rtg_half_active)
+            printf("video path: YUV420P %dx%d -> %s %dx%d "
+                   "(RTG Half, direct-to-queue)\n", vi->width, vi->height,
+                   use_yuv_bgr_queue ? "BGR24" : "RGB24",
+                   vi->width / 2, vi->height / 2);
         else if (use_yuv_rgb_queue)
             printf("video path: YUV420P %dx%d -> RGB24 "
                    "(direct-to-queue)\n", vi->width, vi->height);
@@ -2555,9 +2690,10 @@ int main(int argc, char **argv)
     trace.audio = audio; trace.enabled = want_time; trace.live_diag = live_diag;
     trace.phase = "startup"; trace.phase_started_us = monotonic_us();
     display_set_service(disp, audio ? service_audio_for_display : NULL, &trace);
-    mr_demux_set_service(dx, audio ? service_audio_for_display : NULL, &trace);
-    mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL, &trace);
-    mr_mpeg2_set_service(&dec, audio ? service_audio_for_display : NULL, &trace);
+    mr_demux_set_service(dx, service_player_during_io, &trace);
+    mr_h264_set_service(&dec, service_player_during_packet, &trace);
+    mr_h264_set_quit(&dec, player_h264_quit, NULL);
+    mr_mpeg2_set_service(&dec, service_player_during_packet, &trace);
     /* Off by default: mr_ts_next_packet() (several clock() reads per
      * 188/192-byte TS packet) and mr_source_read_at()/the HLS playlist and
      * segment fetch timers (two clock() reads per source read) only ever
@@ -2666,6 +2802,8 @@ int main(int argc, char **argv)
                             ? (size_t)vi->width * (size_t)vi->height * 2u
                             : use_indexed_queue
                             ? (size_t)vi->width * (size_t)vi->height
+                            : rtg_half_active
+                            ? (size_t)(vi->width / 2) * (size_t)(vi->height / 2) * 3
                             : (size_t)vi->width * (size_t)vi->height * 3;
         ULONG free_any = AvailMem(MEMF_ANY);
         /* Only a third of the (post-floor) free pool is a safety ceiling; the
@@ -2793,6 +2931,33 @@ int main(int argc, char **argv)
         uint64_t audio_elapsed_raw_us = 0;
         uint64_t audio_media_clock_us = 0;
         uint64_t mono_media_clock_us = now - mono_base_us;
+
+        /* Input must stay live even when no frame is waiting to be shown.
+         * The presentation block below is the scheduler's normal event
+         * point, but it only runs with a queued, due frame - and Smoosh
+         * can legitimately keep the queue empty for a long stretch (every
+         * P picture dropped to protect audio on a long-GOP stream). A real
+         * A1200 YouTube session ended up exactly there: playback stalled
+         * and ESC was never read, although the mouse still moved. Read
+         * fresh input here with the same defer-and-let-the-scheduler-act
+         * rule service_player_during_io() uses, acting on quit at once.
+         * Not only when the queue is empty: a second retest still lost
+         * ESC, most likely with a frame queued whose deadline never
+         * arrives because the audio clock had stalled - the presentation
+         * block never runs then either. A queued event is handed to the
+         * presentation block first (player_event() drains
+         * deferred_player_event), so polling here too never loses one. */
+        if (disp && now - last_idle_poll_us >= IDLE_EVENT_POLL_US) {
+            int ev = control_signal_event(disp);
+            last_idle_poll_us = now;
+            if (ev == MR_EV_NONE) ev = display_poll_event(disp);
+            if (ev == MR_EV_VOLUME_UP) { apply_volume_step(8); ev = MR_EV_NONE; }
+            else if (ev == MR_EV_VOLUME_DOWN) { apply_volume_step(-8); ev = MR_EV_NONE; }
+            if (ev != MR_EV_NONE &&
+                (deferred_player_event == MR_EV_NONE || ev == MR_EV_QUIT))
+                deferred_player_event = ev;
+            if (deferred_player_event == MR_EV_QUIT) { quit = 1; break; }
+        }
 
         /* Micro-rescue's unconditional safety timeout - see
          * MICRO_RESCUE_ENTRY_US's declaration above for the full
@@ -3007,6 +3172,11 @@ int main(int argc, char **argv)
             display_set_status(disp, "Buffering...");
             qcount = 0; qhead = 0;               /* stale pictures, far behind */
             mr_h264_set_skip_output(&dec, 1);    /* reference-only: fast/no RGB */
+            /* Normally keep every reference intact through the catch-up.
+             * Smoosh already accepts smeared pictures, so skip everything
+             * but keyframes here too: the fast-forward then costs almost no
+             * decode time and the "Buffering..." gap shrinks accordingly. */
+            mr_h264_set_drop_nonsync(&dec, smoosh_mode);
             for (;;) {
                 uint64_t r0, rdt;
                 mr_status ns;
@@ -3106,10 +3276,9 @@ int main(int argc, char **argv)
                      * fresh h264_state/mpeg2_state comes back with no audio
                      * service hook - reapply, same as every other per-
                      * decoder setting reapplied here. */
-                    mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL,
-                                        &trace);
-                    mr_mpeg2_set_service(&dec, audio ? service_audio_for_display : NULL,
-                                        &trace);
+                    mr_h264_set_service(&dec, service_player_during_packet, &trace);
+                    mr_h264_set_quit(&dec, player_h264_quit, NULL);
+                    mr_mpeg2_set_service(&dec, service_player_during_packet, &trace);
                     if (use_yuv_indexed_queue || use_yuv422_queue ||
                         use_yuv_rgb_queue)
                         mr_h264_set_yuv_output(&dec, 1);
@@ -3408,10 +3577,9 @@ int main(int argc, char **argv)
             apply_mpeg2_speed(&dec, mpeg2_speed, 0);
             /* ...and with no audio service hook either - reapply, same as
              * every other per-decoder setting reapplied here. */
-            mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL,
-                                &trace);
-            mr_mpeg2_set_service(&dec, audio ? service_audio_for_display : NULL,
-                                &trace);
+            mr_h264_set_service(&dec, service_player_during_packet, &trace);
+            mr_h264_set_quit(&dec, player_h264_quit, NULL);
+            mr_mpeg2_set_service(&dec, service_player_during_packet, &trace);
             if (use_yuv_indexed_queue || use_yuv422_queue ||
                 use_yuv_rgb_queue)
                 mr_h264_set_yuv_output(&dec, 1);
@@ -3507,6 +3675,9 @@ int main(int argc, char **argv)
                 break;                          /* different shape: stop cleanly */
             }
             vi = nvi;
+            /* Reopened demuxers do not inherit the TS service hook. */
+            mr_demux_set_service(dx, service_player_during_io, &trace);
+            mr_demux_set_timing_enabled(dx, want_time);
             if (mr_decoder_reset(&dec) != MR_OK ||
                 !apply_h264_speed(&dec, h264_speed, 0)) break;
             /* mr_decoder_reset() closes and reopens the codec, so a fresh
@@ -3517,10 +3688,9 @@ int main(int argc, char **argv)
             apply_mpeg2_speed(&dec, mpeg2_speed, 0);
             /* ...and with no audio service hook either - reapply, same as
              * every other per-decoder setting reapplied here. */
-            mr_h264_set_service(&dec, audio ? service_audio_for_display : NULL,
-                                &trace);
-            mr_mpeg2_set_service(&dec, audio ? service_audio_for_display : NULL,
-                                &trace);
+            mr_h264_set_service(&dec, service_player_during_packet, &trace);
+            mr_h264_set_quit(&dec, player_h264_quit, NULL);
+            mr_mpeg2_set_service(&dec, service_player_during_packet, &trace);
             if (use_yuv_indexed_queue || use_yuv422_queue ||
                 use_yuv_rgb_queue)
                 mr_h264_set_yuv_output(&dec, 1);
@@ -3627,6 +3797,7 @@ int main(int argc, char **argv)
                 if (network_source) presenter.released = 1;
                 mr_status next = mr_demux_next_packet(dx, &pkt);
                 presenter.released = 0;
+                if (deferred_player_event == MR_EV_QUIT) { quit = 1; break; }
                 if (want_time) {
                     uint64_t blocked = monotonic_us() - a;
                     stats.demux_us += blocked; stats.refill_block_us += blocked;
@@ -3770,15 +3941,21 @@ int main(int argc, char **argv)
                      * ever entered - so the mr_micro_rescue_tick() safety
                      * timeout at the top of the loop has nothing to time
                      * out either. */
-                    if (!throughput_mode && playback_started && pkt.has_pts) {
+                    /* !smoosh_mode as well: Smoosh keeps up by dropping late
+                     * P pictures before decode (below), and micro-rescue's
+                     * escalation to IVD_SKIP_PB would instead freeze the
+                     * picture until the next keyframe - the exact thing
+                     * Smoosh exists to avoid. */
+                    if (!throughput_mode && !smoosh_mode &&
+                        playback_started && pkt.has_pts) {
                         int64_t adjusted_pkt_pts_us =
                             (int64_t)pkt.pts_us + container_pts_adjust_us;
                         int64_t pkt_late_us = (int64_t)mono_media_clock_us -
                                               adjusted_pkt_pts_us;
                         mr_micro_rescue_result mrr = mr_micro_rescue_on_packet(
                             &micro_rescue, pkt_late_us, monotonic_us(),
-                            (int64_t)MICRO_RESCUE_ENTRY_US,
-                            (int64_t)MICRO_RESCUE_EXIT_US);
+                            (int64_t)skip_trigger_us,
+                            (int64_t)skip_trigger_exit_us(skip_trigger_us));
                         if (mrr.entered) {
                             stats.micro_rescue_entries++;
                             if (want_time)
@@ -3874,6 +4051,40 @@ int main(int argc, char **argv)
                         }
                     }
                     mr_h264_set_skip_output(&dec, skip_stale_output);
+                    /* Smoosh: same lateness signal as pts_late above, but
+                     * applied regardless of throughput_mode ("All Frames"
+                     * governs showing decoded frames; Smoosh decides which
+                     * frames are worth decoding at all). Before
+                     * playback_started there is no clock to be late against,
+                     * so the startup queue fills normally.
+                     *
+                     * Audio comes first as well: while audio-rescue is
+                     * running, or the Paula cushion is under the rescue entry
+                     * level, every droppable video packet is dropped. A real
+                     * A1200/68060 BBC One log showed why: rescue kept fully
+                     * decoding the video packets it read past (~50 ms each),
+                     * most episodes ended on their time limit rather than a
+                     * refilled buffer, the audio clock stalled, and after
+                     * 4 s of that live-resync fired - the "disconnect,
+                     * Buffering..., reconnect" cycle. */
+                    smoosh_audio_drop = smoosh_mode && playback_started &&
+                        (rescue_active ||
+                         (audio && audio_ms < AUDIO_RESCUE_ENTRY_MS));
+                    smoosh_drop_req = smoosh_audio_drop ||
+                        (smoosh_mode && playback_started && pkt.has_pts &&
+                         (int64_t)mono_media_clock_us -
+                            ((int64_t)pkt.pts_us + container_pts_adjust_us) >
+                            (int64_t)period_us);
+                    /* Never drop everything: if nothing has reached the
+                     * decoder for SMOOSH_MAX_DROP_RUN_US, let this packet
+                     * through whatever audio or lateness say, so the
+                     * picture keeps (smeared) moving at >= ~1 fps instead
+                     * of waiting for a keyframe that on YouTube can be
+                     * many seconds away. */
+                    if (smoosh_drop_req && smoosh_last_decode_us &&
+                        now - smoosh_last_decode_us > SMOOSH_MAX_DROP_RUN_US)
+                        smoosh_drop_req = smoosh_audio_drop = 0;
+                    mr_h264_set_drop_nonsync(&dec, smoosh_drop_req);
                     mr_h264_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
                     mr_mpeg2_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
                     mr_h264_set_input_annexb(&dec, pkt.is_annexb);
@@ -3954,6 +4165,10 @@ int main(int argc, char **argv)
                          */
                         decoded_index++;
                         stats.dropped++;
+                        if (smoosh_drop_req) smoosh_dropped++;
+                        if (smoosh_audio_drop) smoosh_audio_dropped++;
+                    } else if (smoosh_mode) {
+                        smoosh_last_decode_us = monotonic_us();
                     }
                     if (decode_status == MR_EFORMAT) {
                         printf("h264-decode-error: packet %lu len=%lu\n",
@@ -4131,7 +4346,7 @@ int main(int argc, char **argv)
                                 uint64_t yr0 = want_time ? monotonic_us() : 0;
                                 copy_ok = queue_copy_yuv_rgb24(
                                     tail, &dec.frame, pts, decoded_at,
-                                    use_yuv_bgr_queue,
+                                    use_yuv_bgr_queue, rtg_half_active,
                                     audio ? service_audio_for_display : NULL,
                                     &trace);
                                 if (want_time) {
@@ -4335,6 +4550,10 @@ drain_decoded_output:
                (unsigned long)(total_decode_us  / 1000),
                (unsigned long)(total_display_us / 1000),
                enc_ms, blit_ms);
+        if (smoosh_mode)
+            printf("smoosh: %lu P/B access units dropped before decode "
+                   "(%lu of them to protect audio)\n",
+                   smoosh_dropped, smoosh_audio_dropped);
         if (display_aga_kalms_timing(&blit_ms))
             printf("Kalms conversion: %lu ms\n", blit_ms);
     }

@@ -848,7 +848,7 @@ mr_status mr_ts_next_packet(mr_ts *t, mr_packet *pkt)
         t->timing.packets_scanned++;
         if (--service_countdown == 0) {
             if (t->service) {
-                t->service(t->service_opaque);
+                if (t->service(t->service_opaque)) return MR_EAGAIN;
                 t->timing.service_calls++;
             }
             service_countdown = TS_SERVICE_PACKETS;

@@ -84,6 +84,14 @@ ffmpeg -v error -i test_h264_high.mp4 -c:v copy -c:a ac3 -b:a 96k \
 ffmpeg -v error -i test_h264_high.mp4 -c:v copy -c:a ac3 -b:a 96k \
     -f mpegts test_h264_ac3.ts -y
 ffmpeg -v error -i test_h264_high.mp4 -c copy test_h264_aac.mkv -y
+# H.264 Baseline (no B-frames, every P a reference - YouTube itag 18's
+# shape) with a keyframe every 12 of 36 frames, in MP4 (AVCC) and TS
+# (Annex-B): the Smoosh keyframe-classifier/datamosh fixture, see
+# tests/mr_h264_smoosh_check.c.
+ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=3 \
+    -c:v libx264 -profile:v baseline -pix_fmt yuv420p -g 12 -keyint_min 12 \
+    -sc_threshold 0 -crf 24 -movflags +faststart test_h264_gop.mp4 -y
+ffmpeg -v error -i test_h264_gop.mp4 -c copy -f mpegts test_h264_gop.ts -y
 # MPEG-2 Main Profile with B-frame reordering in a transport stream. This also
 # verifies that the decoder drains both delayed reference pictures at EOF.
 ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=25:duration=2 \

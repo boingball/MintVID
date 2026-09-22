@@ -197,7 +197,7 @@ $M68K_CC $H264_FLAGS -c -o "$BUILD/h264/dec_mvpred.o" "$LIBAVC_ROOT/decoder/ih26
 echo "== building AAC (vendor/MintAMP/decoders/aac, AACASM=1 production flags) =="
 MINTAMP_ROOT=vendor/MintAMP
 AAC_FLAGS="-mcpu=68060 -std=gnu89 -O3 -fomit-frame-pointer -DAMIGA_M68K \
-    -DARDUINO -DESP8266 -I$MINTAMP_ROOT/pub -I$MINTAMP_ROOT/real \
+    -DARDUINO -DESP8266 -DAAC_ENABLE_DECIM -I$MINTAMP_ROOT/pub -I$MINTAMP_ROOT/real \
     -I$MINTAMP_ROOT/decoders/aac -I$MINTAMP_ROOT/decoders/aac-arduino-shim \
     -I$MINTAMP_ROOT/decoders -include audio/mr_aac_m68k_config.h -w"
 AAC_OBJS=""

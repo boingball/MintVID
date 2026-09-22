@@ -344,6 +344,7 @@ int main(void) {
                                      NULL, NULL));
     assert(!strcmp(args, "--fast-buffer=auto --h264-speed=turbo "
                          "--dv-speed=fast --mpeg2-speed=fast --throughput "
+                         "--skip-trigger=700 "
                          "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     options.h264_performance = MR_H264_PERF_AUTO;
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
@@ -354,6 +355,7 @@ int main(void) {
      * mode. */
     assert(!strcmp(args, "--fast-buffer=auto --dv-speed=fast "
                          "--mpeg2-speed=fast --throughput "
+                         "--skip-trigger=700 "
                          "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     mr_play_options_default(&options);
     strcpy(launch.user_agent, "Mozilla/5.0 Test Agent");
@@ -709,6 +711,78 @@ int main(void) {
       assert(strstr(summary, "HAM8") && strstr(summary, "2x off") &&
              !strstr(summary, "(copper)"));
     }
+  }
+  /* Smoosh VQ, RTG Half display and the Skip Frames trigger: each must be
+   * emitted for mrplay, and survive an IPTV/YouTube browser's re-parse of
+   * the explicit form, so a GUI choice cannot be silently lost. */
+  {
+    mr_play_options o, parsed;
+    char *argv_rt[40];
+    char buf[1024], args[4096], summary[256], error[128];
+    const char *url = "https://example.test/live.m3u8";
+    int argc_rt;
+    char *p;
+
+    mr_play_options_default(&o);
+    assert(o.skip_trigger_ms == MR_SKIP_TRIGGER_DEFAULT_MS);
+    o.display = MR_DISPLAY_RTG_HALF;
+    o.h264_performance = MR_H264_PERF_SMOOSH;
+    o.throughput = 0;
+    o.skip_trigger_ms = 1500;
+    assert(mr_display_is_rtg(o.display));
+    assert(mr_build_player_arguments(args, sizeof(args), &o, url,
+                                     NULL, NULL));
+    assert(strstr(args, "--rtg-half"));
+    assert(strstr(args, "--h264-speed=smoosh"));
+    assert(strstr(args, "--dv-speed=fast") && strstr(args, "--mpeg2-speed=fast"));
+    assert(strstr(args, "--no-throughput --skip-trigger=1500"));
+    /* RTG has no C2P/lace/2x controls. */
+    assert(!strstr(args, "--aga") && !strstr(args, "--c2p") &&
+           !strstr(args, "--kalms-c2p") && !strstr(args, "--2x"));
+    mr_play_options_summary(&o, summary, sizeof(summary));
+    assert(strstr(summary, "RTG (Half)") && strstr(summary, "H264 Smoosh") &&
+           strstr(summary, "Skip Frames after 1.5s"));
+
+    assert(mr_build_iptv_arguments(buf, sizeof(buf), &o));
+    assert(strstr(buf, "--display rtg-half") && !strstr(buf, "--c2p"));
+    argv_rt[0] = "iptvgui";
+    argc_rt = 1;
+    for (p = strtok(buf, " \n"); p && argc_rt < 40; p = strtok(NULL, " \n"))
+      argv_rt[argc_rt++] = p;
+    mr_play_options_default(&parsed);
+    assert(mr_play_options_parse(&parsed, argc_rt, argv_rt, error,
+                                 sizeof(error)));
+    assert(parsed.display == MR_DISPLAY_RTG_HALF);
+    assert(parsed.h264_performance == MR_H264_PERF_SMOOSH);
+    assert(!parsed.throughput && parsed.skip_trigger_ms == 1500);
+
+    /* Range limits: 200..2000 ms accepted, anything else refused. */
+    {
+      char *lo[] = { "x", "--skip-trigger=200" };
+      char *hi[] = { "x", "--skip-trigger=2000" };
+      char *under[] = { "x", "--skip-trigger=199" };
+      char *over[] = { "x", "--skip-trigger=2001" };
+      char *junk[] = { "x", "--skip-trigger=fast" };
+      mr_play_options_default(&parsed);
+      assert(mr_play_options_parse(&parsed, 2, lo, error, sizeof(error)) &&
+             parsed.skip_trigger_ms == 200);
+      assert(mr_play_options_parse(&parsed, 2, hi, error, sizeof(error)) &&
+             parsed.skip_trigger_ms == 2000);
+      assert(!mr_play_options_parse(&parsed, 2, under, error, sizeof(error)));
+      assert(!mr_play_options_parse(&parsed, 2, over, error, sizeof(error)));
+      assert(!mr_play_options_parse(&parsed, 2, junk, error, sizeof(error)));
+    }
+    /* A corrupt/zero stored trigger is clamped on the way out, never
+     * emitted as a value mrplay would reject. */
+    mr_play_options_default(&o);
+    o.skip_trigger_ms = 0;
+    assert(mr_build_player_arguments(args, sizeof(args), &o, url,
+                                     NULL, NULL));
+    assert(strstr(args, "--skip-trigger=200"));
+    o.skip_trigger_ms = 60000;
+    assert(mr_build_player_arguments(args, sizeof(args), &o, url,
+                                     NULL, NULL));
+    assert(strstr(args, "--skip-trigger=2000"));
   }
   remove("/tmp/mr_channels.json");
   remove("/tmp/mr_streams.json");

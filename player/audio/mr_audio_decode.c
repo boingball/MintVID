@@ -58,6 +58,7 @@ struct mr_audio_decoder {
     int he_aac;
     mr_audio_info pcm_info;
     unsigned stride;
+    unsigned aac_decim;             /* part of stride Helix's IMDCT already did */
     unsigned decim_phase;
     int low_rate;
     int mono;                       /* --audio-mono: emit one channel only */
@@ -179,6 +180,37 @@ static long emit_pcm_stride(mr_audio_decoder *d, unsigned total_shorts,
     d->decim_phase = i - frames;
     if (sink && out) sink(user, d->pcm, out, out_channels);
     return (long)out;
+}
+
+/* AAC: let Helix run its inverse transform at 1/2 or 1/4 size instead of
+ * decoding at full rate and dropping samples in emit_pcm_stride(). That is
+ * roughly 40% (1/2) or 60% (1/4) less AAC work on a 68060, and it is the
+ * better decimator too: dropping samples folds everything above the new
+ * Nyquist back down as aliasing, where the reduced-size transform simply
+ * never synthesises that band (vendor/MintAMP's AACSetOutputDecimation(),
+ * AAC_ENABLE_DECIM). Helix refuses factors it was not built for, in which
+ * case aac_decim stays 1 and emit_pcm_stride() does all of the stride as
+ * before. Must run before the first frame is decoded - changing it flushes
+ * Helix's overlap buffers. */
+static void aac_apply_decim(mr_audio_decoder *d)
+{
+    d->aac_decim = 1;
+    if ((d->stride == 2 || d->stride == 4) &&
+        AACSetOutputDecimation(d->aac, (int)d->stride) == ERR_AAC_NONE)
+        d->aac_decim = d->stride;
+}
+
+/* One decoded AAC frame, whichever container it came from. fi.sampRateOut
+ * and fi.outputSamps already reflect Helix's own decimation, so only the
+ * rest of the stride is left for emit_pcm_stride(); source_rate keeps
+ * meaning the stream's rate. */
+static long emit_aac(mr_audio_decoder *d, const AACFrameInfo *fi,
+                     mr_audio_pcm_sink sink, void *user)
+{
+    return emit_pcm_stride(d, (unsigned)fi->outputSamps,
+                           (unsigned)fi->sampRateOut * d->aac_decim,
+                           (unsigned)fi->nChans, d->stride / d->aac_decim,
+                           sink, user);
 }
 
 static long emit_pcm(mr_audio_decoder *d, unsigned total_shorts,
@@ -361,6 +393,7 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info,
         } else {
             d->kind = AUDIO_KIND_AAC_ADTS;
         }
+        aac_apply_decim(d);
     }
     return d;
 
@@ -424,9 +457,7 @@ static long feed_aac_raw(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
     int err = AACDecode(d->aac, &in, &left, d->pcm);
     if (err != ERR_AAC_NONE) return 0;          /* bad AU: skip, keep playing */
     AACGetLastFrameInfo(d->aac, &fi);
-    return emit_pcm(d, (unsigned)fi.outputSamps,
-                    (unsigned)fi.sampRateOut, (unsigned)fi.nChans,
-                    sink, user);
+    return emit_aac(d, &fi, sink, user);
 }
 
 static long feed_mp2(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
@@ -490,9 +521,7 @@ static long feed_aac_adts(mr_audio_decoder *d, const uint8_t *data, uint32_t len
         consume_pending(d, frame_len);
         if (err != ERR_AAC_NONE) continue;
         AACGetLastFrameInfo(d->aac, &fi);
-        got = emit_pcm(d, (unsigned)fi.outputSamps,
-                       (unsigned)fi.sampRateOut, (unsigned)fi.nChans,
-                       sink, user);
+        got = emit_aac(d, &fi, sink, user);
         if (got < 0) return -1;
         produced += got;
     }

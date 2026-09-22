@@ -80,7 +80,8 @@ typedef enum {
 } mr_container;
 
 typedef struct mr_demux mr_demux;
-typedef void (*mr_demux_service_fn)(void *opaque);
+/* Return nonzero to abort a long TS scan (e.g. after ESC). */
+typedef int (*mr_demux_service_fn)(void *opaque);
 typedef struct mr_demux_timing {
     unsigned long calls, call_us, call_max_us;
     unsigned long source_us, sync_us, assembly_us, copy_us;

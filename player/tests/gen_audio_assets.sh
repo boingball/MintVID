@@ -74,4 +74,19 @@ ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=25:duration=1 \
 ffmpeg -v error -i test_mpeg1_mp2.mpg -vn -f s16le -acodec pcm_s16le \
     ref_mpeg1_mp2.raw -y
 
+# AAC output decimation (tests/mr_aac_decim_check.c): 48 kHz stereo, a chirp
+# in each channel sweeping through the 12 kHz and 6 kHz cut-offs the adapter
+# decimates to, plus 6 ms noise bursts with sharp onsets so the encoder emits
+# start/eight-short/stop sequences as well as long ones. -aac_pns 0 because
+# PNS noise is random by design and ffmpeg's decode would stop being a
+# sample-level reference. Helix's full-rate decode matches ref_aac_decim.raw
+# to within 2 LSB.
+ffmpeg -v error -f lavfi -i "aevalsrc='0.15*sin(2*PI*(200+5000*t)*t)+\
+if(lt(mod(t+0.013\,0.1)\,0.006)\,0.8*(random(0)-0.5)\,0)|\
+0.15*sin(2*PI*(11000-4500*t)*t)+\
+if(lt(mod(t+0.047\,0.1)\,0.006)\,0.8*(random(1)-0.5)\,0)':s=48000:d=2" \
+    -c:a aac -aac_pns 0 -b:a 160k -f adts test_aac_decim.aac -y
+ffmpeg -v error -i test_aac_decim.aac -f s16le -acodec pcm_s16le \
+    ref_aac_decim.raw -y
+
 echo "audio fixtures regenerated in $(pwd)"
