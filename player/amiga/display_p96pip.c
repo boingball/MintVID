@@ -120,6 +120,7 @@ typedef struct {
     int            dx, dy, dw, dh;  /* aspect-fitted PIP rect within the window */
     int            fullscreen;
     int            riva_fullscreen; /* public-screen, default PIP geometry */
+    int            pip_w, pip_h, pip_x, pip_y; /* padded source for RiVA fullscreen */
     int            hw_overlay;      /* 1 = PIPT_VideoWindow, 0 = MemoryWindow */
     int            fullscreen_dest_policy; /* progressive overlay-size retry */
     int            geometry_rejected; /* open failed for geometry/alignment */
@@ -450,8 +451,8 @@ static struct Window *open_pip(p96pip_state *s, ULONG type,
     LONG pip_width, pip_height;
     int simple_window;
     int riva = s->fullscreen && !s->screen && s->riva_fullscreen;
-    ULONG request_w = riva ? (ULONG)s->source_w * 10u : (ULONG)s->win_w;
-    ULONG request_h = riva ? (ULONG)s->source_h * 10u : (ULONG)s->win_h;
+    ULONG request_w = riva ? (ULONG)s->pip_w * 10u : (ULONG)s->win_w;
+    ULONG request_h = riva ? (ULONG)s->pip_h * 10u : (ULONG)s->win_h;
     ULONG max_w = (ULONG)-1, max_h = (ULONG)-1;
     int left = 0, top = 0;
     int pub_locked = 0;
@@ -545,8 +546,8 @@ static struct Window *open_pip(p96pip_state *s, ULONG type,
         riva ? TAG_IGNORE : WA_MaxHeight, max_h,
         WA_IDCMP, idcmp,
         P96PIP_SourceFormat, source_format,
-        P96PIP_SourceWidth, (ULONG)s->source_w,
-        P96PIP_SourceHeight, (ULONG)s->source_h,
+        P96PIP_SourceWidth, (ULONG)(riva ? s->pip_w : s->source_w),
+        P96PIP_SourceHeight, (ULONG)(riva ? s->pip_h : s->source_h),
         P96PIP_Type, type,
         /* The PIP rectangle is relative to the window's interior, not its
          * outer RastPort coordinates. Do not add BorderLeft/BorderTop here:
@@ -584,6 +585,66 @@ static void sync_content_geometry(p96pip_state *s)
     s->win_h = s->win->Height - s->win->BorderTop  - s->win->BorderBottom;
     if (s->win_w < 1) s->win_w = 1;
     if (s->win_h < 1) s->win_h = 1;
+}
+
+/* The RiVA window stays borderless only when its default destination is
+ * allowed to fill it. Pad the PIP source with black instead of resizing the
+ * PIP window (which reintroduced a title bar on WinUAE). The centre retains
+ * the decoder's original pixels; P96 scales the padded source to the screen. */
+static int configure_riva_source(p96pip_state *s, int screen_w, int screen_h)
+{
+    uint64_t padded;
+    s->pip_w = s->source_w;
+    s->pip_h = s->source_h;
+    s->pip_x = s->pip_y = 0;
+    if (screen_w <= 0 || screen_h <= 0) return 0;
+    if ((uint64_t)(unsigned)s->source_w * (unsigned)screen_h >
+        (uint64_t)(unsigned)s->source_h * (unsigned)screen_w) {
+        padded = ((uint64_t)(unsigned)s->source_w * (unsigned)screen_h +
+                  (unsigned)screen_w - 1u) / (unsigned)screen_w;
+        if (padded > 6553u) return 0;
+        s->pip_h = (int)padded;
+        s->pip_y = (s->pip_h - s->source_h) / 2;
+    } else {
+        padded = ((uint64_t)(unsigned)s->source_h * (unsigned)screen_w +
+                  (unsigned)screen_h - 1u) / (unsigned)screen_h;
+        padded = (padded + 1u) & ~(uint64_t)1u;
+        if (padded > 6553u) return 0;
+        s->pip_w = (int)padded;
+        s->pip_x = ((s->pip_w - s->source_w) / 2) & ~1;
+    }
+    return 1;
+}
+
+static int clear_riva_source(p96pip_state *s)
+{
+    struct RenderInfo ri;
+    LONG lock;
+    int y, x;
+    unsigned char *base;
+    if (!s->riva_fullscreen ||
+        (s->pip_w == s->source_w && s->pip_h == s->source_h))
+        return 1;
+    lock = p96LockBitMap(s->source_bitmap, (UBYTE *)&ri, sizeof ri);
+    if (!lock) return 0;
+    if ((int)ri.BytesPerRow < s->pip_w * 2) {
+        p96UnlockBitMap(s->source_bitmap, lock);
+        return 0;
+    }
+    base = (unsigned char *)ri.Memory;
+    for (y = 0; y < s->pip_h; ++y) {
+        unsigned char *row = base + (size_t)y * (size_t)ri.BytesPerRow;
+        if (s->source_format == RGBFB_Y4U2V2) {
+            for (x = 0; x < s->pip_w * 2; x += 4) {
+                row[x] = row[x + 2] = 16;
+                row[x + 1] = row[x + 3] = 128;
+            }
+        } else {
+            memset(row, 0, (size_t)s->pip_w * 2u);
+        }
+    }
+    p96UnlockBitMap(s->source_bitmap, lock);
+    return 1;
 }
 
 static void close_pip(p96pip_state *s)
@@ -665,18 +726,10 @@ static int open_public_fullscreen_backdrop(p96pip_state *s)
                 (UWORD)(backdrop->Width - 1),
                 (UWORD)(backdrop->Height - 1), 0);
 
-    /* The RiVA-style oversized request can return a screen-sized PIP window
-     * (1024x768 for a 640x360 source on WinUAE). Its default destination
-     * fills that window, stretching 16:9 video to 4:3. Resize the PIP to
-     * the source aspect and centre it above the black screen-sized host.
-     * The existing path still requests a screen-sized host and uses explicit
-     * PIP margins for its aspect-fitted destination. */
-    if (s->riva_fullscreen) {
-        mr_aspect_rect fit = mr_aspect_fit(s->source_w, s->source_h,
-                                          screen_w, screen_h);
-        ChangeWindowBox(s->win, 0, 0, fit.w, fit.h);
-        WaitTOF();
-    } else {
+    /* Leave the RiVA-style window at its borderless opening size. Live
+     * resizing brought back a decorated window in the WinUAE test. The
+     * source bitmap itself carries black aspect bars in this mode. */
+    if (!s->riva_fullscreen) {
         ChangeWindowBox(s->win, 0, 0, screen_w, screen_h);
         WaitTOF();
     }
@@ -856,6 +909,14 @@ static int reopen_pip(p96pip_state *s, const char *reason)
             close_pip(s);
             return 0;
         }
+        if (!clear_riva_source(s)) {
+            if (g_display_want_time) {
+                printf("p96pip-fullscreen: could not clear padded source\n");
+                Flush(Output());
+            }
+            close_pip(s);
+            return 0;
+        }
 
         sync_content_geometry(s);
         /* RiVA asks for 10x the source size and lets P96 constrain it.
@@ -936,41 +997,64 @@ static int reopen_fullscreen_pip(p96pip_state *s, const char *reason,
         int screen_w = s->win_w, screen_h = s->win_h;
         mr_aspect_rect expected = mr_aspect_fit(s->source_w, s->source_h,
                                                 screen_w, screen_h);
-        s->riva_fullscreen = 1;
-        if (g_display_want_time) {
-            printf("p96pip-fullscreen: trying RiVA-style MemoryWindow "
-                   "request=%dx%d on public %dx%d\n",
-                   s->source_w * 10, s->source_h * 10,
-                   screen_w, screen_h);
-            Flush(Output());
-        }
-        if (reopen_pip(s, "riva-public-fullscreen")) {
-            int border = s->win->BorderLeft | s->win->BorderRight |
-                         s->win->BorderTop | s->win->BorderBottom;
-            mr_aspect_rect actual = mr_aspect_fit(s->source_w, s->source_h,
-                                                  s->win_w, s->win_h);
+        int padded = configure_riva_source(s, screen_w, screen_h);
+        int attempt;
+        for (attempt = 0; attempt < (padded ? 2 : 1); ++attempt) {
+            int border;
+            mr_aspect_rect actual;
+            if (attempt || !padded) {
+                s->pip_w = s->source_w;
+                s->pip_h = s->source_h;
+                s->pip_x = s->pip_y = 0;
+            }
+            s->riva_fullscreen = 1;
             if (g_display_want_time) {
-                printf("p96pip-fullscreen: RiVA-style result outer=%dx%d "
-                       "inner=%dx%d border=%d expected=%dx%d "
-                       "aspect-fit=%dx%d\n",
-                       s->win->Width, s->win->Height, s->win_w, s->win_h,
-                       border, expected.w, expected.h, actual.w, actual.h);
+                printf("p96pip-fullscreen: trying RiVA-style %s "
+                       "source=%dx%d video=%d,%d %dx%d on public %dx%d\n",
+                       padded && !attempt ? "padded" : "plain",
+                       s->pip_w, s->pip_h, s->pip_x, s->pip_y,
+                       s->source_w, s->source_h, screen_w, screen_h);
                 Flush(Output());
             }
-            if (!border && s->win_w >= expected.w * 3 / 4 &&
-                s->win_h >= expected.h * 3 / 4 &&
-                s->win_w - actual.w <= 2 && s->win_h - actual.h <= 2 &&
-                s->win->Width <= screen_w && s->win->Height <= screen_h)
-                return 1;
+            if (reopen_pip(s, "riva-public-fullscreen")) {
+                border = s->win->BorderLeft | s->win->BorderRight |
+                         s->win->BorderTop | s->win->BorderBottom;
+                actual = mr_aspect_fit(s->pip_w, s->pip_h,
+                                       s->win_w, s->win_h);
+                if (g_display_want_time) {
+                    printf("p96pip-fullscreen: RiVA-style %s result "
+                           "outer=%dx%d inner=%dx%d border=%d "
+                           "source-fit=%dx%d expected-video=%dx%d\n",
+                           padded && !attempt ? "padded" : "plain",
+                           s->win->Width, s->win->Height, s->win_w, s->win_h,
+                           border, actual.w, actual.h, expected.w, expected.h);
+                    Flush(Output());
+                }
+                if (!border && s->win_w >= expected.w * 3 / 4 &&
+                    s->win_h >= expected.h * 3 / 4 &&
+                    (attempt || !padded ||
+                     (s->win_w - actual.w <= 2 &&
+                      s->win_h - actual.h <= 2)) &&
+                    s->win->Width <= screen_w && s->win->Height <= screen_h) {
+                    if ((attempt || !padded) && g_display_want_time &&
+                        (s->win_w - actual.w > 2 ||
+                         s->win_h - actual.h > 2)) {
+                        printf("p96pip-fullscreen: padded source unavailable; "
+                               "plain borderless PIP may stretch video\n");
+                        Flush(Output());
+                    }
+                    return 1;
+                }
+            }
+            close_public_fullscreen_backdrop(s);
+            close_pip(s);
+            s->win_w = screen_w;
+            s->win_h = screen_h;
         }
-        close_public_fullscreen_backdrop(s);
-        close_pip(s);
         s->riva_fullscreen = 0;
-        s->win_w = screen_w;
-        s->win_h = screen_h;
         if (g_display_want_time) {
             printf("p96pip-fullscreen: RiVA-style window unavailable, "
-                   "clamped or distorted; trying existing size ladder\n");
+                   "bordered or clamped; trying existing size ladder\n");
             Flush(Output());
         }
     }
@@ -1112,6 +1196,8 @@ static int reopen_for_size(p96pip_state *s, int w, int h)
     int old_h = s->source_h;
     int old_win_w = s->win_w, old_win_h = s->win_h;
     int old_riva = s->riva_fullscreen;
+    int old_pip_w = s->pip_w, old_pip_h = s->pip_h;
+    int old_pip_x = s->pip_x, old_pip_y = s->pip_y;
     int opened;
 
     if (w <= 0 || h <= 0 || (w & 1)) return 0;
@@ -1141,6 +1227,10 @@ static int reopen_for_size(p96pip_state *s, int w, int h)
     s->win_w = old_win_w;
     s->win_h = old_win_h;
     s->riva_fullscreen = old_riva;
+    s->pip_w = old_pip_w;
+    s->pip_h = old_pip_h;
+    s->pip_x = old_pip_x;
+    s->pip_y = old_pip_y;
     if (!reopen_pip(s, "frame-size-rollback"))
         s->quit = 1;
     return 0;
@@ -1155,12 +1245,11 @@ static unsigned long elapsed_us(clock_t begin)
  * same generic Picasso96API.library calls display_p96.c uses on the shared
  * screen bitmap) and write `rows` starting at row 0 of that bitmap - there
  * is no destination offset to track the way display_p96.c's write_pixel_
- * strip() needs one: the PIP's source bitmap is always exactly source_w x
- * source_h, and its placement/scaling within the window is handled entirely
- * by P96PIP_Left/Top/Width/Height (set by open_pip()), not by us. */
+ * strip() needs one, except the RiVA fullscreen source can have permanent
+ * black bars around the source image to keep its aspect ratio. */
 static int write_yuv422_rows(struct BitMap *bm, ULONG format, int y0,
                              const unsigned char *src, int src_stride,
-                             int w, int rows)
+                             int w, int rows, int pad_x, int pad_y)
 {
     struct RenderInfo ri;
     LONG lock;
@@ -1170,7 +1259,8 @@ static int write_yuv422_rows(struct BitMap *bm, ULONG format, int y0,
     lock = p96LockBitMap(bm, (UBYTE *)&ri, sizeof ri);
     if (!lock) return 0;
     bpr = (int)ri.BytesPerRow;
-    base = (unsigned char *)ri.Memory + (size_t)y0 * (size_t)bpr;
+    base = (unsigned char *)ri.Memory +
+           (size_t)(y0 + pad_y) * (size_t)bpr + (size_t)pad_x * 2u;
     for (y = 0; y < rows; y++) {
         const unsigned char *srow = src + (size_t)y * (size_t)src_stride;
         unsigned char *drow = base + (size_t)y * (size_t)bpr;
@@ -1203,7 +1293,8 @@ static unsigned char clamp_byte(int v)
  * clipping on real video in the P96 overlay path. */
 static int write_rgb_rows(struct BitMap *bm, ULONG format, int y0,
                           const unsigned char *src, int src_stride,
-                          int w, int rows, int src_is_bgr)
+                          int w, int rows, int src_is_bgr,
+                          int pad_x, int pad_y)
 {
     struct RenderInfo ri;
     LONG lock;
@@ -1214,7 +1305,8 @@ static int write_rgb_rows(struct BitMap *bm, ULONG format, int y0,
     lock = p96LockBitMap(bm, (UBYTE *)&ri, sizeof ri);
     if (!lock) return 0;
     bpr = (int)ri.BytesPerRow;
-    base = (unsigned char *)ri.Memory + (size_t)y0 * (size_t)bpr;
+    base = (unsigned char *)ri.Memory +
+           (size_t)(y0 + pad_y) * (size_t)bpr + (size_t)pad_x * 2u;
     for (y = 0; y < rows; y++) {
         const unsigned char *src_pixel =
             src + (size_t)y * (size_t)src_stride;
@@ -1282,7 +1374,9 @@ static void p96pip_show_packed(void *h, const unsigned char *rgb, int w,
 
     if (!write_rgb_rows(s->source_bitmap, s->source_format, dy0,
                         rgb + (size_t)dy0 * (size_t)stride,
-                        stride, w, dy1 - dy0, src_is_bgr)) {
+                        stride, w, dy1 - dy0, src_is_bgr,
+                        s->riva_fullscreen ? s->pip_x : 0,
+                        s->riva_fullscreen ? s->pip_y : 0)) {
         printf("p96pip-error: p96LockBitMap failed - dropped strip\n");
         Flush(Output());
     }
@@ -1340,7 +1434,9 @@ static void p96pip_show_yuv422(void *h, const unsigned char *yuv, int w,
 
     if (!write_yuv422_rows(s->source_bitmap, s->source_format, dy0,
                            yuv + (size_t)dy0 * (size_t)stride,
-                           stride, w, dy1 - dy0)) {
+                           stride, w, dy1 - dy0,
+                           s->riva_fullscreen ? s->pip_x : 0,
+                           s->riva_fullscreen ? s->pip_y : 0)) {
         printf("p96pip-error: p96LockBitMap failed - dropped YUV strip\n");
         Flush(Output());
     }
