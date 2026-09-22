@@ -111,11 +111,9 @@ typedef struct mr_play_options {
     mr_audio_rate_mode audio_rate;
     mr_fast_buffer_mode fast_buffer;
     int no_audio;      /* pass --no-audio: skip the audio decoder/Paula entirely */
-    /* pass --audio-mono: decode one channel instead of two. Paula output has
-     * always been mono; this moves the fold from "decode both, average them"
-     * to "ask the codec for one channel", which skips about half the
-     * per-channel synthesis work in MP3, MP2 and AC-3 (Helix AAC has no mono
-     * mode, so there it only saves the downmix). */
+    /* pass --audio-mono: decode one channel instead of two and duplicate it
+     * to both Paula speakers. Saves per-channel synthesis in MP3, MP2 and
+     * AC-3; Helix AAC has no decoder-side mono synthesis mode. */
     int mono_audio;
     /* GUI label: "Video: All Frames" (1, the default) / "Skip Frames" (0).
      * Non-zero passes --throughput, zero passes --no-throughput - always

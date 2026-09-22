@@ -1,10 +1,9 @@
 /*
  * MintVID - Paula (audio.device) PCM output backend.
  *
- * One allocated Paula channel, mono, signed 8-bit, double-buffered CMD_WRITE.
- * Source PCM (8/16-bit, mono/stereo) is downmixed/converted to signed 8-bit
- * mono and pushed into a ring FIFO; audio_service() reaps completed writes and
- * resubmits from the FIFO, so the player just has to call it often.
+ * One allocated left/right Paula pair, signed 8-bit, double-buffered per
+ * side. Mono PCM is sent to both speakers; stereo PCM retains its channels.
+ * The ring FIFO and master clock count sample frames (left/right pairs).
  *
  * Teardown follows MintAMP's hard-won rule: an in-flight CMD_WRITE must be
  * AbortIO'd and WaitIO'd (reaped) before the chip buffer it points at is freed
@@ -35,6 +34,9 @@
 #define PAL_CLOCK  3546895UL   /* Paula colour clock (PAL)                  */
 #define MIN_PERIOD 124         /* Paula hardware minimum period             */
 #define NBUF       2           /* double buffer                            */
+#define SIDES      2           /* Paula's left and right outputs          */
+#define LEFT       0
+#define RIGHT      1
 #define PAULA_REQUEST_MS 200    /* was 100 (measured validation value) - a
                                  * WinUAE 854x480 TurboGT run still showed
                                  * hw-starvations (both NBUF chip buffers
@@ -73,13 +75,15 @@ extern struct Device *TimerBase;
 
 struct mr_audio {
     struct MsgPort *port;
-    struct IOAudio *io[NBUF];
-    signed char    *chip[NBUF];
+    struct IOAudio *owner;      /* owns both allocated channels            */
+    struct IOAudio *io[NBUF][SIDES];
+    signed char    *chip[NBUF][SIDES];
     int             bufsz;         /* samples per chip buffer               */
     int             busy[NBUF];
+    int             side_busy[NBUF][SIDES];
     int             nsub[NBUF];    /* samples submitted in that buffer      */
     audio_request_timeline request[NBUF];
-    int             opened;        /* audio.device open (io[0])             */
+    int             opened;        /* audio.device open (owner)             */
     struct Task    *parent_task;
     struct Task    *worker_task;
     BYTE            ready_sig, stopped_sig, wake_sig;
@@ -94,7 +98,7 @@ struct mr_audio {
     int             src_channels;
     int             src_bits;
 
-    signed char    *fifo;          /* ring of converted 8-bit mono samples  */
+    signed char    *fifo;          /* interleaved signed 8-bit L/R frames   */
     unsigned        fifo_size;
     unsigned        head, tail, count;
     unsigned long   fifo_dropped_samples;
@@ -190,22 +194,25 @@ static void audio_worker_entry(void);
 
 /* ---- ring FIFO ---------------------------------------------------------- */
 
-static void fifo_push(mr_audio *a, signed char s)
+static void fifo_push(mr_audio *a, signed char left, signed char right)
 {
     if (a->count >= a->fifo_size) {
         a->fifo_dropped_samples++;             /* explicit bounded overflow */
         return;
     }
-    a->fifo[a->head] = s;
+    a->fifo[a->head * SIDES + LEFT] = left;
+    a->fifo[a->head * SIDES + RIGHT] = right;
     a->head = (a->head + 1) % a->fifo_size;
     a->count++;
 }
 
-static int fifo_pop_into(mr_audio *a, signed char *dst, int n)
+static int fifo_pop_into(mr_audio *a, signed char *left,
+                         signed char *right, int n)
 {
     int i = 0;
     while (i < n && a->count) {
-        dst[i++] = a->fifo[a->tail];
+        left[i] = a->fifo[a->tail * SIDES + LEFT];
+        right[i++] = a->fifo[a->tail * SIDES + RIGHT];
         a->tail = (a->tail + 1) % a->fifo_size;
         a->count--;
     }
@@ -269,7 +276,7 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
      * Sync is unaffected: pacing follows samples actually played, not queued. */
     a->fifo_size = a->output_rate * 4;          /* ~4 s cushion              */
     if (a->fifo_size < 8192) a->fifo_size = 8192;
-    a->fifo = (signed char *)malloc(a->fifo_size);
+    a->fifo = (signed char *)malloc((size_t)a->fifo_size * SIDES);
     if (!a->fifo) { audio_close(a); return NULL; }
 
     a->parent_task = FindTask(NULL);
@@ -337,10 +344,11 @@ void audio_close(mr_audio *a)
 
 /* ---- streaming ---------------------------------------------------------- */
 
-static void fifo_push_resampled(mr_audio *a, signed char sample)
+static void fifo_push_resampled(mr_audio *a, signed char left,
+                                signed char right)
 {
     unsigned outputs = mr_audio_rate_outputs(&a->rate_state);
-    while (outputs--) fifo_push(a, sample);
+    while (outputs--) fifo_push(a, left, right);
 }
 
 void audio_write(mr_audio *a, const unsigned char *pcm, unsigned bytes)
@@ -358,23 +366,16 @@ void audio_write(mr_audio *a, const unsigned char *pcm, unsigned bytes)
     Forbid();
     for (k = 0; k < n; k++) {
         const unsigned char *p = pcm + (size_t)k * framebytes;
-        int s;
+        int l, r;
         if (a->src_bits == 16) {
-            int l = (int)(short)(p[0] | (p[1] << 8));      /* LE, signed     */
-            if (ch >= 2) {
-                int r = (int)(short)(p[2] | (p[3] << 8));
-                s = (l + r) / 2;
-            } else s = l;
-            s >>= 8;                                        /* 16 -> 8 bit    */
+            l = (int)(short)(p[0] | (p[1] << 8));       /* LE, signed */
+            r = ch >= 2 ? (int)(short)(p[2] | (p[3] << 8)) : l;
         } else {
-            int l = (int)audio_pcm_u8_to_s16(p[0]);
-            if (ch >= 2) {
-                int r = (int)audio_pcm_u8_to_s16(p[1]);
-                s = (l + r) / 2;
-            } else s = l;
-            s >>= 8;
+            l = (int)audio_pcm_u8_to_s16(p[0]);
+            r = ch >= 2 ? (int)audio_pcm_u8_to_s16(p[1]) : l;
         }
-        fifo_push_resampled(a, (signed char)s);
+        fifo_push_resampled(a, (signed char)(l >> 8),
+                            (signed char)(r >> 8));
     }
     Permit();
     if (a->worker_task && a->wake_sig >= 0)
@@ -388,10 +389,10 @@ void audio_write_s16(mr_audio *a, const short *pcm,
     if (!a || !pcm || channels < 1) return;
     Forbid();
     for (k = 0; k < frames; k++) {
-        int s = pcm[(size_t)k * channels];
-        if (channels >= 2)
-            s = (s + pcm[(size_t)k * channels + 1]) / 2;
-        fifo_push_resampled(a, (signed char)(s >> 8));
+        int l = pcm[(size_t)k * channels];
+        int r = channels >= 2 ? pcm[(size_t)k * channels + 1] : l;
+        fifo_push_resampled(a, (signed char)(l >> 8),
+                            (signed char)(r >> 8));
     }
     Permit();
     if (a->worker_task && a->wake_sig >= 0)
@@ -427,10 +428,19 @@ static void audio_pump(mr_audio *a)
         } else a->no_active_since = 0;
     }
 
-    /* Reap finished writes. */
+    /* Each slot is a left/right pair. Keep the pair's buffer and timeline
+     * alive until both hardware channels have finished the same frames. */
     for (i = 0; i < NBUF; i++) {
-        if (a->busy[i] && CheckIO((struct IORequest *)a->io[i])) {
-            WaitIO((struct IORequest *)a->io[i]);
+        int side;
+        if (!a->busy[i]) continue;
+        for (side = 0; side < SIDES; side++) {
+            if (a->side_busy[i][side] &&
+                CheckIO((struct IORequest *)a->io[i][side])) {
+                WaitIO((struct IORequest *)a->io[i][side]);
+                a->side_busy[i][side] = 0;
+            }
+        }
+        if (!a->side_busy[i][LEFT] && !a->side_busy[i][RIGHT]) {
             a->busy[i] = 0;
             a->request[i].state = AUDIO_REQ_COMPLETE;
         }
@@ -461,17 +471,41 @@ static void audio_pump(mr_audio *a)
                 int had_outstanding = oldest_request(a) >= 0;
                 int n;
                 Forbid();
-                n = fifo_pop_into(a, a->chip[i], a->bufsz);
+                n = fifo_pop_into(a, a->chip[i][LEFT],
+                                  a->chip[i][RIGHT], a->bufsz);
                 Permit();
                 if (n <= 0) continue;
-                a->io[i]->ioa_Request.io_Command = CMD_WRITE;
-                a->io[i]->ioa_Request.io_Flags   = ADIOF_PERVOL;
-                a->io[i]->ioa_Data   = (UBYTE *)a->chip[i];
-                a->io[i]->ioa_Length = (ULONG)n;
-                a->io[i]->ioa_Period = a->period;
-                a->io[i]->ioa_Volume = (UWORD)a->volume;
-                a->io[i]->ioa_Cycles = 1;
-                BeginIO((struct IORequest *)a->io[i]);
+                /* CMD_WRITE targets one Paula channel. Stop/start the pair
+                 * together when playback starts or recovers from starvation,
+                 * so the first left/right samples start on the same tick. */
+                if (!had_outstanding) {
+                    a->owner->ioa_Request.io_Command = CMD_STOP;
+                    a->owner->ioa_Request.io_Flags = 0;
+                    BeginIO((struct IORequest *)a->owner);
+                    WaitIO((struct IORequest *)a->owner);
+                }
+                {
+                    int side;
+                    for (side = 0; side < SIDES; side++) {
+                        struct IOAudio *io = a->io[i][side];
+                        io->ioa_Request.io_Command = CMD_WRITE;
+                        io->ioa_Request.io_Flags   = ADIOF_PERVOL;
+                        io->ioa_Data   = (UBYTE *)a->chip[i][side];
+                        io->ioa_Length = (ULONG)n;
+                        io->ioa_Period = a->period;
+                        io->ioa_Volume = (UWORD)a->volume;
+                        io->ioa_Cycles = 1;
+                        BeginIO((struct IORequest *)io);
+                        a->side_busy[i][side] = 1;
+                    }
+                }
+                if (!had_outstanding) {
+                    a->owner->ioa_Request.io_Command = CMD_START;
+                    a->owner->ioa_Request.io_Flags = 0;
+                    BeginIO((struct IORequest *)a->owner);
+                    WaitIO((struct IORequest *)a->owner);
+                    now = audio_now_us();
+                }
                 a->busy[i] = 1;
                 a->nsub[i] = n;
                 a->request[i].sequence = a->next_sequence++;
@@ -540,36 +574,47 @@ void audio_service(mr_audio *a)
 
 static void audio_worker_cleanup(mr_audio *a)
 {
-    int i;
+    int i, side;
     for (i = 0; i < NBUF; i++) {
-        if (a->busy[i] && a->io[i]) {
-            AbortIO((struct IORequest *)a->io[i]);
-            WaitIO((struct IORequest *)a->io[i]);
-            a->busy[i] = 0;
+        for (side = 0; side < SIDES; side++) {
+            if (a->side_busy[i][side] && a->io[i][side]) {
+                AbortIO((struct IORequest *)a->io[i][side]);
+                WaitIO((struct IORequest *)a->io[i][side]);
+                a->side_busy[i][side] = 0;
+            }
         }
+        a->busy[i] = 0;
     }
-    if (a->opened && a->io[0]) {
-        CloseDevice((struct IORequest *)a->io[0]);
+    if (a->opened && a->owner) {
+        CloseDevice((struct IORequest *)a->owner);
         a->opened = 0;
     }
     for (i = 0; i < NBUF; i++) {
-        if (a->io[i]) DeleteIORequest((struct IORequest *)a->io[i]);
-        a->io[i] = NULL;
+        for (side = 0; side < SIDES; side++) {
+            if (a->io[i][side])
+                DeleteIORequest((struct IORequest *)a->io[i][side]);
+            a->io[i][side] = NULL;
+        }
     }
+    if (a->owner) DeleteIORequest((struct IORequest *)a->owner);
+    a->owner = NULL;
     if (a->port) { DeleteMsgPort(a->port); a->port = NULL; }
     for (i = 0; i < NBUF; i++) {
-        if (a->chip[i]) FreeMem(a->chip[i], (ULONG)a->bufsz);
-        a->chip[i] = NULL;
+        for (side = 0; side < SIDES; side++) {
+            if (a->chip[i][side]) FreeMem(a->chip[i][side], (ULONG)a->bufsz);
+            a->chip[i][side] = NULL;
+        }
     }
     if (a->wake_sig >= 0) { FreeSignal(a->wake_sig); a->wake_sig = -1; }
 }
 
 static void audio_worker_entry(void)
 {
-    static UBYTE anychan[4] = { 1, 2, 4, 8 };
+    static UBYTE stereo_pairs[4] = { 3, 5, 10, 12 };
     struct Task *self = FindTask(NULL);
     mr_audio *a;
-    int i;
+    int i, side;
+    ULONG mask, channel[SIDES];
     /* Parent publishes tc_UserData after CreateNewProcTags() returns. */
     Wait(SIGBREAKF_CTRL_F);
     a = (mr_audio *)self->tc_UserData;
@@ -578,26 +623,38 @@ static void audio_worker_entry(void)
     a->wake_sig = AllocSignal(-1);
     a->port = CreateMsgPort();
     if (a->wake_sig < 0 || !a->port) goto failed;
-    a->io[0] = (struct IOAudio *)CreateIORequest(a->port, sizeof(struct IOAudio));
-    if (!a->io[0]) goto failed;
-    a->io[0]->ioa_Request.io_Message.mn_Node.ln_Pri = ADALLOC_MAXPREC;
-    a->io[0]->ioa_Data = anychan;
-    a->io[0]->ioa_Length = sizeof anychan;
+    a->owner = (struct IOAudio *)CreateIORequest(a->port, sizeof(struct IOAudio));
+    if (!a->owner) goto failed;
+    a->owner->ioa_Request.io_Message.mn_Node.ln_Pri = ADALLOC_MAXPREC;
+    a->owner->ioa_Data = stereo_pairs;
+    a->owner->ioa_Length = sizeof stereo_pairs;
     if (OpenDevice((CONST_STRPTR)"audio.device", 0,
-                   (struct IORequest *)a->io[0], 0) != 0) goto failed;
+                   (struct IORequest *)a->owner, 0) != 0) goto failed;
     a->opened = 1;
-    a->io[1] = (struct IOAudio *)CreateIORequest(a->port, sizeof(struct IOAudio));
-    if (!a->io[1]) goto failed;
-    {
-        struct Message keep = a->io[1]->ioa_Request.io_Message;
-        memcpy(a->io[1], a->io[0], sizeof(struct IOAudio));
-        a->io[1]->ioa_Request.io_Message = keep;
-        a->io[1]->ioa_Request.io_Message.mn_ReplyPort = a->port;
-    }
+    /* The Hardware Reference Manual maps channels 0/3 to the left jack and
+     * 1/2 to the right jack. The audio.device wiki states the reverse, but
+     * a real left/right playback test confirmed the hardware mapping. Keep
+     * the shared allocation key and send each CMD_WRITE to one channel. */
+    mask = (ULONG)a->owner->ioa_Request.io_Unit & 15u;
+    channel[LEFT] = mask & (1u | 8u);
+    channel[RIGHT] = mask & (2u | 4u);
+    if (!channel[LEFT] || !channel[RIGHT]) goto failed;
     for (i = 0; i < NBUF; i++) {
-        a->chip[i] = (signed char *)AllocMem((ULONG)a->bufsz,
-                                             MEMF_CHIP | MEMF_CLEAR);
-        if (!a->chip[i]) goto failed;
+        for (side = 0; side < SIDES; side++) {
+            struct Message keep;
+            a->io[i][side] = (struct IOAudio *)CreateIORequest(
+                a->port, sizeof(struct IOAudio));
+            if (!a->io[i][side]) goto failed;
+            keep = a->io[i][side]->ioa_Request.io_Message;
+            memcpy(a->io[i][side], a->owner, sizeof(struct IOAudio));
+            a->io[i][side]->ioa_Request.io_Message = keep;
+            a->io[i][side]->ioa_Request.io_Message.mn_ReplyPort = a->port;
+            a->io[i][side]->ioa_Request.io_Unit =
+                (struct Unit *)(ULONG)channel[side];
+            a->chip[i][side] = (signed char *)AllocMem((ULONG)a->bufsz,
+                                                      MEMF_CHIP | MEMF_CLEAR);
+            if (!a->chip[i][side]) goto failed;
+        }
     }
     a->ready_ok = 1;
     Signal(a->parent_task, 1UL << a->ready_sig);
