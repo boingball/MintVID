@@ -665,12 +665,18 @@ static int open_public_fullscreen_backdrop(p96pip_state *s)
                 (UWORD)(backdrop->Width - 1),
                 (UWORD)(backdrop->Height - 1), 0);
 
-    /* p96PIP_OpenTags clamps the initial public-screen window to the source
-     * width, but this same WinUAE driver demonstrably permits live resizing
-     * and P96-side scaling afterward. Make the one-off resize now. Relative
-     * PIP margins preserve the 96-pixel top/bottom bars, producing a
-     * 1024x576 overlay inside a borderless 1024x768 window. */
-    if (!s->riva_fullscreen) {
+    /* The RiVA-style oversized request can return a screen-sized PIP window
+     * (1024x768 for a 640x360 source on WinUAE). Its default destination
+     * fills that window, stretching 16:9 video to 4:3. Resize the PIP to
+     * the source aspect and centre it above the black screen-sized host.
+     * The existing path still requests a screen-sized host and uses explicit
+     * PIP margins for its aspect-fitted destination. */
+    if (s->riva_fullscreen) {
+        mr_aspect_rect fit = mr_aspect_fit(s->source_w, s->source_h,
+                                          screen_w, screen_h);
+        ChangeWindowBox(s->win, 0, 0, fit.w, fit.h);
+        WaitTOF();
+    } else {
         ChangeWindowBox(s->win, 0, 0, screen_w, screen_h);
         WaitTOF();
     }
@@ -941,15 +947,19 @@ static int reopen_fullscreen_pip(p96pip_state *s, const char *reason,
         if (reopen_pip(s, "riva-public-fullscreen")) {
             int border = s->win->BorderLeft | s->win->BorderRight |
                          s->win->BorderTop | s->win->BorderBottom;
+            mr_aspect_rect actual = mr_aspect_fit(s->source_w, s->source_h,
+                                                  s->win_w, s->win_h);
             if (g_display_want_time) {
                 printf("p96pip-fullscreen: RiVA-style result outer=%dx%d "
-                       "inner=%dx%d border=%d expected=%dx%d\n",
+                       "inner=%dx%d border=%d expected=%dx%d "
+                       "aspect-fit=%dx%d\n",
                        s->win->Width, s->win->Height, s->win_w, s->win_h,
-                       border, expected.w, expected.h);
+                       border, expected.w, expected.h, actual.w, actual.h);
                 Flush(Output());
             }
             if (!border && s->win_w >= expected.w * 3 / 4 &&
                 s->win_h >= expected.h * 3 / 4 &&
+                s->win_w - actual.w <= 2 && s->win_h - actual.h <= 2 &&
                 s->win->Width <= screen_w && s->win->Height <= screen_h)
                 return 1;
         }
@@ -959,8 +969,8 @@ static int reopen_fullscreen_pip(p96pip_state *s, const char *reason,
         s->win_w = screen_w;
         s->win_h = screen_h;
         if (g_display_want_time) {
-            printf("p96pip-fullscreen: RiVA-style window unavailable or "
-                   "clamped; trying existing size ladder\n");
+            printf("p96pip-fullscreen: RiVA-style window unavailable, "
+                   "clamped or distorted; trying existing size ladder\n");
             Flush(Output());
         }
     }
