@@ -2598,7 +2598,8 @@ the earlier `mr_h264_set_dynamic_skip()` host probes in this file):**
    pulled in changes never validated against this project's own patches
    - the parent repo's submodule gitlink points straight at the fix
    commit instead of at `main`, which is a normal, fully-supported way to
-   pin a submodule). `ih264d_parse_pred_weight_table()` (the function that
+   pin a submodule; later merged into `main` - see "Baseline H.264
+   profile" below). `ih264d_parse_pred_weight_table()` (the function that
    implements `pred_weight_table()` of spec section 7.3.3.2, called
    exactly when `weighted_pred_flag`/`weighted_bipred_idc==1` requires it)
    now computes, once per slice, whether every parsed luma/chroma
@@ -5309,7 +5310,22 @@ both byte-exact:
 Host instructions per 640x360 frame (callgrind over qemu-m68k, 68040 flags):
 full size 34.6M -> 20.0M (asm; the new C is 21.8M), half size (RTG Half, C
 only) 13.1M -> 10.4M. A half-size kernel was written and measured 2% slower
-than the C, so it was dropped. Real-hardware speed is unmeasured.
+than the C, so it was dropped.
+
+**On a real PiStorm it was ~5x, not 1.7x.** Same YouTube 360p/Turbo/CGX
+windowed setup as the 57 ms log: `yuv-rgb=11.7 ms` per frame, identical on
+the MintVID040 and 060 builds (Emu68 JIT). qemu predicted 34.6M -> 20.0M.
+The likely reason is the removed compare-and-branch clipping: two
+data-dependent branches per channel, six per pixel. qemu counts them as a
+few host instructions each. Emu68 evidently charges far more. Treat qemu
+counts as a floor for branchy code on PiStorm, not a prediction.
+
+The same logs give the rest of the frame budget (640x360, 30 fps source):
+`vdecode` ~26 ms, `yuv-rgb` 11.7, `display` (CGX WritePixelArray to a
+B8G8R8A8 screen) ~4.3, AAC ~2.5 per video frame. That is ~45 ms against
+33.3, so it plays at ~17.5 fps with audio rescue firing continuously. The
+P96 PIP overlay is unavailable on the PiStorm's RTG (`PIPERR_NOTAVAILABLE`
+for every MemoryWindow format), so CGX is the path there.
 
 **Page-align code before comparing qemu counts.** qemu does not chain
 translated blocks across a 4 KB page, so a hot loop that straddles one pays a
@@ -5322,6 +5338,62 @@ Two qemu costs also steered the kernel, and both plausibly apply to Emu68:
 word-sized ALU results on a data register (`add.w #256,d6`) and
 postincrement stores. Each costs several extra host instructions. The kernel
 loads slot bases from the stack and advances pointers once per quad.
+
+## Baseline H.264 profile: dead deblocking work and the chroma split
+YouTube's only playable format is Baseline/CAVLC (see above), and on the
+PiStorm its decode was ~26 of ~45 ms per 640x360 frame. Profiled with
+`tools/qemu_tbprof.sh`: it counts **m68k instructions per function** from
+qemu's own block log (`-d in_asm,exec,nochain`), so unlike callgrind over
+qemu it is exact and immune to the page-layout effect above. Unexported
+labels in a `.S` file are charged to the nearest preceding symbol. In
+this build `__wrap_ih264d_read_coeff4x4_cabac` really meant the inverse
+transform kernel's helpers. Profiled clips were x264 Baseline, level 3.0,
+640x360, 30 fps, ~600 kbps, 120 frames under Turbo: a calm testsrc2 and
+a busy mandelbrot-plus-noise.
+
+Three lossless fixes, in the libavc fork (`boingball/libavc` branch
+`claude/baseline-decode-speedups`, one commit on top of the previously
+pinned `cb8d7c3`). That branch was then merged into the fork's `main`
+(`28825e1`) and the submodule now tracks `main`. This also brought in
+`main`'s upstream sync, which had never been tested with MintVID. It
+merged cleanly. Frames were byte-identical to the branch-only build in
+all four speed modes on every clip above. Guest instruction counts
+matched to within 200. `make check` and `make check-m68k` pass. The
+three fixes:
+- **Turbo still ran the per-MB deblocking pass.** With deblocking
+  disabled by the app (`i4_degrade_type` bit 1), the slice parsers skip
+  setting each MB's deblocking mode and boundary strengths, but
+  `ih264d_deblock_mb_nonmbaff()` still ran for every MB. It re-derived
+  alpha/beta per edge on stale data and found bs == 0. That was ~9% of
+  the calm clip. It now treats such pictures as `MB_DISABLE_FILTERING`
+  and keeps only the pointer bookkeeping. A stale non-zero strength left
+  from an earlier Quality-mode picture can no longer filter a Turbo
+  picture either.
+- **The intra-pred line copy is off for those pictures.** It saves each
+  row's pre-deblocking pixels. Unfiltered, the frame holds the same
+  pixels, and `ih264d_process_intra_mb()` reads them from there (1.5%).
+- **The 420SP -> 420P chroma split** (`ih264d_fmt_conv_420sp_to_420p`,
+  8.5%) walked both planes by `j * 2` index: three m68k instructions per
+  byte. One post-incremented source pointer, unrolled, is about two. It
+  is 41% cheaper.
+
+Output is byte-identical to the old build in Quality/Balanced/Fast/Turbo
+on both clips and the repo's H.264 fixtures. `make check` and
+`make check-m68k` pass. Guest instructions: calm 491.1M -> 425.0M
+(-13.5%), busy 728.8M -> 662.7M (-9.1%).
+
+What is left, busy clip after the fixes: `luma_bilinear` 21%, chroma MC
+~16%, residual decode + inverse transform ~20%, MV bookkeeping
+(`form_mb_part_info_bp`, `mv_pred_ref_tfr_nby2_pmb`, `rep_mv_colz`) ~11%.
+The MC loops are already two-lanes-per-register with one multiply per
+lane. Further MC savings would have to trade quality, e.g. snapping
+quarter-pel vectors to half-pel so the cheap averaging paths run.
+`rep_mv_colz` is not B-only waste: the same copy fills the MV bank that
+later MBs read as neighbours. The remaining 3.7% chroma split could go
+entirely: request `IV_YUV_420SP_UV` with shared display buffers and
+libavc decodes straight into our buffers. But every YUV consumer in
+mrplay.c (RGB24, Half, Y4U2V2, HAM, AGA dither, direct planar) reads
+planar chroma today.
 
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
