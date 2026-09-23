@@ -5338,6 +5338,56 @@ word-sized ALU results on a data register (`add.w #256,d6`) and
 postincrement stores. Each costs several extra host instructions. The kernel
 loads slot bases from the stack and advances pointers once per quad.
 
+## Baseline H.264 profile: dead deblocking work and the chroma split
+YouTube's only playable format is Baseline/CAVLC (see above), and on the
+PiStorm its decode was ~26 of ~45 ms per 640x360 frame. Profiled with
+`tools/qemu_tbprof.sh`: it counts **m68k instructions per function** from
+qemu's own block log (`-d in_asm,exec,nochain`), so unlike callgrind over
+qemu it is exact and immune to the page-layout effect above. Unexported
+labels in a `.S` file are charged to the nearest preceding symbol. In
+this build `__wrap_ih264d_read_coeff4x4_cabac` really meant the inverse
+transform kernel's helpers. Profiled clips were x264 Baseline, level 3.0,
+640x360, 30 fps, ~600 kbps, 120 frames under Turbo: a calm testsrc2 and
+a busy mandelbrot-plus-noise.
+
+Three lossless fixes, in the libavc fork (`boingball/libavc` branch
+`claude/baseline-decode-speedups`, one commit on top of the previously
+pinned `cb8d7c3`):
+- **Turbo still ran the per-MB deblocking pass.** With deblocking
+  disabled by the app (`i4_degrade_type` bit 1), the slice parsers skip
+  setting each MB's deblocking mode and boundary strengths, but
+  `ih264d_deblock_mb_nonmbaff()` still ran for every MB. It re-derived
+  alpha/beta per edge on stale data and found bs == 0. That was ~9% of
+  the calm clip. It now treats such pictures as `MB_DISABLE_FILTERING`
+  and keeps only the pointer bookkeeping. A stale non-zero strength left
+  from an earlier Quality-mode picture can no longer filter a Turbo
+  picture either.
+- **The intra-pred line copy is off for those pictures.** It saves each
+  row's pre-deblocking pixels. Unfiltered, the frame holds the same
+  pixels, and `ih264d_process_intra_mb()` reads them from there (1.5%).
+- **The 420SP -> 420P chroma split** (`ih264d_fmt_conv_420sp_to_420p`,
+  8.5%) walked both planes by `j * 2` index: three m68k instructions per
+  byte. One post-incremented source pointer, unrolled, is about two. It
+  is 41% cheaper.
+
+Output is byte-identical to the old build in Quality/Balanced/Fast/Turbo
+on both clips and the repo's H.264 fixtures. `make check` and
+`make check-m68k` pass. Guest instructions: calm 491.1M -> 425.0M
+(-13.5%), busy 728.8M -> 662.7M (-9.1%).
+
+What is left, busy clip after the fixes: `luma_bilinear` 21%, chroma MC
+~16%, residual decode + inverse transform ~20%, MV bookkeeping
+(`form_mb_part_info_bp`, `mv_pred_ref_tfr_nby2_pmb`, `rep_mv_colz`) ~11%.
+The MC loops are already two-lanes-per-register with one multiply per
+lane. Further MC savings would have to trade quality, e.g. snapping
+quarter-pel vectors to half-pel so the cheap averaging paths run.
+`rep_mv_colz` is not B-only waste: the same copy fills the MV bank that
+later MBs read as neighbours. The remaining 3.7% chroma split could go
+entirely: request `IV_YUV_420SP_UV` with shared display buffers and
+libavc decodes straight into our buffers. But every YUV consumer in
+mrplay.c (RGB24, Half, Y4U2V2, HAM, AGA dither, direct planar) reads
+planar chroma today.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.
