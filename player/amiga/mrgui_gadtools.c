@@ -151,7 +151,9 @@ static STRPTR fast_buffer_labels[] = {(STRPTR)"Fast buffer: Auto",
                                      (STRPTR)"Fast buffer: Off",
                                      (STRPTR)"Fast buffer: 4 MB",
                                      (STRPTR)"Fast buffer: 8 MB",
-                                     (STRPTR)"Fast buffer: 16 MB", NULL};
+                                     (STRPTR)"Fast buffer: 16 MB",
+                                     (STRPTR)"Fast buffer: 32 MB",
+                                     (STRPTR)"Fast buffer: 64 MB", NULL};
 static const struct TextAttr topaz = {(STRPTR)"topaz.font", 8, 0, 0};
 
 static int aga(void)
@@ -361,7 +363,7 @@ static void read_options(gt_app *app, mr_play_options *options)
     }
     options->audio_rate = audio_rate == 1
                         ? MR_AUDIO_RATE_LOW : MR_AUDIO_RATE_NORMAL;
-    options->fast_buffer = fast_buffer <= MR_FAST_BUFFER_16MB
+    options->fast_buffer = fast_buffer <= MR_FAST_BUFFER_64MB
                          ? (mr_fast_buffer_mode)fast_buffer
                          : MR_FAST_BUFFER_AUTO;
     options->no_audio = gad_value(app, app->no_audio, GTCB_Checked) != 0;
@@ -1101,7 +1103,7 @@ static int build_window(gt_app *app)
     initial_audio_rate = have_saved_options &&
                          saved_options.audio_rate == MR_AUDIO_RATE_LOW ? 1 : 0;
     initial_fast_buffer = have_saved_options &&
-                          saved_options.fast_buffer <= MR_FAST_BUFFER_16MB
+                          saved_options.fast_buffer <= MR_FAST_BUFFER_64MB
                         ? (ULONG)saved_options.fast_buffer
                         : (ULONG)MR_FAST_BUFFER_AUTO;
     initial_no_audio = have_saved_options && saved_options.no_audio

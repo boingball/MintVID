@@ -412,6 +412,27 @@ int main(void) {
       assert(strstr(summary, "H264 Fast"));
       assert(strstr(summary, "Fast buffer 16 MB"));
 
+      /* Both larger choices must survive controller parsing, argument
+       * generation and the player-facing summary. */
+      {
+        const char *sizes[] = {"--fast-buffer=32", "--fast-buffer=64"};
+        const char *labels[] = {"Fast buffer 32 MB", "Fast buffer 64 MB"};
+        mr_fast_buffer_mode modes[] = {MR_FAST_BUFFER_32MB, MR_FAST_BUFFER_64MB};
+        unsigned n;
+        for (n = 0; n < 2; n++) {
+          inherited[10] = (char *)sizes[n];
+          mr_play_options_default(&parsed);
+          assert(mr_play_options_parse(&parsed, 11, inherited, error,
+                                       sizeof(error)));
+          assert(parsed.fast_buffer == modes[n]);
+          assert(mr_build_player_arguments(first, sizeof(first), &parsed,
+                                           launch.url, NULL, NULL));
+          assert(strstr(first, sizes[n]));
+          mr_play_options_summary(&parsed, summary, sizeof(summary));
+          assert(strstr(summary, labels[n]));
+        }
+      }
+
       parsed.h264_performance = MR_H264_PERF_TURBO;
       assert(mr_build_player_arguments(first, sizeof(first), &parsed,
                                        launch.url, NULL, NULL));

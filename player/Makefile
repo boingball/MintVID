@@ -313,7 +313,7 @@ check-hls-worker-lifecycle:
 	  echo "ERROR: HLS worker teardown must not retain an abandon path"; exit 1; }
 	@grep -q 'static void hls_fetch_wait_busy_forever' amiga/hls_fetch.c || { \
 	  echo "ERROR: HLS worker teardown must join the in-process worker"; exit 1; }
-	@grep -q 'if (g_stopping || g_busy) return;' amiga/hls_fetch.c || { \
+	@grep -q 'if (g_stopping || g_busy || g_prefetch_blocked) return;' amiga/hls_fetch.c || { \
 	  echo "ERROR: HLS shutdown must suppress queued lookahead promotion"; exit 1; }
 
 # Run the Cinepak conformance check against ffmpeg's own decoder output, for

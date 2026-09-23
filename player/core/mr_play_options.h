@@ -101,7 +101,9 @@ typedef enum {
     MR_FAST_BUFFER_OFF,
     MR_FAST_BUFFER_4MB,
     MR_FAST_BUFFER_8MB,
-    MR_FAST_BUFFER_16MB
+    MR_FAST_BUFFER_16MB,
+    MR_FAST_BUFFER_32MB,
+    MR_FAST_BUFFER_64MB
 } mr_fast_buffer_mode;
 
 typedef struct mr_play_options {

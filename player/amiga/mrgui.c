@@ -407,7 +407,7 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
                               : MR_H264_PERF_AUTO;
     options->audio_rate = selected_audio_rate == 1
                         ? MR_AUDIO_RATE_LOW : MR_AUDIO_RATE_NORMAL;
-    options->fast_buffer = selected_fast_buffer <= MR_FAST_BUFFER_16MB
+    options->fast_buffer = selected_fast_buffer <= MR_FAST_BUFFER_64MB
                          ? (mr_fast_buffer_mode)selected_fast_buffer
                          : MR_FAST_BUFFER_AUTO;
     options->no_audio = checked_no_audio != 0;
@@ -1503,7 +1503,9 @@ int main(void)
         !add_chooser_node(&fast_buffer_modes, "Off") ||
         !add_chooser_node(&fast_buffer_modes, "4 MB") ||
         !add_chooser_node(&fast_buffer_modes, "8 MB") ||
-        !add_chooser_node(&fast_buffer_modes, "16 MB"))
+        !add_chooser_node(&fast_buffer_modes, "16 MB") ||
+        !add_chooser_node(&fast_buffer_modes, "32 MB") ||
+        !add_chooser_node(&fast_buffer_modes, "64 MB"))
         goto cleanup;
     /* Rows are fixed, like Scale: 0=All Frames, 1=Skip Frames -
      * read_play_options() hard-codes this exact order. All Frames (never
@@ -1545,7 +1547,7 @@ int main(void)
     initial_audio_rate = have_saved_options &&
                          saved_options.audio_rate == MR_AUDIO_RATE_LOW ? 1 : 0;
     initial_fast_buffer = have_saved_options &&
-                          saved_options.fast_buffer <= MR_FAST_BUFFER_16MB
+                          saved_options.fast_buffer <= MR_FAST_BUFFER_64MB
                         ? (ULONG)saved_options.fast_buffer
                         : (ULONG)MR_FAST_BUFFER_AUTO;
     initial_no_audio = have_saved_options && saved_options.no_audio

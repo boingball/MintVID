@@ -1485,7 +1485,9 @@ static size_t requested_fast_buffer(mr_fast_buffer_mode mode,
     unsigned long reserve = mode == MR_FAST_BUFFER_AUTO
                           ? FAST_BUFFER_AUTO_RESERVE
                           : FAST_BUFFER_FIXED_RESERVE;
-    size_t wanted = mode == MR_FAST_BUFFER_16MB ? 16UL * 1024 * 1024 :
+    size_t wanted = mode == MR_FAST_BUFFER_64MB ? 64UL * 1024 * 1024 :
+                    mode == MR_FAST_BUFFER_32MB ? 32UL * 1024 * 1024 :
+                    mode == MR_FAST_BUFFER_16MB ? 16UL * 1024 * 1024 :
                     mode == MR_FAST_BUFFER_8MB ? 8UL * 1024 * 1024 :
                     mode == MR_FAST_BUFFER_4MB ? 4UL * 1024 * 1024 : 0;
     size_t budget;
@@ -1935,7 +1937,7 @@ int main(int argc, char **argv)
                "[--loop] "
                "[--wpa|--c2p|--riva-c2p|--kalms-c2p|--direct-c2p] "
                "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
-               "[--fast-buffer=auto|off|4|8|16] "
+               "[--fast-buffer=auto|off|4|8|16|32|64] "
                "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+|smoosh] "
                "[--skip-trigger=200..2000] [--rtg-half] "
                "[--dv-speed=quality|fast] "
@@ -2070,6 +2072,8 @@ int main(int argc, char **argv)
                 else if (!strcmp(mode, "4")) fast_buffer = MR_FAST_BUFFER_4MB;
                 else if (!strcmp(mode, "8")) fast_buffer = MR_FAST_BUFFER_8MB;
                 else if (!strcmp(mode, "16")) fast_buffer = MR_FAST_BUFFER_16MB;
+                else if (!strcmp(mode, "32")) fast_buffer = MR_FAST_BUFFER_32MB;
+                else if (!strcmp(mode, "64")) fast_buffer = MR_FAST_BUFFER_64MB;
                 else {
                     printf("invalid Fast buffer size: %s\n", mode);
                     return mrplay_exit(5);
@@ -2190,15 +2194,13 @@ int main(int argc, char **argv)
      * was already false). */
     if (!mr_source_is_hls(media_path))
         hls_fetch_stop();
-    else if (mr_http_fetch_override_active() ||
-             http_options.hls_buffer_segments)
-        http_options.source_buffer_bytes = 0; /* complete segments are buffered */
 
     if (fast_buffer_option_seen) {
-        if (mr_source_is_hls(media_path) &&
+        if (fast_buffer_bytes && mr_source_is_hls(media_path) &&
             (mr_http_fetch_override_active() ||
              http_options.hls_buffer_segments))
-            printf("Fast buffer: HLS uses background whole-segment buffering\n");
+            printf("Fast buffer: HLS compressed-segment lookahead (%lu MB budget)\n",
+                   (unsigned long)(fast_buffer_bytes / (1024UL * 1024UL)));
         else if (fast_buffer_bytes)
             printf("Fast buffer: %lu MB in Fast RAM (%lu MB free before open)\n",
                    (unsigned long)(fast_buffer_bytes / (1024UL * 1024UL)),
@@ -2248,7 +2250,7 @@ int main(int argc, char **argv)
         printf("streaming %s from %s\n", mr_demux_container_name(dx),
                !strncmp(media_path, "http://", 7) ||
                !strncmp(media_path, "https://", 8) ? "network" : "disk");
-        if (http_options.source_buffer_bytes) {
+        if (http_options.source_buffer_bytes && !mr_source_is_hls(media_path)) {
             if (mr_demux_source_is_cached(dx))
                 printf("Fast buffer: whole file cached in Fast RAM (%lu KB)\n",
                        (unsigned long)((actual_buffer + 1023) / 1024));
@@ -2380,6 +2382,7 @@ int main(int argc, char **argv)
      * SMOOSH_MAX_DROP_RUN_US. */
     uint64_t smoosh_last_decode_us = 0;
     uint64_t last_idle_poll_us = 0;
+    uint64_t last_hls_poll_us = 0;
 
     /* No-ops for a non-H.264 codec (mr_h264_set_timing_enabled checks
      * dec->codec internally) - only worth turning on when --time is
@@ -2957,6 +2960,13 @@ int main(int argc, char **argv)
                 (deferred_player_event == MR_EV_NONE || ev == MR_EV_QUIT))
                 deferred_player_event = ev;
             if (deferred_player_event == MR_EV_QUIT) { quit = 1; break; }
+        }
+        /* The worker's replies do not wake the player loop. Reclaim them
+         * while decoding so queued segment downloads continue in the
+         * background instead of waiting until the next segment boundary. */
+        if (hls_fetch_active() && now - last_hls_poll_us >= 20000ULL) {
+            last_hls_poll_us = now;
+            hls_fetch_poll();
         }
 
         /* Micro-rescue's unconditional safety timeout - see

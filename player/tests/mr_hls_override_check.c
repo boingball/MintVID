@@ -28,10 +28,17 @@ static const char *g_playlist =
     "seg0.ts\n"
     "#EXTINF:2.0,\n"
     "seg1.ts\n"
+    "#EXTINF:2.0,\n"
+    "seg2.ts\n"
+    "#EXTINF:2.0,\n"
+    "seg3.ts\n"
+    "#EXTINF:2.0,\n"
+    "seg4.ts\n"
     "#EXT-X-ENDLIST\n";
 
 static int  g_calls;
 static int  g_hint_calls;
+static int  g_live;
 static char g_last_hint_url[256];
 
 static int fake_override(const char *url, const mr_http_options *options,
@@ -43,9 +50,16 @@ static int fake_override(const char *url, const mr_http_options *options,
     size_t len;
     (void)options; (void)post_json; (void)max_size;
     g_calls++;
-    if (strstr(url, "playlist.m3u8")) { body = g_playlist; len = strlen(body); }
+    if (strstr(url, "playlist.m3u8")) {
+        body = g_playlist;
+        len = strlen(body);
+        if (g_live) len -= strlen("#EXT-X-ENDLIST\n");
+    }
     else if (strstr(url, "seg0.ts"))  { body = "AAAA"; len = 4; }
     else if (strstr(url, "seg1.ts"))  { body = "BBBB"; len = 4; }
+    else if (strstr(url, "seg2.ts"))  { body = "CCCC"; len = 4; }
+    else if (strstr(url, "seg3.ts"))  { body = "DDDD"; len = 4; }
+    else if (strstr(url, "seg4.ts"))  { body = "EEEE"; len = 4; }
     else return 0;
     *out = (unsigned char *)mr_alloc(len + 1);
     if (!*out) return 0;
@@ -66,6 +80,7 @@ static void fake_hint(const char *url, const mr_http_options *options)
 int main(void)
 {
     mr_source *s;
+    mr_http_options options;
     unsigned char buf[8];
     int fails = 0;
 
@@ -77,7 +92,9 @@ int main(void)
         fails++;
     }
 
-    s = mr_hls_source_open_ex("http://test.invalid/playlist.m3u8", NULL);
+    mr_http_options_init(&options, NULL, NULL);
+    options.source_buffer_bytes = 64u * 1024u * 1024u;
+    s = mr_hls_source_open_ex("http://test.invalid/playlist.m3u8", &options);
     if (!s) {
         printf("FAIL: mr_hls_source_open_ex returned NULL: %s\n",
                mr_source_last_error());
@@ -90,10 +107,9 @@ int main(void)
         printf("FAIL: segment 0 content mismatch\n");
         fails++;
     }
-    /* Opening segment 0 should have hinted segment 1's URL for background
-     * lookahead (open_seg()'s mr_http_prefetch_hint() call). */
-    if (!g_hint_calls || !strstr(g_last_hint_url, "seg1.ts")) {
-        printf("FAIL: expected a prefetch hint for seg1.ts, got %d hint(s) "
+    /* VOD should queue every known segment within the lookahead window. */
+    if (g_hint_calls != 4 || !strstr(g_last_hint_url, "seg4.ts")) {
+        printf("FAIL: expected four prefetch hints through seg4.ts, got %d hint(s) "
                "(last=%s)\n", g_hint_calls, g_last_hint_url);
         fails++;
     }
@@ -101,7 +117,7 @@ int main(void)
         printf("FAIL: segment 1 content mismatch\n");
         fails++;
     }
-    /* Exactly 3 fetches expected: the playlist plus the two segments. If the
+    /* Exactly 3 fetches expected: the playlist plus the two read segments. If the
      * override weren't honoured, mr_hls_source_open_ex() would have tried to
      * resolve test.invalid via the real network instead. */
     if (g_calls != 3) {
@@ -111,6 +127,17 @@ int main(void)
     }
 
     mr_source_close(s);
+    /* The same playlist without ENDLIST is live: avoid downloading most of
+     * the sliding window and drifting away from the broadcast. */
+    g_live = 1;
+    g_hint_calls = 0;
+    s = mr_hls_source_open_ex("http://test.invalid/playlist.m3u8", &options);
+    if (!s || !mr_source_read_at(s, 0, buf, 4) ||
+        g_hint_calls != 3 || !strstr(g_last_hint_url, "seg3.ts")) {
+        printf("FAIL: live HLS expected three lookahead hints through seg3.ts\n");
+        fails++;
+    }
+    if (s) mr_source_close(s);
     mr_http_set_fetch_override(NULL);
     mr_http_set_prefetch_hint(NULL);
 

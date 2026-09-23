@@ -62,6 +62,8 @@ static mr_source *hls_open(const char *url, const mr_http_options *options,
 #define HLS_LIVE_REFETCH_MAX 40
 /* Fallback poll interval when the playlist declares no EXT-X-TARGETDURATION. */
 #define HLS_LIVE_REFETCH_WAIT_MS 1000
+#define HLS_VOD_LOOKAHEAD_SEGMENTS 8
+#define HLS_LIVE_LOOKAHEAD_SEGMENTS 3
 
 typedef struct {
     char   **segs;        /* resolved segment URLs                            */
@@ -473,15 +475,18 @@ static int open_seg(hls_source *h, size_t i)
     if (timing)
         mr_source_timing_add_hls_segment((unsigned long)
             ((clock() - started) * 1000UL / CLOCKS_PER_SEC));
-    /* Best-effort background lookahead for the next segment, if its URL is
-     * already known - a no-op unless a fetch override installed a hint (see
-     * mr_http_prefetch_hint()). Never fires for a not-yet-discovered next
-     * segment (i+1 == h->nsegs at the live edge), which is also exactly the
-     * case hls_refetch_live()'s playlist poll needs the worker free for -
-     * see amiga/hls_fetch.c's design note on this. */
-    if (i + 1 < h->nsegs)
-        mr_http_prefetch_hint(h->segs[i + 1],
-                              h->have_options ? &h->options : NULL);
+    /* Keep compressed segments ahead of playback when a Fast buffer was
+     * requested. Live stays close to the broadcast; VOD can fill farther
+     * ahead. The worker applies the byte budget and fetches serially. */
+    {
+        size_t next, end = i + 1 + (h->options.source_buffer_bytes ?
+            (h->live ? HLS_LIVE_LOOKAHEAD_SEGMENTS :
+                       HLS_VOD_LOOKAHEAD_SEGMENTS) : 1);
+        if (end > h->nsegs) end = h->nsegs;
+        for (next = i + 1; next < end; next++)
+            mr_http_prefetch_hint(h->segs[next],
+                                  h->have_options ? &h->options : NULL);
+    }
     return 1;
 }
 

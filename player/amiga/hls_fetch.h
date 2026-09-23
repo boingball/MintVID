@@ -30,6 +30,9 @@ typedef int (*hls_fetch_service_fn)(void *opaque);
 
 int  hls_fetch_start(int verbose);
 int  hls_fetch_active(void);
+/* Collect completed lookahead and start the next queued segment without
+ * blocking playback. Call once per scheduler iteration. */
+void hls_fetch_poll(void);
 
 void hls_fetch_set_service(hls_fetch_service_fn fn, void *opaque);
 
