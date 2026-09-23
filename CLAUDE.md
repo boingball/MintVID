@@ -5290,6 +5290,39 @@ existing `luma_bilinear_qpel_*` functions of that kind were removed. On a
 real 68030/040 multiplies are slow, so SWAR (half the multiplies) should win
 there too, but that is unmeasured. Nothing here has run on a PiStorm yet.
 
+## YUV420 -> RGB24 (RTG): clip table and a single-block kernel
+The RTG queue path (`queue_copy_yuv_rgb24()` in mrplay.c) spends nearly as
+long converting colour as decoding: a PiStorm log showed `yuv-rgb=57 ms`
+against `vdecode=72 ms`. Two changes in `core/mr_yuv.c`/`mr_yuv_m68k.S`,
+both byte-exact:
+- Saturation is a byte table (`g_clip`, index -258..534, the full range the
+  `>>8` channel sums reach) instead of two compares and branches per
+  channel. `check_clip_extremes()` in `tests/mr_yuv_check.c` runs every U x V
+  pair at the Y extremes, and ASan fails it if the table is one entry short
+  at either end.
+- The m68k kernel reads every coefficient from one 8 KB block through one
+  address register: d6 is loaded with a slot base, `move.b` drops the sample
+  into its low byte, and `(a5,d6.l*8)`/`(4,a5,d6.l*8)` fetch both addends of
+  a pair. Per pixel it is 13 instructions. BGR24 reuses it with the planes and
+  table slots swapped.
+
+Host instructions per 640x360 frame (callgrind over qemu-m68k, 68040 flags):
+full size 34.6M -> 20.0M (asm; the new C is 21.8M), half size (RTG Half, C
+only) 13.1M -> 10.4M. A half-size kernel was written and measured 2% slower
+than the C, so it was dropped. Real-hardware speed is unmeasured.
+
+**Page-align code before comparing qemu counts.** qemu does not chain
+translated blocks across a 4 KB page, so a hot loop that straddles one pays a
+TB lookup every iteration. The same kernel read 20M in one link and 45M in
+another. Build benchmarks with `-falign-functions=4096` and a `.balign 4096`
+before asm entry points. This is a much bigger layout effect than the 2-3%
+noted in the motion-compensation section above.
+
+Two qemu costs also steered the kernel, and both plausibly apply to Emu68:
+word-sized ALU results on a data register (`add.w #256,d6`) and
+postincrement stores. Each costs several extra host instructions. The kernel
+loads slot bases from the stack and advances pointers once per quad.
+
 ## Git
 Work happens on branch `claude/amiga-video-player-riva-9pz78q`. Commit with
 clear messages; do not open a PR unless asked.

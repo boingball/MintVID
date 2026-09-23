@@ -5,27 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(MR_M68K_ASM)
-/* mr_yuv420_to_rgb24_m68k is normally reached only through
- * mr_yuv420_to_rgb24()'s dispatch (core/mr_yuv.c). An earlier version of
- * it crashed real Pistorm hardware - d0/a0/a1 not preserved across the
- * periodic service() callback, since an ordinary C callee is entitled to
- * clobber m68k's caller-saved registers - fixed, and confirmed clean on
- * the same real hardware with audio servicing active. Declared directly
- * here (rather than relying on the public dispatch) so
- * check_yuv_service_clobber() below keeps exercising exactly that bug
- * class regardless of how the dispatch itself is wired. */
-void mr_yuv420_to_rgb24_m68k(uint8_t *dst, int dst_stride,
-                             const uint8_t *y_plane, int y_stride,
-                             const uint8_t *u_plane, int u_stride,
-                             const uint8_t *v_plane, int v_stride,
-                             int width, int height,
-                             mr_yuv_service_fn service, void *service_opaque,
-                             const int *luma_x298, const int *e_x409,
-                             const int *d_xm100, const int *e_xm208,
-                             const int *d_x516)
-    __asm__("mr_yuv420_to_rgb24_m68k");
-#endif
 
 static uint8_t reference_clip(int value)
 {
@@ -166,6 +145,49 @@ static int run_case(int width, int height, unsigned seed)
                            width, height, NULL, NULL);
         ok = memcmp(expected, actual, dn) == 0;
         if (!ok) fprintf(stderr, "YUV BGR mismatch at %dx%d\n", width, height);
+    }
+    free(yp); free(up); free(vp); free(expected); free(actual);
+    return ok;
+}
+
+/* Every U x V pair at the Y extremes (and mid-range), full and half size,
+ * RGB and BGR: the saturation table must cover the whole -258..534 range
+ * the channel sums can reach, and random samples alone need not hit its
+ * ends. U varies along a row, V down the picture. */
+static int check_clip_extremes(void)
+{
+    enum { W = 512, H = 512, CS = W / 2, DS = W * 3 };
+    static const uint8_t lumas[] = { 0, 16, 17, 128, 235, 236, 255 };
+    uint8_t *yp = (uint8_t *)malloc((size_t)W * H);
+    uint8_t *up = (uint8_t *)malloc((size_t)CS * (H / 2));
+    uint8_t *vp = (uint8_t *)malloc((size_t)CS * (H / 2));
+    uint8_t *expected = (uint8_t *)malloc((size_t)DS * H);
+    uint8_t *actual = (uint8_t *)malloc((size_t)DS * H);
+    unsigned li;
+    int x, y, bgr, ok = 1;
+    if (!yp || !up || !vp || !expected || !actual) return 0;
+    for (y = 0; y < H / 2; y++)
+        for (x = 0; x < CS; x++) {
+            up[y * CS + x] = (uint8_t)x;
+            vp[y * CS + x] = (uint8_t)y;
+        }
+    for (li = 0; li < sizeof lumas && ok; li++) {
+        memset(yp, lumas[li], (size_t)W * H);
+        for (bgr = 0; bgr < 2 && ok; bgr++) {
+            reference_convert(expected, DS, yp, W, up, CS, vp, CS, W, H, bgr);
+            (bgr ? mr_yuv420_to_bgr24 : mr_yuv420_to_rgb24)(
+                actual, DS, yp, W, up, CS, vp, CS, W, H, NULL, NULL);
+            ok = memcmp(expected, actual, (size_t)DS * H) == 0;
+            if (!ok) break;
+            /* Half size: every 2x2 block is Y, so its average is Y too. */
+            reference_convert_half(expected, DS / 2, yp, W, up, CS, vp, CS,
+                                   W, H, bgr);
+            (bgr ? mr_yuv420_to_bgr24_half : mr_yuv420_to_rgb24_half)(
+                actual, DS / 2, yp, W, up, CS, vp, CS, W, H, NULL, NULL);
+            ok = memcmp(expected, actual, (size_t)(DS / 2) * (H / 2)) == 0;
+        }
+        if (!ok) fprintf(stderr, "YUV clip extremes mismatch at Y=%u\n",
+                         lumas[li]);
     }
     free(yp); free(up); free(vp); free(expected); free(actual);
     return ok;
@@ -322,45 +344,38 @@ static void clobbering_service(void *opaque)
         : : : "d0", "d1", "a0", "a1");
 }
 
+/* Under MR_M68K_ASM both public full-size converters dispatch to the
+ * hand-written kernel (mr_yuv_m68k.S), which calls service() mid-picture. */
 static void check_yuv_service_clobber(void)
 {
     enum { W = 40, H = 40 };
-    int luma_x298[256], e_x409[256], d_xm100[256], e_xm208[256], d_x516[256];
     int ys = W + 3, cs = (W + 1) / 2 + 2, ds = W * 3 + 5;
     uint8_t yp[40 * 43], up[20 * 21], vp[20 * 21];
     uint8_t expected[40 * (40 * 3 + 5)], actual[40 * (40 * 3 + 5)];
     unsigned seed = 0x59555643U;
-    int i, services = 0;
+    int i, bgr;
 
-    for (i = 0; i < 256; i++) {
-        int y = i - 16;
-        int d = i - 128, e = i - 128;
-        if (y < 0) y = 0;
-        luma_x298[i] = 298 * y;
-        e_x409[i] = 409 * e + 128;
-        d_xm100[i] = -100 * d + 128;
-        e_xm208[i] = -208 * e;
-        d_x516[i] = 516 * d + 128;
-    }
     for (i = 0; i < (int)sizeof yp; i++) yp[i] = (uint8_t)(next_value(&seed) >> 24);
     for (i = 0; i < (int)sizeof up; i++) up[i] = (uint8_t)(next_value(&seed) >> 24);
     for (i = 0; i < (int)sizeof vp; i++) vp[i] = (uint8_t)(next_value(&seed) >> 24);
-    memset(expected, 0xa5, sizeof expected);
-    memset(actual, 0xa5, sizeof actual);
 
-    reference_convert(expected, ds, yp, ys, up, cs, vp, cs, W, H, 0);
-    mr_yuv420_to_rgb24_m68k(actual, ds, yp, ys, up, cs, vp, cs, W, H,
-                            clobbering_service, &services,
-                            luma_x298, e_x409, d_xm100, e_xm208, d_x516);
-
-    if (services != H / 16) {
-        fprintf(stderr, "service count %d, expected %d\n", services, H / 16);
-        exit(1);
-    }
-    if (memcmp(expected, actual, sizeof expected) != 0) {
-        fprintf(stderr, "mr_yuv420_to_rgb24_m68k mismatch with a "
-                        "register-clobbering service callback\n");
-        exit(1);
+    for (bgr = 0; bgr < 2; bgr++) {
+        int services = 0;
+        memset(expected, 0xa5, sizeof expected);
+        memset(actual, 0xa5, sizeof actual);
+        reference_convert(expected, ds, yp, ys, up, cs, vp, cs, W, H, bgr);
+        (bgr ? mr_yuv420_to_bgr24 : mr_yuv420_to_rgb24)(
+            actual, ds, yp, ys, up, cs, vp, cs, W, H,
+            clobbering_service, &services);
+        if (services != H / 16) {
+            fprintf(stderr, "service count %d, expected %d\n", services, H / 16);
+            exit(1);
+        }
+        if (memcmp(expected, actual, sizeof expected) != 0) {
+            fprintf(stderr, "%s mismatch with a register-clobbering service "
+                            "callback\n", bgr ? "BGR24" : "RGB24");
+            exit(1);
+        }
     }
 }
 #endif
@@ -383,6 +398,7 @@ int main(void)
                                0x48414c46U + i * 17 + j))
                 return 1;
     if (!run_half_case(640, 360, 0x68616c66U)) return 1;
+    if (!check_clip_extremes()) return 1;
     /* Service cadence: every 8 output rows (16 source rows). 34 source rows
      * -> 17 output rows -> 2 calls. */
     services = 0;
