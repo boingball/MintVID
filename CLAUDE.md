@@ -5261,7 +5261,10 @@ by +/-10%, which is useless for a 5% change. `valgrind --tool=callgrind
 --smc-check=all qemu-m68k ./decoder ...` counts the host instructions of the
 whole emulated run and is deterministic to the megainstruction. Instruction
 count is also a fair proxy for Emu68 (a JIT like qemu), unlike the real-060
-cache questions the qemu note at the top warns about.
+cache questions the qemu note at the top warns about. It is repeatable, not
+exact: relinking with code at different addresses moved whole-decode counts by
+2-3% with no real change (68040 Quality flipped from -1% to +2% that way), so
+settle anything that small with a microbenchmark of the kernel itself.
 
 `ih264_mc_degrade.c` now filters two samples per 32-bit register: split a
 longword load into two 16-bit lanes with `0x00ff00ff`, apply the weights
@@ -5272,7 +5275,13 @@ recombine. Luma bilinear (all 15 fractional slots) and chroma eighth-pel
 exercised by `mr_h264_m68k_check`) are both exact, pinned by
 `mr_h264_mc_degrade_check` and by byte-identical `--ppm` output before and
 after, Turbo and Quality alike. Result (m68k code, 68060 flags): Turbo -21%
-on the busy clip, -8% on the calm one; Quality -7% on the busy clip.
+on the busy clip, -8% on the calm one; Quality -7% on the busy clip. At
+68040 flags (the MintVID040 build PiStorm runs): Turbo -16% busy, -5% calm.
+Every multiply is the ordinary 32x32->32 `muls.l`, hardware on 68020-68060
+(the 060 only lacks the 64-bit-result forms); the 68060 disassembly gate
+covers this file. A direct kernel benchmark, all 245 chroma cases, identical
+checksums: SWAR chroma costs 326M against 933M for `ih264_m68k_chroma_mc.S`,
+at both `-mcpu=68040` and `-mcpu=68060` (GCC emits the same code for both).
 
 The obvious alternative measured *worse*: per-slot constant-weight copies of
 the old per-sample loop (GCC turns `3*x` into shift+add) cost +2%, because
