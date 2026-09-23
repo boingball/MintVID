@@ -1799,19 +1799,28 @@ static void audio_only_ui_open(audio_only_ui *ui)
     struct Screen *scr;
     ui->win = NULL;
     snprintf(ui->title, sizeof ui->title, "MintVID - audio only");
+    printf("no-video: opening control window\n");
+    Flush(Output());
     scr = LockPubScreen(NULL);
     if (!scr) return;
+    /* Size the content area and let Intuition add the borders. An outer
+     * WA_Height of just the title bar leaves no room for the bottom border,
+     * i.e. a negative inner height, and on real hardware that froze the
+     * whole machine (mouse included) inside OpenWindowTags(). */
     ui->win = OpenWindowTags(NULL,
         WA_PubScreen, (ULONG)scr,
         WA_Title, (ULONG)ui->title,
         WA_Left, 0, WA_Top, (ULONG)(scr->BarHeight + 1),
-        WA_Width, 320,
-        WA_Height, (ULONG)(scr->WBorTop + scr->Font->ta_YSize + 1),
+        WA_InnerWidth, 320,
+        WA_InnerHeight, 8,
+        WA_AutoAdjust, TRUE,
         WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
                   WFLG_ACTIVATE | WFLG_RMBTRAP | WFLG_NOCAREREFRESH,
         WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_RAWKEY,
         TAG_END);
     UnlockPubScreen(NULL, scr);
+    printf("no-video: control window %s\n", ui->win ? "open" : "failed");
+    Flush(Output());
     if (!ui->win)
         printf("no-video: could not open the control window; "
                "stop from the controller\n");
@@ -1909,6 +1918,8 @@ static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
     uint64_t base_elapsed = 0;
     unsigned long shown_secs = (unsigned long)-1;
 
+    printf("no-video: opening audio decoder\n");
+    Flush(Output());
     if (ai->valid &&
         (ai->format_tag == MR_AUDIO_FORMAT_PCM ||
          ai->format_tag == MR_AUDIO_FORMAT_MP2 ||
@@ -1936,6 +1947,7 @@ static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
            "video off (--no-video)\n",
            mr_audio_decoder_rate(adec), mr_audio_decoder_name(adec),
            mr_audio_decoder_channels(adec));
+    Flush(Output());
     control_audio = audio;
     audio_set_volume(audio, control_volume);
 

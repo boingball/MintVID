@@ -5475,3 +5475,15 @@ HTTP/HLS service hooks keep pointing at it until exit. If both
 was syntax-checked against stub headers with host and m68k gcc; the rest
 of `amiga/` can't be compiled here, so CI's real AmigaOS build is the
 first real compile.
+
+First real-hardware run froze the whole Amiga, mouse included, with the
+controller still showing "Connecting to stream...". The control window
+had been opened with an outer `WA_Height` of just the title bar (WBorTop
++ font height + 1). That leaves no room for the bottom border, so the
+inner height is negative. The freeze fits a layers hang holding the layer
+lock, which blocks Intuition's input handler and so the mouse. It also
+fits the timing: the window opens just before the first audio-only
+status update. The window is now sized with `WA_InnerWidth`/
+`WA_InnerHeight` plus `WA_AutoAdjust`, and flushed "no-video:" log lines
+bracket the audio open and window open. If it still hangs, the log tail
+names the step. Not yet retested on hardware.
