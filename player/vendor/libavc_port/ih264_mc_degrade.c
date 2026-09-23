@@ -22,6 +22,8 @@
 #include <stdint.h>
 
 #define AVG_MASK UINT32_C(0xfefefefe)
+/* Two 16-bit lanes, each holding one byte - see luma_bilinear(). */
+#define LANE_MASK UINT32_C(0x00ff00ff)
 
 #if defined(__GNUC__)
 #define MR_FORCE_INLINE static inline __attribute__((always_inline))
@@ -104,68 +106,88 @@ static void chroma_copy(UWORD8 *src, UWORD8 *dst, WORD32 src_strd,
     }
 }
 
-/* dy == 0, dx != 0.  The two taps are the interleaved-neighbour pair
- * src[col] and src[col+2]. */
-static void chroma_horz(UWORD8 *src, UWORD8 *dst, WORD32 src_strd,
-                        WORD32 dst_strd, WORD32 dx, WORD32 ht, WORD32 wd)
+/*
+ * The remaining cases, exact, two samples per register the same way
+ * luma_bilinear() does it.  A chroma row is interleaved U,V,U,V, so the
+ * horizontal neighbour of byte k is byte k+2 and a load at src+2 lines it up
+ * in the same lane - U and V never mix.  Separably, a horizontal tap sum is
+ * at most 8*255 = 2040 and the vertical one at most 8*2040 + 32 = 16352, so
+ * both fit a 16-bit lane.  Substituting shows the separable form equals
+ * (8-266) exactly; this replaces the per-sample four-multiply filter
+ * (Ittiam's C, or ih264_m68k_chroma_mc.S on m68k) with about half the
+ * instructions under Emu68/qemu.
+ */
+MR_FORCE_INLINE uint32_t chroma_lanes(uint32_t e, uint32_t o, int shift)
 {
-    WORD32 row, col, cols = 2 * wd, inv = 8 - dx;
-    if(dx == 4)
+    return (((e >> shift) & LANE_MASK) << 8) | ((o >> shift) & LANE_MASK);
+}
+
+/* One axis: dy == 0 (step 2) or dx == 0 (step = stride); w is 1..7. */
+static void chroma_1d(UWORD8 *src, UWORD8 *dst, WORD32 src_strd,
+                      WORD32 dst_strd, WORD32 step, uint32_t w,
+                      WORD32 ht, WORD32 wd)
+{
+    const uint32_t inv = 8 - w;
+    const WORD32 groups = wd >> 1;   /* 2*wd bytes, four per group */
+    WORD32 row, g;
+    if(w == 4)
     {
-        for(row = 0; row < ht; row++)
-        {
-            avg_row_u8(dst, src, src + 2, cols);
-            src += src_strd;
-            dst += dst_strd;
-        }
+        for(row = 0; row < ht; row++, src += src_strd, dst += dst_strd)
+            avg_row_u8(dst, src, src + step, 2 * wd);
         return;
     }
-    for(row = 0; row < ht; row++)
+    for(row = 0; row < ht; row++, src += src_strd, dst += dst_strd)
+        for(g = 0; g < groups; g++)
+        {
+            uint32_t a = load_u32(src + 4 * g), b = load_u32(src + 4 * g + step);
+            uint32_t e = inv * ((a >> 8) & LANE_MASK) + w * ((b >> 8) & LANE_MASK)
+                       + UINT32_C(0x00040004);
+            uint32_t o = inv * (a & LANE_MASK) + w * (b & LANE_MASK)
+                       + UINT32_C(0x00040004);
+            store_u32(dst + 4 * g, chroma_lanes(e, o, 3));
+        }
+}
+
+MR_FORCE_INLINE void chroma_h_swar(uint32_t *ev, uint32_t *od,
+                                   const UWORD8 *src, WORD32 groups,
+                                   uint32_t inv, uint32_t dx)
+{
+    WORD32 g;
+    for(g = 0; g < groups; g++, src += 4)
     {
-        for(col = 0; col < cols; col++)
-            dst[col] = (UWORD8)((inv * src[col] + dx * src[col + 2] + 4) >> 3);
-        src += src_strd;
-        dst += dst_strd;
+        uint32_t a = load_u32(src), b = load_u32(src + 2);
+        ev[g] = inv * ((a >> 8) & LANE_MASK) + dx * ((b >> 8) & LANE_MASK);
+        od[g] = inv * (a & LANE_MASK) + dx * (b & LANE_MASK);
     }
 }
 
-/* dx == 0, dy != 0.  The two taps are vertical neighbours. */
-static void chroma_vert(UWORD8 *src, UWORD8 *dst, WORD32 src_strd,
-                        WORD32 dst_strd, WORD32 dy, WORD32 ht, WORD32 wd)
+static void chroma_general(UWORD8 *src, UWORD8 *dst, WORD32 src_strd,
+                           WORD32 dst_strd, WORD32 dx, WORD32 dy,
+                           WORD32 ht, WORD32 wd)
 {
-    WORD32 row, col, cols = 2 * wd, inv = 8 - dy;
-    if(dy == 4)
-    {
-        for(row = 0; row < ht; row++)
-        {
-            avg_row_u8(dst, src, src + src_strd, cols);
-            src += src_strd;
-            dst += dst_strd;
-        }
-        return;
-    }
+    const uint32_t inv_x = 8 - (uint32_t)dx, inv_y = 8 - (uint32_t)dy;
+    const WORD32 groups = wd >> 1;
+    uint32_t buf[4][4];
+    uint32_t *top_e = buf[0], *top_o = buf[1];
+    uint32_t *bot_e = buf[2], *bot_o = buf[3];
+    WORD32 row, g;
+
+    chroma_h_swar(top_e, top_o, src, groups, inv_x, (uint32_t)dx);
     for(row = 0; row < ht; row++)
     {
-        const UWORD8 *next = src + src_strd;
-        for(col = 0; col < cols; col++)
-            dst[col] = (UWORD8)((inv * src[col] + dy * next[col] + 4) >> 3);
+        uint32_t *swap;
         src += src_strd;
+        chroma_h_swar(bot_e, bot_o, src, groups, inv_x, (uint32_t)dx);
+        for(g = 0; g < groups; g++)
+        {
+            uint32_t e = inv_y * top_e[g] + (uint32_t)dy * bot_e[g] + UINT32_C(0x00200020);
+            uint32_t o = inv_y * top_o[g] + (uint32_t)dy * bot_o[g] + UINT32_C(0x00200020);
+            store_u32(dst + 4 * g, chroma_lanes(e, o, 6));
+        }
+        swap = top_e; top_e = bot_e; bot_e = swap;
+        swap = top_o; top_o = bot_o; bot_o = swap;
         dst += dst_strd;
     }
-}
-
-/* The general eighth-pel filter: hand-written assembly on m68k builds,
- * Ittiam's reference C everywhere else. */
-MR_FORCE_INLINE void chroma_general(UWORD8 *src, UWORD8 *dst, WORD32 src_strd,
-                                    WORD32 dst_strd, WORD32 dx, WORD32 dy,
-                                    WORD32 ht, WORD32 wd)
-{
-#if defined(MR_M68K_ASM)
-    mr_ih264_inter_pred_chroma_m68k(src, dst, src_strd, dst_strd, dx, dy,
-                                    ht, wd);
-#else
-    ih264_inter_pred_chroma(src, dst, src_strd, dst_strd, dx, dy, ht, wd);
-#endif
 }
 
 static void chroma_dispatch(UWORD8 *src, UWORD8 *dst, WORD32 src_strd,
@@ -175,12 +197,13 @@ static void chroma_dispatch(UWORD8 *src, UWORD8 *dst, WORD32 src_strd,
     if(dx == 0)
     {
         if(dy == 0) chroma_copy(src, dst, src_strd, dst_strd, ht, wd);
-        else        chroma_vert(src, dst, src_strd, dst_strd, dy, ht, wd);
+        else        chroma_1d(src, dst, src_strd, dst_strd, src_strd,
+                              (uint32_t)dy, ht, wd);
         return;
     }
     if(dy == 0)
     {
-        chroma_horz(src, dst, src_strd, dst_strd, dx, ht, wd);
+        chroma_1d(src, dst, src_strd, dst_strd, 2, (uint32_t)dx, ht, wd);
         return;
     }
     chroma_general(src, dst, src_strd, dst_strd, dx, dy, ht, wd);
@@ -201,157 +224,109 @@ static void chroma_dispatch(UWORD8 *src, UWORD8 *dst, WORD32 src_strd,
  *
  *   dst = ((4-dx)(4-dy)A + dx(4-dy)B + (4-dx)dy C + dx dy D + 8) >> 4
  *
- * evaluated separably: a horizontal pass into 16-bit intermediates, then a
- * vertical pass.  Substituting shows the separable form is the same value,
- * not an approximation of it, and the half-sample cases (dx or dy == 2)
- * reduce to the rounded byte average avg_u8x4() computes four lanes at a
- * time.
+ * evaluated separably: a horizontal pass, then a vertical pass.  Substituting
+ * shows the separable form is the same value, not an approximation of it,
+ * and the half-sample cases with the other axis whole (dx or dy == 2, the
+ * other 0) reduce to the rounded byte average avg_u8x4() computes four lanes
+ * at a time.
+ *
+ * Everything else runs two samples per 32-bit register.  A longword load
+ * puts four source bytes in lanes 0-3; masking with 0x00ff00ff (after an
+ * 8-bit shift for the other pair) spreads two of them into 16-bit lanes, and
+ * a second load one byte further on gives each sample its right-hand
+ * neighbour in the same lane.  Every intermediate fits its 16-bit lane - a
+ * horizontal tap sum is at most 4*255 = 1020, the weighted vertical sum at
+ * most 4*1020 + 8 = 4088 - so ordinary 32-bit multiplies and adds act on
+ * both lanes at once without a carry reaching the neighbour, and one
+ * shift-and-mask finishes both.  Lanes are recombined with the same shift
+ * that split them, so this is independent of byte order.
+ *
+ * On a 640x360 Baseline clip with heavy motion this roughly halved Turbo's
+ * luma MC and took 16% off the whole decode (m68k code, instruction counts
+ * under qemu).  Constant-weight per-slot versions of the old per-sample loop,
+ * where GCC turns the multiplies into shifts and adds, measured *slower*:
+ * under qemu - and Emu68 on a PiStorm - a multiply is one translated
+ * instruction, so strength reduction only adds work.
  */
-MR_FORCE_INLINE void bilinear_h_row(WORD32 *out, const UWORD8 *src,
-                                    WORD32 wd, WORD32 dx)
+MR_FORCE_INLINE void bilinear_h_swar(uint32_t *ev, uint32_t *od,
+                                     const UWORD8 *src, WORD32 groups,
+                                     uint32_t inv, uint32_t dx)
 {
-    WORD32 c, inv = 4 - dx;
-    if(dx == 0)
+    WORD32 g;
+    for(g = 0; g < groups; g++, src += 4)
     {
-        for(c = 0; c < wd; c++) out[c] = 4 * src[c];
-        return;
+        uint32_t a = load_u32(src), b = load_u32(src + 1);
+        ev[g] = inv * ((a >> 8) & LANE_MASK) + dx * ((b >> 8) & LANE_MASK);
+        od[g] = inv * (a & LANE_MASK) + dx * (b & LANE_MASK);
     }
-    for(c = 0; c < wd; c++)
-        out[c] = inv * src[c] + dx * src[c + 1];
 }
 
 static void luma_bilinear(UWORD8 *src, UWORD8 *dst, WORD32 src_strd,
-                          WORD32 dst_strd, WORD32 ht, WORD32 wd,
-                          UWORD8 *tmp, WORD32 dydx)
+                               WORD32 dst_strd, WORD32 ht, WORD32 wd,
+                               UWORD8 *tmp, WORD32 dydx)
 {
-    WORD32 dx = dydx & 3, dy = (dydx >> 2) & 3;
-    WORD32 row, col;
+    const uint32_t dx = (uint32_t)(dydx & 3), dy = (uint32_t)((dydx >> 2) & 3);
+    const uint32_t inv_x = 4 - dx, inv_y = 4 - dy;
+    const WORD32 groups = wd >> 2;
+    WORD32 row, g;
     (void)tmp;
 
-    if(dy == 0)
+    if(dy == 0 || dx == 0)
     {
-        WORD32 inv = 4 - dx;
-        if(dx == 0)
+        /* One axis only: taps are the next sample in that axis.  Whole and
+         * half-sample offsets keep their exact copy/average fast paths. */
+        const WORD32 step = dy == 0 ? 1 : src_strd;
+        const uint32_t w = dy == 0 ? dx : dy, inv = 4 - w;
+        if(w == 0)
         {
             for(row = 0; row < ht; row++, src += src_strd, dst += dst_strd)
                 copy_row_u8(dst, src, wd);
             return;
         }
-        if(dx == 2)
+        if(w == 2)
         {
             for(row = 0; row < ht; row++, src += src_strd, dst += dst_strd)
-                avg_row_u8(dst, src, src + 1, wd);
+                avg_row_u8(dst, src, src + step, wd);
             return;
         }
         for(row = 0; row < ht; row++, src += src_strd, dst += dst_strd)
-            for(col = 0; col < wd; col++)
-                dst[col] = (UWORD8)((inv * src[col] + dx * src[col + 1] + 2) >> 2);
-        return;
-    }
-
-    if(dx == 0)
-    {
-        WORD32 inv = 4 - dy;
-        if(dy == 2)
-        {
-            for(row = 0; row < ht; row++, src += src_strd, dst += dst_strd)
-                avg_row_u8(dst, src, src + src_strd, wd);
-            return;
-        }
-        for(row = 0; row < ht; row++, src += src_strd, dst += dst_strd)
-        {
-            const UWORD8 *next = src + src_strd;
-            for(col = 0; col < wd; col++)
-                dst[col] = (UWORD8)((inv * src[col] + dy * next[col] + 2) >> 2);
-        }
+            for(g = 0; g < groups; g++)
+            {
+                uint32_t a = load_u32(src + 4 * g), b = load_u32(src + 4 * g + step);
+                uint32_t e = inv * ((a >> 8) & LANE_MASK)
+                           + w * ((b >> 8) & LANE_MASK) + UINT32_C(0x00020002);
+                uint32_t o = inv * (a & LANE_MASK)
+                           + w * (b & LANE_MASK) + UINT32_C(0x00020002);
+                store_u32(dst + 4 * g, (((e >> 2) & LANE_MASK) << 8)
+                                       | ((o >> 2) & LANE_MASK));
+            }
         return;
     }
 
     {
-        /* Two rolling horizontally-filtered rows; wd is at most 16. */
-        WORD32 buf[2][16];
-        WORD32 *top = buf[0], *bot = buf[1];
-        WORD32 inv = 4 - dy;
-        bilinear_h_row(top, src, wd, dx);
+        /* Two rolling rows of horizontally filtered lane pairs; wd <= 16. */
+        uint32_t buf[4][4];
+        uint32_t *top_e = buf[0], *top_o = buf[1];
+        uint32_t *bot_e = buf[2], *bot_o = buf[3];
+        bilinear_h_swar(top_e, top_o, src, groups, inv_x, dx);
         for(row = 0; row < ht; row++)
         {
-            WORD32 *swap;
-            bilinear_h_row(bot, src + src_strd, wd, dx);
-            for(col = 0; col < wd; col++)
-                dst[col] = (UWORD8)((inv * top[col] + dy * bot[col] + 8) >> 4);
-            swap = top; top = bot; bot = swap;
+            uint32_t *swap;
             src += src_strd;
+            bilinear_h_swar(bot_e, bot_o, src, groups, inv_x, dx);
+            for(g = 0; g < groups; g++)
+            {
+                uint32_t e = inv_y * top_e[g] + dy * bot_e[g] + UINT32_C(0x00080008);
+                uint32_t o = inv_y * top_o[g] + dy * bot_o[g] + UINT32_C(0x00080008);
+                store_u32(dst + 4 * g, (((e >> 4) & LANE_MASK) << 8)
+                                       | ((o >> 4) & LANE_MASK));
+            }
+            swap = top_e; top_e = bot_e; bot_e = swap;
+            swap = top_o; top_o = bot_o; bot_o = swap;
             dst += dst_strd;
         }
     }
 }
-
-/*
- * Full 2D quarter-pel bilinear (dx and dy both fractional) with the two
- * weights baked in as compile-time literals instead of luma_bilinear()'s
- * runtime dydx, one instantiation per apf_inter_pred_luma[] slot that needs
- * it: 5=(dx1,dy1), 7=(dx3,dy1), 13=(dx1,dy3), 15=(dx3,dy3) - the four
- * positions where both fractional offsets are genuinely non-zero and
- * non-half-pel (dx/dy==2 and dx/dy==0 are already exact fast paths inside
- * luma_bilinear() itself: avg_row_u8()'s packed rounded-average trick for
- * half-pel, copy_row_u8() for whole-sample, so those never reach here).
- * BBC One and similar Fast/Turbo live streams spend real decode time in
- * exactly these four slots - the ones ih264d_form_mb_part_info_*() reaches
- * whenever a motion vector's fractional part isn't a clean half or whole
- * sample in one axis, the common case for real (non-integer, non-half-pel)
- * motion.
- *
- * Byte-for-byte the same computation as luma_bilinear()'s general branch
- * (bilinear_h_row() twice into a rolling two-row buffer, then a weighted
- * vertical combine) - only the two weights change from runtime values to
- * literal 1s and 3s. That is enough for GCC's own constant-multiply
- * strength reduction to replace every MULS.L/MULU.L with a shift-and-add
- * (`x`, `x<<1`, or `(x<<1)+x`) at -O2 on m68k - confirmed by inspecting
- * `m68k-linux-gnu-gcc -mcpu=68030 -O2 -S` output for each of the four
- * instantiations below: none contain a muls/mulu instruction. No hand-
- * written assembly needed to get the "avoid per-pixel general
- * multiplication" win the generic runtime-dx/dy path cannot get on its
- * own (dx/dy there are ordinary WORD32 locals, not literals, so GCC has no
- * constant to fold into a shift).
- *
- * Verified bit-exact via the existing check_luma_bilinear() in
- * tests/mr_h264_mc_degrade_check.c, which already iterates every
- * apf_inter_pred_luma[] slot (0-15) against the spec formula in
- * bilinear_reference() for every H.264 partition geometry - no test
- * changes needed, these four slots are simply no longer luma_bilinear()
- * itself once installed below.
- */
-#define LUMA_BILINEAR_QPEL(DX, DY) \
-static void luma_bilinear_qpel_##DX##_##DY(UWORD8 *src, UWORD8 *dst, \
-                                           WORD32 src_strd, WORD32 dst_strd, \
-                                           WORD32 ht, WORD32 wd, \
-                                           UWORD8 *tmp, WORD32 dydx) \
-{ \
-    WORD32 buf[2][16]; \
-    WORD32 *top = buf[0], *bot = buf[1]; \
-    const WORD32 inv_x = 4 - (DX), inv_y = 4 - (DY); \
-    WORD32 row, col; \
-    (void)tmp; (void)dydx; \
-    for(col = 0; col < wd; col++) \
-        top[col] = inv_x * src[col] + (DX) * src[col + 1]; \
-    for(row = 0; row < ht; row++) \
-    { \
-        const UWORD8 *next = src + src_strd; \
-        WORD32 *swap; \
-        for(col = 0; col < wd; col++) \
-            bot[col] = inv_x * next[col] + (DX) * next[col + 1]; \
-        for(col = 0; col < wd; col++) \
-            dst[col] = (UWORD8)((inv_y * top[col] + (DY) * bot[col] + 8) >> 4); \
-        swap = top; top = bot; bot = swap; \
-        src += src_strd; \
-        dst += dst_strd; \
-    } \
-}
-LUMA_BILINEAR_QPEL(1, 1)
-LUMA_BILINEAR_QPEL(3, 1)
-LUMA_BILINEAR_QPEL(1, 3)
-LUMA_BILINEAR_QPEL(3, 3)
-#undef LUMA_BILINEAR_QPEL
 
 /* Slot 0 - the whole-sample position - in every filter set. */
 MR_FORCE_INLINE ih264_inter_pred_luma_ft *luma_copy_fn(void)
@@ -427,13 +402,6 @@ void mr_h264_port_install_inter_pred(void *handle, mr_mc_quality quality)
             codec->apf_inter_pred_luma[0] = luma_copy_fn();
             for(i = 1; i < 16; i++)
                 codec->apf_inter_pred_luma[i] = luma_bilinear;
-            /* The four full-2D-fractional slots get the constant-weight
-             * specialisations above instead of luma_bilinear()'s runtime
-             * dx/dy - see the header comment on LUMA_BILINEAR_QPEL. */
-            codec->apf_inter_pred_luma[5]  = luma_bilinear_qpel_1_1;
-            codec->apf_inter_pred_luma[7]  = luma_bilinear_qpel_3_1;
-            codec->apf_inter_pred_luma[13] = luma_bilinear_qpel_1_3;
-            codec->apf_inter_pred_luma[15] = luma_bilinear_qpel_3_3;
             codec->pf_inter_pred_chroma = chroma_dispatch;
             break;
 
