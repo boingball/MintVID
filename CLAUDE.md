@@ -5447,3 +5447,31 @@ cushion top-up never reaches it. Coarsely interleaved files that used to
 lose the tail of an audio burst now pause reading until it drains
 instead. Amiga-only code, not compiled here; `fifo-dropped` in a `--time`
 log should now stay at 0.
+
+## Video: Off (`--no-video`), audio-only playback
+For machines too slow for the picture that only want to listen, e.g. to
+a YouTube video. The GUI puts it on the existing Video chooser as a third
+row, "Off", rather than adding a new checkbox. Row mapping in both GUIs:
+0 = All Frames (throughput), 1 = Skip Frames, 2 = Off. It sets
+`mr_play_options.no_video`, is emitted as `--no-video` only when chosen,
+and is re-parsed by the IPTV/YouTube browsers (pinned in
+`tests/mr_iptv_check.c`). "Skip after" is greyed out unless the row is
+Skip Frames. The struct grew, so a saved `ENVARC:MintVID.settings` from
+an earlier build is discarded once.
+
+mrplay branches into `play_audio_only()` right after the codec probe,
+before any video codec lookup, so a clip whose video this build can't
+decode still plays its soundtrack. It opens no video decoder, display or
+queue. Video packets are demuxed and dropped unread; audio is fed to the
+FIFO up to the 2.5 s cushion and never past the FIFO's capacity (see the
+Turbo+ note above). The Paula worker drains the FIFO itself, so the loop
+only tops it up. Input comes from a title-bar-only window on Workbench
+(ESC/close, space, cursor keys) plus the controller's signals via
+`control_signal_event(NULL)` (fullscreen is a no-op without a display).
+The position is `base_pts` (first audio packet's pts since start or seek)
+plus Paula's played time since then. The ui struct is static because the
+HTTP/HLS service hooks keep pointing at it until exit. If both
+`--no-audio` and `--no-video` are given, Video: Off wins. The new block
+was syntax-checked against stub headers with host and m68k gcc; the rest
+of `amiga/` can't be compiled here, so CI's real AmigaOS build is the
+first real compile.

@@ -283,6 +283,7 @@ static int append_playback_flags(char *out, size_t cap,
     snprintf(number, sizeof(number), "--skip-trigger=%u",
              clamp_skip_trigger(o->skip_trigger_ms));
     if (!append_option(out, cap, number)) return 0;
+    if (o->no_video && !append_option(out, cap, "--no-video")) return 0;
     return 1;
 }
 
@@ -440,6 +441,7 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else goto bad;
         }
         else if (!strcmp(arg, "--no-audio")) o->no_audio = 1;
+        else if (!strcmp(arg, "--no-video")) o->no_video = 1;
         else if (!strcmp(arg, "--audio-mono")) o->mono_audio = 1;
         else if (!strcmp(arg, "--audio-stereo")) o->mono_audio = 0;
         else if (!strcmp(arg, "--throughput")) o->throughput = 1;
@@ -521,7 +523,9 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
            o->h264_performance == MR_H264_PERF_TURBO_PLUS ? "Turbo+" :
            o->h264_performance == MR_H264_PERF_SMOOSH ? "Smoosh" : "Auto";
     audio = audio_policy_text(o);
-    if (o->throughput)
+    if (o->no_video)
+        snprintf(video, sizeof video, "Off (audio only)");
+    else if (o->throughput)
         snprintf(video, sizeof video, "All Frames");
     else {
         unsigned ms = clamp_skip_trigger(o->skip_trigger_ms);

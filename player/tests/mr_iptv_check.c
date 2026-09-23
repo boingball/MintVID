@@ -805,6 +805,37 @@ int main(void) {
                                      NULL, NULL));
     assert(strstr(args, "--skip-trigger=2000"));
   }
+  /* Video: Off (--no-video): only emitted when chosen, and must survive an
+   * IPTV/YouTube browser's re-parse so an audio-only launch stays one. */
+  {
+    mr_play_options o, parsed;
+    char *argv_rt[40];
+    char buf[1024], args[4096], summary[256], error[128];
+    const char *url = "https://example.test/watch";
+    int argc_rt;
+    char *p;
+
+    mr_play_options_default(&o);
+    assert(!o.no_video);
+    assert(mr_build_player_arguments(args, sizeof(args), &o, url,
+                                     NULL, NULL));
+    assert(!strstr(args, "--no-video"));
+    o.no_video = 1;
+    assert(mr_build_player_arguments(args, sizeof(args), &o, url,
+                                     NULL, NULL));
+    assert(strstr(args, "--no-video"));
+    mr_play_options_summary(&o, summary, sizeof(summary));
+    assert(strstr(summary, "Video Off (audio only)"));
+    assert(mr_build_iptv_arguments(buf, sizeof(buf), &o));
+    argv_rt[0] = "ytgui";
+    argc_rt = 1;
+    for (p = strtok(buf, " \n"); p && argc_rt < 40; p = strtok(NULL, " \n"))
+      argv_rt[argc_rt++] = p;
+    mr_play_options_default(&parsed);
+    assert(mr_play_options_parse(&parsed, argc_rt, argv_rt, error,
+                                 sizeof(error)));
+    assert(parsed.no_video);
+  }
   remove("/tmp/mr_channels.json");
   remove("/tmp/mr_streams.json");
   mr_iptv_free(&d);

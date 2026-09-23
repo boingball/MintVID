@@ -313,6 +313,13 @@ controllers:
       normally. This does not change the compressed stream or make the
       decoder cheaper; it is a presentation-time recovery policy.
 
+  @{b}Video: Off@{ub}
+      Play the soundtrack only. No video is decoded or shown, so a machine
+      too slow for the picture (a YouTube talk, a music video) can still
+      play it. A small window on Workbench shows the position: ESC or its
+      close gadget stops, space pauses, cursor left/right seek and
+      up/down change the volume. The controller's buttons work as usual.
+
 Use @{b}Skip Frames@{ub} when a slower Amiga is visibly falling behind,
 particularly with H.264, larger pictures, or a demanding display mode. It
 can make motion less complete, but it is preferable to building an ever
@@ -324,6 +331,7 @@ The command-line equivalents are:
 
   --throughput       keep late decoded pictures (All Frames)
   --no-throughput    drop late decoded pictures (Skip Frames)
+  --no-video         audio only (Video: Off)
 
 For most codecs this is a presentation policy: already-decoded late
 pictures are discarded. H.264 gains a second, deliberately stronger

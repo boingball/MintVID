@@ -117,11 +117,13 @@ static STRPTR audio_rate_labels[] = {(STRPTR)"Audio: Normal",
 /* Fixed, like scale_labels above: 0=All Frames (throughput on, the default -
  * never skip a decoded frame purely for falling behind the playback clock,
  * see mr_play_options.h's own throughput field), 1=Skip Frames (restores
- * that lateness check). read_options() hard-codes this exact order. See
+ * that lateness check), 2=Off (audio only, --no-video). read_options()
+ * hard-codes this exact order. See
  * CLAUDE.md's "Live HLS playback stall notes" for the real-hardware
  * regression All Frames fixes. */
 static STRPTR video_labels[] = {(STRPTR)"Video: All Frames",
-                               (STRPTR)"Video: Skip Frames", NULL};
+                               (STRPTR)"Video: Skip Frames",
+                               (STRPTR)"Video: Off", NULL};
 /* "Skip after": how far a "Video: Skip Frames" session may fall behind
  * before it starts skipping (--skip-trigger=). Row i is skip_after_ms[i];
  * 0.7s (row 2) is mrplay's long-standing default. Only meaningful with
@@ -368,8 +370,11 @@ static void read_options(gt_app *app, mr_play_options *options)
                          : MR_FAST_BUFFER_AUTO;
     options->no_audio = gad_value(app, app->no_audio, GTCB_Checked) != 0;
     options->mono_audio = gad_value(app, app->mono_audio, GTCB_Checked) != 0;
-    options->throughput =
-        gad_value(app, app->video_mode, GTCY_Active) == 0;
+    {
+        ULONG video = gad_value(app, app->video_mode, GTCY_Active);
+        options->throughput = video != 1;
+        options->no_video = video == 2;
+    }
     {
         ULONG row = gad_value(app, app->skip_after, GTCY_Active);
         options->skip_trigger_ms = row < SKIP_AFTER_ROWS
@@ -380,14 +385,15 @@ static void read_options(gt_app *app, mr_play_options *options)
 }
 
 /* "Skip after" only changes anything under Video: Skip Frames - All Frames
- * never skips for lateness, and VQ Smoosh drops late pictures itself. */
+ * never skips for lateness, Off decodes no video at all, and VQ Smoosh drops
+ * late pictures itself. */
 static void update_skip_after(gt_app *app)
 {
-    ULONG all_frames = gad_value(app, app->video_mode, GTCY_Active) == 0;
+    ULONG not_skipping = gad_value(app, app->video_mode, GTCY_Active) != 1;
     ULONG smoosh = gad_value(app, app->h264, GTCY_Active) ==
                    MR_H264_PERF_SMOOSH;
     GT_SetGadgetAttrs(app->skip_after, app->window, NULL,
-                     GA_Disabled, (all_frames || smoosh) ? TRUE : FALSE,
+                     GA_Disabled, (not_skipping || smoosh) ? TRUE : FALSE,
                      TAG_DONE);
 }
 
@@ -1110,8 +1116,9 @@ static int build_window(gt_app *app)
                       ? TRUE : FALSE;
     initial_mono_audio = have_saved_options && saved_options.mono_audio
                         ? TRUE : FALSE;
-    initial_video_mode = have_saved_options && !saved_options.throughput
-                        ? 1 : 0;
+    initial_video_mode = !have_saved_options ? 0
+                       : saved_options.no_video ? 2
+                       : !saved_options.throughput ? 1 : 0;
     initial_skip_after = skip_after_row(have_saved_options
                                         ? saved_options.skip_trigger_ms
                                         : MR_SKIP_TRIGGER_DEFAULT_MS);
