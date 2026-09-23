@@ -14,6 +14,13 @@
  * than on a table read, and every coefficient here is applied to an 8-bit
  * input, so the table approach is exact - not an approximation - for every
  * legal sample value.
+ *
+ * Saturation is a byte table too (g_clip): after the >>8 every channel lies
+ * in -258..534, so one indexed load replaces two compares and branches per
+ * channel. Measured with callgrind over qemu-m68k (68040 flags, 640x360,
+ * code page-aligned - see the note below), that took the C from 34.5M to
+ * 21.8M host instructions a frame, and the half-size converter from 13.1M
+ * to 10.4M.
  */
 #include "mr_yuv.h"
 
@@ -25,29 +32,35 @@
  * disabling every other hand-asm path in the project (Makefile.amiga wires
  * MR_M68K_ASM on for all of them at once). Build with YUV_ASM=0.
  *
- * That switch exists because which one is faster is genuinely open. The asm
- * was written when GCC was emitting an indirect jsr to emit_pixel twice per
- * pixel with five stack-pushed arguments; emit_pixel is now always_inline and
- * both paths step 2x2 quads, so that gap is gone. Measured under qemu-m68k on
- * 352x288 the C is about 23% faster - but qemu costs instructions rather than
- * cycles and models neither the 68030's memory system nor its lack of branch
- * prediction, and this kernel's tuning is largely about exactly those. Only a
- * real 68030/68040/PiStorm A/B settles it.
+ * Same measurement as above: the kernel costs 20.0M host instructions a
+ * frame against 21.8M for the C and 34.6M for the kernel it replaced (which
+ * clipped with compares and branches and reloaded four table pointers per
+ * 2x2 quad). qemu counts instructions, not cycles, so this is a fair proxy
+ * for a JIT such as PiStorm's Emu68 and for "less work", not for a real
+ * 68030's memory system; the half-size converter stays C because a kernel
+ * for it measured 2% slower than the C there.
+ *
+ * Measure page-aligned: qemu does not chain translated blocks across a 4 KB
+ * page, so a hot loop that happens to straddle one costs a TB lookup per
+ * iteration. An unaligned build read 45M for this same kernel; build the
+ * benchmark with -falign-functions=4096 and a .balign 4096 before the asm
+ * entry point before comparing numbers.
  */
 #if defined(MR_M68K_ASM) && !defined(MR_YUV_NO_ASM)
-/* core/mr_yuv_m68k.S - hand-written m68k loop over the same formula and
- * tables below. __asm__ binds to the bare .globl name (m68k-amigaos-gcc
- * decorates C symbols but not hand-written asm labels), matching every
- * other hand-asm entry point in this project. */
+/* core/mr_yuv_m68k.S - hand-written m68k loop over the same formula, reading
+ * every coefficient from one table block (g_m68k_block below). a_plane
+ * feeds the block's slot at a_base, b_plane the slot at a_base + 0x100.
+ * __asm__ binds to the bare .globl name (m68k-amigaos-gcc decorates C symbols
+ * but not hand-written asm labels), matching every other hand-asm entry point
+ * in this project. */
 void mr_yuv420_to_rgb24_m68k(uint8_t *dst, int dst_stride,
                              const uint8_t *y_plane, int y_stride,
-                             const uint8_t *u_plane, int u_stride,
-                             const uint8_t *v_plane, int v_stride,
+                             const uint8_t *a_plane, int a_stride,
+                             const uint8_t *b_plane, int b_stride,
                              int width, int height,
                              mr_yuv_service_fn service, void *service_opaque,
-                             const int *luma_x298, const int *e_x409,
-                             const int *d_xm100, const int *e_xm208,
-                             const int *d_x516)
+                             const int32_t *block, const uint8_t *clip,
+                             int a_base)
     __asm__("mr_yuv420_to_rgb24_m68k");
 #endif
 
@@ -56,6 +69,24 @@ static int g_e_x409[256];
 static int g_d_xm100[256];
 static int g_e_xm208[256];
 static int g_d_x516[256];
+/* Saturation table: index -MR_YUV_CLIP_LO..MR_YUV_CLIP_HI-1 through g_clip. */
+#define MR_YUV_CLIP_LO 260
+#define MR_YUV_CLIP_HI 540
+static uint8_t g_clip_store[MR_YUV_CLIP_LO + MR_YUV_CLIP_HI];
+#define g_clip (g_clip_store + MR_YUV_CLIP_LO)
+#if defined(MR_M68K_ASM) && !defined(MR_YUV_NO_ASM)
+/* Layout, in ints, of the block mr_yuv_m68k.S indexes (its virtual index
+ * minus 0x400, which the kernel subtracts once):
+ *     0..255   luma, reached as 4*(0x400|y) by the RGB24 call
+ *   256..511   luma again, reached as 4*(0x500|y) by the BGR24 call
+ *   512..1023  U pairs at 8*(0x300|u): { 516d+128, -100d+128 }
+ *  1024..1535  V pairs at 8*(0x400|v): { 409e+128, -208e }
+ *  1536..2047  U pairs again at 8*(0x500|u)
+ * RGB24 uses A = U at 0x300 and B = V at 0x400, so the kernel's channel 0 is
+ * red and channel 2 blue; BGR24 uses A = V at 0x400 and B = U at 0x500, which
+ * swaps them. 8 KB in all, of which one call reads 5 KB. */
+static int32_t g_m68k_block[2048];
+#endif
 static int g_tables_ready = 0;
 /* Session-specific packed P96 PIP byte order; default preserves YVYU. */
 static int g_p96_yuyv = 0;
@@ -83,14 +114,18 @@ static void build_tables(void)
         g_e_xm208[i] = -208 * e;
         g_d_x516[i] = 516 * d + 128;
     }
+    for (i = -MR_YUV_CLIP_LO; i < MR_YUV_CLIP_HI; i++)
+        g_clip[i] = i < 0 ? 0 : i > 255 ? 255 : (uint8_t)i;
+#if defined(MR_M68K_ASM) && !defined(MR_YUV_NO_ASM)
+    for (i = 0; i < 256; i++) {
+        g_m68k_block[i] = g_m68k_block[256 + i] = g_luma_x298[i];
+        g_m68k_block[512 + 2 * i] = g_m68k_block[1536 + 2 * i] = g_d_x516[i];
+        g_m68k_block[513 + 2 * i] = g_m68k_block[1537 + 2 * i] = g_d_xm100[i];
+        g_m68k_block[1024 + 2 * i] = g_e_x409[i];
+        g_m68k_block[1025 + 2 * i] = g_e_xm208[i];
+    }
+#endif
     g_tables_ready = 1;
-}
-
-static uint8_t clip8(int value)
-{
-    if (value < 0) return 0;
-    if (value > 255) return 255;
-    return (uint8_t)value;
 }
 
 #if defined(__GNUC__)
@@ -106,23 +141,21 @@ MR_YUV_INLINE void emit_pixel(uint8_t *dst, int luma, int red_add,
                               int green_add, int blue_add, int ri, int bi)
 {
     int scaled_y = g_luma_x298[(unsigned)luma];
-    dst[ri] = clip8((scaled_y + red_add) >> 8);
-    dst[1]  = clip8((scaled_y + green_add) >> 8);
-    dst[bi] = clip8((scaled_y + blue_add) >> 8);
+    dst[ri] = g_clip[(scaled_y + red_add) >> 8];
+    dst[1]  = g_clip[(scaled_y + green_add) >> 8];
+    dst[bi] = g_clip[(scaled_y + blue_add) >> 8];
 }
 
 /*
  * 4:2:0 means one chroma sample per 2x2 luma quad, so the three
  * chroma-derived addends below are shared by four output pixels. Stepping the
  * picture a row *pair* at a time computes them once for all four; stepping it
- * one row at a time - which this did until now, and which the m68k kernel in
- * mr_yuv_m68k.S still does - recomputes them for the second row of every
- * pair, doubling the chroma work for no change in output.
+ * one row at a time recomputes them for the second row of every pair,
+ * doubling the chroma work for no change in output. mr_yuv_m68k.S steps
+ * quads the same way.
  *
- * That is not a small share of the total. Colour conversion, not decoding, is
- * where most of an MPEG-1 or MPEG-2 frame's time goes on 68k, and measured
- * under qemu-m68k on 352x288 this quad-stepped C is 27% faster than the
- * hand-written single-row assembly it is the reference for.
+ * That is not a small share of the total: colour conversion, not decoding,
+ * is where most of an MPEG-1 or MPEG-2 frame's time goes on 68k.
  *
  * The addends depend only on (row>>1, x>>1), so hoisting them across the pair
  * is exact: output is bit-identical to the row-at-a-time form, and
@@ -206,23 +239,15 @@ void mr_yuv420_to_rgb24(uint8_t *dst, int dst_stride,
     if (!g_tables_ready) build_tables();
 
 #if defined(MR_M68K_ASM) && !defined(MR_YUV_NO_ASM)
-    /* A real-Pistorm run of an earlier version of this dispatch crashed
-     * (illegal instruction, error 80000004, plus visible corruption of the
-     * mouse pointer and clock gadget - a wild write) the first time it ran
-     * with real audio servicing active: mr_yuv420_to_rgb24_m68k was
-     * clobbering d0/a0/a1 across the periodic service() callback, since
-     * those registers are only safe from *our own caller's* perspective,
-     * not across a call this function makes itself - see
-     * core/mr_yuv_m68k.S for the fix and tests/mr_yuv_check.c's
-     * check_yuv_service_clobber() for the regression test (which
-     * reproduces the crash against the unfixed asm before confirming the
-     * fix). Fixed and confirmed clean on real Pistorm hardware with audio
-     * servicing active (`make -f Makefile.amiga mrplay YUV_ASM=1`, since
-     * folded back into the default build here). */
+    /* The kernel's service call preserves the caller-saved registers it
+     * still needs: an early version did not, and crashed real PiStorm
+     * hardware (illegal instruction, wild writes) the first time audio
+     * servicing was active - tests/mr_yuv_check.c's clobbering callback
+     * keeps that fixed. */
     mr_yuv420_to_rgb24_m68k(dst, dst_stride, y_plane, y_stride, u_plane,
                             u_stride, v_plane, v_stride, width, height,
-                            service, service_opaque, g_luma_x298, g_e_x409,
-                            g_d_xm100, g_e_xm208, g_d_x516);
+                            service, service_opaque, g_m68k_block, g_clip,
+                            0x300);
     return;
 #endif
 
@@ -244,26 +269,13 @@ void mr_yuv420_to_bgr24(uint8_t *dst, int dst_stride,
     if (!g_tables_ready) build_tables();
 
 #if defined(MR_M68K_ASM) && !defined(MR_YUV_NO_ASM)
-    /*
-     * Reuse the bit-exact hand-written RGB kernel without adding a branch to
-     * its hot pixel loop.  Swap U/V and permute the coefficient tables:
-     *
-     *   RGB kernel R slot = 409 * V' = 516 * U  -> B
-     *   RGB kernel G slot = -100*U' -208*V'     -> unchanged G
-     *   RGB kernel B slot = 516 * U' = 409 * V  -> R
-     *
-     * with U'=V and V'=U.  The kernel therefore writes B,G,R directly, with
-     * exactly the same clipping/service behaviour and no post-conversion
-     * channel shuffle.
-     */
-    mr_yuv420_to_rgb24_m68k(dst, dst_stride, y_plane, y_stride,
-                            v_plane, v_stride, u_plane, u_stride,
-                            width, height, service, service_opaque,
-                            g_luma_x298,
-                            g_d_x516,   /* kernel e_x409:  B from original U */
-                            g_e_xm208,  /* kernel d_xm100: V green term      */
-                            g_d_xm100,  /* kernel e_xm208: U green term      */
-                            g_e_x409);  /* kernel d_x516:  R from original V */
+    /* Same kernel with the planes and table slots swapped (see
+     * g_m68k_block): it writes B,G,R directly, with no branch added to its
+     * pixel loop and no post-conversion channel shuffle. */
+    mr_yuv420_to_rgb24_m68k(dst, dst_stride, y_plane, y_stride, v_plane,
+                            v_stride, u_plane, u_stride, width, height,
+                            service, service_opaque, g_m68k_block, g_clip,
+                            0x400);
     return;
 #endif
 
