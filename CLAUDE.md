@@ -5309,7 +5309,22 @@ both byte-exact:
 Host instructions per 640x360 frame (callgrind over qemu-m68k, 68040 flags):
 full size 34.6M -> 20.0M (asm; the new C is 21.8M), half size (RTG Half, C
 only) 13.1M -> 10.4M. A half-size kernel was written and measured 2% slower
-than the C, so it was dropped. Real-hardware speed is unmeasured.
+than the C, so it was dropped.
+
+**On a real PiStorm it was ~5x, not 1.7x.** Same YouTube 360p/Turbo/CGX
+windowed setup as the 57 ms log: `yuv-rgb=11.7 ms` per frame, identical on
+the MintVID040 and 060 builds (Emu68 JIT). qemu predicted 34.6M -> 20.0M.
+The likely reason is the removed compare-and-branch clipping: two
+data-dependent branches per channel, six per pixel. qemu counts them as a
+few host instructions each. Emu68 evidently charges far more. Treat qemu
+counts as a floor for branchy code on PiStorm, not a prediction.
+
+The same logs give the rest of the frame budget (640x360, 30 fps source):
+`vdecode` ~26 ms, `yuv-rgb` 11.7, `display` (CGX WritePixelArray to a
+B8G8R8A8 screen) ~4.3, AAC ~2.5 per video frame. That is ~45 ms against
+33.3, so it plays at ~17.5 fps with audio rescue firing continuously. The
+P96 PIP overlay is unavailable on the PiStorm's RTG (`PIPERR_NOTAVAILABLE`
+for every MemoryWindow format), so CGX is the path there.
 
 **Page-align code before comparing qemu counts.** qemu does not chain
 translated blocks across a 4 KB page, so a hot loop that straddles one pays a
