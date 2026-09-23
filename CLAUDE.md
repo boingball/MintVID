@@ -2598,7 +2598,8 @@ the earlier `mr_h264_set_dynamic_skip()` host probes in this file):**
    pulled in changes never validated against this project's own patches
    - the parent repo's submodule gitlink points straight at the fix
    commit instead of at `main`, which is a normal, fully-supported way to
-   pin a submodule). `ih264d_parse_pred_weight_table()` (the function that
+   pin a submodule; later merged into `main` - see "Baseline H.264
+   profile" below). `ih264d_parse_pred_weight_table()` (the function that
    implements `pred_weight_table()` of spec section 7.3.3.2, called
    exactly when `weighted_pred_flag`/`weighted_bipred_idc==1` requires it)
    now computes, once per slice, whether every parsed luma/chroma
@@ -5352,7 +5353,13 @@ a busy mandelbrot-plus-noise.
 
 Three lossless fixes, in the libavc fork (`boingball/libavc` branch
 `claude/baseline-decode-speedups`, one commit on top of the previously
-pinned `cb8d7c3`):
+pinned `cb8d7c3`). That branch was then merged into the fork's `main`
+(`28825e1`) and the submodule now tracks `main`. This also brought in
+`main`'s upstream sync, which had never been tested with MintVID. It
+merged cleanly. Frames were byte-identical to the branch-only build in
+all four speed modes on every clip above. Guest instruction counts
+matched to within 200. `make check` and `make check-m68k` pass. The
+three fixes:
 - **Turbo still ran the per-MB deblocking pass.** With deblocking
   disabled by the app (`i4_degrade_type` bit 1), the slice parsers skip
   setting each MB's deblocking mode and boundary strengths, but
