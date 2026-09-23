@@ -23,39 +23,47 @@ with native Amiga playback across AGA, HAM and RTG systems.
 Performance scales strongly with CPU, codec, resolution and display mode;
 format support is not a promise of real-time playback on every 68k.
 
-MintVID 1.4.0 makes the P96 hardware video overlay actually work correctly
-on real Voodoo3/Permedia-class boards: the overlay now uses the same
-packed-YUV format the historical RiVA driver path used, a swapped chroma
-order and a studio-range clamp fix real-hardware colour corruption, and a
-failed PIP fullscreen attempt now falls back to ordinary CGX fullscreen
-automatically instead of leaving playback stuck. A YUV-to-RGB conversion
-table optimization also speeds up every RTG display path, overlay or not.
+MintVID 1.4.0 brings stereo audio through a synchronized Paula channel
+pair, and YouTube's 360p stream now plays on a Pi3-based PiStorm 600 with
+VQ Turbo and the new RTG (Half) display mode. It also adds VQ Smoosh,
+audio-only playback (Video: Off), faster H.264 and AAC decoding, and makes
+the P96 hardware video overlay work on real Voodoo3/Permedia-class boards.
 
 ![MintVID playing an LGR YouTube video on AmigaOS](player/amiga/art/MintVID-YouTube.png)
 
 ## What's new in 1.4.0
 
-- **P96 hardware overlay actually works on real Voodoo3/P96 2.x boards:**
-  the PIP overlay now opens with `RGBFB_Y4U2V2` (matching the historical
-  RiVA driver path) instead of a plain RGB request older Voodoo drivers
-  reject outright, and H.264/MPEG-2 frames are packed into that format
-  directly, skipping the full YUV->RGB24 conversion entirely on this path.
-- **Real-hardware colour fixes:** the packed chroma order was swapped from
-  what the `RGBFB_Y4U2V2` name implies (found and confirmed on real
-  Voodoo3 hardware), and decoder samples that legally stray just outside
-  the nominal studio range (compression ringing near high-contrast edges)
-  are now clamped back to it - real hardware could otherwise render an
-  out-of-range sample as a solid white or black fleck.
-- **P96 overlay fullscreen fallback:** if a board can't open the PIP
-  overlay fullscreen (confirmed on real Voodoo3/P96 2.1 hardware, which
-  rejects it outright), MintVID now falls back to ordinary CGX fullscreen
-  automatically instead of leaving the session stuck windowed, and
-  switches back to the hardware overlay again once you return to a
-  windowed view.
-- **Faster YUV->RGB24 conversion:** the shared conversion tables used by
-  every RTG display path (not just the new overlay) were reworked to
-  remove per-pixel branching and redundant rounding additions - about
-  14.7% faster on a 640x360 host benchmark.
+- **Stereo audio:** Paula now plays through a synchronized left/right
+  channel pair, so stereo sources keep their stereo image instead of being
+  mixed down to one channel. Mono sources, and `--audio-mono`, play the
+  same signal on both speakers.
+- **PiStorm 600 plays YouTube:** on the tested Pi3-based PiStorm 600
+  (MintVID040), YouTube's 360p stream plays with VQ Turbo and RTG (Half).
+  The YUV->RGB24 step fell from 57 ms to about 12 ms per 640x360 frame
+  there, and H.264 decode is faster too.
+- **RTG (Half)** (`--rtg-half`): the window opens at half the video's width
+  and height and H.264 is converted straight to that size, so conversion
+  and the copy to the card each do about a quarter of the work.
+- **VQ: Smoosh** (`--h264-speed=smoosh`): Turbo's policy, plus P/B
+  pictures that are already late are not decoded. Motion smears until the
+  next keyframe, but the video keeps moving and audio comes first.
+- **Video: Off** (`--no-video`): plays only the soundtrack, with no video
+  decode, for machines too slow for the picture.
+- **Skip after** (`--skip-trigger=200..2000`): how far behind Video: Skip
+  Frames may fall before it starts skipping.
+- **Turbo+ keeps its audio:** it no longer skips about 10 s of audio while
+  waiting for the next keyframe.
+- **Faster decoding:** H.264 motion compensation filters two samples per
+  register, Turbo skips dead deblocking work, and AAC decodes directly at
+  a halved or quartered output rate (31-63% less AAC work).
+- **P96 hardware overlay on real Voodoo3/P96 2.x boards:** it opens with
+  `RGBFB_Y4U2V2` like the historical RiVA driver path, with the right
+  chroma order (the new *P96 Output Format* menu picks YVYU for WinUAE or
+  YUYV for Voodoo) and studio-range clamping. The overlay window resizes
+  with the card doing the scaling, and fullscreen falls back to CGX if a
+  board refuses it.
+- **Bigger buffers:** Fast buffer adds 32 and 64 MB, and YouTube/IPTV HLS
+  downloads several segments ahead of playback.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete release notes, including
 the 1.3.2 DV decoder/EHB/MPEG-1/2 work and the original 1.3.1 P96 overlay
@@ -63,7 +71,8 @@ introduction this release builds on.
 
 ## Video frame policy
 
-Both GUI editions expose **Video: All Frames** and **Video: Skip Frames**.
+Both GUI editions expose **Video: All Frames**, **Video: Skip Frames** and
+**Video: Off** (audio only, `--no-video`).
 All Frames is the default and preserves every decoded picture. For most
 codecs, Skip Frames discards late decoded output. For H.264, sustained
 lateness also escalates libavc to `IVD_SKIP_PB`, avoiding most P/B-picture
@@ -73,7 +82,9 @@ allows the scheduler to drop pictures that are already late, so a slower
 Amiga can catch up while audio and timestamps continue normally. It is a
 presentation policy, not a codec or bitstream change.
 
-The command-line equivalents are `--throughput` and `--no-throughput`.
+The command-line equivalents are `--throughput` and `--no-throughput`;
+`--skip-trigger=MS` (GUI "Skip after") sets how far behind Skip Frames may
+fall before it starts skipping.
 Use Skip Frames when a demanding source is falling behind; keep All Frames
 when playback is already smooth or every decoded picture matters. See the
 [AmigaGuide manual](MintVID.guide) for hardware-specific starting points.
@@ -108,9 +119,9 @@ For a repeatable real-hardware baseline, see **[68060 @ 50 MHz codec performance
   and occasional keyframes when the full video rate is beyond the machine.
 - **PiStorm/Emu68:** use the **MintVID040** build. This is the release build
   targeted for the Emu68/PiStorm environment. H.264 becomes much more practical;
-  on a tested Pi3-based PiStorm 600, low-resolution H.264 streams below roughly
-  200p have played well. Faster PiStorm hardware should provide more headroom,
-  but results still depend on the source and configuration.
+  on a tested Pi3-based PiStorm 600, YouTube's 360p stream plays with VQ Turbo
+  and RTG (Half). Faster PiStorm hardware should provide more headroom, but
+  results still depend on the source and configuration.
 - **Vampire/Apollo 68080:** currently unvalidated by the MintVID project. No
   optimised build is officially recommended yet, and the 68060 build should not
   be assumed to be the right choice solely from the CPU name.

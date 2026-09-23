@@ -74,29 +74,39 @@ Topics:
 
 @{b}MintVID 1.4.0@{ub}
 
-A P96 hardware overlay compatibility follow-up to 1.3.2:
-
-  - @{b}The P96 hardware video overlay actually works on real Voodoo3/
-    P96 2.x boards now.@{ub} It opens with the same packed-YUV format
-    (@{i}RGBFB_Y4U2V2@{ui}) the historical RiVA driver path used,
-    instead of a plain RGB request older Voodoo drivers reject outright
-    before a window even opens.
-  - @{b}Real-hardware colour fixes.@{ub} The packed chroma order was the
-    opposite of what the format name implies, and decoder samples that
-    legally stray just outside the nominal studio range (compression
-    ringing near high-contrast edges) could render as solid white or
-    black flecks - both confirmed and fixed against real Voodoo3/P96
-    2.x hardware.
-  - @{b}P96 overlay fullscreen fallback.@{ub} If a board can't open the
-    overlay fullscreen at all (confirmed on real Voodoo3/P96 2.1
-    hardware), MintVID now falls back to ordinary CGX fullscreen
-    automatically instead of leaving playback stuck windowed, and
-    switches back to the hardware overlay again once you return to a
-    windowed view.
-  - @{b}Faster YUV->RGB24 conversion.@{ub} The shared conversion tables
-    used by every RTG display path (overlay or not) were reworked to
-    remove per-pixel branching and redundant rounding additions - about
-    14.7% faster on a 640x360 host benchmark.
+  - @{b}Stereo audio.@{ub} Paula now plays through a synchronized
+    left/right channel pair, so stereo sources keep their stereo image
+    instead of being mixed down to one channel. Mono sources, and the Mono
+    audio option, play the same signal on both speakers.
+  - @{b}PiStorm 600 plays YouTube.@{ub} On the tested Pi3-based PiStorm
+    600 (MintVID040), YouTube's 360p stream plays with VQ Turbo and the
+    new RTG (Half) display mode. The YUV-to-RGB step fell from 57 ms to
+    about 12 ms per 640x360 frame there, and H.264 decode is faster too.
+  - @{b}RTG (Half)@{ub} display mode: the window opens at half the video's
+    width and height and colour conversion writes straight to that size,
+    so conversion and the copy to the card each do about a quarter of the
+    work (H.264).
+  - @{b}VQ: Smoosh@{ub} keeps H.264 moving on a machine that cannot keep
+    up: late P/B pictures are not decoded, motion smears until the next
+    keyframe, and audio always comes first.
+  - @{b}Video: Off@{ub} plays only the soundtrack; no video is decoded.
+    See @{" Video frame policy " LINK FramePolicy}.
+  - @{b}Skip after@{ub} sets how far behind Video: Skip Frames may fall
+    before it starts skipping.
+  - @{b}Turbo+ keeps its audio.@{ub} It no longer skips about 10 s of
+    audio while waiting for the next keyframe.
+  - @{b}Faster decoding.@{ub} H.264 motion compensation and Baseline
+    (YouTube) decode need fewer instructions - up to about a fifth less
+    on high-motion video - and AAC is decoded directly at a halved or
+    quartered output rate (31-63% less AAC work).
+  - @{b}P96 hardware overlay on real Voodoo3/Permedia boards.@{ub} It opens
+    with the packed-YUV format the historical RiVA driver used, with the
+    right chroma order (the new @{i}P96 Output Format@{ui} menu switches
+    between YVYU for WinUAE and YUYV for Voodoo) and studio-range
+    clamping. The overlay window can be resized with the card doing the
+    scaling, and fullscreen falls back to CGX if a board refuses it.
+  - @{b}Bigger buffers.@{ub} Fast buffer adds 32 and 64 MB, and YouTube/
+    IPTV HLS downloads several segments ahead of playback.
 
 Performance still depends on the exact CPU, source, codec, resolution,
 audio and display mode. A supported format is not automatically a
@@ -136,10 +146,10 @@ mode:
     configuration.
   - PiStorm/Emu68 (ARM-hosted 68k) - use the MintVID040 build. H.264/AVC
     (Baseline through High Profile, CABAC and B-frames) becomes much more
-    practical. On the tested Pi3-based PiStorm 600, low-resolution H.264
-    streams below roughly 200p have played well. Faster PiStorm hardware
-    should provide more headroom, but exact results depend on the stream
-    and configuration.
+    practical. On the tested Pi3-based PiStorm 600, YouTube's 360p stream
+    plays with VQ Turbo and the RTG (Half) display mode. Faster PiStorm
+    hardware should provide more headroom, but exact results depend on the
+    stream and configuration.
   - Vampire/Apollo 68080 - not yet validated by the MintVID project. No
     optimised build is officially recommended yet, and the MintVID060
     build should not be assumed to be correct solely from the CPU name.
@@ -195,9 +205,13 @@ out on its own.
 
 @{b}Playing a video@{ub}
 
-Run the controller, choose a movie, and select a display mode: AGA, EHB,
-HAM6, HAM8, or CGX. Laced and 2x apply to the chipset modes; CGX playback
-opens a size-gadget window and scales the video as that window is resized.
+Run the controller, choose a movie, and select a display mode: AGA, ECS,
+EHB, HAM6, HAM8, RTG (WritePixel), RTG (Half), P96 (Windowed) or P96
+(Fullscreen). Laced and 2x apply to the chipset modes; RTG playback opens a
+size-gadget window and scales the video as that window is resized. RTG
+(Half) opens that window at half the video's width and height and converts
+H.264 straight to that size, which cuts colour conversion and the copy to
+the card to about a quarter; other codecs play at full size.
 The C2P chooser selects the standard graphics.library path, CD32 Akiko
 hardware, or the Kalms converter for chipset playback (it is disabled for
 CGX). Kalms is the default; incompatible geometry or bitmap layouts fall
@@ -234,6 +248,11 @@ Turbo remains the default. Auto resolves to the same policy.
   Turbo+    skips both P- and B-frames, so only keyframes are decoded
             and shown, keeping that decode short enough to hold audio
             through it; last-resort keyframe/slideshow mode
+  Smoosh    Turbo's policy, plus P/B pictures that are already late are
+            not decoded at all: motion smears ("datamosh") until the next
+            keyframe restores the picture, but the video keeps moving and
+            audio comes first. Meant for streams with no B-frames, such as
+            YouTube 360p, where Turbo has nothing to skip
 
 Use Fast when keeping every frame matters more than maximum speed. Every
 mode from Balanced down disables deblocking on keyframes as well as other
@@ -331,7 +350,13 @@ The command-line equivalents are:
 
   --throughput       keep late decoded pictures (All Frames)
   --no-throughput    drop late decoded pictures (Skip Frames)
+  --skip-trigger=MS  how far behind Skip Frames may fall first (Skip after)
   --no-video         audio only (Video: Off)
+
+@{b}Skip after@{ub}, beside the Video chooser, sets how far behind a Skip
+Frames session may fall (0.2 to 2 seconds, default 0.7) before it starts
+skipping. It is greyed out for All Frames, Off and VQ Smoosh, which never
+use it.
 
 For most codecs this is a presentation policy: already-decoded late
 pictures are discarded. H.264 gains a second, deliberately stronger
@@ -390,8 +415,10 @@ change one setting at a time. The following are sensible starting points:
 
   @{u}PiStorm/Emu68@{uu}
     Build: MintVID040
-    Display: CGX/P96 where available
-    H.264: Turbo, then Fast if full quality is affordable
+    Display: RTG (Half) for YouTube 360p (tested on a Pi3-based PiStorm
+             600); CGX/P96 for smaller sources
+    H.264: Turbo; Smoosh if high-motion scenes fall behind; Fast if
+           full quality is affordable
     Video: All Frames is normally appropriate
     Fast buffer: Auto; increase only when the source and free RAM
                  justify it
@@ -551,18 +578,26 @@ Build with SSL=1 and keep ytgui beside MintVID and mrplay.
                 H.264 decode is starving the audio FIFO
   No audio      skip the audio decoder and Paula entirely
   Mono audio    ask the codec for one channel instead of decoding both
-                and averaging - MP3/MP2/AC-3 skip roughly half their
-                per-channel work this way; Helix AAC only saves the
-                downmix, since it has no mono decode mode. Paula's
-                output is mono either way, so this changes where the
-                CPU cost falls, not what comes out of the speaker.
-  Fast buffer   Auto/Off/4/8/16 MB of Fast RAM read-ahead for local
-                files and direct/progressive HTTP media (HLS uses its
-                own complete-segment buffer instead). Auto picks
-                16/8/4 MB from the largest available Fast RAM block
-                while leaving 24 MB free for decode/display/audio/
-                queues; a fixed size still leaves an 8 MB floor and
-                steps down safely if necessary.
+                - MP3/MP2/AC-3 skip roughly half their per-channel work
+                this way; Helix AAC only saves the downmix, since it has
+                no mono decode mode. The one channel plays on both
+                speakers.
+  Fast buffer   Auto/Off/4/8/16/32/64 MB of Fast RAM read-ahead for
+                local files and direct/progressive HTTP media. Auto
+                picks 16/8/4 MB from the largest available Fast RAM
+                block while leaving 24 MB free for decode/display/audio/
+                queues; 32 and 64 MB are explicit choices. A fixed size
+                still leaves an 8 MB floor and steps down safely if
+                necessary. For YouTube and IPTV HLS the size bounds a
+                queue of downloaded segments ahead of playback (up to
+                eight for recorded videos, three for live streams).
+
+Audio plays in stereo through a synchronized pair of Paula channels. A
+stereo source keeps its left and right channels; a mono source, or Mono
+audio, plays the same signal on both speakers. When the source rate is
+above what Paula can play, or Audio is Low, AAC is decoded directly at
+the lower rate with a smaller transform instead of decoding at full rate
+and dropping samples.
 
 MintAMP/Helix decode MP3, AAC-LC and fixed-point AC-3; MPEG-1/2 Layer II
 (MP2) audio decodes through the same pl_mpeg path used for MPEG video. PCM
@@ -622,6 +657,8 @@ Every GUI is a front end over mrplay, which also runs directly:
   mrplay --net-queue=24 --live-resync \
     "https://example.net/live/master.m3u8"
   mrplay --p96 "DH0:Videos/movie.avi"
+  mrplay --rtg-half --h264-speed=turbo "DH0:Videos/clip.mp4"
+  mrplay --no-video "DH0:Videos/concert.mp4"
 
 mrplay carries a $STACK:320000 AmigaOS stack cookie because libavc needs
 substantially more stack than the classic Shell default - see

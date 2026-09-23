@@ -15,31 +15,42 @@ IPTV and public YouTube playback.
 
 WHAT'S NEW IN 1.4.0
 
-  - Fixes the P96 hardware video overlay to actually work correctly on
-    real Voodoo3/Permedia-class boards: it now opens with the same
-    packed-YUV format (RGBFB_Y4U2V2) the historical RiVA driver path
-    used, instead of a plain RGB request older Voodoo drivers reject
-    outright before a window even opens.
-  - Fixes real-hardware colour corruption in the overlay: the packed
-    chroma order was the opposite of what the format name implies, and
-    decoder samples that legally stray just outside the nominal studio
-    range (compression ringing near high-contrast edges) could render as
-    solid white or black flecks - both confirmed and fixed against real
-    Voodoo3/P96 2.x hardware.
-  - If a board can't open the overlay fullscreen at all (confirmed on
-    real Voodoo3/P96 2.1 hardware), MintVID now falls back to ordinary
-    CGX fullscreen automatically instead of leaving playback stuck
-    windowed, and switches back to the hardware overlay once you return
-    to a windowed view.
-  - Reworks the shared YUV-to-RGB24 conversion tables used by every RTG
-    display path (overlay or not) for roughly 14.7% faster conversion on
-    a 640x360 benchmark.
+  - Stereo audio. Paula now plays through a synchronized left/right
+    channel pair, so stereo sources keep their stereo image instead of
+    being mixed down to one channel. Mono sources, and the Mono audio
+    option, play the same signal on both speakers.
+  - PiStorm 600 plays YouTube. On the tested Pi3-based PiStorm 600
+    (MintVID040), YouTube's 360p stream plays with VQ Turbo and the new
+    RTG (Half) display mode. The YUV-to-RGB step fell from 57 ms to about
+    12 ms per 640x360 frame there, and H.264 decode itself is faster.
+  - RTG (Half) display mode: the window opens at half the video's width
+    and height and colour conversion writes straight to that size, so
+    conversion and the copy to the card each do about a quarter of the
+    work (H.264).
+  - VQ: Smoosh keeps H.264 moving on a machine that cannot keep up: late
+    P/B pictures are not decoded, motion smears until the next keyframe,
+    and audio always comes first.
+  - Video: Off plays only the soundtrack - no video is decoded - with a
+    small Workbench window for ESC, pause, seek and volume.
+  - Turbo+ no longer skips about 10 s of audio while waiting for the next
+    keyframe.
+  - Faster H.264 motion compensation and Baseline decode, and AAC decoded
+    directly at a reduced rate (31-63% less AAC work when the output rate
+    is halved or quartered).
+  - The P96 hardware video overlay works on real Voodoo3/Permedia-class
+    boards: it opens with the packed-YUV format (RGBFB_Y4U2V2) the
+    historical RiVA driver path used, with the right chroma order (a new
+    P96 Output Format menu switches between YVYU for WinUAE and YUYV for
+    Voodoo) and studio-range clamping. The overlay window can be resized
+    with the card doing the scaling, and fullscreen falls back to CGX when
+    a board refuses the overlay.
+  - Fast buffer adds 32 and 64 MB, and YouTube/IPTV HLS now downloads
+    several segments ahead of playback.
 
 MintVID 1.4.0 builds on 1.3.2's DV decoder, Extra Half-Brite display mode
 and MPEG-1/2 Fast speed mode, 1.3.1's original P96 hardware video overlay
-introduction (a real hardware overlay path for Voodoo3/Permedia/BVision-
-class RTG boards - now made to actually work correctly on that hardware,
-see above) and the retirement of H.264 TurboGT, whose policy had become
+introduction (now made to work correctly on real hardware, see above) and
+the retirement of H.264 TurboGT, whose policy had become
 identical to Turbo's; Turbo is now the default H.264 speed and TurboGT
 remains accepted only as a command-line/settings alias. The 1.3.0
 H.264/AAC performance work, and the WMV7/8, HLS shutdown, Kalms C2P, RTG
@@ -82,9 +93,10 @@ practical playback performance depend on the hardware underneath it.
   - PiStorm/Emu68 - use the MintVID040 build. This is the build targeted for
     the Emu68/PiStorm environment. H.264/AVC (Baseline through High Profile,
     CABAC and B-frames) becomes much more practical here. On the tested
-    Pi3-based PiStorm 600, low-resolution H.264 streams below roughly 200p
-    have played well. Faster PiStorm hardware should provide more headroom,
-    but exact results depend on the stream and configuration.
+    Pi3-based PiStorm 600, YouTube's 360p stream plays with VQ Turbo and
+    the RTG (Half) display mode. Faster PiStorm hardware should provide
+    more headroom, but exact results depend on the stream and
+    configuration.
   - Vampire/Apollo 68080 - not yet validated by the MintVID project, so no
     optimised build is officially recommended yet. Do not assume the 68060
     build is the correct choice solely from the CPU name; feedback from real
@@ -100,9 +112,9 @@ WHAT IT PLAYS
     MPEG-4 Part 2 (ISO ASP and Microsoft MP42/DIV2), Windows Media Video 7
     (WMV1), Windows Media Video 8 (WMV2), H.264/AVC Baseline/Main/High
     Profile, and DV (IEC 61834/SMPTE 314M, PAL 4:2:0 and NTSC/DVCPRO 4:1:1).
-  - Audio to Paula: PCM, MP2, MP3, AAC-LC (raw/ADTS/LATM), and fixed-point
-    AC-3 (stereo downmix). MP3/AAC decoding reuses the proven MintAMP/Helix
-    code.
+  - Audio to Paula in stereo: PCM, MP2, MP3, AAC-LC (raw/ADTS/LATM), and
+    fixed-point AC-3 (stereo downmix). MP3/AAC decoding reuses the proven
+    MintAMP/Helix code.
   - Two complete GUI sets over the same player: ReAction (V44) and plain
     GadTools/Intuition (V37) for a standard AmigaOS 3.0 install, each with
     matching file, IPTV-directory and YouTube-search browser windows.
@@ -159,6 +171,11 @@ the fast path for DV and MPEG-1/2 as well as H.264.
     shown and that decode stays short enough on a slow CPU to keep audio from
     stuttering between frames. A last-resort keyframe/slideshow mode, not the
     normal fastest setting.
+  - Smoosh: Turbo's policy, plus P/B pictures that are already late are not
+    decoded at all. Motion smears ("datamosh") until the next keyframe
+    restores the picture, but video keeps moving and audio comes first. For
+    streams with no B-frames (YouTube 360p is Baseline), where Turbo has
+    nothing to skip.
 
 TurboGT was retired in 1.3.1: its policy had been identical to Turbo's
 since a correctness fix forced every degrading H.264 mode onto the same
@@ -184,12 +201,16 @@ Both GUI editions offer a Video selector:
     720p stream under WinUAE, where full-rate decoding was not possible, so a
     slower Amiga can catch up. Audio, timestamps and decoder selection are
     unchanged. This is the recommended first change for a stuttering or
-    decode-bound local/heavy video.
+    decode-bound local/heavy video. "Skip after" sets how far behind it may
+    fall before it starts skipping (0.2-2 s, default 0.7 s).
+  - Video: Off plays the soundtrack only. No video is decoded or shown; a
+    small Workbench window takes ESC, space, cursor keys and volume.
 
-The command-line equivalents are --throughput (All Frames) and
---no-throughput (Skip Frames). A direct network/HLS mrplay invocation defaults
-to throughput mode; a direct local-file invocation does not. GUI sessions pass
-the selected policy explicitly.
+The command-line equivalents are --throughput (All Frames),
+--no-throughput (Skip Frames), --skip-trigger=MS and --no-video (Off). A
+direct network/HLS mrplay invocation defaults to throughput mode; a direct
+local-file invocation does not. GUI sessions pass the selected policy
+explicitly.
 
 RECOMMENDED STARTING POINTS
 
@@ -200,7 +221,11 @@ RECOMMENDED STARTING POINTS
   Turbo+ for audio-first playback and Skip Frames when decode is late.
 
   68040/060 RTG: CGX/P96, Turbo VQ, Fast buffer Auto, and a low-resolution
-  source before increasing quality. PiStorm/Emu68 should use MintVID040.
+  source before increasing quality. Try RTG (Half) when colour conversion
+  and the copy to the card are the bottleneck.
+
+  PiStorm/Emu68: MintVID040, RTG (Half) and Turbo VQ for YouTube 360p.
+  Smoosh keeps high-motion scenes moving if Turbo falls behind.
 
   Live HLS/IPTV: start with All Frames and a low-resolution variant. For direct
   mrplay use --live-resync after a live stall; --net-queue=24 is a deeper
