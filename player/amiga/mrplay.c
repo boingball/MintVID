@@ -123,6 +123,11 @@ void __chkabort(void) { }
  * hardware logs. The active value is reduced after video_cap is known to
  * roughly (video_cap - 2) frame periods, for both network and local media. */
 #define AUDIO_CUSHION_TARGET_MS 2500UL
+/* Stop reading packets this far short of a full Paula FIFO (~4 s). Buffered
+ * audio also counts the two in-flight 200 ms requests, and one more packet
+ * (an AAC/MP3/AC-3 frame is well under 100 ms) must still fit. Kept above
+ * AUDIO_CUSHION_TARGET_MS so the cushion top-up is never held back. */
+#define AUDIO_FIFO_HEADROOM_MS 1000UL
 /* Live-resync (opt-in, --live-resync, network sources only). A multi-second
  * network stall can leave a live stream many seconds behind the wall clock with
  * the audio clock unable to climb back; these bound the catch-up-to-live burst.
@@ -3759,6 +3764,18 @@ int main(int argc, char **argv)
                      late_us > -(int64_t)margin))
                     can_decode = 0;
             }
+            /* Never read further ahead than the Paula FIFO can hold: audio
+             * that does not fit is dropped. With few displayable pictures
+             * (Turbo+ shows keyframes only) the video queue stays empty
+             * until the next keyframe, so without this the loop read at
+             * full speed and threw away everything past ~4 s of audio -
+             * about 10 s on a YouTube clip, heard as a jump forward at
+             * the first keyframe. Only while Paula is running: before
+             * playback starts the FIFO does not drain, and holding reads
+             * there could wait forever for a first picture. */
+            if (can_decode && audio && playback_started &&
+                audio_ms + AUDIO_FIFO_HEADROOM_MS >= audio_capacity_ms(audio))
+                can_decode = 0;
             if (can_decode) {
                 int ready_before = qcount > 0;
                 int64_t due_before = late_us;
