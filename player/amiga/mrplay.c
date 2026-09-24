@@ -1791,6 +1791,7 @@ static int hls_wait_service(void *opaque, unsigned wait_ms)
  * from the controller's signals, exactly as the video window would. */
 typedef struct audio_only_ui {
     struct Window *win;
+    int opened_intuition;   /* we opened IntuitionBase; close it again */
     char title[64];
 } audio_only_ui;
 
@@ -1798,15 +1799,27 @@ static void audio_only_ui_open(audio_only_ui *ui)
 {
     struct Screen *scr;
     ui->win = NULL;
+    ui->opened_intuition = 0;
     snprintf(ui->title, sizeof ui->title, "MintVID - audio only");
     printf("no-video: opening control window\n");
     Flush(Output());
+    /* IntuitionBase belongs to display.c, which only opens it inside
+     * display_open() - and this path never opens a display. Calling
+     * LockPubScreen() through the NULL base jumped into low memory and hard-
+     * froze the machine (mouse included) on the first real-hardware runs. */
+    if (!IntuitionBase) {
+        IntuitionBase = (struct IntuitionBase *)
+            OpenLibrary((CONST_STRPTR)"intuition.library", 37);
+        if (!IntuitionBase) {
+            printf("no-video: intuition.library unavailable; "
+                   "stop from the controller\n");
+            return;
+        }
+        ui->opened_intuition = 1;
+    }
     scr = LockPubScreen(NULL);
     if (!scr) return;
-    /* Size the content area and let Intuition add the borders. An outer
-     * WA_Height of just the title bar leaves no room for the bottom border,
-     * i.e. a negative inner height, and on real hardware that froze the
-     * whole machine (mouse included) inside OpenWindowTags(). */
+    /* Size the content area and let Intuition add the borders. */
     ui->win = OpenWindowTags(NULL,
         WA_PubScreen, (ULONG)scr,
         WA_Title, (ULONG)ui->title,
@@ -1829,11 +1842,17 @@ static void audio_only_ui_open(audio_only_ui *ui)
 static void audio_only_ui_close(audio_only_ui *ui)
 {
     struct IntuiMessage *msg;
-    if (!ui->win) return;
-    while ((msg = (struct IntuiMessage *)GetMsg(ui->win->UserPort)))
-        ReplyMsg((struct Message *)msg);
-    CloseWindow(ui->win);
-    ui->win = NULL;
+    if (ui->win) {
+        while ((msg = (struct IntuiMessage *)GetMsg(ui->win->UserPort)))
+            ReplyMsg((struct Message *)msg);
+        CloseWindow(ui->win);
+        ui->win = NULL;
+    }
+    if (ui->opened_intuition) {
+        CloseLibrary((struct Library *)IntuitionBase);
+        IntuitionBase = NULL;
+        ui->opened_intuition = 0;
+    }
 }
 
 static void audio_only_ui_title(audio_only_ui *ui, const char *text)

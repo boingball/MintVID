@@ -5476,14 +5476,22 @@ was syntax-checked against stub headers with host and m68k gcc; the rest
 of `amiga/` can't be compiled here, so CI's real AmigaOS build is the
 first real compile.
 
-First real-hardware run froze the whole Amiga, mouse included, with the
-controller still showing "Connecting to stream...". The control window
-had been opened with an outer `WA_Height` of just the title bar (WBorTop
-+ font height + 1). That leaves no room for the bottom border, so the
-inner height is negative. The freeze fits a layers hang holding the layer
-lock, which blocks Intuition's input handler and so the mouse. It also
-fits the timing: the window opens just before the first audio-only
-status update. The window is now sized with `WA_InnerWidth`/
-`WA_InnerHeight` plus `WA_AutoAdjust`, and flushed "no-video:" log lines
-bracket the audio open and window open. If it still hangs, the log tail
-names the step. Not yet retested on hardware.
+The first two real-hardware runs froze the whole Amiga, mouse included,
+with the controller still showing "Connecting to stream...". The cause
+was a **NULL `IntuitionBase`**. mrplay has no Intuition library base of
+its own. The global lives in `display.c` (initialised to NULL, so
+libnix's auto-open never supplies one) and is opened only inside
+`display_open()`. The audio-only path never opens a display, so its
+`LockPubScreen()`/`OpenWindowTags()` jumped through a NULL library base
+into low memory. `audio_only_ui_open()` now opens intuition.library
+itself when `IntuitionBase` is NULL, and `audio_only_ui_close()` closes it.
+
+The first fix attempt was wrong. It blamed the window's size (an outer
+`WA_Height` of just the title bar) and changed it to
+`WA_InnerWidth`/`WA_InnerHeight`. That did nothing, because the call
+never got as far as sizing a window.
+
+The general lesson: any Amiga library call made outside display.c before
+`display_open()` has run goes through a NULL base. Check who opens a
+base before using it on a new code path. Flushed "no-video:" log lines
+bracket the audio open and the window open. Not yet retested on hardware.
