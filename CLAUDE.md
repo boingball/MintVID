@@ -5494,7 +5494,7 @@ that clip, the whole run went from 45.5M to 27.2M guest instructions
 
 Turbo+ output is byte-identical with and without the drop on that clip,
 `test_h264_gop.mp4`/`.ts`, `test_h264_high.mp4` (B-frames) and
-`test_h264_aac.ts`/`.mkv`. `make check` passes. Not
+`test_h264_aac.ts`/`.mkv`. `make check` and `make check-m68k` pass. Not
 yet measured on the A1200. There most of the saving should show as idle
 CPU between keyframes, not faster keyframes.
 
