@@ -152,6 +152,10 @@ typedef struct mr_play_options {
      * MR_SKIP_TRIGGER_MIN_MS..MR_SKIP_TRIGGER_MAX_MS. No effect with
      * "All Frames" (throughput) or Smoosh, which never escalate. */
     unsigned skip_trigger_ms;
+    /* GUI "Video: Off" (--no-video): demux the file but decode and show no
+     * video at all, only the audio - for machines too slow for the picture
+     * that just want to listen (e.g. a YouTube talk). */
+    int no_video;
 } mr_play_options;
 
 /* The display modes that play through an RTG window rather than a native

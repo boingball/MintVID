@@ -1,9 +1,46 @@
 # MintVID changelog
 
-## 1.4.0 - 2026-09-20
+## 1.4.0 - 2026-09-23
+
+### Highlights
+
+- **Stereo audio.** Paula now plays through a synchronized left/right
+  channel pair, so stereo sources keep their stereo image instead of being
+  mixed down to one channel. Mono sources, and the Mono audio option, play
+  the same signal on both speakers.
+- **PiStorm 600 plays YouTube.** On the tested Pi3-based PiStorm 600
+  (MintVID040), YouTube's 360p stream plays with VQ Turbo and the new
+  RTG (Half) display mode. The YUV-to-RGB step that used to cost about as
+  much as decoding fell from 57 ms to about 12 ms per 640x360 frame there,
+  and H.264 decode itself is faster too (see Performance).
 
 ### Added
 
+- **RTG (Half)** display mode: the window opens at half the video's width
+  and height, and colour conversion writes straight to that size, so the
+  conversion and the copy to the graphics card each do about a quarter of
+  the work. H.264 only; other codecs and P96 overlays play at full size.
+- **VQ: Smoosh** H.264 mode: Turbo's decode policy, plus ordinary P/B
+  pictures that are already more than a frame late are not decoded at
+  all. Motion smears until the next keyframe restores the picture, but
+  the video keeps moving on a machine that cannot keep up. Audio comes
+  first: pictures are also dropped while the audio buffer is low. Drops
+  never run for more than a second, so the picture always advances.
+- **Video: Off** (`--no-video`): a third Video choice that plays only the
+  soundtrack. No video is decoded or shown. A small Workbench window shows
+  the position and takes ESC, space, seek and volume keys, for a machine
+  that is too slow for the picture but can still play the audio.
+- **Skip after** (`--skip-trigger=200..2000`): how far a Video: Skip
+  Frames session may fall behind before it starts skipping (default 0.7 s).
+- **P96 Output Format** menu item (YVYU for WinUAE, YUYV for Voodoo) to
+  select the packed chroma order a board's overlay expects. The choice is
+  saved.
+- The P96 overlay window can be resized, with the card doing the scaling;
+  public-screen fullscreen now uses a borderless window with black bars
+  added to the source picture to keep the aspect ratio.
+- Fast buffer gains 32 MB and 64 MB choices. For YouTube and IPTV HLS the
+  size bounds a queue of downloaded segments ahead of playback (up to
+  eight for recorded videos, three for live streams).
 - YouTube's Low setting now tries the original, combined 144p H.264/AAC HLS
   offered to some WEB sessions with Safari headers. Recorded HLS is marked
   finite, and
@@ -27,6 +64,14 @@
 
 ### Fixed
 
+- Turbo+ no longer skips audio. With only keyframes shown the video queue
+  sat empty between them, so the player read ahead as fast as it could and
+  audio beyond the 4 s Paula buffer was thrown away - on a YouTube clip
+  about 10 s, heard as a jump forward at the first keyframe. Reading now
+  pauses while that buffer is nearly full.
+- ESC stays responsive when no picture is queued (for example while Smoosh
+  or Turbo+ wait for the next keyframe) and between H.264 decode calls.
+- The Paula worker's exit handshake no longer races shutdown after ESC.
 - The P96 overlay's packed chroma order was the opposite of what the
   `RGBFB_Y4U2V2` format name and the vendored Picasso96 headers imply -
   confirmed and fixed against real Voodoo3/P96 2.x hardware, which had
@@ -78,6 +123,24 @@
   single chroma table instead of being added per pixel. About 14.7%
   faster on a 640x360 host benchmark; the same reduction was applied to
   the hand-written m68k kernel.
+- YUV->RGB24 for RTG: channel clipping is a table lookup instead of two
+  compares and branches, and the m68k kernel reads all its coefficients
+  through one base register. Measured on a PiStorm 600: 57 ms -> 11.7 ms
+  per 640x360 frame. The half-size converter used by RTG (Half) got the
+  same table.
+- H.264 motion compensation for Fast/Turbo filters two samples per 32-bit
+  register (luma bilinear and chroma). Turbo decode takes 16-21% fewer
+  instructions on high-motion video, 5-8% on calm video.
+- H.264 Turbo no longer runs the per-macroblock deblocking pass on pictures
+  it has already told libavc not to filter, and the planar chroma split is
+  faster. YouTube-style Baseline H.264 takes 9-13% fewer instructions.
+  Output is byte-identical.
+- AAC with a halved or quartered output rate (above 28 kHz, or Audio: Low)
+  now decodes with a smaller IMDCT at the lower rate directly, instead of
+  decoding at full rate and dropping samples: 31-47% less AAC decode work
+  on a 68040 and 41-63% on a 68060, with no aliasing.
+- Faster CGX downscaling for wide windows, and two-multiply chroma motion
+  compensation for half-sample H.264 vectors.
 
 ## 1.3.2 - 2026-09-19
 

@@ -44,12 +44,15 @@ MINTVID_DECLARE_VERSION(mrplay_version_tag, "mrplay");
 
 #include <proto/dos.h>
 #include <proto/exec.h>
+#include <proto/intuition.h>
 #include <proto/timer.h>
 #include <clib/alib_protos.h>
 #include <devices/timer.h>
 #include <exec/memory.h>
 #include <exec/nodes.h>
 #include <exec/ports.h>
+#include <intuition/intuition.h>
+#include <intuition/screens.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -123,6 +126,11 @@ void __chkabort(void) { }
  * hardware logs. The active value is reduced after video_cap is known to
  * roughly (video_cap - 2) frame periods, for both network and local media. */
 #define AUDIO_CUSHION_TARGET_MS 2500UL
+/* Stop reading packets this far short of a full Paula FIFO (~4 s). Buffered
+ * audio also counts the two in-flight 200 ms requests, and one more packet
+ * (an AAC/MP3/AC-3 frame is well under 100 ms) must still fit. Kept above
+ * AUDIO_CUSHION_TARGET_MS so the cushion top-up is never held back. */
+#define AUDIO_FIFO_HEADROOM_MS 1000UL
 /* Live-resync (opt-in, --live-resync, network sources only). A multi-second
  * network stall can leave a live stream many seconds behind the wall clock with
  * the audio clock unable to climb back; these bound the catch-up-to-live burst.
@@ -1773,6 +1781,316 @@ static int hls_wait_service(void *opaque, unsigned wait_ms)
     }
 }
 
+/* ---- --no-video: audio-only playback -------------------------------------
+ *
+ * For machines too slow for the picture that only want to listen. The file
+ * is demuxed as usual, but video packets are dropped unread: no video
+ * decoder, no display, no queue. The Paula worker drains the FIFO on its
+ * own, so this loop only keeps the FIFO topped up and reads input from a
+ * small title-bar window on Workbench (ESC/close, space, cursor keys) and
+ * from the controller's signals, exactly as the video window would. */
+typedef struct audio_only_ui {
+    struct Window *win;
+    int opened_intuition;   /* we opened IntuitionBase; close it again */
+    char title[64];
+} audio_only_ui;
+
+static void audio_only_ui_open(audio_only_ui *ui)
+{
+    struct Screen *scr;
+    ui->win = NULL;
+    ui->opened_intuition = 0;
+    snprintf(ui->title, sizeof ui->title, "MintVID - audio only");
+    printf("no-video: opening control window\n");
+    Flush(Output());
+    /* IntuitionBase belongs to display.c, which only opens it inside
+     * display_open() - and this path never opens a display. Calling
+     * LockPubScreen() through the NULL base jumped into low memory and hard-
+     * froze the machine (mouse included) on the first real-hardware runs. */
+    if (!IntuitionBase) {
+        IntuitionBase = (struct IntuitionBase *)
+            OpenLibrary((CONST_STRPTR)"intuition.library", 37);
+        if (!IntuitionBase) {
+            printf("no-video: intuition.library unavailable; "
+                   "stop from the controller\n");
+            return;
+        }
+        ui->opened_intuition = 1;
+    }
+    scr = LockPubScreen(NULL);
+    if (!scr) return;
+    /* Size the content area and let Intuition add the borders. */
+    ui->win = OpenWindowTags(NULL,
+        WA_PubScreen, (ULONG)scr,
+        WA_Title, (ULONG)ui->title,
+        WA_Left, 0, WA_Top, (ULONG)(scr->BarHeight + 1),
+        WA_InnerWidth, 320,
+        WA_InnerHeight, 8,
+        WA_AutoAdjust, TRUE,
+        WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
+                  WFLG_ACTIVATE | WFLG_RMBTRAP | WFLG_NOCAREREFRESH,
+        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_RAWKEY,
+        TAG_END);
+    UnlockPubScreen(NULL, scr);
+    printf("no-video: control window %s\n", ui->win ? "open" : "failed");
+    Flush(Output());
+    if (!ui->win)
+        printf("no-video: could not open the control window; "
+               "stop from the controller\n");
+}
+
+static void audio_only_ui_close(audio_only_ui *ui)
+{
+    struct IntuiMessage *msg;
+    if (ui->win) {
+        while ((msg = (struct IntuiMessage *)GetMsg(ui->win->UserPort)))
+            ReplyMsg((struct Message *)msg);
+        CloseWindow(ui->win);
+        ui->win = NULL;
+    }
+    if (ui->opened_intuition) {
+        CloseLibrary((struct Library *)IntuitionBase);
+        IntuitionBase = NULL;
+        ui->opened_intuition = 0;
+    }
+}
+
+static void audio_only_ui_title(audio_only_ui *ui, const char *text)
+{
+    if (!ui->win) return;
+    snprintf(ui->title, sizeof ui->title, "%s", text);
+    SetWindowTitles(ui->win, (CONST_STRPTR)ui->title, (CONST_STRPTR)-1);
+}
+
+/* Same keys as the video backends' poll functions. Volume is applied here,
+ * as player_event() does. */
+static int audio_only_event(audio_only_ui *ui)
+{
+    struct IntuiMessage *msg;
+    int ev = MR_EV_NONE;
+    if (deferred_player_event != MR_EV_NONE) {
+        ev = deferred_player_event;
+        deferred_player_event = MR_EV_NONE;
+        return ev;
+    }
+    ev = control_signal_event(NULL);         /* no display: fullscreen no-ops */
+    if (ev != MR_EV_NONE || !ui || !ui->win) return ev;
+    while ((msg = (struct IntuiMessage *)GetMsg(ui->win->UserPort))) {
+        ULONG cls = msg->Class;
+        UWORD code = msg->Code;
+        ReplyMsg((struct Message *)msg);
+        if (cls == IDCMP_CLOSEWINDOW) ev = MR_EV_QUIT;
+        else if (cls == IDCMP_RAWKEY && !(code & 0x80) && ev != MR_EV_QUIT) {
+            switch (code) {
+            case 0x45: ev = MR_EV_QUIT; break;          /* ESC          */
+            case 0x40: ev = MR_EV_PAUSE; break;         /* space        */
+            case 0x4E: ev = MR_EV_SEEK_FWD; break;      /* cursor right */
+            case 0x4F: ev = MR_EV_SEEK_BACK; break;     /* cursor left  */
+            case 0x4C: apply_volume_step(8); break;     /* cursor up    */
+            case 0x4D: apply_volume_step(-8); break;    /* cursor down  */
+            }
+        }
+    }
+    return ev;
+}
+
+/* Blocking network reads and the HLS live-edge wait: keep input alive and
+ * let a quit through. Main task only, as service_player_during_io(). */
+static int audio_only_io_service(void *opaque)
+{
+    int ev;
+    if (FindTask(NULL) != g_main_task) return 0;
+    ev = audio_only_event((audio_only_ui *)opaque);
+    if (ev != MR_EV_NONE &&
+        (deferred_player_event == MR_EV_NONE || ev == MR_EV_QUIT))
+        deferred_player_event = ev;
+    return deferred_player_event == MR_EV_QUIT;
+}
+
+static int audio_only_hls_wait(void *opaque, unsigned wait_ms)
+{
+    uint64_t begin = monotonic_us();
+    for (;;) {
+        if (audio_only_io_service(opaque)) return 1;
+        if (monotonic_us() - begin >= (uint64_t)wait_ms * 1000ULL) return 0;
+        Delay(1);
+    }
+}
+
+static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
+                           const char *audio_description, int audio_low_rate,
+                           int audio_mono, int loop, int auto_close_eof)
+{
+    mr_audio_decoder *adec = NULL;
+    mr_audio *audio = NULL;
+    /* Static: the service hooks below keep pointing at it until exit, and
+     * the fetch worker may still be mid-read when this returns. With the
+     * window closed it only relays controller signals. */
+    static audio_only_ui ui;
+    mr_packet pkt;
+    char detail[MR_PLAYER_STATUS_TEXT_MAX];
+    int quit = 0, paused = 0, running = 0, eof = 0;
+    /* Media time of the first sample queued since the last (re)start, and
+     * Paula's played-sample clock at that moment: the position shown is
+     * base_pts + (elapsed now - base_elapsed). */
+    int64_t base_pts = -1;
+    uint64_t base_elapsed = 0;
+    unsigned long shown_secs = (unsigned long)-1;
+
+    printf("no-video: opening audio decoder\n");
+    Flush(Output());
+    if (ai->valid &&
+        (ai->format_tag == MR_AUDIO_FORMAT_PCM ||
+         ai->format_tag == MR_AUDIO_FORMAT_MP2 ||
+         ai->format_tag == MR_AUDIO_FORMAT_MP3 ||
+         ai->format_tag == MR_AUDIO_FORMAT_AAC ||
+         ai->format_tag == MR_AUDIO_FORMAT_AC3))
+        adec = mr_audio_decoder_open(ai, audio_low_rate, audio_mono);
+    if (adec)
+        audio = audio_open(mr_audio_decoder_rate(adec),
+                           (int)mr_audio_decoder_channels(adec), 16);
+    if (!audio) {
+        char reason[MR_PLAYER_STATUS_TEXT_MAX];
+        snprintf(reason, sizeof reason, "video off, and audio %s %s",
+                 audio_description,
+                 !ai->valid || !strcmp(audio_description, "none detected")
+                     ? "is missing" : !adec ? "is not supported"
+                     : "could not open Paula");
+        printf("no-video: %s\n", reason);
+        player_status(MR_PLAYER_STATE_UNSUPPORTED, "", reason);
+        status_hold();
+        if (adec) mr_audio_decoder_close(adec);
+        return 10;
+    }
+    printf("audio: Paula stereo pair, %u Hz (%s, %u decoded ch); "
+           "video off (--no-video)\n",
+           mr_audio_decoder_rate(adec), mr_audio_decoder_name(adec),
+           mr_audio_decoder_channels(adec));
+    Flush(Output());
+    control_audio = audio;
+    audio_set_volume(audio, control_volume);
+
+    audio_only_ui_open(&ui);
+    mr_demux_set_service(dx, audio_only_io_service, &ui);
+    mr_http_set_service(audio_only_io_service, &ui);
+    hls_fetch_set_service(audio_only_io_service, &ui);
+    mr_hls_set_wait(audio_only_hls_wait, &ui);
+    snprintf(detail, sizeof detail, "audio only (video off); %s",
+             audio_description);
+    player_prepare_playing_status(mr_audio_decoder_name(adec), detail);
+    player_status(MR_PLAYER_STATE_OPENING, mr_audio_decoder_name(adec),
+                  "Buffering audio...");
+    printf("playing audio only: space=pause, %s, up/down=volume, "
+           "ESC=quit%s...\n",
+           mr_demux_can_seek(dx) ? "left/right=seek 10s" : "no seeking",
+           loop ? ", loop on" : "");
+    Flush(Output());
+
+    while (!quit) {
+        unsigned long buffered = audio_buffered_ms(audio);
+        int ev = audio_only_event(&ui);
+        if (ev == MR_EV_QUIT) { quit = 1; break; }
+        if (ev == MR_EV_PAUSE && running) {
+            paused = !paused;
+            audio_set_running(audio, !paused);
+            if (paused) audio_only_ui_title(&ui, "MintVID - paused");
+            shown_secs = (unsigned long)-1;
+        }
+        if ((ev == MR_EV_SEEK_FWD || ev == MR_EV_SEEK_BACK) &&
+            mr_demux_can_seek(dx)) {
+            int64_t pos = base_pts >= 0 && running
+                ? base_pts + (int64_t)(audio_elapsed_us(audio) - base_elapsed)
+                : (base_pts >= 0 ? base_pts : 0);
+            int64_t target = pos + (ev == MR_EV_SEEK_FWD ? MR_SEEK_STEP_US
+                                                         : -MR_SEEK_STEP_US);
+            uint64_t out_us;
+            if (target < 0) target = 0;
+            if (mr_demux_seek(dx, (uint64_t)target, &out_us) == MR_OK) {
+                audio_set_running(audio, 0);
+                audio_flush(audio);
+                mr_audio_decoder_reset(adec);
+                audio_only_ui_title(&ui, "MintVID - seeking...");
+                running = paused = eof = 0;
+                base_pts = -1;
+                shown_secs = (unsigned long)-1;
+            }
+            continue;
+        }
+        if (paused) { Delay(2); continue; }
+
+        /* Keep the cushion topped up, never past what the FIFO holds. */
+        if (!eof && buffered < AUDIO_CUSHION_TARGET_MS &&
+            buffered + AUDIO_FIFO_HEADROOM_MS < audio_capacity_ms(audio)) {
+            mr_status st = mr_demux_next_packet(dx, &pkt);
+            if (deferred_player_event == MR_EV_QUIT) { quit = 1; break; }
+            if (st != MR_OK) eof = 1;
+            else if (!pkt.is_video && pkt.len) {
+                if (base_pts < 0 && pkt.has_pts)
+                    base_pts = (int64_t)pkt.pts_us;
+                mr_audio_decoder_feed(adec, pkt.data, pkt.len,
+                                      decoded_audio_sink, audio);
+            }
+            /* A video packet is simply dropped: nothing decodes it. */
+        }
+
+        if (!running) {
+            unsigned long now_buffered = audio_buffered_ms(audio);
+            if (now_buffered && (eof || now_buffered >= AUDIO_STARTUP_TARGET_MS)) {
+                base_elapsed = audio_elapsed_us(audio);
+                audio_set_running(audio, 1);
+                running = 1;
+                player_first_frame_presented(NULL,
+                                             base_pts >= 0 ? base_pts : 0);
+            } else if (eof) {
+                break;                           /* nothing playable left  */
+            }
+        } else {
+            int64_t pos = (base_pts >= 0 ? base_pts : 0) +
+                          (int64_t)(audio_elapsed_us(audio) - base_elapsed);
+            unsigned long secs = (unsigned long)(pos / 1000000);
+            player_update_position(NULL, pos);
+            if (secs != shown_secs) {
+                char title[48];
+                shown_secs = secs;
+                if (secs >= 3600)
+                    snprintf(title, sizeof title, "MintVID - audio %lu:%02lu:%02lu",
+                             secs / 3600, (secs / 60) % 60, secs % 60);
+                else
+                    snprintf(title, sizeof title, "MintVID - audio %lu:%02lu",
+                             secs / 60, secs % 60);
+                audio_only_ui_title(&ui, title);
+            }
+            if (eof && audio_starved(audio)) {
+                if (!loop) break;
+                audio_set_running(audio, 0);
+                mr_demux_rewind(dx);
+                mr_audio_decoder_reset(adec);
+                running = eof = 0;
+                base_pts = -1;
+                continue;
+            }
+        }
+        /* Nothing to read right now: yield instead of spinning. */
+        if (eof || audio_buffered_ms(audio) >= AUDIO_CUSHION_TARGET_MS ||
+            audio_buffered_ms(audio) + AUDIO_FIFO_HEADROOM_MS >=
+                audio_capacity_ms(audio))
+            Delay(1);
+    }
+
+    audio_set_running(audio, 0);
+    if (!quit && !auto_close_eof && ui.win) {
+        audio_only_ui_title(&ui, "MintVID - ended (ESC to close)");
+        while (audio_only_event(&ui) != MR_EV_QUIT) Delay(2);
+    }
+    player_status(MR_PLAYER_STATE_ENDED, mr_audio_decoder_name(adec),
+                  "stream ended");
+    control_audio = NULL;
+    audio_close(audio);
+    mr_audio_decoder_close(adec);
+    audio_only_ui_close(&ui);
+    return 0;
+}
+
 
 int main(int argc, char **argv)
 {
@@ -1832,6 +2150,7 @@ int main(int argc, char **argv)
     int mpeg2_speed = 0; /* 0 = Quality (default, unchanged), 1 = Fast   */
     int audio_low_rate = 0; /* --audio-rate=low: halve the output rate again */
     int no_audio = 0;       /* --no-audio: skip the decoder/Paula entirely   */
+    int no_video = 0;       /* --no-video: audio only, no decoder/display    */
     int audio_mono = 0;     /* --audio-mono: decode one channel, not two     */
     mr_fast_buffer_mode fast_buffer = MR_FAST_BUFFER_OFF;
     int fast_buffer_option_seen = 0;
@@ -1942,7 +2261,7 @@ int main(int argc, char **argv)
                "[--skip-trigger=200..2000] [--rtg-half] "
                "[--dv-speed=quality|fast] "
                "[--mpeg2-speed=quality|fast] "
-               "[--audio-rate=normal|low] [--no-audio] [--audio-mono] "
+               "[--audio-rate=normal|low] [--no-audio] [--no-video] [--audio-mono] "
                "[--time] [--live-diag] [--throughput|--no-throughput]\n");
         return mrplay_exit(5);
     }
@@ -2062,6 +2381,7 @@ int main(int argc, char **argv)
                 }
             }
             else if (!strcmp(argv[i], "--no-audio")) no_audio = 1;
+            else if (!strcmp(argv[i], "--no-video")) no_video = 1;
             else if (!strcmp(argv[i], "--audio-mono")) audio_mono = 1;
             else if (!strcmp(argv[i], "--audio-stereo")) audio_mono = 0;
             else if (!strncmp(argv[i], "--fast-buffer=", 14)) {
@@ -2325,6 +2645,20 @@ int main(int argc, char **argv)
     printf("codec probe: container=%s, video=%s, audio=%s\n",
            mr_demux_container_name(dx), video_description, audio_description);
     Flush(Output());
+    /* Audio only: before any video codec lookup, so a clip whose video this
+     * build cannot decode still plays its soundtrack. */
+    if (no_video) {
+        int rc;
+        /* Both off would play nothing; the user picked Video: Off to listen,
+         * so an older No audio setting left ticked yields to it. */
+        if (no_audio)
+            printf("no-video: ignoring --no-audio (nothing would play)\n");
+        rc = play_audio_only(dx, ai, audio_description, audio_low_rate,
+                                 audio_mono, loop, auto_close_eof);
+        mr_demux_close(dx);
+        free(buf);
+        return mrplay_exit(rc);
+    }
     codec = mr_codec_find(vi->fourcc);
     if (!codec) { char reason[MR_PLAYER_STATUS_TEXT_MAX];
                   snprintf(reason, sizeof reason, "%s has no decoder",
@@ -3759,6 +4093,18 @@ int main(int argc, char **argv)
                      late_us > -(int64_t)margin))
                     can_decode = 0;
             }
+            /* Never read further ahead than the Paula FIFO can hold: audio
+             * that does not fit is dropped. With few displayable pictures
+             * (Turbo+ shows keyframes only) the video queue stays empty
+             * until the next keyframe, so without this the loop read at
+             * full speed and threw away everything past ~4 s of audio -
+             * about 10 s on a YouTube clip, heard as a jump forward at
+             * the first keyframe. Only while Paula is running: before
+             * playback starts the FIFO does not drain, and holding reads
+             * there could wait forever for a first picture. */
+            if (can_decode && audio && playback_started &&
+                audio_ms + AUDIO_FIFO_HEADROOM_MS >= audio_capacity_ms(audio))
+                can_decode = 0;
             if (can_decode) {
                 int ready_before = qcount > 0;
                 int64_t due_before = late_us;

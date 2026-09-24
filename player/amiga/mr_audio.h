@@ -76,6 +76,9 @@ int           audio_starved(mr_audio *a);
 
 /* PCM queued in the software FIFO plus audio.device writes in flight. */
 unsigned long audio_buffered_ms(mr_audio *a);
+/* How much the software FIFO holds when full; audio_write*() drops what
+ * does not fit, so the player stops reading packets short of this. */
+unsigned long audio_capacity_ms(mr_audio *a);
 void          audio_diagnostics(mr_audio *a, mr_audio_diagnostics *diag);
 int           audio_active_requests(mr_audio *a);
 void          audio_set_running(mr_audio *a, int running);

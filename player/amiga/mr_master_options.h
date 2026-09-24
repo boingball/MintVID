@@ -117,6 +117,7 @@ static inline int mr_master_options_apply(mr_play_options *options)
     options->mono_audio = master.mono_audio;
     options->throughput = master.throughput;
     options->skip_trigger_ms = master.skip_trigger_ms;
+    options->no_video = master.no_video;
     return 1;
 }
 

@@ -413,8 +413,10 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
     options->no_audio = checked_no_audio != 0;
     options->mono_audio = checked_mono != 0;
     /* Video rows are fixed, like Scale: 0=All Frames (throughput on), 1=Skip
-     * Frames (throughput off) - see where video_modes is built in main(). */
-    options->throughput = selected_video_mode == 0;
+     * Frames (throughput off), 2=Off (audio only, --no-video) - see where
+     * video_modes is built in main(). */
+    options->throughput = selected_video_mode != 1;
+    options->no_video = selected_video_mode == 2;
     if (g_skip_after) {
         ULONG row = 2;
         GetAttr(CHOOSER_Selected, g_skip_after, &row);
@@ -435,7 +437,7 @@ static void update_skip_after(Object *h264, Object *video_mode,
     GetAttr(CHOOSER_Selected, h264, &selected_h264);
     GetAttr(CHOOSER_Selected, video_mode, &selected_video_mode);
     SetGadgetAttrs((struct Gadget *)g_skip_after, window, NULL,
-                   GA_Disabled, (selected_video_mode == 0 ||
+                   GA_Disabled, (selected_video_mode != 1 ||
                                  selected_h264 == MR_H264_PERF_SMOOSH)
                                 ? TRUE : FALSE,
                    TAG_DONE);
@@ -1515,7 +1517,8 @@ int main(void)
      * decode in real time; see CLAUDE.md's "Live HLS playback stall
      * notes". */
     if (!add_chooser_node(&video_modes, "All Frames") ||
-        !add_chooser_node(&video_modes, "Skip Frames"))
+        !add_chooser_node(&video_modes, "Skip Frames") ||
+        !add_chooser_node(&video_modes, "Off"))
         goto cleanup;
 
     /* Restore the last-saved controller settings (mr_saved_options.h),
@@ -1554,8 +1557,9 @@ int main(void)
                       ? TRUE : FALSE;
     initial_mono_audio = have_saved_options && saved_options.mono_audio
                         ? TRUE : FALSE;
-    initial_video_mode = have_saved_options && !saved_options.throughput
-                        ? 1 : 0;
+    initial_video_mode = !have_saved_options ? 0
+                       : saved_options.no_video ? 2
+                       : !saved_options.throughput ? 1 : 0;
     initial_skip_after = skip_after_row(have_saved_options
                                         ? saved_options.skip_trigger_ms
                                         : MR_SKIP_TRIGGER_DEFAULT_MS);

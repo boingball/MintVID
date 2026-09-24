@@ -7,7 +7,7 @@
  * MINTVID_VERSION carries the complete release number shown by the GUIs. */
 #define MINTVID_VERSION       "1.4.0"
 #define MINTVID_AMIGA_VERSION "1.4"
-#define MINTVID_VERSION_DATE  "20.9.2026"
+#define MINTVID_VERSION_DATE  "23.9.2026"
 
 #if defined(__GNUC__)
 #define MINTVID_VERSION_USED __attribute__((used))

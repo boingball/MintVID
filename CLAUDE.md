@@ -5427,3 +5427,71 @@ m68k output is bit-exact with the host. `tests/mr_aac_decim_check.c`
 PNS, dequant and stereo processing still run on the discarded upper band.
 TNS filters across frequency, so skipping them needs care, and it has not
 been done. Real-hardware speed is still unconfirmed.
+
+## Turbo+ skipped ~10 s of audio at the first keyframe
+A YouTube 360p log under Turbo+ (keyframes only) showed `fifo-dropped=
+219541` samples: almost exactly 10 s at 22050 Hz, heard as the audio
+jumping forward to the next keyframe. With no displayable picture until
+that keyframe the video queue stays empty, and `can_decode` in mrplay.c
+reads whenever `qcount < target_depth`. So the loop read packets flat out.
+The audio filled Paula's ~4 s software FIFO, and `fifo_push()` silently
+dropped the rest until the keyframe arrived.
+
+The loop now stops reading once buffered audio is within
+`AUDIO_FIFO_HEADROOM_MS` (1 s) of `audio_capacity_ms()`, the FIFO's size.
+That leaves room for the in-flight Paula requests and one more packet.
+It only applies after playback has started: before that Paula does not
+drain, so holding reads could wait forever for a first picture. The
+threshold (3 s) sits above `AUDIO_CUSHION_TARGET_MS` (2.5 s), so normal
+cushion top-up never reaches it. Coarsely interleaved files that used to
+lose the tail of an audio burst now pause reading until it drains
+instead. Amiga-only code, not compiled here; `fifo-dropped` in a `--time`
+log should now stay at 0.
+
+## Video: Off (`--no-video`), audio-only playback
+For machines too slow for the picture that only want to listen, e.g. to
+a YouTube video. The GUI puts it on the existing Video chooser as a third
+row, "Off", rather than adding a new checkbox. Row mapping in both GUIs:
+0 = All Frames (throughput), 1 = Skip Frames, 2 = Off. It sets
+`mr_play_options.no_video`, is emitted as `--no-video` only when chosen,
+and is re-parsed by the IPTV/YouTube browsers (pinned in
+`tests/mr_iptv_check.c`). "Skip after" is greyed out unless the row is
+Skip Frames. The struct grew, so a saved `ENVARC:MintVID.settings` from
+an earlier build is discarded once.
+
+mrplay branches into `play_audio_only()` right after the codec probe,
+before any video codec lookup, so a clip whose video this build can't
+decode still plays its soundtrack. It opens no video decoder, display or
+queue. Video packets are demuxed and dropped unread; audio is fed to the
+FIFO up to the 2.5 s cushion and never past the FIFO's capacity (see the
+Turbo+ note above). The Paula worker drains the FIFO itself, so the loop
+only tops it up. Input comes from a title-bar-only window on Workbench
+(ESC/close, space, cursor keys) plus the controller's signals via
+`control_signal_event(NULL)` (fullscreen is a no-op without a display).
+The position is `base_pts` (first audio packet's pts since start or seek)
+plus Paula's played time since then. The ui struct is static because the
+HTTP/HLS service hooks keep pointing at it until exit. If both
+`--no-audio` and `--no-video` are given, Video: Off wins. The new block
+was syntax-checked against stub headers with host and m68k gcc; the rest
+of `amiga/` can't be compiled here, so CI's real AmigaOS build is the
+first real compile.
+
+The first two real-hardware runs froze the whole Amiga, mouse included,
+with the controller still showing "Connecting to stream...". The cause
+was a **NULL `IntuitionBase`**. mrplay has no Intuition library base of
+its own. The global lives in `display.c` (initialised to NULL, so
+libnix's auto-open never supplies one) and is opened only inside
+`display_open()`. The audio-only path never opens a display, so its
+`LockPubScreen()`/`OpenWindowTags()` jumped through a NULL library base
+into low memory. `audio_only_ui_open()` now opens intuition.library
+itself when `IntuitionBase` is NULL, and `audio_only_ui_close()` closes it.
+
+The first fix attempt was wrong. It blamed the window's size (an outer
+`WA_Height` of just the title bar) and changed it to
+`WA_InnerWidth`/`WA_InnerHeight`. That did nothing, because the call
+never got as far as sizing a window.
+
+The general lesson: any Amiga library call made outside display.c before
+`display_open()` has run goes through a NULL base. Check who opens a
+base before using it on a new code path. Flushed "no-video:" log lines
+bracket the audio open and the window open. Not yet retested on hardware.

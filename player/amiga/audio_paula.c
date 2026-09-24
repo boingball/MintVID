@@ -751,6 +751,12 @@ unsigned long audio_buffered_ms(mr_audio *a)
     return samples;
 }
 
+unsigned long audio_capacity_ms(mr_audio *a)
+{
+    if (!a || !a->output_rate) return 0;
+    return (unsigned long)a->fifo_size * 1000UL / a->output_rate;
+}
+
 void audio_diagnostics(mr_audio *a, mr_audio_diagnostics *diag)
 {
     uint64_t now;
