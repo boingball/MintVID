@@ -777,6 +777,59 @@ int main(void) {
     assert(parsed.h264_performance == MR_H264_PERF_SMOOSH);
     assert(!parsed.throughput && parsed.skip_trigger_ms == 1500);
 
+    /* AGA (Window): a native-chipset mode, but it draws into a Workbench
+     * window through shared pens, so no C2P/lace/2x flags go out with it. */
+    mr_play_options_default(&o);
+    o.display = MR_DISPLAY_AGA_WINDOW;
+    o.c2p = MR_C2P_KALMS;
+    o.laced = 1;
+    o.scale_2x = 1;
+    o.copper_vdouble = 1;
+    assert(!mr_display_is_rtg(o.display));
+    assert(!mr_display_has_screen_options(o.display));
+    assert(mr_display_has_screen_options(MR_DISPLAY_AGA));
+    assert(!mr_display_has_screen_options(MR_DISPLAY_CGX));
+    assert(mr_build_player_arguments(args, sizeof(args), &o, url,
+                                     NULL, NULL));
+    assert(strstr(args, "--aga-window") && !strstr(args, "--aga-window-half"));
+    assert(!strstr(args, "--aga ") && !strstr(args, "--kalms-c2p") &&
+           !strstr(args, "--c2p") && !strstr(args, "--wpa") &&
+           !strstr(args, "--lace") && !strstr(args, "--2x") &&
+           !strstr(args, "--copper-vdouble") && !strstr(args, "--p96"));
+    mr_play_options_summary(&o, summary, sizeof(summary));
+    assert(strstr(summary, "Playback: Window /") && !strstr(summary, "Lace"));
+    assert(mr_build_iptv_arguments(buf, sizeof(buf), &o));
+    assert(strstr(buf, "--display aga-window") && !strstr(buf, "--c2p") &&
+           !strstr(buf, "laced") && !strstr(buf, "scale-2x"));
+    argc_rt = 1;
+    for (p = strtok(buf, " \n"); p && argc_rt < 40; p = strtok(NULL, " \n"))
+      argv_rt[argc_rt++] = p;
+    mr_play_options_default(&parsed);
+    assert(mr_play_options_parse(&parsed, argc_rt, argv_rt, error,
+                                 sizeof(error)));
+    assert(parsed.display == MR_DISPLAY_AGA_WINDOW);
+
+    /* Window (Half): same rules, its own flag and --display name. */
+    mr_play_options_default(&o);
+    o.display = MR_DISPLAY_AGA_WINDOW_HALF;
+    o.scale_2x = 1;
+    assert(!mr_display_has_screen_options(o.display));
+    assert(mr_build_player_arguments(args, sizeof(args), &o, url,
+                                     NULL, NULL));
+    assert(strstr(args, "--aga-window-half") && !strstr(args, "--2x") &&
+           !strstr(args, "--kalms-c2p") && !strstr(args, "--aga "));
+    mr_play_options_summary(&o, summary, sizeof(summary));
+    assert(strstr(summary, "Playback: Window (Half) /"));
+    assert(mr_build_iptv_arguments(buf, sizeof(buf), &o));
+    assert(strstr(buf, "--display aga-window-half") && !strstr(buf, "--c2p"));
+    argc_rt = 1;
+    for (p = strtok(buf, " \n"); p && argc_rt < 40; p = strtok(NULL, " \n"))
+      argv_rt[argc_rt++] = p;
+    mr_play_options_default(&parsed);
+    assert(mr_play_options_parse(&parsed, argc_rt, argv_rt, error,
+                                 sizeof(error)));
+    assert(parsed.display == MR_DISPLAY_AGA_WINDOW_HALF);
+
     /* Range limits: 200..2000 ms accepted, anything else refused. */
     {
       char *lo[] = { "x", "--skip-trigger=200" };
@@ -825,7 +878,7 @@ int main(void) {
                                      NULL, NULL));
     assert(strstr(args, "--no-video"));
     mr_play_options_summary(&o, summary, sizeof(summary));
-    assert(strstr(summary, "Video Off (audio only)"));
+    assert(strstr(summary, "Playback: No Video (audio only)"));
     assert(mr_build_iptv_arguments(buf, sizeof(buf), &o));
     argv_rt[0] = "ytgui";
     argc_rt = 1;
@@ -835,6 +888,34 @@ int main(void) {
     assert(mr_play_options_parse(&parsed, argc_rt, argv_rt, error,
                                  sizeof(error)));
     assert(parsed.no_video);
+
+    /* The GUIs pick audio-only through the Display chooser's "No Video"
+     * row: MR_DISPLAY_NONE alone must produce --no-video, no display or
+     * C2P flags, and survive a browser's re-parse as the same row. */
+    mr_play_options_default(&o);
+    o.display = MR_DISPLAY_NONE;
+    o.c2p = MR_C2P_KALMS;
+    o.scale_2x = 1;
+    assert(!o.no_video && mr_play_options_no_video(&o));
+    assert(!mr_display_has_screen_options(o.display) &&
+           !mr_display_is_rtg(o.display));
+    assert(mr_build_player_arguments(args, sizeof(args), &o, url,
+                                     NULL, NULL));
+    assert(strstr(args, "--no-video") && !strstr(args, "--aga") &&
+           !strstr(args, "--kalms-c2p") && !strstr(args, "--2x") &&
+           !strstr(args, "--p96") && !strstr(args, "--rtg-half"));
+    mr_play_options_summary(&o, summary, sizeof(summary));
+    assert(strstr(summary, "Playback: No Video (audio only)") &&
+           !strstr(summary, "H264") && !strstr(summary, "Lace"));
+    assert(mr_build_iptv_arguments(buf, sizeof(buf), &o));
+    assert(strstr(buf, "--display none") && !strstr(buf, "--c2p"));
+    argc_rt = 1;
+    for (p = strtok(buf, " \n"); p && argc_rt < 40; p = strtok(NULL, " \n"))
+      argv_rt[argc_rt++] = p;
+    mr_play_options_default(&parsed);
+    assert(mr_play_options_parse(&parsed, argc_rt, argv_rt, error,
+                                 sizeof(error)));
+    assert(parsed.display == MR_DISPLAY_NONE && parsed.no_video);
   }
   remove("/tmp/mr_channels.json");
   remove("/tmp/mr_streams.json");

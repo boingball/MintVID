@@ -79,8 +79,8 @@ typedef struct gt_app {
     struct FileRequester *requester;
     mr_master_options_port *master;
     mr_gui_menu menu;
-    mr_display_mode modes[10];
-    STRPTR mode_labels[11];
+    mr_display_mode modes[12];
+    STRPTR mode_labels[13];
     unsigned mode_count;
     mr_c2p_mode c2p_modes[5];
     STRPTR c2p_labels[6];
@@ -117,13 +117,12 @@ static STRPTR audio_rate_labels[] = {(STRPTR)"Audio: Normal",
 /* Fixed, like scale_labels above: 0=All Frames (throughput on, the default -
  * never skip a decoded frame purely for falling behind the playback clock,
  * see mr_play_options.h's own throughput field), 1=Skip Frames (restores
- * that lateness check), 2=Off (audio only, --no-video). read_options()
- * hard-codes this exact order. See
+ * that lateness check). read_options() hard-codes this exact order. Audio
+ * only is the Display cycle's "No Video" row. See
  * CLAUDE.md's "Live HLS playback stall notes" for the real-hardware
  * regression All Frames fixes. */
 static STRPTR video_labels[] = {(STRPTR)"Video: All Frames",
-                               (STRPTR)"Video: Skip Frames",
-                               (STRPTR)"Video: Off", NULL};
+                               (STRPTR)"Video: Skip Frames", NULL};
 /* "Skip after": how far a "Video: Skip Frames" session may fall behind
  * before it starts skipping (--skip-trigger=). Row i is skip_after_ms[i];
  * 0.7s (row 2) is mrplay's long-standing default. Only meaningful with
@@ -373,7 +372,7 @@ static void read_options(gt_app *app, mr_play_options *options)
     {
         ULONG video = gad_value(app, app->video_mode, GTCY_Active);
         options->throughput = video != 1;
-        options->no_video = video == 2;
+        options->no_video = options->display == MR_DISPLAY_NONE;
     }
     {
         ULONG row = gad_value(app, app->skip_after, GTCY_Active);
@@ -385,15 +384,23 @@ static void read_options(gt_app *app, mr_play_options *options)
 }
 
 /* "Skip after" only changes anything under Video: Skip Frames - All Frames
- * never skips for lateness, Off decodes no video at all, and VQ Smoosh drops
- * late pictures itself. */
+ * never skips for lateness and VQ Smoosh drops late pictures itself. Under
+ * Display: No Video nothing is decoded, so Video and VQ grey out too. */
 static void update_skip_after(gt_app *app)
 {
+    ULONG selected = gad_value(app, app->mode, GTCY_Active);
+    ULONG no_video = selected < app->mode_count &&
+                     app->modes[selected] == MR_DISPLAY_NONE ? TRUE : FALSE;
     ULONG not_skipping = gad_value(app, app->video_mode, GTCY_Active) != 1;
     ULONG smoosh = gad_value(app, app->h264, GTCY_Active) ==
                    MR_H264_PERF_SMOOSH;
+    GT_SetGadgetAttrs(app->video_mode, app->window, NULL,
+                     GA_Disabled, no_video, TAG_DONE);
+    GT_SetGadgetAttrs(app->h264, app->window, NULL,
+                     GA_Disabled, no_video, TAG_DONE);
     GT_SetGadgetAttrs(app->skip_after, app->window, NULL,
-                     GA_Disabled, (not_skipping || smoosh) ? TRUE : FALSE,
+                     GA_Disabled, (no_video || not_skipping || smoosh)
+                                  ? TRUE : FALSE,
                      TAG_DONE);
 }
 
@@ -408,7 +415,7 @@ static void update_mode_controls(gt_app *app, int output_changed)
 {
     ULONG selected = gad_value(app, app->mode, GTCY_Active);
     ULONG disabled = selected < app->mode_count &&
-                     mr_display_is_rtg(app->modes[selected]);
+                     !mr_display_has_screen_options(app->modes[selected]);
     ULONG selected_c2p = gad_value(app, app->c2p, GTCY_Active);
     mr_c2p_mode selected_c2p_mode = selected_c2p < app->c2p_count
                                   ? app->c2p_modes[selected_c2p]
@@ -1047,6 +1054,21 @@ static int build_window(gt_app *app)
         app->mode_labels[app->mode_count] = (STRPTR)"Display: HAM8";
         app->modes[app->mode_count++] = MR_DISPLAY_HAM8;
     }
+    if (!screen_is_rtg(app->screen)) {
+        /* Video in a Workbench window with shared pens, full or half size.
+         * Only offered on a native-chipset (AGA/ECS/OCS) Workbench: an RTG
+         * one has RTG (WritePixel) and RTG (Half). */
+        app->mode_labels[app->mode_count] =
+            aga() ? (STRPTR)"Display: AGA Window" :
+            ecs() ? (STRPTR)"Display: ECS Window" :
+                    (STRPTR)"Display: OCS Window";
+        app->modes[app->mode_count++] = MR_DISPLAY_AGA_WINDOW;
+        app->mode_labels[app->mode_count] =
+            aga() ? (STRPTR)"Display: AGA Win Half" :
+            ecs() ? (STRPTR)"Display: ECS Win Half" :
+                    (STRPTR)"Display: OCS Win Half";
+        app->modes[app->mode_count++] = MR_DISPLAY_AGA_WINDOW_HALF;
+    }
     if (screen_is_rtg(app->screen)) {
         app->mode_labels[app->mode_count] = (STRPTR)"Display: RTG (WritePixel)";
         app->modes[app->mode_count++] = MR_DISPLAY_CGX;
@@ -1064,6 +1086,11 @@ static int build_window(gt_app *app)
          * than WritePixel. */
         default_mode = (int)app->mode_count - 1;
     }
+    /* Audio only, listed last so it never becomes the hardware default.
+     * It sits here rather than under Video so it is easy to find; Video,
+     * Skip after and VQ grey out under it (update_skip_after()). */
+    app->mode_labels[app->mode_count] = (STRPTR)"Display: No Video";
+    app->modes[app->mode_count++] = MR_DISPLAY_NONE;
     app->mode_labels[app->mode_count] = NULL;
 
     add_c2p_mode(app, (STRPTR)"C2P: Standard", MR_C2P_STANDARD);
@@ -1091,7 +1118,11 @@ static int build_window(gt_app *app)
      * net a manual click through these controls relies on. */
     have_saved_options = mr_saved_options_load(&saved_options);
     if (have_saved_options) {
-        int saved_mode_row = mode_row(app, saved_options.display);
+        /* Settings saved by the old Video: Off row have no_video set with
+         * an ordinary display; they now mean the No Video display. */
+        int saved_mode_row = mode_row(app, saved_options.no_video
+                                           ? MR_DISPLAY_NONE
+                                           : saved_options.display);
         if (saved_mode_row >= 0)
             default_mode = saved_mode_row;
     }
@@ -1116,9 +1147,8 @@ static int build_window(gt_app *app)
                       ? TRUE : FALSE;
     initial_mono_audio = have_saved_options && saved_options.mono_audio
                         ? TRUE : FALSE;
-    initial_video_mode = !have_saved_options ? 0
-                       : saved_options.no_video ? 2
-                       : !saved_options.throughput ? 1 : 0;
+    initial_video_mode = have_saved_options && !saved_options.throughput
+                       ? 1 : 0;
     initial_skip_after = skip_after_row(have_saved_options
                                         ? saved_options.skip_trigger_ms
                                         : MR_SKIP_TRIGGER_DEFAULT_MS);
@@ -1342,6 +1372,7 @@ int main(void)
                 case G_YOUTUBE: open_browser(&app, 1); break;
                 case G_MODE:
                     update_mode_controls(&app, TRUE);
+                    update_skip_after(&app);
                     publish_options(&app);
                     break;
                 case G_C2P:

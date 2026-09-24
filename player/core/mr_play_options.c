@@ -81,6 +81,17 @@ int mr_display_is_rtg(mr_display_mode display)
            display == MR_DISPLAY_RTG_HALF;
 }
 
+int mr_display_has_screen_options(mr_display_mode display)
+{
+    return !mr_display_is_rtg(display) && display != MR_DISPLAY_AGA_WINDOW &&
+           display != MR_DISPLAY_AGA_WINDOW_HALF && display != MR_DISPLAY_NONE;
+}
+
+int mr_play_options_no_video(const mr_play_options *o)
+{
+    return o && (o->no_video || o->display == MR_DISPLAY_NONE);
+}
+
 static unsigned clamp_skip_trigger(unsigned ms)
 {
     if (ms < MR_SKIP_TRIGGER_MIN_MS) return MR_SKIP_TRIGGER_MIN_MS;
@@ -133,6 +144,9 @@ static const char *display_name(mr_display_mode display)
     case MR_DISPLAY_AGA_ECS32: return "ecs32";
     case MR_DISPLAY_AGA_ECS16: return "ecs16";
     case MR_DISPLAY_AGA_EHB: return "ehb";
+    case MR_DISPLAY_AGA_WINDOW: return "aga-window";
+    case MR_DISPLAY_AGA_WINDOW_HALF: return "aga-window-half";
+    case MR_DISPLAY_NONE: return "none";
     default: return "aga";
     }
 }
@@ -174,7 +188,7 @@ static int append_playback_flags(char *out, size_t cap,
     if (explicit) {
         if (!append_option(out, cap, "--display") ||
             !append_option(out, cap, display_name(o->display))) return 0;
-        if (!mr_display_is_rtg(o->display)) {
+        if (mr_display_has_screen_options(o->display)) {
             if (!append_option(out, cap, "--c2p") ||
                 !append_option(out, cap, c2p_name(o->c2p)) ||
                 !append_option(out, cap, o->laced ? "--laced" : "--no-laced") ||
@@ -203,7 +217,11 @@ static int append_playback_flags(char *out, size_t cap,
             !append_option(out, cap, "--fullscreen")) return 0;
         if (o->display == MR_DISPLAY_RTG_HALF &&
             !append_option(out, cap, "--rtg-half")) return 0;
-        if (!mr_display_is_rtg(o->display)) {
+        if (o->display == MR_DISPLAY_AGA_WINDOW &&
+            !append_option(out, cap, "--aga-window")) return 0;
+        if (o->display == MR_DISPLAY_AGA_WINDOW_HALF &&
+            !append_option(out, cap, "--aga-window-half")) return 0;
+        if (mr_display_has_screen_options(o->display)) {
             const char *flag = o->c2p == MR_C2P_AKIKO ? "--cd32" :
                                o->c2p == MR_C2P_KALMS ? "--kalms-c2p" :
                                o->c2p == MR_C2P_RIVA ? "--riva-c2p" :
@@ -283,7 +301,8 @@ static int append_playback_flags(char *out, size_t cap,
     snprintf(number, sizeof(number), "--skip-trigger=%u",
              clamp_skip_trigger(o->skip_trigger_ms));
     if (!append_option(out, cap, number)) return 0;
-    if (o->no_video && !append_option(out, cap, "--no-video")) return 0;
+    if (mr_play_options_no_video(o) &&
+        !append_option(out, cap, "--no-video")) return 0;
     return 1;
 }
 
@@ -366,6 +385,9 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "ecs32")) o->display = MR_DISPLAY_AGA_ECS32;
             else if (!strcmp(value, "ecs16")) o->display = MR_DISPLAY_AGA_ECS16;
             else if (!strcmp(value, "ehb")) o->display = MR_DISPLAY_AGA_EHB;
+            else if (!strcmp(value, "aga-window")) o->display = MR_DISPLAY_AGA_WINDOW;
+            else if (!strcmp(value, "aga-window-half")) o->display = MR_DISPLAY_AGA_WINDOW_HALF;
+            else if (!strcmp(value, "none")) { o->display = MR_DISPLAY_NONE; o->no_video = 1; }
             else goto bad;
         } else if (!strcmp(arg, "--c2p")) {
             if (i + 1 >= argc) goto bad;
@@ -523,9 +545,14 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
            o->h264_performance == MR_H264_PERF_TURBO_PLUS ? "Turbo+" :
            o->h264_performance == MR_H264_PERF_SMOOSH ? "Smoosh" : "Auto";
     audio = audio_policy_text(o);
-    if (o->no_video)
-        snprintf(video, sizeof video, "Off (audio only)");
-    else if (o->throughput)
+    if (mr_play_options_no_video(o)) {
+        snprintf(out, cap,
+                 "Playback: No Video (audio only) / %s / Audio %s / Fast buffer %s%s",
+                 hls, audio, fast_buffer_text(o),
+                 o->live_resync ? " / Live-resync" : "");
+        return;
+    }
+    if (o->throughput)
         snprintf(video, sizeof video, "All Frames");
     else {
         unsigned ms = clamp_skip_trigger(o->skip_trigger_ms);
@@ -538,6 +565,13 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
                  o->display == MR_DISPLAY_P96_FULLSCREEN ? "P96 Fullscreen" :
                  o->display == MR_DISPLAY_RTG_HALF ? "Half" :
                  "WritePixel",
+                 hls, h264, audio, fast_buffer_text(o),
+                 o->live_resync ? " / Live-resync" : "", video);
+    else if (o->display == MR_DISPLAY_AGA_WINDOW ||
+             o->display == MR_DISPLAY_AGA_WINDOW_HALF)
+        snprintf(out, cap, "Playback: %s / %s / H264 %s / Audio %s / Fast buffer %s%s / Video %s",
+                 o->display == MR_DISPLAY_AGA_WINDOW_HALF ? "Window (Half)"
+                                                          : "Window",
                  hls, h264, audio, fast_buffer_text(o),
                  o->live_resync ? " / Live-resync" : "", video);
     else

@@ -96,6 +96,7 @@ extern const display_backend backend_cgx;
 extern const display_backend backend_p96;
 extern const display_backend backend_p96pip;
 extern const display_backend backend_aga;
+extern const display_backend backend_aga_window;
 
 /* AGA backend configuration, set via the public display_set_* calls. */
 extern int g_aga_ham;    /* 0 = indexed planar, 6 = HAM6, 8 = AGA HAM8      */
@@ -113,6 +114,7 @@ extern int g_aga_ehb;      /* 1 = force 6-plane Extra Half-Brite (ECS/OCS,
 extern int g_aga_copper_vdouble; /* 1 = copper-assisted vertical 2x, see
                                    * display_set_copper_vdouble()             */
 extern int g_display_fullscreen;
+extern int g_aga_window;  /* 0 off, 1 Window, 2 Window (Half) */
 
 /* Library bases opened once by display.c and shared by the backends. */
 struct IntuitionBase;

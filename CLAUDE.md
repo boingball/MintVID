@@ -5545,3 +5545,65 @@ The general lesson: any Amiga library call made outside display.c before
 `display_open()` has run goes through a NULL base. Check who opens a
 base before using it on a new code path. Flushed "no-video:" log lines
 bracket the audio open and the window open. Not yet retested on hardware.
+
+**Moved to the Display chooser.** The user's call: people look for "no
+video" where they pick how video is shown, so the Video chooser's Off row
+became the Display chooser's last row, "No Video" (`MR_DISPLAY_NONE`,
+`--display none` in the browser hand-off). The Video chooser is back to
+All Frames / Skip Frames. Both GUIs set `no_video` from the display, and
+`update_skip_after()` now also greys Video and VQ under it (C2P, Laced
+and Scale already grey through `mr_display_has_screen_options()`). Core
+code tests `mr_play_options_no_video()`, which is true for either
+`no_video` or `MR_DISPLAY_NONE`, so `--no-video` from the CLI and old
+saved settings still work. A saved setting with `no_video` set restores
+to the No Video row. The enum value is appended, so saved display values
+keep their meaning.
+
+## AGA (Window): video on the Workbench with shared pens
+`amiga/display_aga_window.c` (`backend_aga_window`, `--aga-window`,
+`MR_DISPLAY_AGA_WINDOW`, GUI "AGA (Window)") plays in a sizeable window on
+the default public screen instead of opening one. It dithers to the usual
+RGB cube: 6x6x6 on a screen of 8+ planes, 4x4x2 on 5-7, 2x4x2 below that.
+Each cube colour becomes a pen via `ObtainBestPenA(..., OBP_Precision =
+PRECISION_IMAGE, OBP_FailIfBad = FALSE)`, which takes free pens where
+available and shares the closest colour otherwise, so Workbench's own pens
+never change. Each frame goes through a 256-byte cube-index -> pen table,
+nearest-neighbour scaled if the window is not the video's size. It is then
+drawn in 32-row strips with `WriteChunkyPixels()` (graphics V40), or
+`WritePixelArray8()` plus a one-row temp bitmap on older graphics.library.
+Both go through layers, so overlapping windows clip. `--time` prints how
+many distinct pens the cube got.
+
+To mrplay it looks like any indexed display. `supports_indexed` and
+`supports_yuv_indexed` report the chosen depth at source size (vscale 1).
+So H.264/MPEG-2 dither straight from YUV, Cinepak/MSVideo1 decode straight
+to indices, and everything else comes in as RGB24 through `show()`.
+display.c tries this backend first when the flag is set and falls back to
+the normal chain if the window cannot open. It has no fullscreen toggle.
+
+C2P, lace, 2x and Copper 2x don't apply to it. It is not RTG either, so
+`mr_display_has_screen_options()` was added next to `mr_display_is_rtg()`.
+Both GUIs grey out those controls with it, and `append_playback_flags()`
+emits the C2P flags only when it is true. The GUIs list this mode only
+when the Workbench is not RTG, where RTG (WritePixel) is the better
+choice. The enum value is appended at the end, so saved settings keep
+their meaning.
+
+Nothing in the backend is AGA-specific, so the GUIs list it on ECS and
+OCS Workbenches too, labelled after the chipset ("AGA/ECS/OCS (Window)").
+Its backend name in logs is "Window (Workbench)".
+
+**Window Half** (`MR_DISPLAY_AGA_WINDOW_HALF`, `--aga-window-half`,
+`display_set_aga_window(2)`, the shared `g_aga_window`) opens the window at
+(w/2)x(h/2). `supports_yuv_indexed` then reports that size with vscale 0,
+so H.264/MPEG-2 go through `mr_yuv420_dither_indexed_resize()` straight to
+half size (nearest-neighbour, a quarter of the dither and draw work).
+RGB24 input dithers only every other row (`stride * 2`) and the scaled
+draw halves the width. Cinepak/MSVideo1 indices arrive at full size and
+are scaled down while drawing.
+
+`tests/mr_iptv_check.c` pins the flags and the `--display aga-window` /
+`aga-window-half` round trips. The backend itself was only syntax-checked (host and m68k gcc)
+against stub NDK headers, then confirmed working on WinUAE (AGA, plenty
+of CPU). ECS/OCS Workbenches and Window Half have not run anywhere yet.
+Not done yet: a direct C2P fast path for when the window is unobscured.

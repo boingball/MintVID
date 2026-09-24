@@ -48,7 +48,20 @@ typedef enum {
      * to a (w/2)x(h/2) RGB picture - a quarter of the colour conversion and
      * blit work, for RTG boards without a working P96 overlay (PiStorm).
      * Passes --rtg-half; see mrplay.c's rtg_half_active. */
-    MR_DISPLAY_RTG_HALF
+    MR_DISPLAY_RTG_HALF,
+    /* Video in a window on the Workbench screen (AGA, ECS or OCS), using
+     * shared screen pens (ObtainBestPen) for the dither palette - see
+     * amiga/display_aga_window.c. Native chipset, but no C2P, lace or 2x
+     * options apply. --aga-window. */
+    MR_DISPLAY_AGA_WINDOW,
+    /* The same window at half the video's width and height: H.264/MPEG-2
+     * dither straight to that size. --aga-window-half. */
+    MR_DISPLAY_AGA_WINDOW_HALF,
+    /* GUI Display "No Video": play only the soundtrack. Same as no_video
+     * below (mrplay gets --no-video); as a display choice it sits where
+     * people look for "how do I show this", and the frame/VQ controls grey
+     * out under it. */
+    MR_DISPLAY_NONE
 } mr_display_mode;
 
 typedef enum {
@@ -152,15 +165,26 @@ typedef struct mr_play_options {
      * MR_SKIP_TRIGGER_MIN_MS..MR_SKIP_TRIGGER_MAX_MS. No effect with
      * "All Frames" (throughput) or Smoosh, which never escalate. */
     unsigned skip_trigger_ms;
-    /* GUI "Video: Off" (--no-video): demux the file but decode and show no
-     * video at all, only the audio - for machines too slow for the picture
-     * that just want to listen (e.g. a YouTube talk). */
+    /* --no-video: demux the file but decode and show no video at all, only
+     * the audio - for machines too slow for the picture that just want to
+     * listen (e.g. a YouTube talk). The GUIs set it through the Display
+     * chooser's "No Video" row (MR_DISPLAY_NONE); see
+     * mr_play_options_no_video(). */
     int no_video;
 } mr_play_options;
 
 /* The display modes that play through an RTG window rather than a native
  * Amiga screen (no C2P, lace or 2x options apply). */
 int mr_display_is_rtg(mr_display_mode display);
+
+/* The display modes that open their own native screen, where the C2P, lace,
+ * 2x and Copper 2x options apply: everything except RTG and the Workbench
+ * window modes. */
+int mr_display_has_screen_options(mr_display_mode display);
+
+/* True when the session plays audio only: no_video set directly (--no-video)
+ * or the "No Video" display (MR_DISPLAY_NONE). */
+int mr_play_options_no_video(const mr_play_options *options);
 
 void mr_play_options_default(mr_play_options *options);
 int mr_play_options_parse(mr_play_options *options, int argc, char **argv,

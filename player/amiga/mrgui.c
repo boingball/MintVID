@@ -114,7 +114,7 @@ enum {
 
 /* Chooser rows are chipset-dependent, so never infer a display mode from a
  * hard-coded row number. This map is populated alongside the labels. */
-static mr_display_mode mode_values[10];
+static mr_display_mode mode_values[12];
 static unsigned mode_count;
 /* "Skip after" chooser (--skip-trigger=). Kept file-level rather than
  * threaded through every read_play_options() caller's argument list, since
@@ -413,10 +413,10 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
     options->no_audio = checked_no_audio != 0;
     options->mono_audio = checked_mono != 0;
     /* Video rows are fixed, like Scale: 0=All Frames (throughput on), 1=Skip
-     * Frames (throughput off), 2=Off (audio only, --no-video) - see where
-     * video_modes is built in main(). */
+     * Frames (throughput off) - see where video_modes is built in main().
+     * Audio only is the Display chooser's "No Video" row. */
     options->throughput = selected_video_mode != 1;
-    options->no_video = selected_video_mode == 2;
+    options->no_video = options->display == MR_DISPLAY_NONE;
     if (g_skip_after) {
         ULONG row = 2;
         GetAttr(CHOOSER_Selected, g_skip_after, &row);
@@ -427,17 +427,26 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
     mr_saved_options_save(options);
 }
 
-/* "Skip after" only matters under Video: Skip Frames - see mrgui_gadtools.c's
+/* "Skip after" only matters under Video: Skip Frames, and Video/VQ/Skip
+ * after all do nothing under Display: No Video - see mrgui_gadtools.c's
  * update_skip_after(), which this mirrors. */
-static void update_skip_after(Object *h264, Object *video_mode,
+static void update_skip_after(Object *mode, Object *h264, Object *video_mode,
                               struct Window *window)
 {
-    ULONG selected_h264 = 0, selected_video_mode = 0;
-    if (!g_skip_after) return;
+    ULONG selected = 0, selected_h264 = 0, selected_video_mode = 0;
+    ULONG no_video;
+    GetAttr(CHOOSER_Selected, mode, &selected);
     GetAttr(CHOOSER_Selected, h264, &selected_h264);
     GetAttr(CHOOSER_Selected, video_mode, &selected_video_mode);
+    no_video = selected < mode_count &&
+               mode_values[selected] == MR_DISPLAY_NONE ? TRUE : FALSE;
+    SetGadgetAttrs((struct Gadget *)video_mode, window, NULL,
+                   GA_Disabled, no_video, TAG_DONE);
+    SetGadgetAttrs((struct Gadget *)h264, window, NULL,
+                   GA_Disabled, no_video, TAG_DONE);
+    if (!g_skip_after) return;
     SetGadgetAttrs((struct Gadget *)g_skip_after, window, NULL,
-                   GA_Disabled, (selected_video_mode != 1 ||
+                   GA_Disabled, (no_video || selected_video_mode != 1 ||
                                  selected_h264 == MR_H264_PERF_SMOOSH)
                                 ? TRUE : FALSE,
                    TAG_DONE);
@@ -607,7 +616,8 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
     selected = 0;
     GetAttr(CHOOSER_Selected, mode, &selected);
     disable_chipset_options = selected < mode_count &&
-                              mr_display_is_rtg(mode_values[selected])
+                              !mr_display_has_screen_options(
+                                  mode_values[selected])
                             ? TRUE : FALSE;
 
     selected_c2p = 0;
@@ -1446,6 +1456,18 @@ int main(void)
     if (!add_mode_node(&modes, "HAM6", MR_DISPLAY_HAM6) ||
         (chipset_has_aga() &&
          !add_mode_node(&modes, "HAM8", MR_DISPLAY_HAM8)) ||
+        /* Video in a Workbench window with shared pens, full or half size.
+         * Only offered on a native-chipset (AGA/ECS/OCS) Workbench: an RTG
+         * one has RTG (WritePixel) and RTG (Half). */
+        (!have_rtg && !add_mode_node(&modes,
+             chipset_has_aga() ? "AGA (Window)" :
+             chipset_has_ecs_denise() ? "ECS (Window)" : "OCS (Window)",
+             MR_DISPLAY_AGA_WINDOW)) ||
+        (!have_rtg && !add_mode_node(&modes,
+             chipset_has_aga() ? "AGA (Window Half)" :
+             chipset_has_ecs_denise() ? "ECS (Window Half)" :
+                                        "OCS (Window Half)",
+             MR_DISPLAY_AGA_WINDOW_HALF)) ||
         (have_rtg && !add_mode_node(&modes, "RTG (WritePixel)", MR_DISPLAY_CGX)) ||
         /* Half-resolution WritePixel for boards with no working P96
          * overlay (PiStorm): a quarter of the YUV->RGB and blit work. */
@@ -1459,6 +1481,11 @@ int main(void)
      * of plain WritePixel and AGA/HAM - default to it rather than
      * WritePixel. */
     if (have_rtg) default_mode = (int)mode_count - 1;
+    /* Audio only, listed last so it never becomes the hardware default.
+     * It sits here rather than under Video so it is easy to find; Video,
+     * Skip after and VQ grey out under it (update_skip_after()). */
+    if (!add_mode_node(&modes, "No Video (audio only)", MR_DISPLAY_NONE))
+        goto cleanup;
     if (!add_c2p_node(&c2p_modes, "Standard", MR_C2P_STANDARD) ||
         (mr_akiko_available() &&
          !add_c2p_node(&c2p_modes, "CD32", MR_C2P_AKIKO)) ||
@@ -1517,8 +1544,7 @@ int main(void)
      * decode in real time; see CLAUDE.md's "Live HLS playback stall
      * notes". */
     if (!add_chooser_node(&video_modes, "All Frames") ||
-        !add_chooser_node(&video_modes, "Skip Frames") ||
-        !add_chooser_node(&video_modes, "Off"))
+        !add_chooser_node(&video_modes, "Skip Frames"))
         goto cleanup;
 
     /* Restore the last-saved controller settings (mr_saved_options.h),
@@ -1532,7 +1558,11 @@ int main(void)
      * safety net a manual click through these controls relies on. */
     have_saved_options = mr_saved_options_load(&saved_options);
     if (have_saved_options) {
-        int saved_mode_row = mode_row(saved_options.display);
+        /* Settings saved by the old Video: Off row have no_video set with
+         * an ordinary display; they now mean the No Video display. */
+        int saved_mode_row = mode_row(saved_options.no_video
+                                      ? MR_DISPLAY_NONE
+                                      : saved_options.display);
         if (saved_mode_row >= 0)
             default_mode = saved_mode_row;
     }
@@ -1557,9 +1587,8 @@ int main(void)
                       ? TRUE : FALSE;
     initial_mono_audio = have_saved_options && saved_options.mono_audio
                         ? TRUE : FALSE;
-    initial_video_mode = !have_saved_options ? 0
-                       : saved_options.no_video ? 2
-                       : !saved_options.throughput ? 1 : 0;
+    initial_video_mode = have_saved_options && !saved_options.throughput
+                       ? 1 : 0;
     initial_skip_after = skip_after_row(have_saved_options
                                         ? saved_options.skip_trigger_ms
                                         : MR_SKIP_TRIGGER_DEFAULT_MS);
@@ -1904,7 +1933,7 @@ int main(void)
     mr_gui_menu_open(&app_menu, window);
 
     update_mode_controls(mode, c2p, lace, scale, window, TRUE);
-    update_skip_after(h264, video_mode, window);
+    update_skip_after(mode, h264, video_mode, window);
     master_options = mr_master_options_open();
     publish_play_options(master_options, mode, c2p, h264, lace, scale,
                          audio_rate, fast_buffer, no_audio, mono_audio,
@@ -1954,6 +1983,7 @@ int main(void)
 
                 case G_MODE:
                     update_mode_controls(mode, c2p, lace, scale, window, TRUE);
+                    update_skip_after(mode, h264, video_mode, window);
                     publish_play_options(master_options, mode, c2p, h264,
                                          lace, scale, audio_rate, fast_buffer,
                                          no_audio, mono_audio, video_mode);
@@ -1978,7 +2008,7 @@ int main(void)
 
                 case G_H264:
                 case G_VIDEO_MODE:
-                    update_skip_after(h264, video_mode, window);
+                    update_skip_after(mode, h264, video_mode, window);
                     publish_play_options(master_options, mode, c2p, h264,
                                          lace, scale, audio_rate, fast_buffer,
                                          no_audio, mono_audio, video_mode);

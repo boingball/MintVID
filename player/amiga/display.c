@@ -26,6 +26,8 @@ struct Library       *P96Base       = NULL;
 
 static int g_force_aga = 0;
 static int g_force_p96 = 0;
+int g_aga_window = 0;  /* 0 off, 1 Window, 2 Window (Half); shared with
+                        * display_aga_window.c */
 int g_aga_ham   = 0;   /* shared with the AGA backend */
 int g_aga_scale = 1;
 int g_aga_c2p   = 3;   /* CPU-matched Kalms by default; its runtime checks
@@ -42,6 +44,10 @@ int g_display_fullscreen = 0;
 
 void display_set_force_aga(int on) { g_force_aga = on; }
 void display_set_force_p96(int on) { g_force_p96 = on; }
+void display_set_aga_window(int mode)
+{
+    g_aga_window = mode == 2 ? 2 : mode ? 1 : 0;
+}
 void display_set_ham(int bits) { g_aga_ham = bits; if (bits) g_force_aga = 1; }
 void display_set_scale(int n)  { g_aga_scale = (n == 2) ? 2 : 1; }
 void display_set_c2p(int on)   { g_aga_c2p = on ? 1 : 0; }
@@ -103,7 +109,7 @@ static void close_libs(void)
 
 amiga_display *display_open(int w, int h, const char *title)
 {
-    const display_backend *order[4];
+    const display_backend *order[5];
     int n = 0, i;
 
     IntuitionBase = (struct IntuitionBase *)
@@ -131,6 +137,11 @@ amiga_display *display_open(int w, int h, const char *title)
      * can tell them apart even though the user only ever picks one option.
      * backend_p96pip doesn't need CyberGfxBase at all (see its own file
      * header); backend_p96 does. */
+    /* Window mode shares the Workbench screen instead of opening one; if
+     * that window can't open, the normal chain below still gets a picture
+     * up. */
+    if (g_aga_window)
+        order[n++] = &backend_aga_window;
     if (!g_force_aga && g_force_p96 && P96Base)
         order[n++] = &backend_p96pip;
     if (!g_force_aga && g_force_p96 && CyberGfxBase && P96Base)

@@ -1,5 +1,31 @@
 # MintVID changelog
 
+## Unreleased
+
+### Added
+
+- **Window** display mode (`--aga-window`, listed as AGA/ECS/OCS Window
+  after the chipset): plays in a sizeable window on a native-chipset
+  Workbench instead of opening its own screen.
+  Each colour of the dither palette is matched to a screen pen with
+  ObtainBestPen(), using free pens where there are some, so Workbench's
+  own colours never change. 216 colours on a 256-colour Workbench, 32 or
+  16 on shallower ones. Drawn with WriteChunkyPixels() (WritePixelArray8()
+  before graphics.library V40), so overlapping windows clip correctly. No
+  HAM, C2P, Laced or 2x.
+- **Window Half** display mode (`--aga-window-half`): the same window at
+  half the video's width and height. H.264 and MPEG-1/2 are dithered
+  straight to that size, so conversion and drawing each do about a quarter
+  of the work.
+
+### Changed
+
+- **Audio-only playback moved to the Display chooser.** "Video: Off" is now
+  the Display chooser's last row, **No Video**, where it is easier to
+  find. Video (All Frames / Skip Frames), Skip after and VQ grey out under
+  it. `--no-video` is unchanged, and a saved "Video: Off" setting comes
+  back as No Video.
+
 ## 1.4.0 - 2026-09-23
 
 ### Highlights
