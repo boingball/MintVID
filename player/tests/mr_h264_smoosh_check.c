@@ -166,6 +166,61 @@ static void check_file(const char *path, int expect_keys, int baseline)
     release(&full); release(&keys); release(&mosh);
 }
 
+/* Turbo+ decodes keyframes only, so each one must come out of the very
+ * decode call that consumed it. In libavc's display-order mode a B-frame
+ * stream's reorder delay held every keyframe back until two more had been
+ * decoded (or the stream ended): 15 s late on 7.68 s GOPs, which mrplay then
+ * dropped as stale, so live BBC IPTV showed one picture and stalled. */
+static void check_turbo_plus_low_delay(const char *path, int expect_keys)
+{
+    mr_demux *dx = mr_demux_open_file(path);
+    const mr_video_info *vi;
+    mr_decoder dec;
+    mr_packet pkt;
+    unsigned long index = 0;
+    int out = 0;
+
+    if (!dx) { fprintf(stderr, "cannot open %s\n", path); exit(1); }
+    vi = mr_demux_video(dx);
+    assert(vi && vi->valid);
+    assert(mr_decoder_open_config(&dec, &mr_codec_h264, vi->width, vi->height,
+                                  vi->config, vi->config_len) == MR_OK);
+    assert(mr_h264_set_speed_mode(&dec, MR_H264_SPEED_TURBO_PLUS));
+    while (mr_demux_next_packet(dx, &pkt) == MR_OK) {
+        mr_status st;
+        uint64_t pts = 0;
+        if (!pkt.is_video || !pkt.len) continue;
+        mr_h264_set_input_annexb(&dec, pkt.is_annexb);
+        mr_h264_set_input_pts(&dec, 1, (uint64_t)index * 1000u);
+        st = mr_decoder_decode(&dec, pkt.data, pkt.len);
+        index++;
+        if (st != MR_OK) continue;
+        do {
+            assert(mr_h264_output_pts(&dec, &pts));
+            if (pts != (uint64_t)(index - 1) * 1000u) {
+                fprintf(stderr, "%s: Turbo+ picture from packet %lu came out "
+                        "at packet %lu\n", path,
+                        (unsigned long)(pts / 1000u), index - 1);
+                exit(1);
+            }
+            out++;
+        } while (mr_decoder_drain(&dec) == MR_OK);
+    }
+    if (mr_decoder_flush(&dec) == MR_OK) {
+        fprintf(stderr, "%s: Turbo+ still held a picture until the flush\n",
+                path);
+        exit(1);
+    }
+    if (out != expect_keys) {
+        fprintf(stderr, "%s: Turbo+ output %d pictures, expected %d\n",
+                path, out, expect_keys);
+        exit(1);
+    }
+    printf("  %s: Turbo+ output %d keyframes with no delay\n", path, out);
+    mr_decoder_close(&dec);
+    mr_demux_close(dx);
+}
+
 int main(void)
 {
     decode_run turbo;
@@ -176,6 +231,10 @@ int main(void)
     /* High profile with B-frames (CABAC, reordering): 2 keyframes. */
     check_file("tests/assets/test_h264_high.mp4", 2, 0);
     check_file("tests/assets/test_h264_aac.ts", 2, 0);
+
+    check_turbo_plus_low_delay("tests/assets/test_h264_high.mp4", 2);
+    check_turbo_plus_low_delay("tests/assets/test_h264_aac.ts", 2);
+    check_turbo_plus_low_delay("tests/assets/test_h264_gop.ts", 3);
 
     /* The Smoosh speed mode itself is accepted and decodes like Turbo. */
     decode("tests/assets/test_h264_gop.mp4", MR_H264_SPEED_SMOOSH, 2, &turbo);

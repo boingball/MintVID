@@ -5498,6 +5498,54 @@ Turbo+ output is byte-identical with and without the drop on that clip,
 yet measured on the A1200. There most of the saving should show as idle
 CPU between keyframes, not faster keyframes.
 
+## Turbo+ on B-frame streams: libavc's display delay, and live HLS start
+A real A1200 run of BBC One IPTV (192x108 High profile, 7.68 s segments,
+Turbo+, HAM8) showed one picture, then nothing. Audio stuttered, and
+micro-rescue entered over and over with `late=` 5-12 s. YouTube's 360p
+stream played fine on the same settings.
+
+The cause was libavc's display-order output (`IVD_DISPLAY_FRAME_OUT`). It
+holds a picture until `num_reorder_frames + 1` later ones are decoded.
+Under Turbo+ the later pictures are the next keyframes, so on a B-frame
+stream each keyframe came out **two GOPs late**. That is 15.4 s on BBC,
+and the player dropped every such picture as stale. A host probe on a
+BBC-like clip (High, `-bf 3`, 192-frame GOP) showed it: keyframe 1 came
+out when keyframe 3 went in. The 2-keyframe fixtures only produced
+pictures at the EOF flush. YouTube itag 18 is Baseline, with no
+reordering, so it never showed.
+
+`mr_h264_set_speed_mode()` now picks `IVD_DECODE_FRAME_OUT` (low delay)
+whenever the base skip mode is `IVD_SKIP_PB`. With only I pictures
+decoded, decode order is display order. Output is byte-identical to the
+old Turbo+ output, with the same pts, just immediate.
+
+libavc sets `i4_display_delay` once, at the first picture
+(`ih264d_init_pic()`), so the mode must be chosen before decoding starts.
+mrplay already sets the speed right after open and after every reset.
+`mr_h264_set_dynamic_skip()` (Skip Frames' escalation) keeps whatever
+output mode the speed mode chose. So on a B-frame stream, an escalated
+keyframe still waits until normal decoding resumes. That is a freeze,
+not a permanent loss. `check_turbo_plus_low_delay()` in
+`tests/mr_h264_smoosh_check.c` pins it: every Turbo+ picture must come
+out of the decode call that consumed it, and nothing may be left for
+the flush.
+
+The same log also showed `HLS: 1875 initial segments`, then
+`opening segment 1 of 1875`. BBC lists a four-hour DVR window, and
+without `hls_live_start_segments` (only YouTube sets it) playback began
+at its oldest entry. That first segment took 4.9 s to fetch. A live
+playlist now starts `HLS_LIVE_START_DEFAULT_MS` (30 s) before the newest
+segment, and at least 3 segments back (RFC 8216 6.3.3). An explicit
+count still wins. Pinned in `tests/mr_hls_override_check.c`.
+
+A note on the `--time` output: `audio-gap=` measures the time between
+calls to `service_audio_for_display()`, and those only happen during
+decode, conversion and network waits. Under Turbo+ it reads multi-second
+"gaps" while the loop is simply idle, so it is not a stall indicator
+there.
+
+Not yet rerun on the A1200.
+
 ## Video: Off (`--no-video`), audio-only playback
 For machines too slow for the picture that only want to listen, e.g. to
 a YouTube video. The GUI puts it on the existing Video chooser as a third

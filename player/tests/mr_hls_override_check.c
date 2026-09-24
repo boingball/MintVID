@@ -17,6 +17,7 @@
 #include "../core/mr_alloc.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const char *g_playlist =
@@ -40,6 +41,21 @@ static int  g_calls;
 static int  g_hint_calls;
 static int  g_live;
 static char g_last_hint_url[256];
+/* A long live window (a DVR-style playlist): g_long_count segments of
+ * g_long_target seconds each, segment N's body "N%03d". */
+static int  g_long_count;
+static int  g_long_target;
+static char g_long_playlist[16384];
+
+static void build_long_playlist(void)
+{
+    char *p = g_long_playlist;
+    int i;
+    p += sprintf(p, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:%d\n"
+                    "#EXT-X-MEDIA-SEQUENCE:100\n", g_long_target);
+    for (i = 0; i < g_long_count; i++)
+        p += sprintf(p, "#EXTINF:%d.0,\nlong%d.ts\n", g_long_target, i);
+}
 
 static int fake_override(const char *url, const mr_http_options *options,
                          const char *post_json,
@@ -50,7 +66,16 @@ static int fake_override(const char *url, const mr_http_options *options,
     size_t len;
     (void)options; (void)post_json; (void)max_size;
     g_calls++;
-    if (strstr(url, "playlist.m3u8")) {
+    if (g_long_count) {
+        static char seg[8];
+        const char *name = strstr(url, "long");
+        if (strstr(url, "playlist.m3u8")) body = g_long_playlist;
+        else if (name) {
+            snprintf(seg, sizeof seg, "N%03d", atoi(name + 4));
+            body = seg;
+        } else return 0;
+        len = strlen(body);
+    } else if (strstr(url, "playlist.m3u8")) {
         body = g_playlist;
         len = strlen(body);
         if (g_live) len -= strlen("#EXT-X-ENDLIST\n");
@@ -138,6 +163,49 @@ int main(void)
         fails++;
     }
     if (s) mr_source_close(s);
+
+    /* A long live window with no requested start count begins about 30 s
+     * before the newest segment, not at the oldest entry: 8 s targets keep
+     * four segments (40 listed -> start at long36), 2 s targets keep
+     * fifteen (40 -> long25), and a short window is kept whole. */
+    {
+        static const struct { int count, target, first; } cases[] = {
+            { 40, 8, 36 }, { 40, 2, 25 }, { 3, 8, 0 }, { 40, 20, 37 }
+        };
+        size_t i;
+        for (i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+            char want[8];
+            g_long_count = cases[i].count;
+            g_long_target = cases[i].target;
+            build_long_playlist();
+            snprintf(want, sizeof want, "N%03d", cases[i].first);
+            s = mr_hls_source_open_ex("http://test.invalid/playlist.m3u8",
+                                      &options);
+            if (!s || !mr_source_read_at(s, 0, buf, 4) ||
+                memcmp(buf, want, 4) != 0) {
+                printf("FAIL: live window of %d x %d s should start at "
+                       "long%d\n", cases[i].count, cases[i].target,
+                       cases[i].first);
+                fails++;
+            }
+            if (s) mr_source_close(s);
+        }
+        /* An explicit count still wins (YouTube asks for two). */
+        g_long_count = 40;
+        g_long_target = 8;
+        build_long_playlist();
+        options.hls_live_start_segments = 2;
+        s = mr_hls_source_open_ex("http://test.invalid/playlist.m3u8",
+                                  &options);
+        if (!s || !mr_source_read_at(s, 0, buf, 4) ||
+            memcmp(buf, "N038", 4) != 0) {
+            printf("FAIL: hls_live_start_segments=2 should start at long38\n");
+            fails++;
+        }
+        if (s) mr_source_close(s);
+        options.hls_live_start_segments = 0;
+        g_long_count = 0;
+    }
     mr_http_set_fetch_override(NULL);
     mr_http_set_prefetch_hint(NULL);
 

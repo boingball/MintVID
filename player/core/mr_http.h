@@ -31,8 +31,9 @@ typedef struct mr_http_options {
     char user_agent[MR_HTTP_USER_AGENT_MAX];
     char referer[MR_HTTP_REFERER_MAX];
     int hls_low;
-    /* For slow live-start resolvers, retain only this many newest segments
-     * from the first sliding playlist. Zero preserves the complete window. */
+    /* Retain only this many newest segments from the first live playlist.
+     * Zero picks the default: about 30 s before the newest segment, and at
+     * least three segments (see HLS_LIVE_START_DEFAULT_MS in mr_hls.c). */
     unsigned hls_live_start_segments;
     /* Download each HLS segment to a bounded RAM buffer before exposing it to
      * the demuxer. Required by CDNs that use chunked transfer without length. */

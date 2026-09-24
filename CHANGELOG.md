@@ -26,6 +26,20 @@
   it. `--no-video` is unchanged, and a saved "Video: Off" setting comes
   back as No Video.
 
+### Fixed
+
+- **Turbo+ showed one picture, then stalled, on streams with B-frames.**
+  This hit live IPTV like BBC One. The decoder held each keyframe back
+  until two more had been decoded, and in Turbo+ those are the next
+  keyframes. On BBC's 7.68-second GOPs every picture arrived about 15
+  seconds late, and the player dropped it as stale. Turbo+ now outputs
+  each keyframe as soon as it is decoded. YouTube's 360p stream has no
+  B-frames, which is why it was unaffected.
+- **Live HLS started at the oldest segment in the playlist.** For BBC
+  that was four hours behind live, on segments the CDN no longer had
+  cached. Live playback now starts about 30 seconds before the newest
+  segment, and never fewer than three segments back.
+
 ## 1.4.0 - 2026-09-23
 
 ### Highlights

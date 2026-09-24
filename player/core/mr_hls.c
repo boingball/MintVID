@@ -64,6 +64,15 @@ static mr_source *hls_open(const char *url, const mr_http_options *options,
 #define HLS_LIVE_REFETCH_WAIT_MS 1000
 #define HLS_VOD_LOOKAHEAD_SEGMENTS 8
 #define HLS_LIVE_LOOKAHEAD_SEGMENTS 3
+/* Where live playback starts when the caller names no segment count: about
+ * this much media before the newest segment, and never fewer than three
+ * segments (RFC 8216 6.3.3 asks clients to start at least three target
+ * durations from the end). Starting at the oldest entry instead is wrong for
+ * a DVR-style window: BBC's IPTV playlists list 1875 7.68 s segments, so
+ * playback began four hours behind live, on segments the CDN no longer had
+ * cached (the first took 4.9 s to arrive on an A1200). */
+#define HLS_LIVE_START_DEFAULT_MS 30000UL
+#define HLS_LIVE_START_MIN_SEGMENTS 3
 
 typedef struct {
     char   **segs;        /* resolved segment URLs                            */
@@ -668,13 +677,21 @@ mr_source *mr_hls_source_open_ex(const char *url,
         mr_source_set_error("HLS playlist has no segments");
         return NULL;
     }
-    if (h->live && options && options->hls_live_start_segments &&
-        h->nsegs > options->hls_live_start_segments) {
-        size_t before = h->nsegs;
-        keep_live_tail(h, options->hls_live_start_segments);
-        if (g_verbose)
-            printf("HLS: skipped %lu stale startup segments\n",
-                   (unsigned long)(before - h->nsegs));
+    if (h->live) {
+        size_t keep = options ? options->hls_live_start_segments : 0;
+        if (!keep) {
+            unsigned long target = h->target_ms ? h->target_ms : 10000UL;
+            keep = (size_t)((HLS_LIVE_START_DEFAULT_MS + target - 1) / target);
+            if (keep < HLS_LIVE_START_MIN_SEGMENTS)
+                keep = HLS_LIVE_START_MIN_SEGMENTS;
+        }
+        if (h->nsegs > keep) {
+            size_t before = h->nsegs;
+            keep_live_tail(h, keep);
+            if (g_verbose)
+                printf("HLS: skipped %lu stale startup segments\n",
+                       (unsigned long)(before - h->nsegs));
+        }
     }
     if (g_verbose)
         printf("HLS: %lu initial segments (%s)\n",
