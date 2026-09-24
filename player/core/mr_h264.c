@@ -878,7 +878,13 @@ static mr_status h264_decode(mr_decoder *dec,
      * visibly smeared ("datamoshed") motion until the next keyframe, which
      * resynchronises everything exactly. The pending PTS belonged to the
      * dropped picture, so forget it rather than pinning it to the next one. */
-    if (s->drop_nonsync && h264_au_droppable(s, data, len)) {
+    /* Turbo+ (IVD_SKIP_PB) would have libavc throw these away anyway, but
+     * only after it has scanned every byte for start codes, stripped the
+     * emulation-prevention bytes of the whole NAL and cleared per-picture
+     * state - about half of all Turbo+ decode work on a 5 s YouTube GOP.
+     * Dropping them here costs two ue(v) reads per slice. */
+    if ((s->drop_nonsync || s->base_skip_mode == IVD_SKIP_PB) &&
+        h264_au_droppable(s, data, len)) {
         s->pending_input_pts_set = 0;
         s->pending_input_has_pts = 0;
         return MR_SKIPPED;
