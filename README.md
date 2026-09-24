@@ -244,10 +244,10 @@ Inspect or dump any AVI/MOV/MP4/MKV/TS/M2TS:
 ```
 
 `mrplay` streams AVI, MOV/MP4, Matroska/MKV and MPEG-TS/M2TS packets from disk or a direct
-`http://`/`https://` file URL. Its RAM use is therefore set by container
-metadata, the largest compressed packet, a 4 MB network rewind cache, and
-the active decoder/display buffers rather than by the media file size. HTTP
-redirects and byte-range seeking are supported:
+`http://`/`https://` file URL. Apart from the optional Fast buffer below,
+its RAM use is set by container metadata, the largest compressed packet, a
+4 MB network rewind cache, and the active decoder/display buffers rather than
+by the media file size. HTTP redirects and byte-range seeking are supported:
 
 ```sh
 mrplay "http://example.net/video.avi"
@@ -258,25 +258,6 @@ mrplay --hls-max-width=640 --hls-max-height=360 \
   "https://www.youtube.com/watch?v=LIVE_STREAM_ID"
 mrplay --fast-buffer=8 "DH0:Videos/movie.avi"
 ```
-
-`--fast-buffer=auto|off|4|8|16|32|64` adds a Fast RAM read-ahead window for local
-files and direct/progressive HTTP media. Local playback gives that memory to
-stdio so sequential demuxing crosses AmigaDOS far less often; HTTP playback
-uses it as a rewind/read-ahead cache and absorbs data already waiting on the
-socket while the CPU is decoding. `off` retains the small normal file buffer
-and HTTP's existing 4 MB compatibility cache. `auto` selects 16, 8, or 4 MB
-from the largest available Fast RAM block while leaving 24 MB free for the
-decoder, display, TLS, audio, and frame queue. Auto remains capped at 16 MB;
-32 and 64 MB are explicit choices for machines with abundant Fast RAM. A fixed
-size still leaves an 8 MB floor and steps down safely if necessary. For IPTV
-and YouTube HLS, the selected size bounds compressed segment lookahead rather
-than allocating an extra HTTP cache: one network worker tops up the queued
-segments while playback decodes from RAM. Recorded streams queue up to eight
-segments ahead; live streams queue up to three known segments to stay close to
-the broadcast. The queue starts filling as soon as the first segment opens;
-playback does not wait for the selected amount to arrive. Segments are fetched
-serially and the total is capped by the selected byte budget. At the live
-edge the playlist must advertise a new segment before it can be downloaded.
 
 Plain HTTP is present in the normal Amiga build. HTTPS uses
 `amisslmaster.library`/AmiSSL v5 and must be enabled when compiling:
@@ -291,15 +272,51 @@ with `SSL=1 SSLCERTS=1` to enable the default CA roots and hostname
 verification; this is the recommended setting for packaged online-enabled
 release builds.
 
+### Fast RAM buffer
+
+`--fast-buffer=auto|off|4|8|16|32|64` sets how much Fast RAM `mrplay` uses to
+buffer the compressed input. What the buffer does depends on the source:
+
+| Source | What the Fast buffer does |
+|--------|---------------------------|
+| Local file that fits in the buffer | The whole file is read into Fast RAM when it opens, and playback never touches the disk again. |
+| Larger local file | The buffer becomes a large read-ahead window, so demuxing goes to AmigaDOS far less often. |
+| Direct/progressive HTTP (including YouTube 360p MP4) | Rewind/read-ahead cache that also soaks up data already waiting on the socket while the CPU decodes. |
+| HLS (IPTV, YouTube HLS) | Bounds a queue of downloaded segments: up to eight ahead for recorded streams, three for live streams. |
+
+`auto` picks 16, 8 or 4 MB from the largest free Fast RAM block while leaving
+24 MB free for the decoder, display, TLS, audio and frame queue; it never goes
+above 16 MB. 32 and 64 MB are explicit choices for machines with plenty of
+Fast RAM. A fixed size keeps at least 8 MB free and halves itself until it
+fits. `off` keeps the small normal file buffer and HTTP's 4 MB compatibility
+cache, and HLS then fetches only the next segment ahead. `mrplay` prints the
+size it actually got at startup. The buffer is always allocated from Fast
+RAM, never Chip RAM.
+
+Loading a whole file takes as long as reading it once, and that read happens
+before the first frame, so a big file on a slow drive or network share can
+take a while to start. Choose a size smaller than the file, or Off, if the
+wait matters more than disk access during playback.
+
+The HLS segment queue starts filling as soon as the first segment opens, so
+playback does not wait for the buffer to fill. One network worker fetches
+segments one at a time, within the byte budget. At the live edge a segment
+can only be fetched once the playlist advertises it.
+
+The Fast buffer holds compressed input only. Decoded pictures go into a
+separate frame queue of up to 48 frames, which grows with free RAM for local
+files and network streams alike.
+
 ### Live streaming resilience
 
 Live HLS (`.m3u8`) playback on constrained hardware has a few extra controls.
 The AmiSSL library, TLS context, and TLS session are initialised once and reused
 across segments, so each segment boundary reconnects with an abbreviated
-handshake instead of the full per-segment bring-up. Since 1.1.1, compressed
-lookahead normally hints only the next segment. Selecting a Fast buffer
-enables a RAM-bounded queue of up to three known segments for live streams,
-combined with the no-abandon worker shutdown and AmiSSL lifecycle hardening.
+handshake instead of the full per-segment bring-up. With Fast buffer Off,
+only the next segment is fetched ahead. Any Fast buffer size enables a
+RAM-bounded queue of up to three known segments for live streams (eight for
+recorded ones), combined with the no-abandon worker shutdown and AmiSSL
+lifecycle hardening.
 
 - `--net-queue=N` — request a decoded-frame read-ahead target for network
   playback. The default scheduling target is 1 frame and the hard ceiling is
@@ -423,49 +440,51 @@ unpaced decode.
 
 The **Audio** chooser picks the Paula output rate (Normal, or Low to halve it
 again), **No audio** skips the decoder and Paula entirely, and **Mono audio**
-(`--audio-mono`) asks the codec for one channel instead of two. Paula's output
-is a single 8-bit channel either way, so mono changes where the fold happens,
-not what you hear coming out of the machine: instead of decoding both channels
-and averaging them per sample, MP3, MP2 and AC-3 are asked for one channel and
-skip roughly half of their per-channel synthesis. Helix AAC has no mono mode,
-so an AAC track only saves the downmix. Worth a try when a heavy H.264 stream
-is starving the audio FIFO.
+(`--audio-mono`) asks the codec for one channel instead of two. Paula plays
+stereo through a synchronized left/right channel pair; in mono the one decoded
+channel plays on both speakers. MP3, MP2 and AC-3 then skip roughly half of
+their per-channel synthesis. Helix AAC has no mono mode, so an AAC track only
+saves the downmix. Worth a try when a heavy H.264 stream is starving the audio
+FIFO.
 
 **Fast RAM buffering**
 
-The **Fast buffer** chooser is available in both ReAction and GadTools editions
-and defaults to Auto. It applies to ordinary **Play**, IPTV, and YouTube
-launches. Direct/progressive online media receives the same 4/8/16 MB rolling
-cache as local playback; HLS uses its compressed-segment background
-buffer instead. The selected size is allocated with `MEMF_FAST`, never Chip
-RAM, and `mrplay` prints the chosen or reduced size at startup for hardware
-comparisons.
+The **Fast buffer** chooser (Auto, Off, 4, 8, 16, 32 or 64 MB) is in both the
+ReAction and GadTools editions and defaults to Auto. It applies to ordinary
+**Play**, IPTV and YouTube launches, and is the `--fast-buffer` option
+described under [Fast RAM buffer](#fast-ram-buffer): a local file that fits is
+loaded whole into Fast RAM, larger files and progressive HTTP get a read-ahead
+window, and HLS gets a queue of downloaded segments. If a large local file on
+a slow drive takes a long time to start, pick a smaller size or Off.
 
-**H.264 performance modes**
+**VQ (video quality) modes**
 
-TurboGT remains the default. The choices trade picture quality and/or decoded
-frames for throughput:
+The **VQ** chooser trades picture quality for decode speed. It mostly sets
+H.264's performance mode (`--h264-speed=`). For DV and MPEG-1/2, Quality
+decodes in full and every other choice picks that codec's fast mode: DC-only
+DV (`--dv-speed=fast`) or MPEG-1/2 B-frame skipping (`--mpeg2-speed=fast`).
+Turbo is the default:
 
-| Mode | Decoder policy | When to use it |
-|------|----------------|----------------|
-| **Auto** | Resolves to TurboGT. | Keep the release default. |
+| Mode | H.264 decoder policy | When to use it |
+|------|----------------------|----------------|
+| **Auto** | Resolves to Turbo. | Keep the release default. |
 | **Quality** | Full filtering; no deliberate frame skipping. | Quality comparisons or very fast systems. |
 | **Balanced** | In-loop deblocking disabled; motion compensation stays spec-exact. | Mild quality/performance trade-off. |
 | **Fast** | Balanced plus bilinear rather than six-tap interpolation; keeps every frame. | Prefer this when avoiding deliberate frame skips matters more than maximum speed. |
-| **Turbo** | Fast policy plus B-frame skipping. | Extra speed while preserving the P-frame reference chain. |
+| **Turbo** | Fast policy plus B-frame skipping. | The default: extra speed while preserving the P-frame reference chain. |
 | **Turbo+** | Skips both P- and B-frames. | Last-resort keyframe/slideshow mode; not recommended for normal viewing. |
-| **TurboGT** | Same policy as Turbo. | Kept as a selectable name; see below. |
+| **Smoosh** | Turbo, plus P/B pictures that are already late are not decoded. | Streams with no B-frames, such as YouTube 360p. Motion smears until the next keyframe, but the video keeps moving and audio comes first. |
 
-Turbo and TurboGT are now the same setting. TurboGT used to differ by
-disabling deblocking on keyframes too, and every mode from Balanced down now
-does that unconditionally: leaving some pictures undegraded made the decoder
-filter the remaining ones against stale per-macroblock deblocking parameters,
-which was both wrong and slow enough that Fast ran *slower* than Quality. The
-one candidate replacement lever for TurboGT - truncating motion vectors to
-whole samples - was implemented and measured at 3-4% for a 17 dB PSNR loss, so
-it is not shipped. Every mode below Quality is markedly faster than in 1.2.0;
-measured on a 320x180 CABAC stream, Fast by 53%, Turbo by 49%, Balanced by 30%
-and TurboGT by 15%, with Quality itself 8% faster at bit-identical output.
+Every mode from Balanced down also disables deblocking on keyframes: leaving
+some pictures undegraded made the decoder filter the others against stale
+per-macroblock deblocking parameters, which was both wrong and slow enough that
+Fast ran *slower* than Quality. Every mode below Quality is markedly faster
+than in 1.2.0; measured on a 320x180 CABAC stream, Fast by 53%, Turbo by 49%
+and Balanced by 30%, with Quality itself 8% faster at bit-identical output.
+
+TurboGT was retired in 1.3.1, because its policy had become identical to
+Turbo's. `--h264-speed=turbogt` (and `turbo-gt`) still work on the command
+line as aliases for Turbo, but neither GUI offers it any more.
 
 In RTG/CGX mode, `F` switches the live player between its resizeable window and
 a borderless public-screen-sized view without restarting decoding; `--fullscreen`
@@ -556,7 +575,7 @@ without silently looping. Double-clicking a channel plays it directly, without
 a separate Play press.
 
 IPTV playback inherits a snapshot of the controller's display, C2P, lace, 2x,
-audio, H.264, and Fast buffer selections when **IPTV...** is pressed. The IPTV
+audio, VQ, Video and Fast buffer selections when **IPTV...** is pressed. The IPTV
 window shows that snapshot beside its status; close and reopen it after changing controller
 settings. A Shell-launched `iptvgui` uses safe AGA/Standard, lace-off, 2x-off,
 low-bandwidth HLS defaults. The shared bounded argument builder is also used by
