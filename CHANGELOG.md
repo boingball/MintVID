@@ -18,6 +18,14 @@
   straight to that size, so conversion and drawing each do about a quarter
   of the work.
 
+### Changed
+
+- **Audio-only playback moved to the Display chooser.** "Video: Off" is now
+  the Display chooser's last row, **No Video**, where it is easier to
+  find. Video (All Frames / Skip Frames), Skip after and VQ grey out under
+  it. `--no-video` is unchanged, and a saved "Video: Off" setting comes
+  back as No Video.
+
 ## 1.4.0 - 2026-09-23
 
 ### Highlights

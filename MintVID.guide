@@ -89,7 +89,8 @@ Topics:
   - @{b}VQ: Smoosh@{ub} keeps H.264 moving on a machine that cannot keep
     up: late P/B pictures are not decoded, motion smears until the next
     keyframe, and audio always comes first.
-  - @{b}Video: Off@{ub} plays only the soundtrack; no video is decoded.
+  - @{b}No Video@{ub} (Display chooser) plays only the soundtrack; no
+    video is decoded.
     See @{" Video frame policy " LINK FramePolicy}.
   - @{b}Skip after@{ub} sets how far behind Video: Skip Frames may fall
     before it starts skipping.
@@ -346,8 +347,9 @@ controllers:
       normally. This does not change the compressed stream or make the
       decoder cheaper; it is a presentation-time recovery policy.
 
-  @{b}Video: Off@{ub}
-      Play the soundtrack only. No video is decoded or shown, so a machine
+  @{b}Display: No Video@{ub}
+      The last row of the Display chooser, not the Video one: Video, Skip
+      after and VQ grey out under it. Play the soundtrack only. No video is decoded or shown, so a machine
       too slow for the picture (a YouTube talk, a music video) can still
       play it. A small window on Workbench shows the position: ESC or its
       close gadget stops, space pauses, cursor left/right seek and
@@ -365,7 +367,7 @@ The command-line equivalents are:
   --throughput       keep late decoded pictures (All Frames)
   --no-throughput    drop late decoded pictures (Skip Frames)
   --skip-trigger=MS  how far behind Skip Frames may fall first (Skip after)
-  --no-video         audio only (Video: Off)
+  --no-video         audio only (Display: No Video)
 
 @{b}Skip after@{ub}, beside the Video chooser, sets how far behind a Skip
 Frames session may fall (0.2 to 2 seconds, default 0.7) before it starts

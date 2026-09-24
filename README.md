@@ -26,7 +26,7 @@ format support is not a promise of real-time playback on every 68k.
 MintVID 1.4.0 brings stereo audio through a synchronized Paula channel
 pair, and YouTube's 360p stream now plays on a Pi3-based PiStorm 600 with
 VQ Turbo and the new RTG (Half) display mode. It also adds VQ Smoosh,
-audio-only playback (Video: Off), faster H.264 and AAC decoding, and makes
+audio-only playback (Display: No Video), faster H.264 and AAC decoding, and makes
 the P96 hardware video overlay work on real Voodoo3/Permedia-class boards.
 
 ![MintVID playing an LGR YouTube video on AmigaOS](player/amiga/art/MintVID-YouTube.png)
@@ -47,8 +47,9 @@ the P96 hardware video overlay work on real Voodoo3/Permedia-class boards.
 - **VQ: Smoosh** (`--h264-speed=smoosh`): Turbo's policy, plus P/B
   pictures that are already late are not decoded. Motion smears until the
   next keyframe, but the video keeps moving and audio comes first.
-- **Video: Off** (`--no-video`): plays only the soundtrack, with no video
-  decode, for machines too slow for the picture.
+- **No Video** (`--no-video`, last row of the Display chooser): plays only
+  the soundtrack, with no video decode, for machines too slow for the
+  picture.
 - **Skip after** (`--skip-trigger=200..2000`): how far behind Video: Skip
   Frames may fall before it starts skipping.
 - **Turbo+ keeps its audio:** it no longer skips about 10 s of audio while
@@ -71,8 +72,9 @@ introduction this release builds on.
 
 ## Video frame policy
 
-Both GUI editions expose **Video: All Frames**, **Video: Skip Frames** and
-**Video: Off** (audio only, `--no-video`).
+Both GUI editions expose **Video: All Frames** and **Video: Skip Frames**.
+Audio-only playback (`--no-video`) is the Display chooser's **No Video**
+row; the Video, Skip after and VQ controls grey out under it.
 All Frames is the default and preserves every decoded picture. For most
 codecs, Skip Frames discards late decoded output. For H.264, sustained
 lateness also escalates libavc to `IVD_SKIP_PB`, avoiding most P/B-picture

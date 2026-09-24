@@ -5546,6 +5546,19 @@ The general lesson: any Amiga library call made outside display.c before
 base before using it on a new code path. Flushed "no-video:" log lines
 bracket the audio open and the window open. Not yet retested on hardware.
 
+**Moved to the Display chooser.** The user's call: people look for "no
+video" where they pick how video is shown, so the Video chooser's Off row
+became the Display chooser's last row, "No Video" (`MR_DISPLAY_NONE`,
+`--display none` in the browser hand-off). The Video chooser is back to
+All Frames / Skip Frames. Both GUIs set `no_video` from the display, and
+`update_skip_after()` now also greys Video and VQ under it (C2P, Laced
+and Scale already grey through `mr_display_has_screen_options()`). Core
+code tests `mr_play_options_no_video()`, which is true for either
+`no_video` or `MR_DISPLAY_NONE`, so `--no-video` from the CLI and old
+saved settings still work. A saved setting with `no_video` set restores
+to the No Video row. The enum value is appended, so saved display values
+keep their meaning.
+
 ## AGA (Window): video on the Workbench with shared pens
 `amiga/display_aga_window.c` (`backend_aga_window`, `--aga-window`,
 `MR_DISPLAY_AGA_WINDOW`, GUI "AGA (Window)") plays in a sizeable window on

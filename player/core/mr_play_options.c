@@ -84,7 +84,12 @@ int mr_display_is_rtg(mr_display_mode display)
 int mr_display_has_screen_options(mr_display_mode display)
 {
     return !mr_display_is_rtg(display) && display != MR_DISPLAY_AGA_WINDOW &&
-           display != MR_DISPLAY_AGA_WINDOW_HALF;
+           display != MR_DISPLAY_AGA_WINDOW_HALF && display != MR_DISPLAY_NONE;
+}
+
+int mr_play_options_no_video(const mr_play_options *o)
+{
+    return o && (o->no_video || o->display == MR_DISPLAY_NONE);
 }
 
 static unsigned clamp_skip_trigger(unsigned ms)
@@ -141,6 +146,7 @@ static const char *display_name(mr_display_mode display)
     case MR_DISPLAY_AGA_EHB: return "ehb";
     case MR_DISPLAY_AGA_WINDOW: return "aga-window";
     case MR_DISPLAY_AGA_WINDOW_HALF: return "aga-window-half";
+    case MR_DISPLAY_NONE: return "none";
     default: return "aga";
     }
 }
@@ -295,7 +301,8 @@ static int append_playback_flags(char *out, size_t cap,
     snprintf(number, sizeof(number), "--skip-trigger=%u",
              clamp_skip_trigger(o->skip_trigger_ms));
     if (!append_option(out, cap, number)) return 0;
-    if (o->no_video && !append_option(out, cap, "--no-video")) return 0;
+    if (mr_play_options_no_video(o) &&
+        !append_option(out, cap, "--no-video")) return 0;
     return 1;
 }
 
@@ -380,6 +387,7 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "ehb")) o->display = MR_DISPLAY_AGA_EHB;
             else if (!strcmp(value, "aga-window")) o->display = MR_DISPLAY_AGA_WINDOW;
             else if (!strcmp(value, "aga-window-half")) o->display = MR_DISPLAY_AGA_WINDOW_HALF;
+            else if (!strcmp(value, "none")) { o->display = MR_DISPLAY_NONE; o->no_video = 1; }
             else goto bad;
         } else if (!strcmp(arg, "--c2p")) {
             if (i + 1 >= argc) goto bad;
@@ -537,9 +545,14 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
            o->h264_performance == MR_H264_PERF_TURBO_PLUS ? "Turbo+" :
            o->h264_performance == MR_H264_PERF_SMOOSH ? "Smoosh" : "Auto";
     audio = audio_policy_text(o);
-    if (o->no_video)
-        snprintf(video, sizeof video, "Off (audio only)");
-    else if (o->throughput)
+    if (mr_play_options_no_video(o)) {
+        snprintf(out, cap,
+                 "Playback: No Video (audio only) / %s / Audio %s / Fast buffer %s%s",
+                 hls, audio, fast_buffer_text(o),
+                 o->live_resync ? " / Live-resync" : "");
+        return;
+    }
+    if (o->throughput)
         snprintf(video, sizeof video, "All Frames");
     else {
         unsigned ms = clamp_skip_trigger(o->skip_trigger_ms);

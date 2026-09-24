@@ -878,7 +878,7 @@ int main(void) {
                                      NULL, NULL));
     assert(strstr(args, "--no-video"));
     mr_play_options_summary(&o, summary, sizeof(summary));
-    assert(strstr(summary, "Video Off (audio only)"));
+    assert(strstr(summary, "Playback: No Video (audio only)"));
     assert(mr_build_iptv_arguments(buf, sizeof(buf), &o));
     argv_rt[0] = "ytgui";
     argc_rt = 1;
@@ -888,6 +888,34 @@ int main(void) {
     assert(mr_play_options_parse(&parsed, argc_rt, argv_rt, error,
                                  sizeof(error)));
     assert(parsed.no_video);
+
+    /* The GUIs pick audio-only through the Display chooser's "No Video"
+     * row: MR_DISPLAY_NONE alone must produce --no-video, no display or
+     * C2P flags, and survive a browser's re-parse as the same row. */
+    mr_play_options_default(&o);
+    o.display = MR_DISPLAY_NONE;
+    o.c2p = MR_C2P_KALMS;
+    o.scale_2x = 1;
+    assert(!o.no_video && mr_play_options_no_video(&o));
+    assert(!mr_display_has_screen_options(o.display) &&
+           !mr_display_is_rtg(o.display));
+    assert(mr_build_player_arguments(args, sizeof(args), &o, url,
+                                     NULL, NULL));
+    assert(strstr(args, "--no-video") && !strstr(args, "--aga") &&
+           !strstr(args, "--kalms-c2p") && !strstr(args, "--2x") &&
+           !strstr(args, "--p96") && !strstr(args, "--rtg-half"));
+    mr_play_options_summary(&o, summary, sizeof(summary));
+    assert(strstr(summary, "Playback: No Video (audio only)") &&
+           !strstr(summary, "H264") && !strstr(summary, "Lace"));
+    assert(mr_build_iptv_arguments(buf, sizeof(buf), &o));
+    assert(strstr(buf, "--display none") && !strstr(buf, "--c2p"));
+    argc_rt = 1;
+    for (p = strtok(buf, " \n"); p && argc_rt < 40; p = strtok(NULL, " \n"))
+      argv_rt[argc_rt++] = p;
+    mr_play_options_default(&parsed);
+    assert(mr_play_options_parse(&parsed, argc_rt, argv_rt, error,
+                                 sizeof(error)));
+    assert(parsed.display == MR_DISPLAY_NONE && parsed.no_video);
   }
   remove("/tmp/mr_channels.json");
   remove("/tmp/mr_streams.json");

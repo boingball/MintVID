@@ -2651,7 +2651,7 @@ int main(int argc, char **argv)
      * build cannot decode still plays its soundtrack. */
     if (no_video) {
         int rc;
-        /* Both off would play nothing; the user picked Video: Off to listen,
+        /* Both off would play nothing; the user picked No Video to listen,
          * so an older No audio setting left ticked yields to it. */
         if (no_audio)
             printf("no-video: ignoring --no-audio (nothing would play)\n");
