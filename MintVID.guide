@@ -206,12 +206,22 @@ out on its own.
 @{b}Playing a video@{ub}
 
 Run the controller, choose a movie, and select a display mode: AGA, ECS,
-EHB, HAM6, HAM8, RTG (WritePixel), RTG (Half), P96 (Windowed) or P96
-(Fullscreen). Laced and 2x apply to the chipset modes; RTG playback opens a
-size-gadget window and scales the video as that window is resized. RTG
+EHB, HAM6, HAM8, AGA (Window), RTG (WritePixel), RTG (Half), P96
+(Windowed) or P96 (Fullscreen). Laced and 2x apply to the chipset modes;
+RTG playback opens a size-gadget window and scales the video as that window
+is resized. RTG
 (Half) opens that window at half the video's width and height and converts
 H.264 straight to that size, which cuts colour conversion and the copy to
 the card to about a quarter; other codecs play at full size.
+AGA (Window), offered when Workbench is not an RTG screen, plays in a
+sizeable window on the Workbench instead of opening its own screen. It
+shares Workbench's colours: each colour of the dither palette is matched to
+the closest screen pen, and free pens are used where there are some, so
+Workbench's own colours never change. With 256 colours on Workbench the
+picture uses the same 216-colour palette as the AGA screen mode; shallower
+Workbenches get a 32- or 16-colour palette. It is slower than the AGA
+screen mode, since graphics.library does the chunky-to-planar step so that
+overlapping windows are clipped. Laced, 2x and C2P do not apply.
 The C2P chooser selects the standard graphics.library path, CD32 Akiko
 hardware, or the Kalms converter for chipset playback (it is disabled for
 CGX). Kalms is the default; incompatible geometry or bitmap layouts fall
@@ -658,6 +668,7 @@ Every GUI is a front end over mrplay, which also runs directly:
     "https://example.net/live/master.m3u8"
   mrplay --p96 "DH0:Videos/movie.avi"
   mrplay --rtg-half --h264-speed=turbo "DH0:Videos/clip.mp4"
+  mrplay --aga-window "DH0:Videos/clip.avi"
   mrplay --no-video "DH0:Videos/concert.mp4"
 
 mrplay carries a $STACK:320000 AmigaOS stack cookie because libavc needs

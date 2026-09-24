@@ -114,7 +114,7 @@ enum {
 
 /* Chooser rows are chipset-dependent, so never infer a display mode from a
  * hard-coded row number. This map is populated alongside the labels. */
-static mr_display_mode mode_values[10];
+static mr_display_mode mode_values[12];
 static unsigned mode_count;
 /* "Skip after" chooser (--skip-trigger=). Kept file-level rather than
  * threaded through every read_play_options() caller's argument list, since
@@ -607,7 +607,8 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
     selected = 0;
     GetAttr(CHOOSER_Selected, mode, &selected);
     disable_chipset_options = selected < mode_count &&
-                              mr_display_is_rtg(mode_values[selected])
+                              !mr_display_has_screen_options(
+                                  mode_values[selected])
                             ? TRUE : FALSE;
 
     selected_c2p = 0;
@@ -1446,6 +1447,10 @@ int main(void)
     if (!add_mode_node(&modes, "HAM6", MR_DISPLAY_HAM6) ||
         (chipset_has_aga() &&
          !add_mode_node(&modes, "HAM8", MR_DISPLAY_HAM8)) ||
+        /* Video in a Workbench window with shared pens. Only offered on a
+         * native-chipset Workbench: an RTG one has RTG (WritePixel). */
+        (!have_rtg && !add_mode_node(&modes, "AGA (Window)",
+                                     MR_DISPLAY_AGA_WINDOW)) ||
         (have_rtg && !add_mode_node(&modes, "RTG (WritePixel)", MR_DISPLAY_CGX)) ||
         /* Half-resolution WritePixel for boards with no working P96
          * overlay (PiStorm): a quarter of the YUV->RGB and blit work. */

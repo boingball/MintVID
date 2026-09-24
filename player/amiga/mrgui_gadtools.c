@@ -79,8 +79,8 @@ typedef struct gt_app {
     struct FileRequester *requester;
     mr_master_options_port *master;
     mr_gui_menu menu;
-    mr_display_mode modes[10];
-    STRPTR mode_labels[11];
+    mr_display_mode modes[12];
+    STRPTR mode_labels[13];
     unsigned mode_count;
     mr_c2p_mode c2p_modes[5];
     STRPTR c2p_labels[6];
@@ -408,7 +408,7 @@ static void update_mode_controls(gt_app *app, int output_changed)
 {
     ULONG selected = gad_value(app, app->mode, GTCY_Active);
     ULONG disabled = selected < app->mode_count &&
-                     mr_display_is_rtg(app->modes[selected]);
+                     !mr_display_has_screen_options(app->modes[selected]);
     ULONG selected_c2p = gad_value(app, app->c2p, GTCY_Active);
     mr_c2p_mode selected_c2p_mode = selected_c2p < app->c2p_count
                                   ? app->c2p_modes[selected_c2p]
@@ -1046,6 +1046,12 @@ static int build_window(gt_app *app)
     if (aga()) {
         app->mode_labels[app->mode_count] = (STRPTR)"Display: HAM8";
         app->modes[app->mode_count++] = MR_DISPLAY_HAM8;
+    }
+    if (!screen_is_rtg(app->screen)) {
+        /* Video in a Workbench window with shared pens. Only offered on a
+         * native-chipset Workbench: an RTG one has RTG (WritePixel). */
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: AGA (Window)";
+        app->modes[app->mode_count++] = MR_DISPLAY_AGA_WINDOW;
     }
     if (screen_is_rtg(app->screen)) {
         app->mode_labels[app->mode_count] = (STRPTR)"Display: RTG (WritePixel)";

@@ -96,6 +96,7 @@ extern const display_backend backend_cgx;
 extern const display_backend backend_p96;
 extern const display_backend backend_p96pip;
 extern const display_backend backend_aga;
+extern const display_backend backend_aga_window;
 
 /* AGA backend configuration, set via the public display_set_* calls. */
 extern int g_aga_ham;    /* 0 = indexed planar, 6 = HAM6, 8 = AGA HAM8      */
