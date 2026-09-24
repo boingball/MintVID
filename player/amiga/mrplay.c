@@ -3076,6 +3076,18 @@ int main(int argc, char **argv)
 
     {
         int playback_started = 0;
+        /* Paula was started before the first picture existed, because the
+         * FIFO filled first (Turbo+ shows keyframes only, so the first
+         * picture can be seconds away). The media clock then already runs
+         * from the audio, and the first picture joins it instead of
+         * rebasing it. Cleared wherever playback_started is. */
+        int audio_early = 0;
+        /* Container pts of the first audio packet since the last (re)start,
+         * and the media time the clock gave that sample when Paula started
+         * early: together they place the first picture on the audio's
+         * timeline (the first decoded picture is otherwise anchored to 0). */
+        int have_first_audio_pts = 0;
+        uint64_t first_audio_pts_us = 0, audio_early_t0_us = 0;
         int network_source = mr_source_is_url(media_path);
         /* Throughput mode: on a network/HLS source, real-time decode
          * throughput is not guaranteed (see CLAUDE.md's "Live HLS playback
@@ -3549,6 +3561,7 @@ int main(int argc, char **argv)
             /* Re-prime from the new position; the startup path below refills the
              * queue and audio cushion and restarts playback near the edge. */
             playback_started = 0;
+            audio_early = 0; have_first_audio_pts = 0;
             decoded_index = 0; mono_base_us = 0; video_run = 0; last_packet_call_us = 0;
             have_container_pts = 0; last_container_pts_us = 0;
             container_pts_adjust_us = 0;
@@ -3638,6 +3651,7 @@ int main(int argc, char **argv)
                     if (audio_dec) mr_audio_decoder_reset(audio_dec);
                     qcount = 0; qhead = 0;
                     playback_started = 0;
+                    audio_early = 0; have_first_audio_pts = 0;
                     /* decoded_index drives synthetic_pts (= decoded_index *
                      * period_us, the same product either way period_us is
                      * derived) below, used whenever a decoded frame's own
@@ -3941,6 +3955,7 @@ int main(int argc, char **argv)
             have_container_pts = 0; last_container_pts_us = 0;
             container_pts_adjust_us = 0;
             playback_started = 0;
+            audio_early = 0; have_first_audio_pts = 0;
             if (audio)
                 media_clock_rebase(&mc, audio_elapsed_us(audio), 0);
             else
@@ -4052,6 +4067,7 @@ int main(int argc, char **argv)
             have_container_pts = 0; last_container_pts_us = 0;
             container_pts_adjust_us = 0;
             playback_started = 0;
+            audio_early = 0; have_first_audio_pts = 0;
             qcount = 0; qhead = 0;
             if (audio) media_clock_rebase(&mc, audio_elapsed_us(audio), 0);
             else memset(&mc, 0, sizeof mc);
@@ -4101,8 +4117,10 @@ int main(int argc, char **argv)
              * about 10 s on a YouTube clip, heard as a jump forward at
              * the first keyframe. Only while Paula is running: before
              * playback starts the FIFO does not drain, and holding reads
-             * there could wait forever for a first picture. */
-            if (can_decode && audio && playback_started &&
+             * there could wait forever for a first picture. The start
+             * logic below makes sure Paula is running (audio_early) by
+             * the time the FIFO gets this full. */
+            if (can_decode && audio && (playback_started || audio_early) &&
                 audio_ms + AUDIO_FIFO_HEADROOM_MS >= audio_capacity_ms(audio))
                 can_decode = 0;
             if (can_decode) {
@@ -4174,6 +4192,10 @@ int main(int argc, char **argv)
                 }
                 else if (!pkt.is_video) {
                     if (want_time) { video_run = 0; stats.audio_packets++; }
+                    if (!have_first_audio_pts && pkt.has_pts) {
+                        first_audio_pts_us = pkt.pts_us;
+                        have_first_audio_pts = 1;
+                    }
                     if (audio && audio_dec) {
                         trace_phase(&trace, "audio-decode");
                         /* stats.audio_decode_us only ever feeds the --time
@@ -4761,12 +4783,67 @@ drain_decoded_output:
                         stats.refill_delayed_ready_us +=
                             refill_elapsed - (uint64_t)(-due_before);
                 }
+                /* The audio FIFO is about to overflow before startup_depth
+                 * pictures exist: in Turbo+ the next picture is the next
+                 * keyframe, often seconds away. Waiting would drop audio
+                 * (heard as the opening seconds skipping), so start with
+                 * the pictures there are, or with audio alone if there
+                 * are none yet. */
+                int fifo_full = audio && !playback_started &&
+                    audio_buffered_ms(audio) + AUDIO_FIFO_HEADROOM_MS >=
+                        audio_capacity_ms(audio);
                 if (!playback_started &&
-                    (qcount >= startup_depth || input_eof) &&
-                    (!audio || audio_buffered_ms(audio) >=
-                               AUDIO_STARTUP_TARGET_MS || input_eof)) {
+                    (qcount >= startup_depth || input_eof ||
+                     (qcount > 0 && (fifo_full || audio_early))) &&
+                    (!audio || audio_early || fifo_full ||
+                     audio_buffered_ms(audio) >= AUDIO_STARTUP_TARGET_MS ||
+                     input_eof)) {
                     playback_started = qcount > 0;
-                    if (playback_started) {
+                    if (playback_started && audio_early) {
+                        /* Paula is already playing: the audio clock is
+                         * the timeline, so anchor the wall clock to it
+                         * and let the first picture wait for its pts. */
+                        uint64_t amc;
+                        live_diag_report(&trace, "started");
+                        /* The first decoded picture was anchored to
+                         * pts 0 (or the seek target), but it really lies
+                         * after the first audio sample by the difference
+                         * in their container timestamps. Move the video
+                         * timeline by that much so the picture shows in
+                         * step with the audio already playing. */
+                        if (have_first_audio_pts && have_container_pts) {
+                            int64_t frame_container =
+                                (int64_t)vq[qhead].pts_us -
+                                container_pts_adjust_us;
+                            int64_t true_pts =
+                                (int64_t)audio_early_t0_us +
+                                frame_container -
+                                (int64_t)first_audio_pts_us;
+                            int64_t delta;
+                            int k;
+                            if (true_pts < 0) true_pts = 0;
+                            delta = true_pts - (int64_t)vq[qhead].pts_us;
+                            container_pts_adjust_us += delta;
+                            for (k = 0; k < qcount; k++) {
+                                queued_video *qv =
+                                    &vq[(qhead + k) % video_cap];
+                                qv->pts_us = (uint64_t)
+                                    ((int64_t)qv->pts_us + delta);
+                            }
+                        }
+                        now = monotonic_us();
+                        amc = current_media_clock_us(&mc, 1,
+                                                     audio_starved(audio),
+                                                     audio_elapsed_us(audio),
+                                                     want_time);
+                        mono_base_us = now - amc;
+                        display_set_status(disp, NULL);
+                        if (want_time)
+                            printf("startup: first picture pts=%lu ms joins "
+                                   "audio at %lu ms\n",
+                                   (unsigned long)(vq[qhead].pts_us / 1000),
+                                   (unsigned long)(amc / 1000));
+                    } else if (playback_started) {
                         live_diag_report(&trace, "started");
                         now = monotonic_us();
                         mono_base_us = now - vq[qhead].pts_us;
@@ -4801,6 +4878,22 @@ drain_decoded_output:
                             h264_pipeline_stage = 3;
                         }
                     }
+                }
+                /* No picture at all yet and the FIFO is full: play the audio
+                 * now. The media clock was already set up for this start
+                 * position (zeroed at session start, rebased by every reset
+                 * path), so it simply runs from Paula; reads stay gated by
+                 * the FIFO headroom check above, and the first picture joins
+                 * this clock in the branch above when it arrives. */
+                if (!playback_started && !audio_early && fifo_full) {
+                    audio_early = 1;
+                    audio_early_t0_us = media_clock_rescue_estimate(
+                        &mc, audio_elapsed_us(audio));
+                    audio_set_running(audio, 1);
+                    if (want_time)
+                        printf("startup: audio FIFO full (%lu ms) before the "
+                               "first picture; starting audio first\n",
+                               audio_buffered_ms(audio));
                 }
                 continue;
             }

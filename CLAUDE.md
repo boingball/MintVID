@@ -5448,6 +5448,56 @@ lose the tail of an audio burst now pause reading until it drains
 instead. Amiga-only code, not compiled here; `fifo-dropped` in a `--time`
 log should now stay at 0.
 
+**That fix missed the start, and the A1200 still skipped the opening
+seconds.** Nothing limited reads before the first start. That start
+waits for `startup_depth` pictures (2 for local files, 1 for network) and
+400 ms of audio. In Turbo+ the second picture, or even the first, is a
+keyframe seconds away, so the FIFO overflowed before Paula ever ran. Two
+changes near the start block in mrplay.c, both only when the FIFO is
+within the headroom of full before playback has started:
+- With at least one picture queued, playback starts with what it has.
+  This is the normal start path, rebasing the audio clock to that picture.
+- With no picture yet, Paula starts on its own (`audio_early`), and the
+  headroom read gate now also covers that state. The media clock already
+  maps the FIFO's first sample to the start position: it is zeroed at
+  session start, and every reset path rebases it to 0 or the seek target.
+  When the first picture arrives, it joins that clock and does not rebase
+  it. `mono_base_us` is set from the current audio media time.
+
+The first decoded picture is always anchored to session pts 0 by
+`container_pts_adjust_us`. In the audio-first case that is wrong, because
+the picture really sits seconds into the audio. On joining, the video
+timeline is shifted by `t0 + (picture container pts - first audio packet
+pts) - picture pts`, where `t0` is the clock's media time when Paula
+started early. The shift is applied to `container_pts_adjust_us` and to
+every queued picture. The first audio packet's pts is tracked from each
+(re)start and cleared with `audio_early` at the same four reset sites.
+Without a pts on either side the shift is skipped, and the picture just
+shows late once. `--time` prints both startup events. Not compiled here
+and not yet retested on the A1200.
+
+**Turbo+ spent half its decode time on pictures it then skipped.**
+Profiled with `tools/qemu_tbprof.sh` (68060 flags, `--h264-yuv`) on a
+YouTube-like clip: x264 Baseline 640x360, 30 fps, 600 kbps, a keyframe
+every 5 s. Under `IVD_SKIP_PB`, libavc still scans every skipped P
+picture for start codes (`ih264d_find_start_code`, 17%). It also strips
+the emulation-prevention bytes of the whole NAL
+(`ih264d_process_nal_unit`, 17%) before reading enough of the slice
+header to skip it. On top of that come our AVCC-to-Annex-B copy and
+per-call memsets.
+
+`h264_decode()` now runs Smoosh's pre-libavc drop (`h264_au_droppable()`)
+whenever `base_skip_mode == IVD_SKIP_PB`, i.e. under Turbo+ only. Skip
+Frames' dynamic escalation is deliberately left to libavc. Measured on
+that clip, the whole run went from 45.5M to 27.2M guest instructions
+(-40%), and the keyframe decode work is unchanged.
+
+Turbo+ output is byte-identical with and without the drop on that clip,
+`test_h264_gop.mp4`/`.ts`, `test_h264_high.mp4` (B-frames) and
+`test_h264_aac.ts`/`.mkv`. `make check` and `make check-m68k` pass. Not
+yet measured on the A1200. There most of the saving should show as idle
+CPU between keyframes, not faster keyframes.
+
 ## Video: Off (`--no-video`), audio-only playback
 For machines too slow for the picture that only want to listen, e.g. to
 a YouTube video. The GUI puts it on the existing Video chooser as a third
