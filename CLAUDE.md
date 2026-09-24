@@ -5576,8 +5576,21 @@ when the Workbench is not RTG, where RTG (WritePixel) is the better
 choice. The enum value is appended at the end, so saved settings keep
 their meaning.
 
-`tests/mr_iptv_check.c` pins the flags and the `--display aga-window`
-round trip. The backend itself was only syntax-checked (host and m68k gcc)
-against stub NDK headers: CI's AmigaOS build is its first real compile,
-and nothing has run on hardware yet. Not done yet: a direct C2P fast path
-for when the window is unobscured.
+Nothing in the backend is AGA-specific, so the GUIs list it on ECS and
+OCS Workbenches too, labelled after the chipset ("AGA/ECS/OCS (Window)").
+Its backend name in logs is "Window (Workbench)".
+
+**Window Half** (`MR_DISPLAY_AGA_WINDOW_HALF`, `--aga-window-half`,
+`display_set_aga_window(2)`, the shared `g_aga_window`) opens the window at
+(w/2)x(h/2). `supports_yuv_indexed` then reports that size with vscale 0,
+so H.264/MPEG-2 go through `mr_yuv420_dither_indexed_resize()` straight to
+half size (nearest-neighbour, a quarter of the dither and draw work).
+RGB24 input dithers only every other row (`stride * 2`) and the scaled
+draw halves the width. Cinepak/MSVideo1 indices arrive at full size and
+are scaled down while drawing.
+
+`tests/mr_iptv_check.c` pins the flags and the `--display aga-window` /
+`aga-window-half` round trips. The backend itself was only syntax-checked (host and m68k gcc)
+against stub NDK headers, then confirmed working on WinUAE (AGA, plenty
+of CPU). ECS/OCS Workbenches and Window Half have not run anywhere yet.
+Not done yet: a direct C2P fast path for when the window is unobscured.

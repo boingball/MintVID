@@ -1447,10 +1447,18 @@ int main(void)
     if (!add_mode_node(&modes, "HAM6", MR_DISPLAY_HAM6) ||
         (chipset_has_aga() &&
          !add_mode_node(&modes, "HAM8", MR_DISPLAY_HAM8)) ||
-        /* Video in a Workbench window with shared pens. Only offered on a
-         * native-chipset Workbench: an RTG one has RTG (WritePixel). */
-        (!have_rtg && !add_mode_node(&modes, "AGA (Window)",
-                                     MR_DISPLAY_AGA_WINDOW)) ||
+        /* Video in a Workbench window with shared pens, full or half size.
+         * Only offered on a native-chipset (AGA/ECS/OCS) Workbench: an RTG
+         * one has RTG (WritePixel) and RTG (Half). */
+        (!have_rtg && !add_mode_node(&modes,
+             chipset_has_aga() ? "AGA (Window)" :
+             chipset_has_ecs_denise() ? "ECS (Window)" : "OCS (Window)",
+             MR_DISPLAY_AGA_WINDOW)) ||
+        (!have_rtg && !add_mode_node(&modes,
+             chipset_has_aga() ? "AGA (Window Half)" :
+             chipset_has_ecs_denise() ? "ECS (Window Half)" :
+                                        "OCS (Window Half)",
+             MR_DISPLAY_AGA_WINDOW_HALF)) ||
         (have_rtg && !add_mode_node(&modes, "RTG (WritePixel)", MR_DISPLAY_CGX)) ||
         /* Half-resolution WritePixel for boards with no working P96
          * overlay (PiStorm): a quarter of the YUV->RGB and blit work. */

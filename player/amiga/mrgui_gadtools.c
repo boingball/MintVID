@@ -1048,10 +1048,19 @@ static int build_window(gt_app *app)
         app->modes[app->mode_count++] = MR_DISPLAY_HAM8;
     }
     if (!screen_is_rtg(app->screen)) {
-        /* Video in a Workbench window with shared pens. Only offered on a
-         * native-chipset Workbench: an RTG one has RTG (WritePixel). */
-        app->mode_labels[app->mode_count] = (STRPTR)"Display: AGA (Window)";
+        /* Video in a Workbench window with shared pens, full or half size.
+         * Only offered on a native-chipset (AGA/ECS/OCS) Workbench: an RTG
+         * one has RTG (WritePixel) and RTG (Half). */
+        app->mode_labels[app->mode_count] =
+            aga() ? (STRPTR)"Display: AGA Window" :
+            ecs() ? (STRPTR)"Display: ECS Window" :
+                    (STRPTR)"Display: OCS Window";
         app->modes[app->mode_count++] = MR_DISPLAY_AGA_WINDOW;
+        app->mode_labels[app->mode_count] =
+            aga() ? (STRPTR)"Display: AGA Win Half" :
+            ecs() ? (STRPTR)"Display: ECS Win Half" :
+                    (STRPTR)"Display: OCS Win Half";
+        app->modes[app->mode_count++] = MR_DISPLAY_AGA_WINDOW_HALF;
     }
     if (screen_is_rtg(app->screen)) {
         app->mode_labels[app->mode_count] = (STRPTR)"Display: RTG (WritePixel)";

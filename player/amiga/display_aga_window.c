@@ -1,9 +1,11 @@
 /*
- * MintVID - "AGA (Window)" backend: video in a window on the Workbench.
+ * MintVID - "Window" backend: video in a window on the Workbench.
  *
  * Every other native-chipset path (display_aga.c) opens its own screen and
  * owns its whole palette. This one shares the default public screen instead,
- * so it has to live with the pens that screen already uses:
+ * so it has to live with the pens that screen already uses. Nothing here is
+ * AGA-specific: an ECS or OCS Workbench (16 or 32 colours, say) gets the
+ * smaller cube its depth allows, through exactly the same code.
  *
  *   - the frame is dithered to the same fixed RGB cube the AGA screen uses
  *     (core/mr_dither.h / mr_yuv_dither.h; 6x6x6 on a 256-colour screen,
@@ -48,6 +50,11 @@
 #include <stdio.h>
 #include <time.h>
 
+/* Half mode (display_set_aga_window(2)): the window opens at half the
+ * video's width and height. H.264/MPEG-2 dither straight to that size from
+ * YUV (a quarter of the dither work and of the draw); other codecs dither
+ * every other row and are scaled down while drawing. */
+
 /* Destination rows remapped and drawn per graphics call. Keeps the strip
  * small and gives Paula a service point between strips. */
 #define AW_STRIP_ROWS 32
@@ -61,7 +68,9 @@ typedef struct {
     UBYTE            lut[256];     /* cube index -> pen, for the hot loop    */
     int              depth;        /* dither depth handed to callers: 4/5/8  */
     int              use_wcp;      /* graphics V40 WriteChunkyPixels()       */
-    int              source_w, source_h;
+    int              half;         /* window and YUV target at half size     */
+    int              source_w, source_h; /* picture size shown (halved in
+                                          * half mode)                        */
     int              bl, bt, iw, ih;
     int              dx, dy, dw, dh; /* aspect-fitted video rectangle        */
     int              pending_w, pending_h;
@@ -271,8 +280,9 @@ static void *aw_open(int w, int h, const char *title)
     s = (aw_state *)AllocVec(sizeof *s, MEMF_CLEAR);
     if (!s) return NULL;
     s->black_pen = -1;
-    s->source_w = w;
-    s->source_h = h;
+    s->half = g_aga_window == 2;
+    s->source_w = s->half ? (w / 2 > 0 ? w / 2 : 1) : w;
+    s->source_h = s->half ? (h / 2 > 0 ? h / 2 : 1) : h;
     s->use_wcp = ((struct Library *)GfxBase)->lib_Version >= 40;
     snprintf(s->title, sizeof s->title, "%s",
              (title && *title) ? title : "MintVID");
@@ -289,8 +299,10 @@ static void *aw_open(int w, int h, const char *title)
     }
     aw_rebuild_geometry(s);
     if (g_display_want_time)
-        printf("aga-window: %s draw path\n",
-               s->use_wcp ? "WriteChunkyPixels" : "WritePixelArray8");
+        printf("aga-window: %s draw path, %s %dx%d\n",
+               s->use_wcp ? "WriteChunkyPixels" : "WritePixelArray8",
+               s->half ? "half size" : "full size",
+               s->source_w, s->source_h);
     return s;
 }
 
@@ -404,6 +416,24 @@ static void aw_show(void *h, const unsigned char *rgb, int w, int hh,
     int y0, y1;
 
     if (!s || !s->win || !rgb || w <= 0 || hh <= 0) return;
+    if (s->half && hh >= 2) {
+        /* Only every other row can survive a halved picture, so dither
+         * just those (the whole frame: the draw rescales it anyway). The
+         * horizontal halving happens in the scaled draw. */
+        int rows = hh / 2;
+        need = (size_t)w * (size_t)rows;
+        if (!s->idx || s->idx_size < need) {
+            UBYTE *p = (UBYTE *)AllocVec(need, MEMF_ANY);
+            if (!p) return;
+            if (s->idx) FreeVec(s->idx);
+            s->idx = p;
+            s->idx_size = need;
+        }
+        mr_dither_rgb_indexed(rgb, w, rows, stride * 2, s->idx, w, 0,
+                              s->depth);
+        aw_draw_indices(s, s->idx, w, rows, w, 0, rows, service, opaque);
+        return;
+    }
     need = (size_t)w * (size_t)hh;
     if (!s->idx || s->idx_size < need) {
         UBYTE *p = (UBYTE *)AllocVec(need, MEMF_ANY);
@@ -430,17 +460,25 @@ static int aw_supports_indexed(void *h, int *indexed_depth)
     return 1;
 }
 
-/* H.264/MPEG-2 can dither straight from their YUV planes at source size;
- * any window scaling happens in aw_draw_indices(). */
+/* H.264/MPEG-2 can dither straight from their YUV planes: at source size
+ * normally (vscale 1), or straight to half size in half mode (vscale 0, the
+ * general resize path). Any further window scaling happens in
+ * aw_draw_indices(). */
 static int aw_supports_yuv_indexed(void *h, int src_w, int src_h,
                                    int *dst_w, int *dst_h, int *vscale,
                                    int *indexed_depth, int *ham)
 {
     aw_state *s = (aw_state *)h;
     if (!s || src_w <= 0 || src_h <= 0) return 0;
-    if (dst_w) *dst_w = src_w;
-    if (dst_h) *dst_h = src_h;
-    if (vscale) *vscale = 1;
+    if (s->half) {
+        if (dst_w) *dst_w = src_w / 2 > 0 ? src_w / 2 : 1;
+        if (dst_h) *dst_h = src_h / 2 > 0 ? src_h / 2 : 1;
+        if (vscale) *vscale = 0;
+    } else {
+        if (dst_w) *dst_w = src_w;
+        if (dst_h) *dst_h = src_h;
+        if (vscale) *vscale = 1;
+    }
     if (indexed_depth) *indexed_depth = s->depth;
     if (ham) *ham = 0;
     return 1;
@@ -525,7 +563,7 @@ static void aw_close(void *h)
 }
 
 const display_backend backend_aga_window = {
-    .name = "AGA (Window)",
+    .name = "Window (Workbench)",
     .open = aw_open,
     .show = aw_show,
     .timing = aw_timing,

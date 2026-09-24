@@ -49,10 +49,14 @@ typedef enum {
      * blit work, for RTG boards without a working P96 overlay (PiStorm).
      * Passes --rtg-half; see mrplay.c's rtg_half_active. */
     MR_DISPLAY_RTG_HALF,
-    /* Video in a window on the Workbench screen, using shared screen pens
-     * (ObtainBestPen) for the dither palette - see amiga/display_aga_window.c.
-     * Native chipset, but no C2P, lace or 2x options apply. --aga-window. */
-    MR_DISPLAY_AGA_WINDOW
+    /* Video in a window on the Workbench screen (AGA, ECS or OCS), using
+     * shared screen pens (ObtainBestPen) for the dither palette - see
+     * amiga/display_aga_window.c. Native chipset, but no C2P, lace or 2x
+     * options apply. --aga-window. */
+    MR_DISPLAY_AGA_WINDOW,
+    /* The same window at half the video's width and height: H.264/MPEG-2
+     * dither straight to that size. --aga-window-half. */
+    MR_DISPLAY_AGA_WINDOW_HALF
 } mr_display_mode;
 
 typedef enum {
@@ -167,7 +171,8 @@ typedef struct mr_play_options {
 int mr_display_is_rtg(mr_display_mode display);
 
 /* The display modes that open their own native screen, where the C2P, lace,
- * 2x and Copper 2x options apply: everything except RTG and AGA (Window). */
+ * 2x and Copper 2x options apply: everything except RTG and the Workbench
+ * window modes. */
 int mr_display_has_screen_options(mr_display_mode display);
 
 void mr_play_options_default(mr_play_options *options);

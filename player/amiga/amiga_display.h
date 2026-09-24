@@ -62,13 +62,15 @@ void display_set_force_aga(int on);
  * display_set_force_aga() is also on. */
 void display_set_force_p96(int on);
 
-/* Show the video in a window on the default public screen (an AGA
- * Workbench, typically) instead of opening a screen of its own. Frames are
- * dithered to the usual RGB cube and each cube colour is mapped to a shared
- * screen pen with ObtainBestPen(), so Workbench's own colours are left
- * alone. No HAM, no C2P. Tried before every other backend; the normal chain
- * is the fallback if the window can't open. See display_aga_window.c. */
-void display_set_aga_window(int on);
+/* Show the video in a window on the default public screen (an AGA, ECS or
+ * OCS Workbench) instead of opening a screen of its own. Frames are
+ * dithered to the usual RGB cube (sized to the screen's depth) and each
+ * cube colour is mapped to a shared screen pen with ObtainBestPen(), so
+ * Workbench's own colours are left alone. No HAM, no C2P. mode: 0 off,
+ * 1 Window, 2 Window (Half) - half the video's width and height. Tried
+ * before every other backend; the normal chain is the fallback if the
+ * window can't open. See display_aga_window.c. */
+void display_set_aga_window(int mode);
 
 /* Planar colour mode: 0 = indexed dither (256 colours on AGA, 32 on
  * OCS/ECS), 6 = HAM6 on any chipset, 8 = HAM8 on AGA. A non-zero HAM depth

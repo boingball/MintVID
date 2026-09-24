@@ -83,7 +83,8 @@ int mr_display_is_rtg(mr_display_mode display)
 
 int mr_display_has_screen_options(mr_display_mode display)
 {
-    return !mr_display_is_rtg(display) && display != MR_DISPLAY_AGA_WINDOW;
+    return !mr_display_is_rtg(display) && display != MR_DISPLAY_AGA_WINDOW &&
+           display != MR_DISPLAY_AGA_WINDOW_HALF;
 }
 
 static unsigned clamp_skip_trigger(unsigned ms)
@@ -139,6 +140,7 @@ static const char *display_name(mr_display_mode display)
     case MR_DISPLAY_AGA_ECS16: return "ecs16";
     case MR_DISPLAY_AGA_EHB: return "ehb";
     case MR_DISPLAY_AGA_WINDOW: return "aga-window";
+    case MR_DISPLAY_AGA_WINDOW_HALF: return "aga-window-half";
     default: return "aga";
     }
 }
@@ -211,6 +213,8 @@ static int append_playback_flags(char *out, size_t cap,
             !append_option(out, cap, "--rtg-half")) return 0;
         if (o->display == MR_DISPLAY_AGA_WINDOW &&
             !append_option(out, cap, "--aga-window")) return 0;
+        if (o->display == MR_DISPLAY_AGA_WINDOW_HALF &&
+            !append_option(out, cap, "--aga-window-half")) return 0;
         if (mr_display_has_screen_options(o->display)) {
             const char *flag = o->c2p == MR_C2P_AKIKO ? "--cd32" :
                                o->c2p == MR_C2P_KALMS ? "--kalms-c2p" :
@@ -375,6 +379,7 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "ecs16")) o->display = MR_DISPLAY_AGA_ECS16;
             else if (!strcmp(value, "ehb")) o->display = MR_DISPLAY_AGA_EHB;
             else if (!strcmp(value, "aga-window")) o->display = MR_DISPLAY_AGA_WINDOW;
+            else if (!strcmp(value, "aga-window-half")) o->display = MR_DISPLAY_AGA_WINDOW_HALF;
             else goto bad;
         } else if (!strcmp(arg, "--c2p")) {
             if (i + 1 >= argc) goto bad;
@@ -549,8 +554,11 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
                  "WritePixel",
                  hls, h264, audio, fast_buffer_text(o),
                  o->live_resync ? " / Live-resync" : "", video);
-    else if (o->display == MR_DISPLAY_AGA_WINDOW)
-        snprintf(out, cap, "Playback: AGA (Window) / %s / H264 %s / Audio %s / Fast buffer %s%s / Video %s",
+    else if (o->display == MR_DISPLAY_AGA_WINDOW ||
+             o->display == MR_DISPLAY_AGA_WINDOW_HALF)
+        snprintf(out, cap, "Playback: %s / %s / H264 %s / Audio %s / Fast buffer %s%s / Video %s",
+                 o->display == MR_DISPLAY_AGA_WINDOW_HALF ? "Window (Half)"
+                                                          : "Window",
                  hls, h264, audio, fast_buffer_text(o),
                  o->live_resync ? " / Live-resync" : "", video);
     else

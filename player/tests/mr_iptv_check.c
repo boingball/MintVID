@@ -791,13 +791,13 @@ int main(void) {
     assert(!mr_display_has_screen_options(MR_DISPLAY_CGX));
     assert(mr_build_player_arguments(args, sizeof(args), &o, url,
                                      NULL, NULL));
-    assert(strstr(args, "--aga-window"));
+    assert(strstr(args, "--aga-window") && !strstr(args, "--aga-window-half"));
     assert(!strstr(args, "--aga ") && !strstr(args, "--kalms-c2p") &&
            !strstr(args, "--c2p") && !strstr(args, "--wpa") &&
            !strstr(args, "--lace") && !strstr(args, "--2x") &&
            !strstr(args, "--copper-vdouble") && !strstr(args, "--p96"));
     mr_play_options_summary(&o, summary, sizeof(summary));
-    assert(strstr(summary, "AGA (Window)") && !strstr(summary, "Lace"));
+    assert(strstr(summary, "Playback: Window /") && !strstr(summary, "Lace"));
     assert(mr_build_iptv_arguments(buf, sizeof(buf), &o));
     assert(strstr(buf, "--display aga-window") && !strstr(buf, "--c2p") &&
            !strstr(buf, "laced") && !strstr(buf, "scale-2x"));
@@ -808,6 +808,27 @@ int main(void) {
     assert(mr_play_options_parse(&parsed, argc_rt, argv_rt, error,
                                  sizeof(error)));
     assert(parsed.display == MR_DISPLAY_AGA_WINDOW);
+
+    /* Window (Half): same rules, its own flag and --display name. */
+    mr_play_options_default(&o);
+    o.display = MR_DISPLAY_AGA_WINDOW_HALF;
+    o.scale_2x = 1;
+    assert(!mr_display_has_screen_options(o.display));
+    assert(mr_build_player_arguments(args, sizeof(args), &o, url,
+                                     NULL, NULL));
+    assert(strstr(args, "--aga-window-half") && !strstr(args, "--2x") &&
+           !strstr(args, "--kalms-c2p") && !strstr(args, "--aga "));
+    mr_play_options_summary(&o, summary, sizeof(summary));
+    assert(strstr(summary, "Playback: Window (Half) /"));
+    assert(mr_build_iptv_arguments(buf, sizeof(buf), &o));
+    assert(strstr(buf, "--display aga-window-half") && !strstr(buf, "--c2p"));
+    argc_rt = 1;
+    for (p = strtok(buf, " \n"); p && argc_rt < 40; p = strtok(NULL, " \n"))
+      argv_rt[argc_rt++] = p;
+    mr_play_options_default(&parsed);
+    assert(mr_play_options_parse(&parsed, argc_rt, argv_rt, error,
+                                 sizeof(error)));
+    assert(parsed.display == MR_DISPLAY_AGA_WINDOW_HALF);
 
     /* Range limits: 200..2000 ms accepted, anything else refused. */
     {
