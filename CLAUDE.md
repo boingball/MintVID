@@ -5448,6 +5448,34 @@ lose the tail of an audio burst now pause reading until it drains
 instead. Amiga-only code, not compiled here; `fifo-dropped` in a `--time`
 log should now stay at 0.
 
+**That fix missed the start, and the A1200 still skipped the opening
+seconds.** Nothing limited reads before the first start. That start
+waits for `startup_depth` pictures (2 for local files, 1 for network) and
+400 ms of audio. In Turbo+ the second picture, or even the first, is a
+keyframe seconds away, so the FIFO overflowed before Paula ever ran. Two
+changes near the start block in mrplay.c, both only when the FIFO is
+within the headroom of full before playback has started:
+- With at least one picture queued, playback starts with what it has.
+  This is the normal start path, rebasing the audio clock to that picture.
+- With no picture yet, Paula starts on its own (`audio_early`), and the
+  headroom read gate now also covers that state. The media clock already
+  maps the FIFO's first sample to the start position: it is zeroed at
+  session start, and every reset path rebases it to 0 or the seek target.
+  When the first picture arrives, it joins that clock and does not rebase
+  it. `mono_base_us` is set from the current audio media time.
+
+The first decoded picture is always anchored to session pts 0 by
+`container_pts_adjust_us`. In the audio-first case that is wrong, because
+the picture really sits seconds into the audio. On joining, the video
+timeline is shifted by `t0 + (picture container pts - first audio packet
+pts) - picture pts`, where `t0` is the clock's media time when Paula
+started early. The shift is applied to `container_pts_adjust_us` and to
+every queued picture. The first audio packet's pts is tracked from each
+(re)start and cleared with `audio_early` at the same four reset sites.
+Without a pts on either side the shift is skipped, and the picture just
+shows late once. `--time` prints both startup events. Not compiled here
+and not yet retested on the A1200.
+
 ## Video: Off (`--no-video`), audio-only playback
 For machines too slow for the picture that only want to listen, e.g. to
 a YouTube video. The GUI puts it on the existing Video chooser as a third
