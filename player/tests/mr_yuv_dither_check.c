@@ -167,6 +167,14 @@ int main(void)
         { 16, 8, 1 },
         { 18, 12, 2 },     /* odd width - exercises the tail-pixel path     */
         { 2, 2, 1 },
+        /* w % 4 == 1 and 3: the m68k 6x6x6 kernel works in 4-pixel groups,
+         * so these exercise its one- and three-pixel tails. */
+        { 17, 12, 1 },
+        { 19, 10, 2 },
+        { 7, 6, 1 },
+        { 1, 2, 1 },
+        { 3, 4, 1 },
+        { 193, 108, 1 },
     };
     static const int depths[] = { 4, 5, 8 };
     size_t n = sizeof geoms / sizeof geoms[0], i, di;

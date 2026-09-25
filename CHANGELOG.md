@@ -35,6 +35,15 @@
   it. `--no-video` is unchanged, and a saved "Video: Off" setting comes
   back as No Video.
 
+### Performance
+
+- **Faster AGA colour conversion.** Converting each H.264 or MPEG-1/2
+  picture to the 256-colour AGA palette now takes about 20 68k
+  instructions per pixel instead of about 56. Output is identical. On
+  BBC One's 192x108 stream on an A1200 with a 68060/50 this step cost
+  about 28 ms per picture; expect roughly a third of that, but that is
+  not yet measured on the machine.
+
 ### Fixed
 
 - **Turbo+ showed one picture, then stalled, on streams with B-frames.**

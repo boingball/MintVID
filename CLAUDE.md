@@ -5631,6 +5631,46 @@ the live context (3 resumed, none TLS 1.3), then auto again. YouTube is
 affected the same way: googlevideo and the API hosts accept TLS 1.2. How
 much a TLS 1.2 resumption costs on the 060 is for the next log.
 
+**The AGA dither was the next biggest cost, at ~56 instructions per
+pixel.** With TLS fixed, a BBC One run (Turbo, stereo 12 kHz, All Frames)
+spent per decoded picture ~45 ms in `vdecode`, ~28 ms in `yuv-indexed`
+and ~5 ms in Kalms C2P. It decoded ~8.6 pictures a second. That may be every non-B picture
+this stream has (the GOP structure isn't known from here), but either
+way the loop could not also keep audio fed. `tools/qemu_tbprof.sh` on a
+192x108 benchmark put `mr_yuv420_dither8_m68k` at 55.7 m68k
+instructions per pixel (1.15M per frame, which at 50 MHz matches the
+28 ms). The 6x6x6 path reloaded every table pointer from the stack for
+every pixel and clipped each channel with compare-and-branch.
+
+It is now a separate kernel (`.Lyd_q6_kernel` in
+`core/mr_yuv_dither_m68k.S`) at 20.4 instructions per pixel, using the
+RGB24 kernel's layout. `mr_yuv_dither.c` builds two tables for it
+(`build_q6_tables()`), exported with `__asm__` names so the AmigaOS
+underscore prefix never applies:
+- A 6 KB luma/chroma addend block, indexed with the slot-plus-sample
+  trick.
+- A 50 KB `{36q, 6q, q, 0}` table, indexed by Bayer threshold and
+  channel sum. Clip, dither and quantise are then one lookup per
+  channel.
+
+Each pixel's threshold is fixed per row and `x & 3`. So the kernel
+works in 4-pixel groups and adds a per-lane `(t*793) << 8` to the luma
+value, which turns the shifted sum straight into the table index. The
+function's arguments are unchanged, so the direct-planar dispatcher and
+its fallback need no change. The 4/5-bit kernel is untouched.
+
+Output is bit-identical: `tests/mr_yuv_dither_check.c` passes on 68030
+and 68060 builds, and gained widths with `w % 4` of 1 and 3 for the
+kernel's tails. Breaking the 3-pixel tail makes it fail. The table is
+50 KB against the 060's 8 KB data cache. Each row touches only its four
+thresholds' entries for the values present, but per the qemu note at
+the top, the real-060 time still needs a hardware log to confirm.
+
+A remaining lever, not taken: under All Frames the presentation
+catch-up drops queued pictures that were already dithered (`dropped=`
+in the `rtg timing` lines), so dithering at presentation instead of at
+queue time would skip that work.
+
 A note on the `--time` output: `audio-gap=` measures the time between
 calls to `service_audio_for_display()`, and those only happen during
 decode, conversion and network waits. Under Turbo+ it reads multi-second
