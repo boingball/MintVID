@@ -36,7 +36,7 @@ CORE     = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
            core/mr_demux.c core/mr_latm.c core/mr_mkv.c core/mr_avi.c core/mr_mov.c \
            core/mr_ts.c core/mr_ps.c \
            core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c \
-           core/mr_cinepak.c core/mr_dither.c core/mr_ham.c core/mr_scale.c \
+           core/mr_cinepak.c core/mr_dither.c core/mr_ham.c core/mr_ham_m68k.S core/mr_scale.c \
            core/mr_c2p.c core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c \
            core/mr_mpeg2.c $(LIBMPEG2_SRC) \
            core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_wmv.c core/mr_wmv2.c core/mr_h263.c core/mr_h264.c \
@@ -128,7 +128,7 @@ mr_c2p_check: tests/mr_c2p_check.c core/mr_c2p.c core/mr_c2p.h \
 	$(CC) $(CFLAGS) -o $@ tests/mr_c2p_check.c core/mr_c2p.c
 
 mr_ham_check: tests/mr_ham_check.c core/mr_ham.c core/mr_ham.h core/mr_types.h
-	$(CC) $(CFLAGS) -o $@ tests/mr_ham_check.c core/mr_ham.c
+	$(CC) $(CFLAGS) -o $@ tests/mr_ham_check.c core/mr_ham.c core/mr_ham_m68k.S
 
 mr_dither_check: tests/mr_dither_check.c core/mr_dither.c core/mr_dither.h \
                  core/mr_types.h
@@ -155,7 +155,7 @@ mr_yuv_ham_check: tests/mr_yuv_ham_check.c core/mr_yuv_ham.c \
                   core/mr_scale.c core/mr_scale.h core/mr_ham.c \
                   core/mr_ham.h core/mr_types.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_yuv_ham_check.c core/mr_yuv_ham.c \
-	    core/mr_yuv.c core/mr_scale.c core/mr_ham.c
+	    core/mr_yuv.c core/mr_scale.c core/mr_ham.c core/mr_ham_m68k.S
 
 mr_mpeg1_probe_check: tests/mr_mpeg1_probe_check.c core/mr_mpeg1.c \
                       core/mr_mpeg1.h core/pl_mpeg.h core/mr_types.h

@@ -5972,12 +5972,80 @@ Cost: about 15% more m68k instructions per HAM encode (HAM8 640x360: 14.4M
 -> 16.6M per frame at 68060 flags). That is not the table read: the
 encoder is already register-starved and GCC spills throughout the loop, and
 the dither adds live values. Both a pre-shifted table and a rotating
-packed threshold word measured the same. The whole HAM encode is ~60
+packed threshold word measured the same. The whole C HAM encode is ~60
 instructions per pixel, against ~20 for the table-driven AGA dither
-kernel. A hand-written m68k HAM encoder is the lever if HAM speed matters.
+kernel. The hand-written encoder below replaced it on m68k.
 
 Pinned bit-exact in `tests/mr_ham_check.c`: its oracle takes the threshold
 and y_base, and a banded encode must match a whole-frame one.
 `tests/mr_yuv_ham_check.c` runs the fused-vs-three-stage comparison with
 dither on as well. Breaking the threshold scale, the row index or the clamp
 makes them fail. Not yet run on real hardware.
+
+## Hand-written m68k HAM encoder
+`core/mr_ham_m68k.S` holds four row functions: HAM8 and HAM6, each plain
+and dithered, generated from two macros. `mr_ham_encode_ex()` calls them on
+`MR_M68K_ASM` builds; `-DMR_HAM_NO_ASM` keeps the C. Output is
+bit-identical to the C.
+
+Every value lives in a register. Three ideas make that fit:
+- **The held colour is a pointer.** Each held channel is kept as
+  `a3 - 4*held`, where `a3` points at the middle of a 511-long table of
+  |i|. Indexing it by the new sample gives |C - held| in one load, and a
+  modify sets it with one `lea`.
+- **The decision is rewritten, not transliterated.** HAM8's C compares the
+  set error against `er`/`eg`/`eb`, each built from all three distances.
+  The kernel keeps `E = sum(serr8[C] - m)` and `best = min(l - m)` over
+  channels (strict `<`, so R then G wins ties, as in the C) and sets when
+  `E <= best`. HAM6 compares the grey error against `held + best`.
+- **The rest is tables.** Per depth there is a held offset
+  (`-4*(v & ~step)`) and, per channel, an output byte
+  (`code | v >> shift`), both indexed by the (dithered) value.
+
+The tables are built in `mr_ham.c` and passed as arguments. The C
+prototypes use `__asm__("name")`, so the AmigaOS underscore prefix never
+applies.
+
+Dither: the row's four thresholds are packed low byte first into `d6`,
+which rotates a byte per pixel. HAM8's threshold rows have period 2, so
+rotating the wrong way is an equivalent mutant there; the HAM6 rows catch
+it.
+
+`mr_yuv420_ham_encode_ex()` (the H.264/MPEG-2 path) now converts each kept
+row with the asm YUV->RGB24 kernel into a row buffer, then calls
+`mr_ham_encode_ex()`. That is the three-stage path
+`tests/mr_yuv_ham_check.c` compares against. So on m68k that test mostly
+checks full-frame conversion against single-row conversion. The fused C
+remains for host builds, and as the fallback if the row buffer can't be
+allocated. At height 1 the converter costs ~19 instructions per pixel
+rather than ~13, since it normally shares chroma between a pair of rows.
+The real geometry (vertical downscale) keeps one row per chroma row
+anyway.
+
+Instructions per pixel (qemu_tbprof, 68060 flags, 640x360, page-aligned):
+
+| path | C | asm |
+|---|---|---|
+| RGB24 -> HAM8 / dither | 61.3 / 71.3 | 41.5 / 47.5 |
+| RGB24 -> HAM6 / dither | 77.7 / 88.6 | 53.4 / 59.7 |
+| YUV420 -> HAM8 / dither | 87.3 / 98.8 | 60.8 / 66.8 |
+| YUV420 -> HAM6 / dither | 106.5 / 118.5 | 72.8 / 79.0 |
+
+A first version still built the held offset and output byte with shifts
+and masks: 10 instructions per modify instead of 4. It measured 47.5
+(HAM8) and 58.4 (HAM6) on RGB24.
+
+Checks:
+- `tests/mr_ham_check.c` runs the asm against its C oracle on 68030 and
+  68060 builds. It fails when the dither clamp is removed, when HAM6's
+  rotation is reversed, or when the set comparison is made strict.
+- Clamping at 254 instead of 255 is an equivalent mutant: both truncate to
+  the same modify value.
+- The three HAM objects are in `check_m68060_asm.sh` (item 9).
+
+Table footprint against the real 060's 8 KB data cache:
+- HAM8: 2 KB of |i| plus 4.75 KB of aux.
+- HAM6: 2 KB plus 7.7 KB. Most of that is the grey tables indexed by
+  R+G+B, and a frame touches only part of them.
+
+Not yet timed on real hardware.
