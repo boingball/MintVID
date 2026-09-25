@@ -98,6 +98,10 @@
 
 ### Fixed
 
+- **MPEG-1/2 ended on three grey copies of the last picture.** On AGA
+  (and other paths that take decoded YUV), the last picture or two, held
+  back by the decoder until the end of the file, were drawn as if they
+  were RGB. They are now converted properly first.
 - **The GadTools YouTube and IPTV browsers showed stale playback options.**
   Their "Playback:" line kept the options the browser was opened with,
   though Play already used the controller's current Display, C2P, VQ and
