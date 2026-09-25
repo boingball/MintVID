@@ -58,6 +58,9 @@ typedef struct iptvgt {
     APTR visual;
     struct Gadget *gadgets, *search, *country, *category, *channels;
     struct Gadget *url, *debug, *summary, *status;
+    /* GTTX_Text keeps the pointer, so the summary text must outlive the
+     * call that sets it. */
+    char summary_text[192];
     struct List labels;
     mr_iptv_directory directory;
     mr_play_options options;
@@ -315,14 +318,25 @@ static int stop_player(void)
     return had?(player_running()?-1:1):0;
 }
 
+/* Redraw the "Playback:" line from app->options. */
+static void show_summary(iptvgt *app)
+{
+    mr_play_options_summary(&app->options,app->summary_text,
+                            sizeof app->summary_text);
+    set_text(app,app->summary,app->summary_text);
+}
+
 static int start_stream(iptvgt *app, const mr_iptv_stream *stream)
 {
-    mr_play_options options=app->options;
+    mr_play_options options;
     mr_http_options http;
     char args[3200]; BPTR seglist,log=0,nil=0; struct Process *process;
     if(!stream||!mr_iptv_supported_url(stream->url)||
        !mr_http_options_init(&http,stream->user_agent,stream->http_referrer))return 0;
-    mr_master_options_apply(&options);
+    /* The controller's current choices (only its own fields are merged);
+     * show them, or the line keeps what the browser was started with. */
+    if(mr_master_options_apply(&app->options))show_summary(app);
+    options=app->options;
     if(!mr_build_player_arguments(args,sizeof(args),&options,stream->url,
                                   stream->user_agent,stream->http_referrer))return 0;
     if(app->debug_on){size_t n=strlen(args);if(n&&args[n-1]=='\n')n--;
@@ -512,7 +526,7 @@ static void cleanup(iptvgt *app)
 
 int main(int argc,char **argv)
 {
-    iptvgt app;char error[160],summary[160];int done=0,rc=RETURN_FAIL;
+    iptvgt app;char error[160];int done=0,rc=RETURN_FAIL;
     ULONG winmask,timermask=0;memset(&app,0,sizeof(app));init_list(&app.labels);
     app.selected_index=-1;
     mr_iptv_init(&app.directory);mr_play_options_default(&app.options);
@@ -520,7 +534,7 @@ int main(int argc,char **argv)
     IntuitionBase=(struct IntuitionBase *)OpenLibrary((CONST_STRPTR)"intuition.library",37);
     GadToolsBase=OpenLibrary((CONST_STRPTR)"gadtools.library",37);
     if(!IntuitionBase||!GadToolsBase||!choose_cache(&app)||!window_open(&app))goto out;
-    mr_play_options_summary(&app.options,summary,sizeof(summary));set_text(&app,app.summary,summary);
+    show_summary(&app);
     mr_http_set_tls_max(MR_TLS_PREF_HTTP_MAX());
     mr_gui_menu_open(&app.menu,app.window);
     iptv_gui_port_open();

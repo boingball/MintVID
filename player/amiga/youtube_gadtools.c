@@ -54,6 +54,9 @@ typedef struct ytgt {
     APTR visual;
     struct Gadget *gadgets, *query, *type, *results, *play, *quality, *log;
     struct Gadget *summary, *status;
+    /* GTTX_Text keeps the pointer, so the summary text must outlive the
+     * call that sets it. */
+    char summary_text[192];
     struct List labels;
     mr_youtube_search_results found;
     mr_play_options options;
@@ -253,12 +256,23 @@ static int start_video(ytgt *app, const mr_youtube_search_result *video)
 
 static mr_youtube_search_result *selected(ytgt *app);
 
+/* Redraw the "Playback:" line from app->options. */
+static void show_summary(ytgt *app)
+{
+    mr_play_options_summary(&app->options, app->summary_text,
+                            sizeof app->summary_text);
+    set_text(app, app->summary, app->summary_text);
+}
+
 /* Shared by the Play button and double-clicking a result - same checks and
  * status text either way. */
 static void play_selected(ytgt *app)
 {
     mr_youtube_search_result *video = selected(app);
-    mr_master_options_apply(&app->options);
+    /* The controller's current display/audio/video choices; show them, or
+     * the line keeps whatever the browser was started with. */
+    if (mr_master_options_apply(&app->options))
+        show_summary(app);
     if (!video) set_text(app, app->status, "Select a video first.");
     else if (!start_video(app, video)) set_text(app, app->status, "Could not start mrplay.");
     else set_text(app, app->status, video->live ? "Resolving YouTube Live..." : "Resolving YouTube video...");
@@ -611,7 +625,7 @@ static void cleanup(ytgt *app)
 int main(int argc, char **argv)
 {
     ytgt app;
-    char error[160], summary[160];
+    char error[160];
     int done=0, rc=RETURN_FAIL;
     ULONG winmask, timermask=0;
     memset(&app,0,sizeof(app));
@@ -625,8 +639,7 @@ int main(int argc, char **argv)
     IntuitionBase=(struct IntuitionBase *)OpenLibrary((CONST_STRPTR)"intuition.library",37);
     GadToolsBase=OpenLibrary((CONST_STRPTR)"gadtools.library",37);
     if (!IntuitionBase || !GadToolsBase || !window_open(&app)) goto out;
-    mr_play_options_summary(&app.options,summary,sizeof(summary));
-    set_text(&app,app.summary,summary);
+    show_summary(&app);
     mr_http_set_tls_max(MR_TLS_PREF_HTTP_MAX());
     mr_gui_menu_open(&app.menu,app.window);
     load_search_cache(&app);
@@ -685,7 +698,7 @@ int main(int argc, char **argv)
                 else if (id==G_QUALITY) {
                     app.quality_index=value(&app,app.quality,GTCY_Active);
                     set_quality(&app.options,app.quality_index);
-                    mr_play_options_summary(&app.options,summary,sizeof(summary)); set_text(&app,app.summary,summary);
+                    show_summary(&app);
                 } else if (id==G_PLAY) {
                     play_selected(&app);
                 }
