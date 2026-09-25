@@ -98,6 +98,10 @@
 
 ### Fixed
 
+- **The GadTools YouTube and IPTV browsers showed stale playback options.**
+  Their "Playback:" line kept the options the browser was opened with,
+  though Play already used the controller's current Display, C2P, VQ and
+  audio choices. The line is now redrawn with those choices on every Play.
 - **GadTools Scale could not be turned back off.** With a C2P that doesn't
   support Copper 2x (Kalms, Standard, Direct), clicking Scale from 2x went
   to Copper 2x, which was immediately put back to 2x, so None was never
