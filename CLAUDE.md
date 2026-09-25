@@ -635,10 +635,10 @@ extended-result `MULS.L`/`MULU.L` always shows 3 operands (there is no
 2-register-safe degenerate case, unlike divide, so any 3-operand
 `muls*`/`mulu*` is unconditionally forbidden); `DIVS.L`/`DIVU.L` also shows
 3 operands for *both* the trapping 64-bit-dividend form and the ordinary
-32-bit form hardware since 68020 - objdump's own disassembly distinguishes
-them by whether the remainder and quotient registers are the same register
-(safe) or different registers (the operands genuinely span a 64-bit
-dividend - forbidden); libgcc calls are found via relocations against
+32-bit form hardware since 68020, so the scanner decodes the extension
+word's size bit (bit 10: `divsl`/`divul` set, `divsll`/`divull` clear) - see
+the correction in "MPEG-1/2 decode: what RiVA had to offer" below, the
+first version judged by register names and was wrong both ways; libgcc calls are found via relocations against
 `__muldi3`/`__divdi3`/`__udivdi3`. `tests/check_m68060_asm.sh` runs it two
 ways: the whole object for each standalone kernel (nothing else lives in
 those files), and, for `core/mr_mpeg1.c` built with the real production
@@ -5814,3 +5814,76 @@ are scaled down while drawing.
 against stub NDK headers, then confirmed working on WinUAE (AGA, plenty
 of CPU). ECS/OCS Workbenches and Window Half have not run anywhere yet.
 Not done yet: a direct C2P fast path for when the window is unobscured.
+
+## MPEG-1/2 decode: what RiVA had to offer
+A 68060 user asked whether RiVA 0.54 (the fastest 68k MPEG player, whose
+source is still in this repo's history: `src/`, deleted in `b8f1516`) had
+anything to speed up MPEG decoding. Profile first (`tools/qemu_tbprof.sh`,
+68060 flags, VCD-style 352x240 1150 kbps MPEG-1 with B-frames; the harness's
+RGB24 conversion excluded, since AGA playback uses the YUV path): motion
+compensation 42% of decode, IDCT 35%, bitstream/VLC 19%.
+
+RiVA's own IDCT (`MacrosIDCT68k.m`) was **not** ported. It is a 16-bit
+fixed-point scaled AAN, and its own comments say it is not IEEE-1180
+compliant. A decoder IDCT that differs from the encoder's drifts on P/B
+pictures until the next I picture, and output would stop matching ffmpeg.
+Two of its ideas were taken instead, both exact. The RiVA macros are
+GPL-2.0-or-later, like libmpeg2.
+
+- **Motion compensation, four pixels per register**
+  (`vendor/libmpeg2/libmpeg2/motion_comp_swar.c`, `mpeg2_mc_swar`, selected
+  in `mpeg2_mc_init()`). libmpeg2's C version works a byte at a time. The
+  two-way average is `(a|b) - (((a^b)&0xfe..)>>1)`. The four-way average
+  splits each byte into its top six and low two bits, the RiVA
+  `MacrosInterpol68k.m` technique (Henryk Richter). The vertical and
+  four-way cases walk each 4-pixel column down the block, so every source
+  row is loaded, and its horizontal pair summed, once. The 16-wide columns
+  are spelled out as four statements: GCC did not unroll
+  `for (i = 0; i < 16; i += 4)`, and the index loop made plain copy slower
+  than the byte version. Unaligned reference rows use `memcpy`, which is one
+  `move.l` on 68020+. MC dropped from 97.3M to 45.4M guest instructions on
+  the noisy clip (-53%).
+- **Sparse-block IDCT shortcuts** (`libmpeg2/idct.c`). The coefficient
+  storage is permuted: storage row r holds vertical frequency 0,2,4,6,1,3,5,7.
+  An all-zero row is now skipped instead of transformed. Blocks with only
+  storage row 0 (every column constant, `(v + 32) >> 6`) or only rows 0 and
+  4 (vertical frequencies 0 and 1) get reduced column passes. Measured on
+  those clips: about 40-80% of intra blocks have only row 0, and 15-25% of
+  inter blocks have only rows 0 and 4. 36% of the blocks that still need
+  the full column pass are fully dense, so more mask-specific variants
+  were not worth it. Fusing the column pass with the add/clip, writing
+  straight to the picture, measured 2-5% *slower* even with
+  `always_inline`, and was dropped.
+
+Result, decode only: 233.6M -> 170.0M (noisy mandelbrot, -27%),
+218.5M -> 155.3M (clean mandelbrot, -29%), 125.3M -> 101.4M (testsrc2,
+-19%). Output is byte-identical to the unmodified libmpeg2 on those clips
+and on every MPEG-1/2 fixture. The whole-program comparison: `--ppm` output
+diffed from two host builds. Per function:
+- `tests/mr_mpeg2_mc_check.c` runs every `mpeg2_mc_swar` entry against
+  `mpeg2_mc_c`: all heights 1..16, odd strides, all reference alignments,
+  and values that exercise the low-bit carries.
+- `tests/mr_mpeg2_idct_check.c` runs the IDCT against the imported code
+  (`tests/mr_mpeg2_idct_reference.h`) on blocks shaped like each shortcut,
+  plus random sparse and dense blocks.
+Mutating the rounding constant, a mask, the row-0 formula or the zero-row
+test makes them fail. Both run on the host and on 68030 and 68060 builds
+in `make check-m68k`. What is left: VLC ~20% of decode, and the remaining
+IDCT is mostly dense inter blocks. Nothing here has been timed on a real
+68060 yet.
+
+**The 68060 disassembly gate had its divide rule wrong, in both
+directions.** Adding every `vendor/libmpeg2/libmpeg2/*.c` object to
+`check_m68060_asm.sh` (item 8, whole objects) flagged two
+`divull %d1,%d1,%d0` in `header.c`. The scanner called a divide trapping
+whenever its remainder and quotient registers differed. Assembling each form
+shows objdump's spelling instead:
+- `divull`/`divsll` (extension-word bit 10 clear) are the 32-bit-dividend
+  `DIVU.L`/`DIVUL.L`, which the 68060 implements, whatever the registers.
+- `divul`/`divsl` (bit 10 set) are the 64-bit-dividend forms that trap.
+So the gate also passed a trapping `divul %d1,%d1,%d0` (same registers).
+`scan_m68060_forbidden.py` now decodes bit 10 from the instruction bytes,
+for multiplies too. Every existing object still passes, `header.o`
+passes, and hand-assembled test objects flag exactly the three 64-bit
+multiplies and three 64-bit divides among them.
+

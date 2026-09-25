@@ -47,6 +47,11 @@
   (ECS screens and Window mode on a shallow Workbench): about 53
   instructions per pixel down to about 20. EHB and HAM use other
   converters and are unchanged.
+- **Faster MPEG-1/MPEG-2 decoding.** Motion compensation now handles four
+  pixels at a time instead of one, and the inverse DCT skips the work that
+  is always zero in sparse blocks. Picture output is unchanged, byte for
+  byte. On VCD-style 352x240 clips, decoding takes 19-29% fewer 68k
+  instructions. Not yet timed on a real 68060.
 
 ### Fixed
 

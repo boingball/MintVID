@@ -14,7 +14,7 @@
 # the remainder/quotient registers differ; an ordinary two-operand
 # muls.l/mulu.l is real 68060 hardware and is never flagged either).
 #
-# Seven things are checked:
+# Eight things are checked:
 #   1. The two standalone MP2 kernels (core/plm_audio_idct36_m68k_060.S,
 #      core/plm_audio_synth_window_m68k_060.S) - the whole object, since
 #      each file contains only the one hand-tuned function (plus, for
@@ -113,6 +113,10 @@
 #      one exported function. This experiment (Makefile.fused,
 #      display_aga_fused.c) predated this whole audit methodology and had
 #      never been through it before landing as a real runtime option.
+#   8. MPEG-1/2 video: every vendor/libmpeg2/libmpeg2/*.c object whole
+#      (parser, VLC, the sparse-block IDCT and the word-at-a-time motion
+#      compensation in motion_comp_swar.c) - the decode path is portable C,
+#      so this is the only check that the compiler emitted nothing trapping.
 set -e
 cd "$(dirname "$0")/.."
 
@@ -281,5 +285,19 @@ echo "== scanning AGA direct-planar C2P (whole objects) =="
 python3 tests/scan_m68060_forbidden.py "$BUILD/mr_yuv_dither_planar_m68k_060.o" \
     "$BUILD/mr_yuv_dither_planar_direct_m68k_060.o" \
     "$BUILD/mr_yuv_planar_queue_060.o"
+
+echo "== building MPEG-1/2 video (vendor/libmpeg2) at the real 68060 production flags =="
+mkdir -p "$BUILD/mpeg2"
+MPEG2_OBJS=""
+for f in vendor/libmpeg2/libmpeg2/*.c; do
+    base=$(basename "$f" .c)
+    $M68K_CC -mcpu=68060 -O2 -std=c99 -DMR_M68K_ASM=1 -Ivendor/libmpeg2 \
+        -Ivendor/libmpeg2/include -Ivendor/libmpeg2/libmpeg2 -w \
+        -c -o "$BUILD/mpeg2/$base.o" "$f"
+    MPEG2_OBJS="$MPEG2_OBJS $BUILD/mpeg2/$base.o"
+done
+
+echo "== scanning MPEG-1/2 video (vendor/libmpeg2, whole objects) =="
+python3 tests/scan_m68060_forbidden.py $MPEG2_OBJS
 
 echo "68060 disassembly check: OK"

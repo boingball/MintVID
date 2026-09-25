@@ -11,3 +11,18 @@ License: GNU GPL version 2 or later; see COPYING and the source headers.
 
 config.h is MintVID-specific. It selects portable C and declares the Amiga
 m68k target big-endian for both GCC and vbcc builds.
+
+MintVID changes to the imported sources
+---------------------------------------
+
+Both produce output bit-identical to the imported C code.
+
+- libmpeg2/motion_comp_swar.c (new): motion compensation working on four
+  pixels per 32-bit word. The four-way half-pel average uses the byte
+  split from RiVA's MacrosInterpol68k.m (Henryk Richter, GPL-2.0-or-later).
+  mpeg2_mc_init() selects it (mpeg2_mc_swar) instead of mpeg2_mc_c, which
+  stays compiled as the reference for tests/mr_mpeg2_mc_check.c.
+- libmpeg2/idct.c: mpeg2_idct_copy_c/mpeg2_idct_add_c skip all-zero rows
+  and use reduced column passes when only storage row 0, or rows 0 and 4,
+  are non-zero. tests/mr_mpeg2_idct_check.c compares them against the
+  imported code, kept in tests/mr_mpeg2_idct_reference.h.

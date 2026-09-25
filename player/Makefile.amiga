@@ -87,6 +87,7 @@ LIBMPEG2_SRC = $(LIBMPEG2_ROOT)/libmpeg2/alloc.c \
                $(LIBMPEG2_ROOT)/libmpeg2/header.c \
                $(LIBMPEG2_ROOT)/libmpeg2/idct.c \
                $(LIBMPEG2_ROOT)/libmpeg2/motion_comp.c \
+               $(LIBMPEG2_ROOT)/libmpeg2/motion_comp_swar.c \
                $(LIBMPEG2_ROOT)/libmpeg2/slice.c
 CORE  = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
         core/mr_youtube.c \
