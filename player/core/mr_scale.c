@@ -226,6 +226,62 @@ void mr_scale_resize_rgb24_strip(const uint8_t *src, int w, int h,
     }
 }
 
+void mr_scale_resize_u16_strip(const uint8_t *src, int w, int h,
+                               int src_stride, uint8_t *dst, int dst_w,
+                               int dst_h, int dst_stride, int y0, int rows)
+{
+    int y, sy, yq, yr, yerr;
+    int xq, xr, sx0, xerr0;
+    int i;
+
+    if (!src || !dst || w <= 0 || h <= 0 || dst_w <= 0 || dst_h <= 0 ||
+        y0 < 0 || y0 >= dst_h || rows <= 0)
+        return;
+    if (rows > dst_h - y0) rows = dst_h - y0;
+
+    /* The DDA of mr_scale_resize_rgb24_strip(), unchanged. */
+    xq = w / dst_w;
+    xr = w % dst_w;
+    sx0 = (w / 2) / dst_w;
+    xerr0 = (w / 2) % dst_w;
+    yq = h / dst_h;
+    yr = h % dst_h;
+    sy = (h / 2) / dst_h;
+    yerr = (h / 2) % dst_h;
+    for (i = 0; i < y0; i++) {
+        sy += yq;
+        yerr += yr;
+        if (yerr >= dst_h) {
+            yerr -= dst_h;
+            sy++;
+        }
+    }
+
+    for (y = 0; y < rows; y++) {
+        const uint16_t *sr =
+            (const uint16_t *)(const void *)(src + (size_t)sy * src_stride);
+        uint16_t *dr = (uint16_t *)(void *)(dst + (size_t)y * dst_stride);
+        int x, sx = sx0, xerr = xerr0;
+
+        for (x = 0; x < dst_w; x++) {
+            dr[x] = sr[sx];
+            sx += xq;
+            xerr += xr;
+            if (xerr >= dst_w) {
+                xerr -= dst_w;
+                sx++;
+            }
+        }
+
+        sy += yq;
+        yerr += yr;
+        if (yerr >= dst_h) {
+            yerr -= dst_h;
+            sy++;
+        }
+    }
+}
+
 void mr_scale_resize_rgb24(const uint8_t *src, int w, int h, int src_stride,
                            uint8_t *dst, int dst_w, int dst_h, int dst_stride)
 {

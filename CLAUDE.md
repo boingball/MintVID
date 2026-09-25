@@ -5887,3 +5887,53 @@ for multiplies too. Every existing object still passes, `header.o`
 passes, and hand-assembled test objects flag exactly the three 64-bit
 multiplies and three 64-bit divides among them.
 
+## 720p YouTube on a 16-bit P96 screen: the display repack was the cost
+A WinUAE log of YouTube live 720p60 (Turbo, All Frames, P96) showed
+microstutter: ~20 fps shown from a 60 fps source, Paula starving all the
+time (`hw-starvations` climbing, `audio-buffered=0`), audio-rescue
+episodes back to back and live-resync every ~4 s. Per frame: `vdecode`
+~7 ms, `yuv-rgb` ~4.3 ms, `display` ~34 ms. The P96 PIP overlay was
+refused (`PIPERR_OUTOFPENS`, then `PIPERR_NOTAVAILABLE` for every size),
+so `backend_p96` opened a private **16-bit** screen. The H.264 queue held
+BGR24, because `display_supports_bgr24()` is true for P96 whatever the
+screen depth. `write_pixel_strip()` then repacked every pixel to RGB565
+in C, with a `switch` on the format inside the pixel loop, as 921,600
+separate 16-bit writes into screen memory per frame.
+
+The queue now holds RGB565 when the screen is 16-bit:
+- `mr_yuv420_to_rgb565()`/`_half()` (`core/mr_yuv.c`): the RGB24
+  converters' sums, clipped and packed through three field tables
+  (`g_r565`/`g_g565`/`g_b565`, same index range as `g_clip`). One native
+  `uint16_t` per pixel, which on the big-endian Amiga is RGBFB_R5G6B5.
+- `mr_scale_resize_u16_strip()` (`core/mr_scale.c`): the RGB24 strip
+  scaler's DDA for 2-byte pixels, for a window or fullscreen that isn't
+  the video's size.
+- `display_supports_rgb565()`/`display_show_rgb565()`, backed by
+  `backend_p96`'s `supports_rgb565`/`show_rgb565`. The P96 strip writer
+  copies RGB565 rows with `memcpy`. If the backend or screen changes
+  mid-session, `display_show_rgb565()` unpacks to RGB24 and uses `show()`,
+  like the YUV422 fallback.
+- mrplay picks RGB565 before BGR24 (`QUEUE_RGB565` in
+  `queue_copy_yuv_rgb24()`); RTG Half gets it too. A 720p slot shrinks
+  from 2.7 MB to 1.8 MB.
+- The remaining 24-bit repacks (other codecs, 32-bit screens) choose the
+  layout once per strip instead of once per pixel.
+
+`tests/mr_rgb565_check.c` requires the new converters to equal the RGB24
+output packed to RGB565 (odd sizes, padded strides, every U x V pair at
+the Y extremes) and the 16-bit scaler to pick the same pixels as the
+RGB24 one. Host (ASan/UBSan), 68030 and 68060. Breaking the green
+mask, the pair test or the half chroma index makes it fail.
+`write_pixel_strip()` was exercised on the host through a fake bitmap
+lock, for all nine source/screen combinations.
+
+Instruction counts per 720p frame (68060 flags): BGR24 asm conversion
+plus the old repack 15.0M + 13.8M = 28.8M; C RGB565 conversion plus row
+copies 20.1M + 0.8M = 20.9M. The WinUAE figures show the repack cost
+far more than its instruction count, since 13.8M instructions took
+34 ms against 4.3 ms for 15.0M in the converter. So the gain there
+depends on how WinUAE and the board handle the writes, and needs a
+`--time` rerun. The RGB565 converter is C only, with no asm kernel yet.
+Even with display nearly free, decode plus conversion (~12 ms) leaves
+little of a 60 fps stream's 16.7 ms frame.
+

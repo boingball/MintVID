@@ -212,6 +212,16 @@ int display_supports_bgr24(amiga_display *d);
 void display_show_bgr24(amiga_display *d, const unsigned char *bgr,
                         int w, int h, int stride, int dy0, int dy1);
 
+/* Native RGB565 path (one native uint16_t per pixel, stride in bytes - see
+ * core/mr_yuv.h's mr_yuv420_to_rgb565()). display_supports_rgb565() is true
+ * when the active backend writes it to a 16-bit screen with a row copy (P96
+ * direct lock on RGBFB_R5G6B5). display_show_rgb565() always works: if the
+ * backend or its screen changes mid-session it unpacks to RGB24 and uses the
+ * ordinary show(), the same fallback shape as display_show_yuv422(). */
+int display_supports_rgb565(amiga_display *d);
+void display_show_rgb565(amiga_display *d, const unsigned char *pix,
+                         int w, int h, int stride, int dy0, int dy1);
+
 /* Packed Picasso96 Y4U2V2 path (Y,chroma,Y,chroma for each horizontal pair -
  * see core/mr_yuv.c's mr_yuv420_to_y4u2v2() for the real chroma order).
  * display_supports_yuv422() reports whether the *currently active* backend

@@ -673,6 +673,8 @@ typedef struct video_presenter {
     int                  use_indexed;
     /* P96 native BGR queue: present with display_show_bgr24(). */
     int                  use_bgr;
+    /* P96 16-bit screen queue: present with display_show_rgb565(). */
+    int                  use_rgb565;
     int                  use_yuv422;
 } video_presenter;
 
@@ -785,6 +787,9 @@ static void present_service_frame(video_presenter *vp)
     else if (vp->use_bgr)
         display_show_bgr24(vp->disp, front->rgb, front->width, front->height,
                            front->stride, front->dirty_y0, front->dirty_y1);
+    else if (vp->use_rgb565)
+        display_show_rgb565(vp->disp, front->rgb, front->width, front->height,
+                            front->stride, front->dirty_y0, front->dirty_y1);
     else if (vp->use_yuv422)
         display_show_yuv422(vp->disp, front->rgb, front->width, front->height,
                             front->stride, front->dirty_y0, front->dirty_y1);
@@ -1028,12 +1033,17 @@ static int queue_copy(queued_video *q, const mr_frame *fr, uint64_t pts,
  * The service hook is the same audio/presenter callback formerly used inside
  * mr_h264.c's conversion and remains safe here: the queue is not published
  * (qcount is not incremented) until this function returns. */
+/* queue_copy_yuv_rgb24()'s output layouts. RGB565 is one native uint16_t
+ * per pixel for a 16-bit P96 screen: the display then copies rows instead of
+ * repacking each pixel, which cost ~34 ms per 720p frame under WinUAE. */
+enum { QUEUE_RGB24 = 0, QUEUE_BGR24 = 1, QUEUE_RGB565 = 2 };
+
 static int queue_copy_yuv_rgb24(queued_video *q, const mr_frame *fr,
-                                uint64_t pts, uint64_t decoded_at, int bgr,
+                                uint64_t pts, uint64_t decoded_at, int layout,
                                 int half, mr_yuv_service_fn service,
                                 void *service_opaque)
 {
-    size_t stride, bytes;
+    size_t stride, bytes, bpp = layout == QUEUE_RGB565 ? 2u : 3u;
     int out_w, out_h;
     if (!q || !fr || fr->fmt != MR_PIX_YUV420P ||
         !fr->data || !fr->u_data || !fr->v_data ||
@@ -1044,8 +1054,8 @@ static int queue_copy_yuv_rgb24(queued_video *q, const mr_frame *fr,
     out_w = half ? fr->width / 2 : fr->width;
     out_h = half ? fr->height / 2 : fr->height;
     if (out_w <= 0 || out_h <= 0) return 0;
-    if ((size_t)out_w > (size_t)-1 / 3u) return 0;
-    stride = (size_t)out_w * 3u;
+    if ((size_t)out_w > (size_t)-1 / bpp) return 0;
+    stride = (size_t)out_w * bpp;
     if ((size_t)out_h > (size_t)-1 / stride) return 0;
     bytes = stride * (size_t)out_h;
     if (q->capacity < bytes) {
@@ -1053,7 +1063,20 @@ static int queue_copy_yuv_rgb24(queued_video *q, const mr_frame *fr,
         if (!p) return 0;
         q->rgb = p; q->capacity = bytes;
     }
-    if (half && bgr)
+    if (layout == QUEUE_RGB565 && half)
+        mr_yuv420_to_rgb565_half(q->rgb, (int)stride,
+                                 fr->data, fr->stride,
+                                 fr->u_data, fr->u_stride,
+                                 fr->v_data, fr->v_stride,
+                                 fr->width, fr->height, service,
+                                 service_opaque);
+    else if (layout == QUEUE_RGB565)
+        mr_yuv420_to_rgb565(q->rgb, (int)stride,
+                            fr->data, fr->stride,
+                            fr->u_data, fr->u_stride,
+                            fr->v_data, fr->v_stride,
+                            fr->width, fr->height, service, service_opaque);
+    else if (half && layout == QUEUE_BGR24)
         mr_yuv420_to_bgr24_half(q->rgb, (int)stride,
                                 fr->data, fr->stride,
                                 fr->u_data, fr->u_stride,
@@ -1065,7 +1088,7 @@ static int queue_copy_yuv_rgb24(queued_video *q, const mr_frame *fr,
                                 fr->u_data, fr->u_stride,
                                 fr->v_data, fr->v_stride,
                                 fr->width, fr->height, service, service_opaque);
-    else if (bgr)
+    else if (layout == QUEUE_BGR24)
         mr_yuv420_to_bgr24(q->rgb, (int)stride,
                            fr->data, fr->stride,
                            fr->u_data, fr->u_stride,
@@ -2896,7 +2919,11 @@ int main(int argc, char **argv)
                             !use_yuv_indexed_queue && !use_yuv422_queue &&
                             !use_indexed_queue;
     if (!use_yuv_rgb_queue) rtg_half_active = 0;
-    int use_yuv_bgr_queue = use_yuv_rgb_queue &&
+    /* A 16-bit P96 screen takes RGB565 rows as they are; a 24-bit one takes
+     * BGR24 rows as they are. Anything else gets RGB24 and repacks. */
+    int use_yuv_565_queue = use_yuv_rgb_queue &&
+                            display_supports_rgb565(disp);
+    int use_yuv_bgr_queue = use_yuv_rgb_queue && !use_yuv_565_queue &&
                             display_supports_bgr24(disp);
     if (use_yuv_indexed_queue || use_yuv422_queue || use_yuv_rgb_queue)
         mr_h264_set_yuv_output(&dec, 1);
@@ -2943,14 +2970,18 @@ int main(int argc, char **argv)
             printf("video path: YUV420P %dx%d -> Y4U2V2 "
                    "(P96 overlay direct-to-queue)\n",
                    vi->width, vi->height);
-        else if (use_yuv_bgr_queue)
-            printf("video path: YUV420P %dx%d -> BGR24 "
-                   "(direct-to-queue; P96 native)\n", vi->width, vi->height);
         else if (use_yuv_rgb_queue && rtg_half_active)
             printf("video path: YUV420P %dx%d -> %s %dx%d "
                    "(RTG Half, direct-to-queue)\n", vi->width, vi->height,
+                   use_yuv_565_queue ? "RGB565" :
                    use_yuv_bgr_queue ? "BGR24" : "RGB24",
                    vi->width / 2, vi->height / 2);
+        else if (use_yuv_565_queue)
+            printf("video path: YUV420P %dx%d -> RGB565 "
+                   "(direct-to-queue; P96 native)\n", vi->width, vi->height);
+        else if (use_yuv_bgr_queue)
+            printf("video path: YUV420P %dx%d -> BGR24 "
+                   "(direct-to-queue; P96 native)\n", vi->width, vi->height);
         else if (use_yuv_rgb_queue)
             printf("video path: YUV420P %dx%d -> RGB24 "
                    "(direct-to-queue)\n", vi->width, vi->height);
@@ -3185,8 +3216,10 @@ int main(int argc, char **argv)
                             : use_indexed_queue
                             ? (size_t)vi->width * (size_t)vi->height
                             : rtg_half_active
-                            ? (size_t)(vi->width / 2) * (size_t)(vi->height / 2) * 3
-                            : (size_t)vi->width * (size_t)vi->height * 3;
+                            ? (size_t)(vi->width / 2) * (size_t)(vi->height / 2) *
+                              (use_yuv_565_queue ? 2u : 3u)
+                            : (size_t)vi->width * (size_t)vi->height *
+                              (use_yuv_565_queue ? 2u : 3u);
         ULONG free_any = AvailMem(MEMF_ANY);
         /* Only a third of the (post-floor) free pool is a safety ceiling; the
          * shallow default is far below it, but it protects a tight machine and
@@ -3292,6 +3325,7 @@ int main(int argc, char **argv)
          * queue_copy_yuv_indexed()), so one flag covers both. */
         presenter.use_indexed = use_indexed_queue || use_yuv_indexed_queue;
         presenter.use_bgr = use_yuv_bgr_queue;
+        presenter.use_rgb565 = use_yuv_565_queue;
         presenter.use_yuv422 = use_yuv422_queue;
         trace.presenter = &presenter;
 
@@ -3852,6 +3886,10 @@ int main(int argc, char **argv)
                 display_show_bgr24(disp, front->rgb, front->width, front->height,
                                    front->stride, front->dirty_y0,
                                    front->dirty_y1);
+            else if (use_yuv_565_queue)
+                display_show_rgb565(disp, front->rgb, front->width,
+                                    front->height, front->stride,
+                                    front->dirty_y0, front->dirty_y1);
             else if (use_yuv422_queue)
                 display_show_yuv422(disp, front->rgb, front->width,
                                     front->height, front->stride,
@@ -4757,7 +4795,10 @@ int main(int argc, char **argv)
                                 uint64_t yr0 = want_time ? monotonic_us() : 0;
                                 copy_ok = queue_copy_yuv_rgb24(
                                     tail, &dec.frame, pts, decoded_at,
-                                    use_yuv_bgr_queue, rtg_half_active,
+                                    use_yuv_565_queue ? QUEUE_RGB565 :
+                                    use_yuv_bgr_queue ? QUEUE_BGR24 :
+                                                        QUEUE_RGB24,
+                                    rtg_half_active,
                                     audio ? service_audio_for_display : NULL,
                                     &trace);
                                 if (want_time) {

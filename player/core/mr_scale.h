@@ -54,4 +54,11 @@ void mr_scale_resize_rgb24_strip(const uint8_t *src, int w, int h,
                                  int src_stride, uint8_t *dst, int dst_w,
                                  int dst_h, int dst_stride, int y0, int rows);
 
+/* mr_scale_resize_rgb24_strip() for 2-byte pixels (RGB565): the same
+ * nearest-neighbour source-pixel choice, so it picks exactly the pixels the
+ * RGB24 version would. Strides are in bytes; rows must be 2-byte aligned. */
+void mr_scale_resize_u16_strip(const uint8_t *src, int w, int h,
+                               int src_stride, uint8_t *dst, int dst_w,
+                               int dst_h, int dst_stride, int y0, int rows);
+
 #endif /* MR_SCALE_H */

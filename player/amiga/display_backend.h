@@ -23,6 +23,16 @@ typedef struct {
     void  (*show_bgr)(void *handle, const unsigned char *bgr, int w, int h,
                       int stride, int dy0, int dy1,
                       mr_display_service_fn service, void *service_opaque);
+    /* Optional native RGB565 input: one native uint16_t per pixel, as
+     * core/mr_yuv.c's mr_yuv420_to_rgb565() writes it. P96's direct-lock
+     * backend implements it for RGBFB_R5G6B5 screens, where it is a row copy
+     * instead of a per-pixel repack of 24-bit input. supports_rgb565()
+     * answers for the screen currently open; display.c falls back to
+     * unpacking into show() whenever it says no. */
+    int   (*supports_rgb565)(void *handle);
+    void  (*show_rgb565)(void *handle, const unsigned char *pix, int w, int h,
+                         int stride, int dy0, int dy1,
+                         mr_display_service_fn service, void *service_opaque);
     /* Optional packed P96 Y4U2V2 input (Y,chroma,Y,chroma per pixel pair -
      * see core/mr_yuv.c's mr_yuv420_to_y4u2v2() for the real, hardware-
      * confirmed chroma order, which is the opposite of what the format

@@ -332,6 +332,12 @@ echo "== building mr_yuv_check.m68k =="
 $CC -o "$BUILD/mr_yuv_check.m68k" tests/mr_yuv_check.c core/mr_yuv.c \
     core/mr_yuv_m68k.S
 
+echo "== building mr_rgb565_check.m68k (68030 and 68060) =="
+$CC -o "$BUILD/mr_rgb565_check.m68k" tests/mr_rgb565_check.c core/mr_yuv.c \
+    core/mr_yuv_m68k.S core/mr_scale.c
+$CC_060 -o "$BUILD/mr_rgb565_check_060.m68k" tests/mr_rgb565_check.c \
+    core/mr_yuv.c core/mr_yuv_m68k.S core/mr_scale.c
+
 echo "== building mr_scale_check.m68k / mr_c2p_check.m68k / mr_ham_check.m68k / mr_dither_check.m68k =="
 $CC -o "$BUILD/mr_scale_check.m68k" tests/mr_scale_check.c core/mr_scale.c
 $CC -o "$BUILD/mr_c2p_check.m68k" tests/mr_c2p_check.c core/mr_c2p.c \
@@ -500,6 +506,8 @@ run "$BUILD/mr_h264_intra8x8_check.m68k"
 run "$BUILD/mr_h264_intra_chroma_check.m68k"
 run "$BUILD/mr_h264_bs_check.m68k"
 run "$BUILD/mr_yuv_check.m68k"
+run "$BUILD/mr_rgb565_check.m68k"
+run "$BUILD/mr_rgb565_check_060.m68k"
 run "$BUILD/mr_scale_check.m68k"
 run "$BUILD/mr_c2p_check.m68k"
 run "$BUILD/mr_ham_check.m68k"
