@@ -45,6 +45,11 @@ static char g_last_hint_url[256];
  * g_long_target seconds each, segment N's body "N%03d". */
 static int  g_long_count;
 static int  g_long_target;
+/* Segments the server adds on every playlist fetch after the first, and how
+ * many playlist fetches / playlist hints there have been. */
+static int  g_long_grow;
+static int  g_playlist_fetches;
+static int  g_playlist_hints;
 static char g_long_playlist[16384];
 
 static void build_long_playlist(void)
@@ -69,7 +74,13 @@ static int fake_override(const char *url, const mr_http_options *options,
     if (g_long_count) {
         static char seg[8];
         const char *name = strstr(url, "long");
-        if (strstr(url, "playlist.m3u8")) body = g_long_playlist;
+        if (strstr(url, "playlist.m3u8")) {
+            if (g_playlist_fetches++ && g_long_grow) {
+                g_long_count += g_long_grow;
+                build_long_playlist();
+            }
+            body = g_long_playlist;
+        }
         else if (name) {
             snprintf(seg, sizeof seg, "N%03d", atoi(name + 4));
             body = seg;
@@ -98,6 +109,7 @@ static void fake_hint(const char *url, const mr_http_options *options)
 {
     (void)options;
     g_hint_calls++;
+    if (strstr(url, "playlist.m3u8")) g_playlist_hints++;
     strncpy(g_last_hint_url, url, sizeof g_last_hint_url - 1);
     g_last_hint_url[sizeof g_last_hint_url - 1] = 0;
 }
@@ -205,6 +217,46 @@ int main(void)
         if (s) mr_source_close(s);
         options.hls_live_start_segments = 0;
         g_long_count = 0;
+    }
+
+    /* A live playlist is re-read in the background before playback reaches
+     * its last known segment, so reading straight through never stalls at
+     * the edge. 40 x 8 s keeps long36..long39. Opening long36 leaves three
+     * segments ahead, so the playlist is hinted then and taken when long37
+     * opens: 4 segments were added, so long36..long43 are known. Opening
+     * long40 leaves three ahead again, and long41's open takes the next
+     * refresh. Reading long36..long43 must therefore cost exactly three
+     * playlist fetches (open + two refreshes) and two playlist hints. */
+    {
+        int k;
+        g_long_count = 40;
+        g_long_target = 8;
+        g_long_grow = 4;
+        g_playlist_fetches = 0;
+        g_playlist_hints = 0;
+        build_long_playlist();
+        s = mr_hls_source_open_ex("http://test.invalid/playlist.m3u8",
+                                  &options);
+        for (k = 0; s && k < 8; k++) {
+            char want[8];
+            snprintf(want, sizeof want, "N%03d", 36 + k);
+            if (!mr_source_read_at(s, (size_t)k * 4, buf, 4) ||
+                memcmp(buf, want, 4) != 0) {
+                printf("FAIL: early live refresh: segment %d should be "
+                       "long%d\n", k, 36 + k);
+                fails++;
+                break;
+            }
+        }
+        if (!s || g_playlist_fetches != 3 || g_playlist_hints != 2) {
+            printf("FAIL: early live refresh expected 3 playlist fetches and "
+                   "2 playlist hints, got %d and %d\n", g_playlist_fetches,
+                   g_playlist_hints);
+            fails++;
+        }
+        if (s) mr_source_close(s);
+        g_long_count = 0;
+        g_long_grow = 0;
     }
     mr_http_set_fetch_override(NULL);
     mr_http_set_prefetch_hint(NULL);

@@ -49,6 +49,13 @@
   connecting to that address fails. `--time` logs gain an
   `http fetches=` line that splits fetch time into DNS, connect, TLS,
   headers and body.
+- **Live HLS stalled each time playback caught up with the playlist.**
+  The playlist was only re-read once the last known segment had been
+  played. Playback then waited for that re-read and for a segment nobody
+  had prefetched, about 2.8 seconds on BBC One, and the audio ran dry.
+  The playlist is now re-read in the background a few segments before
+  the end, so the next segments are already downloading when playback
+  gets there.
 
 ## 1.4.0 - 2026-09-23
 

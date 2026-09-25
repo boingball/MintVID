@@ -5583,6 +5583,29 @@ before the fix, 3 after, against both `openssl s_server -tls1_2` and
 pins it. How much a resumption saves on the 060, and whether Akamai
 accepts PSK-only, is for the next hardware log to show.
 
+**It worked, and exposed a stall at the live edge.** The next log had
+segment 1 in 1382 ms (was 4.9 s), `tls=22218 ms over 19 (resumed 18)`,
+and a steady ~1.85 s audio cushion with no starvations for segments
+2-8. Then `mr_hls.c` only re-read the playlist once segment 8, the last
+known one, had been consumed. The poll took ~1.4 s, and segment 9 had
+never been hinted, so it was fetched on demand (1412 ms). Audio ran dry
+(`clock-holdover`, audio-rescue with 0 packets for 1.09 s), and
+live-resync fired at segment 10. The poll found 9 new segments: starting
+30 s back means the server is always well ahead of the list we hold.
+
+`refresh_live_ahead()` now hints the playlist URL to the fetch worker,
+like a segment, when an opened segment leaves no more than the lookahead
+count of known segments after it. The next segment open takes the result
+(normally already complete) and merges it, so the new segments get
+hinted before playback reaches them. This only runs with a fetch
+override installed. Segments are then in-memory buffers, so the playlist
+fetch never opens a second connection. Host streaming sources keep the
+edge poll in `hls_refetch_live()`, which also takes a queued refresh
+first if one is outstanding. Pinned in `tests/mr_hls_override_check.c`
+(reading 8 segments of a growing live playlist costs 3 playlist fetches
+and 2 playlist hints; before the fix it was 2 and 0, with the second
+fetch at the edge).
+
 A note on the `--time` output: `audio-gap=` measures the time between
 calls to `service_audio_for_display()`, and those only happen during
 decode, conversion and network waits. Under Turbo+ it reads multi-second
