@@ -103,14 +103,14 @@ static void build_dither_lut(int depth)
 }
 
 #if defined(MR_M68K_ASM)
-/* Tables for the 6x6x6 kernel in mr_yuv_dither_m68k.S (see its comment for
- * the layout). Named with __asm__ so the assembly can reference them without
- * the AmigaOS underscore prefix. */
+/* Tables for the kernel in mr_yuv_dither_m68k.S (see its comment for the
+ * layout), built from the current depth's LUTs. Named with __asm__ so the
+ * assembly can reference them without the AmigaOS underscore prefix. */
 #define Q6_SUMS 793                     /* channel sums -258..534 */
 int32_t mr_yuv_dither_q6_block[0x600] __asm__("mr_yuv_dither_q6_block");
 uint8_t mr_yuv_dither_q6_tab[16 * Q6_SUMS * 4]
     __asm__("mr_yuv_dither_q6_tab");
-static int g_q6_ready = 0;
+static int g_q6_depth = 0;          /* depth the tables hold, 0 = none */
 
 static void build_q6_tables(void)
 {
@@ -123,9 +123,8 @@ static void build_q6_tables(void)
         mr_yuv_dither_q6_block[0x400 + 2 * i] = g_d_x516[i];
         mr_yuv_dither_q6_block[0x400 + 2 * i + 1] = g_d_xm100[i];
     }
-    /* Same clip, dither and quantise as the C loop below, via lut_b: for
-     * depth 8 it is the unweighted 6-level quantiser (lut_r/lut_g are the
-     * same level times 36 and 6). */
+    /* Same clip, dither and quantise as the C loop below: each channel's
+     * LUT entry for the clipped sum, so one byte lookup per channel. */
     for (t = 0; t < 16; t++)
         for (s = -258; s <= 534; s++) {
             uint8_t *e = &mr_yuv_dither_q6_tab[(t * Q6_SUMS + s + 258) * 4];
@@ -135,7 +134,7 @@ static void build_q6_tables(void)
             e[2] = lut_b[t][c];
             e[3] = 0;
         }
-    g_q6_ready = 1;
+    g_q6_depth = dither_lut_depth;
 }
 #endif
 
@@ -155,7 +154,7 @@ void mr_yuv420_dither_indexed(const uint8_t *y_plane, int y_stride,
 
     dst_h = height / vscale;
 #if defined(MR_M68K_ASM)
-    if (depth == 8 && !g_q6_ready) build_q6_tables();
+    if (g_q6_depth != depth) build_q6_tables();
     mr_yuv420_dither8_m68k(y_plane, y_stride, u_plane, u_stride, v_plane,
                            v_stride, width, dst_h, vscale, out, out_stride,
                            y_base, g_luma_x298, g_e_x409, g_d_xm100,

@@ -5657,7 +5657,33 @@ Each pixel's threshold is fixed per row and `x & 3`. So the kernel
 works in 4-pixel groups and adds a per-lane `(t*793) << 8` to the luma
 value, which turns the shifted sum straight into the table index. The
 function's arguments are unchanged, so the direct-planar dispatcher and
-its fallback need no change. The 4/5-bit kernel is untouched.
+its fallback need no change.
+
+**The same kernel now serves the ECS/OCS palettes too (depth 5, 4x4x2,
+and depth 4, 2x4x2), replacing the old weighted-LUT kernel, which had
+measured 52.7 instructions per pixel on them.** Each table longword
+holds each channel's own `lut_*` entry, `{lut_r, lut_g, lut_b}[t][c]`,
+and the kernel adds the three bytes. Nothing in it is specific to 6x6x6.
+The only differences between palettes were the per-channel dither
+amplitudes and weights, and those are already inside the LUTs. So
+`build_q6_tables()` just builds from the current depth's LUTs, and
+`g_q6_depth` rebuilds them when the depth changes. The largest index
+is 215 (6x6x6), so the byte adds never carry.
+
+The ECS palettes are used by the AGA backend on ECS/OCS screens and by
+the Window backend on 16/32-colour Workbenches. Their bench cost went
+from 52.7 to 20.4 instructions per pixel, the same as depth 8, with
+identical output. A mutation test fails with 256 mismatches:
+`tests/mr_yuv_dither_check.c` runs depths 4, 5 and 8 in turn, and
+building the table only once fails it.
+
+EHB (6 planes, 64 colours) does not use this path. Its dither
+(`mr_dither_rgb_ehb()`, RGB24 input) picks, per pixel, whichever of
+the bright and half-bright cubes is nearer by squared RGB distance. That
+decision couples all three channels, so it doesn't split into
+per-channel lookups. A YUV-direct EHB path would need its own design.
+HAM6/HAM8 go through `mr_yuv420_ham_encode()`, a different encoder
+altogether.
 
 Output is bit-identical: `tests/mr_yuv_dither_check.c` passes on 68030
 and 68060 builds, and gained widths with `w % 4` of 1 and 3 for the

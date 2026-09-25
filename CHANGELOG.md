@@ -43,6 +43,10 @@
   BBC One's 192x108 stream on an A1200 with a 68060/50 this step cost
   about 28 ms per picture; expect roughly a third of that, but that is
   not yet measured on the machine.
+  The same speedup now applies to the 32- and 16-colour ECS/OCS palettes
+  (ECS screens and Window mode on a shallow Workbench): about 53
+  instructions per pixel down to about 20. EHB and HAM use other
+  converters and are unchanged.
 
 ### Fixed
 
