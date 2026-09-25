@@ -5538,6 +5538,31 @@ playlist now starts `HLS_LIVE_START_DEFAULT_MS` (30 s) before the newest
 segment, and at least 3 segments back (RFC 8216 6.3.3). An explicit
 count still wins. Pinned in `tests/mr_hls_override_check.c`.
 
+**Follow-up A1200 logs, with #235 in the build.** The live start worked:
+`skipped 1867 stale startup segments`, then `8 initial segments`, so
+BBC's target duration is 4 s, not 8. Two more findings:
+- **The CPU cannot keep up with this stream at stereo 24 kHz.** Per
+  3-second window with All Frames and Turbo: ~47 ms decode, ~29 ms dither
+  and ~5 ms display per frame, and AAC ~95 ms per audio PES (about 0.17 s
+  of sound). Audio alone is ~55% of the CPU. Smoosh read packets at real
+  time and dropped 515 P/B access units (451 to protect audio), but the
+  audio cushion still never passed ~250 ms, and live-resync fired every
+  segment. Turbo+ built a 2 s audio cushion and starvations stopped
+  after startup. Mono and low audio rate have not been tried yet.
+- **Every segment the lookahead had not prefetched took a steady
+  ~4.9 s**: segment 1 on an idle machine, and segment 9 after the live
+  playlist refresh (segment 10 then took 14 s). The TLS context is
+  already shared and sessions are offered for resumption, so the
+  constant looked like a resolver timeout. `connect_socket()` now reuses
+  the last lookup for the same host for up to 5 minutes, dropping it
+  and resolving again if a connect to the cached address fails. It also
+  counts per-phase wall time (DNS, TCP, TLS handshakes and how many were
+  resumed, request-to-headers, body) into `mr_http_timing`, which mrplay
+  prints under `--time` as an `http fetches=...` line. That line will
+  show whether DNS really was the 4.9 s. The counters are written by the
+  hls_fetch worker task and read by the main task. They are only
+  diagnostics, so a read one fetch stale does not matter.
+
 A note on the `--time` output: `audio-gap=` measures the time between
 calls to `service_audio_for_display()`, and those only happen during
 decode, conversion and network waits. Under Turbo+ it reads multi-second

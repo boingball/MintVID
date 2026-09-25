@@ -149,4 +149,17 @@ int mr_http_tls_disabled(void);
 typedef int (*mr_http_service_fn)(void *opaque);
 void mr_http_set_service(mr_http_service_fn fn, void *opaque);
 
+/* Cumulative cost of the complete-body fetches (playlists, HLS segments) this
+ * process has made, split by phase, in milliseconds of wall time. Written by
+ * whichever task does the fetching (amiga/hls_fetch.c's worker), so read it
+ * only as a diagnostic: a report may be one fetch out of date. dns_cached
+ * counts connections that reused a recent lookup instead of resolving. */
+typedef struct mr_http_timing {
+    unsigned long fetches, fetch_ms, max_fetch_ms;
+    unsigned long connects, dns_ms, dns_cached, tcp_ms;
+    unsigned long tls_handshakes, tls_ms, tls_resumed;
+    unsigned long header_ms, body_ms;
+} mr_http_timing;
+void mr_http_timing_get(mr_http_timing *out);
+
 #endif /* MR_HTTP_H */

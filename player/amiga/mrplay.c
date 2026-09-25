@@ -1312,6 +1312,20 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
         printf("hls fetch: hits=%lu misses=%lu worst-wait=%lu ms\n",
                hits, misses, worst_wait_ms);
     }
+    {
+        /* Where each network fetch spends its time, all fetches so far:
+         * sums in ms, so dividing by the counts gives per-fetch averages. */
+        mr_http_timing ht;
+        mr_http_timing_get(&ht);
+        if (ht.connects)
+            printf("http fetches=%lu total=%lu max=%lu ms | connects=%lu "
+                   "dns=%lu ms (cached %lu) tcp=%lu ms | tls=%lu ms over %lu "
+                   "(resumed %lu) | headers=%lu ms body=%lu ms\n",
+                   ht.fetches, ht.fetch_ms, ht.max_fetch_ms, ht.connects,
+                   ht.dns_ms, ht.dns_cached, ht.tcp_ms, ht.tls_ms,
+                   ht.tls_handshakes, ht.tls_resumed, ht.header_ms,
+                   ht.body_ms);
+    }
     if (audio) service_audio_for_display(trace);
     if (st->decoded) {
 #if defined(MR_H264_STAGE_PROFILE)

@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #if (defined(AMIGA_M68K) && !defined(MR_HOST_BUILD)) || \
     defined(__amigaos__) || defined(__AMIGA__)
@@ -139,6 +140,34 @@ static int      g_tls_inited = 0;
 static SSL_SESSION *g_tls_session = NULL;
 static char         g_tls_session_host[HTTP_HOST_MAX];
 #endif
+
+/* Per-phase fetch timing (see mr_http_timing in the header). */
+static mr_http_timing g_http_timing;
+
+static unsigned long http_ms_since(clock_t start)
+{
+    clock_t now = clock();
+    if (start == (clock_t)-1 || now == (clock_t)-1 || now < start) return 0;
+    return (unsigned long)((unsigned long)(now - start) * 1000UL /
+                           (unsigned long)CLOCKS_PER_SEC);
+}
+
+void mr_http_timing_get(mr_http_timing *out)
+{
+    if (out) *out = g_http_timing;
+}
+
+/* The last successful name lookup. Every HLS segment is a new connection to
+ * the same CDN host, and a real A1200 log showed each fetch that was not
+ * already prefetched taking a steady ~4.9 s, even on an idle machine, which
+ * looks like a resolver timeout rather than work. Reusing the answer for a
+ * while skips that; a connect failure on a reused address drops it and
+ * resolves again, so a CDN that moves the host only costs one retry. */
+#define HTTP_DNS_CACHE_SECONDS 300
+static char    g_dns_host[HTTP_HOST_MAX];
+static unsigned char g_dns_addr[4];
+static clock_t g_dns_time;
+static int     g_dns_valid;
 
 typedef struct {
     char host[HTTP_HOST_MAX];
@@ -721,18 +750,38 @@ static int connect_socket(http_source *h, const http_url *url)
      * left over from an earlier, unrelated cancel would otherwise sit
      * pending and immediately abort *this* call the moment the mask goes
      * live. */
+    unsigned char addr[4];
+    int from_cache = 0;
+    clock_t phase = clock();
+    g_http_timing.connects++;
+    if (g_dns_valid && !strcmp(g_dns_host, url->host) &&
+        http_ms_since(g_dns_time) < HTTP_DNS_CACHE_SECONDS * 1000UL) {
+        memcpy(addr, g_dns_addr, sizeof addr);
+        from_cache = 1;
+        g_http_timing.dns_cached++;
+    } else {
 #if MR_HTTP_AMIGA
-    SetSignal(0, SIGBREAKF_CTRL_C);
-    SocketBaseTags(SBTM_SETVAL(SBTC_BREAKMASK), (ULONG)SIGBREAKF_CTRL_C,
-                   TAG_DONE);
-    he = gethostbyname(url->host);
-    SocketBaseTags(SBTM_SETVAL(SBTC_BREAKMASK), 0UL, TAG_DONE);
+        SetSignal(0, SIGBREAKF_CTRL_C);
+        SocketBaseTags(SBTM_SETVAL(SBTC_BREAKMASK), (ULONG)SIGBREAKF_CTRL_C,
+                       TAG_DONE);
+        he = gethostbyname(url->host);
+        SocketBaseTags(SBTM_SETVAL(SBTC_BREAKMASK), 0UL, TAG_DONE);
 #else
-    he = gethostbyname(url->host);
+        he = gethostbyname(url->host);
 #endif
-    if (!he || !he->h_addr_list || !he->h_addr_list[0]) {
-        mr_source_set_error("HTTP DNS lookup failed");
-        return 0;
+        g_http_timing.dns_ms += http_ms_since(phase);
+        if (!he || !he->h_addr_list || !he->h_addr_list[0] ||
+            he->h_length != (int)sizeof addr) {
+            mr_source_set_error("HTTP DNS lookup failed");
+            return 0;
+        }
+        memcpy(addr, he->h_addr_list[0], sizeof addr);
+        if (strlen(url->host) < sizeof g_dns_host) {
+            strcpy(g_dns_host, url->host);
+            memcpy(g_dns_addr, addr, sizeof addr);
+            g_dns_time = clock();
+            g_dns_valid = 1;
+        }
     }
     h->sock = (int)socket(AF_INET, SOCK_STREAM, 0);
     if (h->sock < 0) {
@@ -755,12 +804,20 @@ static int connect_socket(http_source *h, const http_url *url)
     memset(&sa, 0, sizeof sa);
     sa.sin_family = AF_INET;
     sa.sin_port = htons(url->port);
-    memcpy(&sa.sin_addr, he->h_addr_list[0], (size_t)he->h_length);
+    memcpy(&sa.sin_addr, addr, sizeof addr);
+    phase = clock();
     if (!connect_with_timeout(h->sock, (struct sockaddr *)&sa, sizeof sa)) {
-        mr_source_set_error("HTTP connection failed");
+        g_http_timing.tcp_ms += http_ms_since(phase);
         close_socket_only(h);
+        if (from_cache) {
+            /* The cached address may be stale: forget it and resolve once. */
+            g_dns_valid = 0;
+            return connect_socket(h, url);
+        }
+        mr_source_set_error("HTTP connection failed");
         return 0;
     }
+    g_http_timing.tcp_ms += http_ms_since(phase);
     if (url->tls) {
 #if MR_HTTP_HAVE_TLS
         if (!tls_open(h)) {
@@ -797,12 +854,17 @@ static int connect_socket(http_source *h, const http_url *url)
          * SSL_connect()'s own internal reads/writes go through that same
          * fd, so a full stuck handshake costs at most a handful of 20s
          * increments, not an unbounded wait. */
+        phase = clock();
+        g_http_timing.tls_handshakes++;
         if (SSL_set_fd(h->ssl, h->sock) != 1 ||
             SSL_connect(h->ssl) != 1) {
+            g_http_timing.tls_ms += http_ms_since(phase);
             mr_source_set_error("HTTPS TLS handshake failed");
             close_connection(h, 0);
             return 0;
         }
+        g_http_timing.tls_ms += http_ms_since(phase);
+        if (SSL_session_reused(h->ssl)) g_http_timing.tls_resumed++;
         h->using_tls = 1;
         /* Remember this handshake's session for the next same-host connection. */
         {
@@ -1872,6 +1934,7 @@ int mr_http_fetch_text_direct(const char *url, const mr_http_options *options,
     unsigned char *buf = NULL;
     size_t total = 0, cap = 0;
     int ok = 0;
+    clock_t fetch_start = 0, body_start = 0;
     if (out) *out = NULL;
     if (out_len) *out_len = 0;
     if (!url || !*url || strlen(url) >= HTTP_URL_MAX || !out || !out_len ||
@@ -1891,7 +1954,23 @@ int mr_http_fetch_text_direct(const char *url, const mr_http_options *options,
         if (!mr_http_options_init(&h->options, options->user_agent,
                                   options->referer)) goto done;
     }
-    if (!platform_open(h) || !begin_response(h, 0)) goto done;
+    fetch_start = clock();
+    if (!platform_open(h)) goto done;
+    {
+        mr_http_timing before = g_http_timing;
+        clock_t head_start = clock();
+        if (!begin_response(h, 0)) goto done;
+        /* Request + wait for headers: everything begin_response() spent
+         * outside the DNS/TCP/TLS phases connect_socket() already counted. */
+        {
+            unsigned long all = http_ms_since(head_start);
+            unsigned long conn = (g_http_timing.dns_ms - before.dns_ms) +
+                                 (g_http_timing.tcp_ms - before.tcp_ms) +
+                                 (g_http_timing.tls_ms - before.tls_ms);
+            g_http_timing.header_ms += all > conn ? all - conn : 0;
+        }
+    }
+    body_start = clock();
     if (h->response_left_known && h->response_left > max_size) {
         mr_source_set_error("HTTP text response exceeds size limit");
         goto done;
@@ -1947,6 +2026,13 @@ int mr_http_fetch_text_direct(const char *url, const mr_http_options *options,
     *out_len = total;
     buf = NULL;
     ok = 1;
+    {
+        unsigned long all = http_ms_since(fetch_start);
+        g_http_timing.body_ms += http_ms_since(body_start);
+        g_http_timing.fetches++;
+        g_http_timing.fetch_ms += all;
+        if (all > g_http_timing.max_fetch_ms) g_http_timing.max_fetch_ms = all;
+    }
 done:
     platform_close(h);
     mr_free(h);

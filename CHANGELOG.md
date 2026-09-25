@@ -39,6 +39,13 @@
   that was four hours behind live, on segments the CDN no longer had
   cached. Live playback now starts about 30 seconds before the newest
   segment, and never fewer than three segments back.
+- **HLS no longer looks up the CDN host again for every segment.** On an
+  A1200, every segment that had not been prefetched took about 4.9
+  seconds to arrive. A slow DNS lookup is the likely cause, but that is
+  not yet confirmed. The last lookup is now reused for up to five
+  minutes, and dropped if connecting to that address fails. `--time`
+  logs gain an `http fetches=` line that splits fetch time into DNS,
+  connect, TLS, headers and body.
 
 ## 1.4.0 - 2026-09-23
 
