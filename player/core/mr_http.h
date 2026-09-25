@@ -150,16 +150,30 @@ typedef int (*mr_http_service_fn)(void *opaque);
 void mr_http_set_service(mr_http_service_fn fn, void *opaque);
 
 /* Cumulative cost of the complete-body fetches (playlists, HLS segments) this
- * process has made, split by phase, in milliseconds of wall time. Written by
+ * process has made, split by phase, in milliseconds of wall time. tls13 counts
+ * handshakes that negotiated TLS 1.3 (so a log shows whether the cap below
+ * took effect). Written by
  * whichever task does the fetching (amiga/hls_fetch.c's worker), so read it
  * only as a diagnostic: a report may be one fetch out of date. dns_cached
  * counts connections that reused a recent lookup instead of resolving. */
 typedef struct mr_http_timing {
     unsigned long fetches, fetch_ms, max_fetch_ms;
     unsigned long connects, dns_ms, dns_cached, tcp_ms;
-    unsigned long tls_handshakes, tls_ms, tls_resumed;
+    unsigned long tls_handshakes, tls_ms, tls_resumed, tls13;
     unsigned long header_ms, body_ms;
 } mr_http_timing;
 void mr_http_timing_get(mr_http_timing *out);
+
+/* Highest TLS version HTTPS connections offer. MR_HTTP_TLS_AUTO leaves it to
+ * the TLS library (TLS 1.3 where available); MR_HTTP_TLS_12 caps it at 1.2.
+ * A TLS 1.2 resumption is a short handshake with no key exchange at all,
+ * where a TLS 1.3 one still does a fresh (EC)DHE: on an A1200/68060 that was
+ * still ~0.9 s per HLS segment even when resumed. Takes effect for the next
+ * connection, and drops the cached session when the setting changes. The
+ * default is AUTO; the Amiga programs set it from the saved menu preference
+ * (amiga/mr_tls_pref.h). */
+enum { MR_HTTP_TLS_AUTO = 0, MR_HTTP_TLS_12 = 12 };
+void mr_http_set_tls_max(int version);
+int mr_http_tls_max(void);
 
 #endif /* MR_HTTP_H */

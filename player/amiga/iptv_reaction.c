@@ -10,6 +10,7 @@
 #include "mr_player_status.h"
 #include "mr_master_options.h"
 #include "mr_gui_menu.h"
+#include "mr_tls_pref.h"
 
 MINTVID_DECLARE_VERSION(iptvgui_version_tag, "iptvgui");
 
@@ -953,6 +954,7 @@ int main(int argc, char **argv) {
   window = (struct Window *)RA_OpenWindow(winobj);
   if (!window)
     goto cleanup;
+  mr_http_set_tls_max(MR_TLS_PREF_HTTP_MAX());
   mr_gui_menu_open(&app_menu, window);
   iptv_gui_port_open();
   GetAttr(WINDOW_SigMask, winobj, &sigmask);
@@ -1023,6 +1025,8 @@ int main(int argc, char **argv) {
           mr_gui_show_about(window, "IPTV ReAction edition");
         else if (action == MR_GUI_MENU_GUIDE)
           mr_gui_open_guide(&app_menu, window);
+        else if (action == MR_GUI_MENU_TLS)
+          mr_http_set_tls_max(MR_TLS_PREF_HTTP_MAX());
         else if (action == MR_GUI_MENU_QUIT)
           goto done;
         continue;

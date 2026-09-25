@@ -5606,6 +5606,31 @@ first if one is outstanding. Pinned in `tests/mr_hls_override_check.c`
 and 2 playlist hints; before the fix it was 2 and 0, with the second
 fetch at the edge).
 
+**A Turbo, All Frames, stereo run showed the CPU limit, and a TLS cost that
+remained.** The video needed ~80 ms per 40 ms frame (decode ~47,
+`yuv-indexed` ~28, display ~5), so audio starved (61 starvations,
+live-resync every segment). Networking was fine. But a resumed TLS 1.3
+connection still cost ~0.9 s per segment, on a worker that shares the
+main task's priority: TLS 1.3 resumption still runs an (EC)DHE key
+exchange unless the server accepts PSK-only, and Akamai evidently does
+not. A TLS 1.2 resumption has no key exchange at all.
+
+`mr_http_set_tls_max(MR_HTTP_TLS_12)` caps the context with
+`SSL_CTX_set_max_proto_version()`, applied at context creation and to a
+live context, and drops the cached session on a change. Core default is
+AUTO; on Amiga the saved preference `ENVARC:MintVID.tls`
+(`amiga/mr_tls_pref.h`, missing file = TLS 1.2) is set from a shared
+menu submenu (`mr_gui_menu.c`, MintVID > HTTPS), applied by mrplay before
+`hls_fetch_start()` (`--tls=1.2|1.3` overrides) and by both browsers at
+startup and on `MR_GUI_MENU_TLS`. The controller GUIs don't link
+mr_http, so the header's apply step is a macro, `MR_TLS_PREF_HTTP_MAX()`.
+`mr_http_timing.tls13` counts TLS 1.3 handshakes and the `http fetches=`
+line prints it with the cap, so a log shows the cap took effect.
+`tests/mr_http_resume_check.c` checks auto (4 TLS 1.3), then the cap on
+the live context (3 resumed, none TLS 1.3), then auto again. YouTube is
+affected the same way: googlevideo and the API hosts accept TLS 1.2. How
+much a TLS 1.2 resumption costs on the 060 is for the next log.
+
 A note on the `--time` output: `audio-gap=` measures the time between
 calls to `service_audio_for_display()`, and those only happen during
 decode, conversion and network waits. Under Turbo+ it reads multi-second

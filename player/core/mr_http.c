@@ -143,6 +143,8 @@ static char         g_tls_session_host[HTTP_HOST_MAX];
 
 /* Per-phase fetch timing (see mr_http_timing in the header). */
 static mr_http_timing g_http_timing;
+/* mr_http_set_tls_max(): MR_HTTP_TLS_AUTO or MR_HTTP_TLS_12. */
+static int g_tls_max = MR_HTTP_TLS_AUTO;
 
 static unsigned long http_ms_since(clock_t start)
 {
@@ -155,6 +157,36 @@ static unsigned long http_ms_since(clock_t start)
 void mr_http_timing_get(mr_http_timing *out)
 {
     if (out) *out = g_http_timing;
+}
+
+#if MR_HTTP_HAVE_TLS
+static void apply_tls_max(SSL_CTX *ctx)
+{
+#if defined(SSL_CTX_set_max_proto_version) && defined(TLS1_2_VERSION)
+    /* 0 means "the highest the library supports". */
+    SSL_CTX_set_max_proto_version(ctx, g_tls_max == MR_HTTP_TLS_12
+                                       ? TLS1_2_VERSION : 0);
+#else
+    (void)ctx;
+#endif
+}
+#endif
+
+void mr_http_set_tls_max(int version)
+{
+    if (version != MR_HTTP_TLS_12) version = MR_HTTP_TLS_AUTO;
+    if (version == g_tls_max) return;
+    g_tls_max = version;
+#if MR_HTTP_HAVE_TLS
+    /* A session from the other protocol version cannot be resumed anyway. */
+    if (g_tls_session) { SSL_SESSION_free(g_tls_session); g_tls_session = NULL; }
+    if (g_ssl_ctx) apply_tls_max(g_ssl_ctx);
+#endif
+}
+
+int mr_http_tls_max(void)
+{
+    return g_tls_max;
 }
 
 /* The last successful name lookup. Every HLS segment is a new connection to
@@ -585,6 +617,7 @@ static int tls_open(http_source *h)
      * declines simply resumes with the key exchange as before. */
     SSL_CTX_set_options(g_ssl_ctx, SSL_OP_ALLOW_NO_DHE_KEX);
 #endif
+    apply_tls_max(g_ssl_ctx);
     g_tls_inited = 1;
     h->ssl_ctx = g_ssl_ctx;
     h->tls_ready = 1;
@@ -904,6 +937,9 @@ static int connect_socket(http_source *h, const http_url *url)
         }
         g_http_timing.tls_ms += http_ms_since(phase);
         if (SSL_session_reused(h->ssl)) g_http_timing.tls_resumed++;
+#ifdef TLS1_3_VERSION
+        if (SSL_version(h->ssl) == TLS1_3_VERSION) g_http_timing.tls13++;
+#endif
         h->using_tls = 1;
         /* The session is saved for the next connection when this one closes
          * (remember_tls_session()), not here: see the note there. */

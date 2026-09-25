@@ -18,6 +18,15 @@
   straight to that size, so conversion and drawing each do about a quarter
   of the work.
 
+- **HTTPS menu: TLS 1.2 or TLS 1.3.** The MintVID menu in every GUI has
+  an HTTPS submenu. The default, **TLS 1.2 (faster)**, makes each repeat
+  connection to a streaming server a short handshake. On an A1200/68060
+  a resumed TLS 1.3 connection still took about 0.9 seconds per HLS
+  segment, because it still does a key exchange. The choice is saved and
+  used by the IPTV/YouTube browsers and mrplay. `mrplay --tls=1.2|1.3`
+  overrides it for one run, and `--time` logs now show how many
+  connections used TLS 1.3.
+
 ### Changed
 
 - **Audio-only playback moved to the Display chooser.** "Video: Off" is now
