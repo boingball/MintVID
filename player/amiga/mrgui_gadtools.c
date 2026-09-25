@@ -64,6 +64,9 @@ typedef struct gt_app {
     struct Gadget *audio_rate, *fast_buffer, *no_audio, *mono_audio;
     struct Gadget *video_mode, *volume, *skip_after;
     struct Gadget *iptv;
+    /* Scale row after the last update_mode_controls(): tells a forward
+     * click on the cycle gadget from a backward (shift) one. */
+    ULONG scale_prev;
     struct Window *plWin;
     struct Gadget *plGadgets, *plGadContext, *plGadList;
     APTR plVisual;
@@ -411,6 +414,27 @@ static void publish_options(gt_app *app)
     mr_master_options_publish(app->master, &options);
 }
 
+/* Copper 2x (scale row 2) is only honoured for a plain c2p/riva-c2p/Akiko
+ * geometry - see update_mode_controls(). */
+static int copper_allowed(gt_app *app)
+{
+    ULONG row = gad_value(app, app->c2p, GTCY_Active);
+    mr_c2p_mode mode = row < app->c2p_count ? app->c2p_modes[row]
+                                            : MR_C2P_STANDARD;
+    return mode == MR_C2P_WPA || mode == MR_C2P_RIVA || mode == MR_C2P_AKIKO;
+}
+
+/* A click on the Scale cycle gadget. It steps None -> 2x -> Copper 2x ->
+ * None. Where Copper 2x is not allowed, update_mode_controls() would snap it
+ * back to 2x, so a forward click from 2x could never reach None again. Skip
+ * the row instead, in whichever direction the click went. */
+static void scale_clicked(gt_app *app)
+{
+    if (gad_value(app, app->scale, GTCY_Active) == 2 && !copper_allowed(app))
+        GT_SetGadgetAttrs(app->scale, app->window, NULL,
+                         GTCY_Active, app->scale_prev == 1 ? 0 : 1, TAG_DONE);
+}
+
 static void update_mode_controls(gt_app *app, int output_changed)
 {
     ULONG selected = gad_value(app, app->mode, GTCY_Active);
@@ -479,6 +503,7 @@ static void update_mode_controls(gt_app *app, int output_changed)
     if (disabled) {
         GT_SetGadgetAttrs(app->scale, app->window, NULL,
                          GTCY_Active, 0, TAG_DONE);
+        app->scale_prev = 0;
         return;
     }
 
@@ -506,6 +531,7 @@ static void update_mode_controls(gt_app *app, int output_changed)
     if (!copper_ok && gad_value(app, app->scale, GTCY_Active) == 2)
         GT_SetGadgetAttrs(app->scale, app->window, NULL,
                          GTCY_Active, 1, TAG_DONE);
+    app->scale_prev = gad_value(app, app->scale, GTCY_Active);
 }
 
 static struct Task *find_player(void)
@@ -1380,6 +1406,7 @@ int main(void)
                     publish_options(&app);
                     break;
                 case G_SCALE:
+                    scale_clicked(&app);
                     /* Re-validate here too (not just on G_MODE/G_C2P): picking
                      * an incompatible c2p/mode first and only then Copper 2x
                      * must snap back just as reliably as the reverse order. */

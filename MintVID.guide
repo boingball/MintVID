@@ -78,10 +78,21 @@ Topics:
     left/right channel pair, so stereo sources keep their stereo image
     instead of being mixed down to one channel. Mono sources, and the Mono
     audio option, play the same signal on both speakers.
-  - @{b}PiStorm 600 plays YouTube.@{ub} On the tested Pi3-based PiStorm
-    600 (MintVID040), YouTube's 360p stream plays with VQ Turbo and the
-    new RTG (Half) display mode. The YUV-to-RGB step fell from 57 ms to
-    about 12 ms per 640x360 frame there, and H.264 decode is faster too.
+  - @{b}A1200 68060/50 plays YouTube.@{ub} In VQ Turbo+ (keyframes only)
+    YouTube's 360p stream plays with correct high-quality stereo sound on
+    a real A1200 with a 68060 at 50 MHz. Turbo+ no longer skips audio
+    while it waits for keyframes, HTTPS segments resume their TLS session
+    instead of paying a full handshake, and AGA colour conversion takes
+    about a third of the 68k instructions it did.
+  - @{b}PiStorm 600 plays YouTube without the P96 overlay.@{ub} On the
+    tested Pi3-based PiStorm 600 (MintVID040), YouTube's 360p stream plays
+    through CGX with VQ Turbo and the new RTG (Half) display mode. The
+    YUV-to-RGB step fell from 57 ms to about 12 ms per 640x360 frame there,
+    and H.264 decode is faster too.
+  - @{b}Window@{ub} and @{b}Window Half@{ub} display modes play in a
+    sizeable window on a native-chipset Workbench, matching the dither
+    palette to the screen's pens so Workbench's own colours never change.
+    See @{" Controls " LINK Controls}.
   - @{b}RTG (Half)@{ub} display mode: the window opens at half the video's
     width and height and colour conversion writes straight to that size,
     so conversion and the copy to the card each do about a quarter of the
@@ -108,6 +119,19 @@ Topics:
     scaling, and fullscreen falls back to CGX if a board refuses it.
   - @{b}Bigger buffers.@{ub} Fast buffer adds 32 and 64 MB, and YouTube/
     IPTV HLS downloads several segments ahead of playback.
+  - @{b}HTTPS menu.@{ub} The MintVID menu's HTTPS submenu picks TLS 1.2
+    (the faster default) or TLS 1.3.
+  - @{b}Faster P96 on 16-bit screens.@{ub} When the overlay is refused,
+    H.264 is converted straight to the 16-bit screen format and copied a
+    row at a time. On WinUAE 720p YouTube the display step fell from about
+    34 ms to about 17 ms per frame.
+  - @{b}Faster MPEG-1/2.@{ub} Four-pixel motion compensation and a
+    sparse-block IDCT cut decode by 19-29% of 68k instructions, with
+    identical output.
+  - @{b}Live HLS/IPTV fixes.@{ub} Turbo+ no longer stalls on streams with
+    B-frames (BBC One), live playback starts about 30 seconds from the
+    live edge, and the playlist is re-read before playback reaches its
+    end.
 
 Performance still depends on the exact CPU, source, codec, resolution,
 audio and display mode. A supported format is not automatically a
@@ -144,13 +168,16 @@ mode:
     brought the lowest-resolution BBC One HLS stream close to real time on
     a tested real 68060 using AGA/HAM8. Higher resolutions remain beyond
     normal classic hardware, and results depend on the exact stream and
-    configuration.
+    configuration. In 1.4.0 a real A1200 with a 68060/50 plays YouTube's
+    360p stream in VQ Turbo+ (keyframes only) with full-quality stereo
+    sound.
   - PiStorm/Emu68 (ARM-hosted 68k) - use the MintVID040 build. H.264/AVC
     (Baseline through High Profile, CABAC and B-frames) becomes much more
     practical. On the tested Pi3-based PiStorm 600, YouTube's 360p stream
-    plays with VQ Turbo and the RTG (Half) display mode. Faster PiStorm
-    hardware should provide more headroom, but exact results depend on the
-    stream and configuration.
+    plays with VQ Turbo and the RTG (Half) display mode, through CGX since
+    the PiStorm's RTG has no P96 overlay. Faster PiStorm hardware should
+    provide more headroom, but exact results depend on the stream and
+    configuration.
   - Vampire/Apollo 68080 - not yet validated by the MintVID project. No
     optimised build is officially recommended yet, and the MintVID060
     build should not be assumed to be correct solely from the CPU name.
@@ -351,11 +378,12 @@ controllers:
 
   @{b}Display: No Video@{ub}
       The last row of the Display chooser, not the Video one: Video, Skip
-      after and VQ grey out under it. Play the soundtrack only. No video is decoded or shown, so a machine
-      too slow for the picture (a YouTube talk, a music video) can still
-      play it. A small window on Workbench shows the position: ESC or its
-      close gadget stops, space pauses, cursor left/right seek and
-      up/down change the volume. The controller's buttons work as usual.
+      after and VQ grey out under it. Plays the soundtrack only. No video
+      is decoded or shown, so a machine too slow for the picture (a YouTube
+      talk, a music video) can still play it. A small window on Workbench
+      shows the position: ESC or its close gadget stops, space pauses,
+      cursor left/right seek and up/down change the volume. The
+      controller's buttons work as usual.
 
 Use @{b}Skip Frames@{ub} when a slower Amiga is visibly falling behind,
 particularly with H.264, larger pictures, or a demanding display mode. It
@@ -373,8 +401,8 @@ The command-line equivalents are:
 
 @{b}Skip after@{ub}, beside the Video chooser, sets how far behind a Skip
 Frames session may fall (0.2 to 2 seconds, default 0.7) before it starts
-skipping. It is greyed out for All Frames, Off and VQ Smoosh, which never
-use it.
+skipping. It is greyed out for All Frames, No Video and VQ Smoosh, which
+never use it.
 
 For most codecs this is a presentation policy: already-decoded late
 pictures are discarded. H.264 gains a second, deliberately stronger

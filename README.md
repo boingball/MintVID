@@ -24,10 +24,14 @@ Performance scales strongly with CPU, codec, resolution and display mode;
 format support is not a promise of real-time playback on every 68k.
 
 MintVID 1.4.0 brings stereo audio through a synchronized Paula channel
-pair, and YouTube's 360p stream now plays on a Pi3-based PiStorm 600 with
-VQ Turbo and the new RTG (Half) display mode. It also adds VQ Smoosh,
-audio-only playback (Display: No Video), faster H.264 and AAC decoding, and makes
-the P96 hardware video overlay work on real Voodoo3/Permedia-class boards.
+pair. YouTube's 360p stream now plays on a real A1200 with a 68060/50 in
+VQ Turbo+, with correct high-quality stereo sound, and on a Pi3-based
+PiStorm 600 with VQ Turbo and the new RTG (Half) display mode, even though
+the PiStorm's RTG has no P96 overlay. It also adds a Window display mode
+for the Workbench, VQ Smoosh, audio-only playback (Display: No Video), an
+HTTPS TLS 1.2/1.3 choice, and faster H.264, MPEG-1/2, AAC, AGA and P96
+paths, and makes the P96 hardware video overlay work on real
+Voodoo3/Permedia-class boards.
 
 ![MintVID playing an LGR YouTube video on AmigaOS](player/amiga/art/MintVID-YouTube.png)
 
@@ -37,10 +41,20 @@ the P96 hardware video overlay work on real Voodoo3/Permedia-class boards.
   channel pair, so stereo sources keep their stereo image instead of being
   mixed down to one channel. Mono sources, and `--audio-mono`, play the
   same signal on both speakers.
-- **PiStorm 600 plays YouTube:** on the tested Pi3-based PiStorm 600
-  (MintVID040), YouTube's 360p stream plays with VQ Turbo and RTG (Half).
-  The YUV->RGB24 step fell from 57 ms to about 12 ms per 640x360 frame
-  there, and H.264 decode is faster too.
+- **A1200 68060/50 plays YouTube:** in VQ Turbo+ (keyframes only),
+  YouTube's 360p stream plays with correct high-quality stereo audio on a
+  real A1200 with a 68060 at 50 MHz. Turbo+ no longer skips audio while it
+  waits for keyframes, HTTPS segments resume their TLS session instead of
+  paying a full handshake, and AGA colour conversion takes about a third
+  of the 68k instructions it did.
+- **PiStorm 600 plays YouTube without the P96 overlay:** on the tested
+  Pi3-based PiStorm 600 (MintVID040), YouTube's 360p stream plays through
+  CGX with VQ Turbo and RTG (Half). The YUV->RGB24 step fell from 57 ms to
+  about 12 ms per 640x360 frame there, and H.264 decode is faster too.
+- **Window** (`--aga-window`) and **Window Half** (`--aga-window-half`):
+  play in a sizeable window on a native-chipset (AGA/ECS/OCS) Workbench,
+  matching the dither palette to the screen's pens so Workbench's own
+  colours never change.
 - **RTG (Half)** (`--rtg-half`): the window opens at half the video's width
   and height and H.264 is converted straight to that size, so conversion
   and the copy to the card each do about a quarter of the work.
@@ -65,7 +79,20 @@ the P96 hardware video overlay work on real Voodoo3/Permedia-class boards.
   board refuses it.
 - **Bigger buffers:** Fast buffer adds 32 and 64 MB, and YouTube/IPTV HLS
   downloads several segments ahead of playback.
-
+- **HTTPS menu:** the MintVID menu's HTTPS submenu picks TLS 1.2 (the
+  faster default: a repeat connection resumes with no key exchange) or
+  TLS 1.3. `mrplay --tls=1.2|1.3` overrides it for one run.
+- **Faster P96 on 16-bit screens:** when the overlay is refused, H.264 is
+  converted straight to the 16-bit screen format and copied a row at a
+  time. On WinUAE 720p YouTube the display step fell from about 34 ms to
+  about 17 ms per frame.
+- **Faster MPEG-1/2:** four-pixel motion compensation and a sparse-block
+  IDCT cut decode by 19-29% of 68k instructions, with byte-identical
+  output.
+- **Live HLS/IPTV fixes:** Turbo+ no longer stalls on streams with
+  B-frames (BBC One), live playback starts about 30 seconds from the live
+  edge instead of hours back, and the playlist is re-read before playback
+  reaches its end.
 See [CHANGELOG.md](CHANGELOG.md) for the complete release notes, including
 the 1.3.2 DV decoder/EHB/MPEG-1/2 work and the original 1.3.1 P96 overlay
 introduction this release builds on.
@@ -118,7 +145,9 @@ For a repeatable real-hardware baseline, see **[68060 @ 50 MHz codec performance
   68060 using AGA/HAM8. Results remain highly dependent on clock speed, stream,
   audio, resolution and display mode; higher resolutions are not expected to
   be real-time on classic CPUs. Turbo+ deliberately favours continuous audio
-  and occasional keyframes when the full video rate is beyond the machine.
+  and occasional keyframes when the full video rate is beyond the machine:
+  in 1.4.0 that plays YouTube's 360p stream with full-quality stereo sound
+  on a real A1200 with a 68060/50.
 - **PiStorm/Emu68:** use the **MintVID040** build. This is the release build
   targeted for the Emu68/PiStorm environment. H.264 becomes much more practical;
   on a tested Pi3-based PiStorm 600, YouTube's 360p stream plays with VQ Turbo

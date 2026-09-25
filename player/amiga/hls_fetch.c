@@ -205,6 +205,17 @@ static int hls_fetch_download(hls_fetch_request *r)
     return 1;
 }
 
+/* --time breadcrumb for the shutdown handshake, flushed at once so the last
+ * one survives a crash. printf() writes through mrplay's own stdout (the
+ * log), which is why this uses fflush(stdout) rather than this task's
+ * Output(). Main is only polling while these print. */
+static void hls_fetch_trace(const char *what)
+{
+    if (!g_verbose) return;
+    printf("hls-fetch: %s\n", what);
+    fflush(stdout);
+}
+
 static void hls_fetch_worker(void)
 {
     hls_fetch_request *req, *quit_req = NULL;
@@ -224,6 +235,7 @@ static void hls_fetch_worker(void)
         }
     }
 done:
+    hls_fetch_trace("worker: quit received");
     /* Consume the cancellation kick before returning through DOS. It is only
      * meaningful while a blocking DNS call has SBTC_BREAKMASK installed. */
     SetSignal(0, SIGBREAKF_CTRL_C);
@@ -231,8 +243,12 @@ done:
      * acknowledging the quit - main proceeds to its own mr_http_net_shutdown()
      * as soon as it sees the reply, so ours must be fully done first. */
     mr_http_net_shutdown();
+    hls_fetch_trace("worker: network closed");
     DeleteMsgPort(g_worker_port);
     g_worker_port = NULL;
+    /* Last output before the Forbid(): printf() may Wait(), which would
+     * break it. */
+    hls_fetch_trace("worker: replying and exiting");
     /* Forbid() before the reply so main - woken by it - cannot start tearing
      * down further (freeing state this task's final RemTask still touches)
      * until dos has actually removed this task; only its last Permit-equivalent
@@ -688,14 +704,19 @@ void hls_fetch_stop(void)
     mr_http_set_prefetch_hint(NULL);
 
     hls_fetch_reclaim();
-    if (g_busy) hls_fetch_wait_busy_forever();
+    if (g_busy) {
+        hls_fetch_trace("stop: waiting for the in-flight fetch");
+        hls_fetch_wait_busy_forever();
+    }
     hls_fetch_free_ready();
     hls_fetch_free_slots();
 
+    hls_fetch_trace("stop: sending quit");
     g_req.quit = 1;
     g_busy = 1;
     PutMsg(g_worker_port, &g_req.msg);
     hls_fetch_wait_busy_forever();
+    hls_fetch_trace("stop: worker joined");
 
     g_active = 0;
     g_proc = NULL;

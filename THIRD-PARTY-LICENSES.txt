@@ -1,4 +1,4 @@
-MintVID 1.3.0 - third-party licence index
+MintVID 1.4.0 - third-party licence index
 =========================================
 
 MintVID's own source code is MIT-licensed. See LICENSE in the project root.
@@ -20,6 +20,11 @@ libmpeg2 (VideoLAN)
   Licence: GPL-2.0-or-later
   Source:  player/vendor/libmpeg2/
   Release notice: LICENSES/GPL-2.0.txt and LICENSES/libmpeg2-README.txt
+  MintVID adds libmpeg2/motion_comp_swar.c (four pixels per 32-bit word)
+  and sparse-block shortcuts in libmpeg2/idct.c, both under the same
+  GPL-2.0-or-later terms. The four-way half-pel average uses the byte-split
+  technique of Henryk Richter's MacrosInterpol68k.m from RiVA 0.54
+  (GPL-2.0-or-later); the file header says what was changed.
 
 Rockbox/a52dec-derived fixed-point AC-3 core
   Licence: GPL-2.0-or-later

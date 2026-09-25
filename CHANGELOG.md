@@ -1,6 +1,30 @@
 # MintVID changelog
 
-## Unreleased
+## 1.4.0 - 2026-09-25
+
+### Highlights
+
+- **Stereo audio.** Paula now plays through a synchronized left/right
+  channel pair, so stereo sources keep their stereo image instead of being
+  mixed down to one channel. Mono sources, and the Mono audio option, play
+  the same signal on both speakers.
+- **A1200 with a 68060/50 plays YouTube.** In VQ Turbo+ (keyframes
+  only) YouTube's 360p stream plays with correct, high-quality stereo audio
+  on a real A1200 with a 68060 at 50 MHz. Turbo+ no longer skips audio
+  while it waits for keyframes, HTTPS segments resume their TLS session
+  instead of paying a full handshake each time, and the AGA colour
+  conversion needs about a third of the 68k instructions it did.
+- **PiStorm 600 plays YouTube without the P96 overlay.** On the tested
+  Pi3-based PiStorm 600 (MintVID040), YouTube's 360p stream plays with VQ
+  Turbo and the new RTG (Half) display mode. The overlay is not available
+  on the PiStorm's RTG, so it plays through CGX, where the YUV-to-RGB step
+  fell from 57 ms to about 12 ms per 640x360 frame.
+- **Much faster P96 on 16-bit screens.** When the overlay is refused, P96
+  now copies H.264 pictures straight to a 16-bit screen. On WinUAE 720p
+  YouTube the display step fell from about 34 ms to about 17 ms a frame,
+  and shown frames rose from about 16-22 to about 32 fps.
+- **Window display mode:** video in a window on a native-chipset
+  Workbench, sharing its pens.
 
 ### Added
 
@@ -17,7 +41,6 @@
   half the video's width and height. H.264 and MPEG-1/2 are dithered
   straight to that size, so conversion and drawing each do about a quarter
   of the work.
-
 - **HTTPS menu: TLS 1.2 or TLS 1.3.** The MintVID menu in every GUI has
   an HTTPS submenu. The default, **TLS 1.2 (faster)**, makes each repeat
   connection to a streaming server a short handshake. On an A1200/68060
@@ -26,86 +49,6 @@
   used by the IPTV/YouTube browsers and mrplay. `mrplay --tls=1.2|1.3`
   overrides it for one run, and `--time` logs now show how many
   connections used TLS 1.3.
-
-### Changed
-
-- **Audio-only playback moved to the Display chooser.** "Video: Off" is now
-  the Display chooser's last row, **No Video**, where it is easier to
-  find. Video (All Frames / Skip Frames), Skip after and VQ grey out under
-  it. `--no-video` is unchanged, and a saved "Video: Off" setting comes
-  back as No Video.
-
-### Performance
-
-- **Faster H.264 on 16-bit P96 screens.** When the P96 overlay isn't
-  available, P96 plays on a 16-bit screen. H.264 pictures are now
-  converted straight to that screen's 16-bit format and copied a row at
-  a time. Before, every pixel was converted twice and written
-  separately. On a WinUAE 720p YouTube stream that step took about 34 ms
-  of every frame. The video queue also needs a third less memory.
-- **Faster AGA colour conversion.** Converting each H.264 or MPEG-1/2
-  picture to the 256-colour AGA palette now takes about 20 68k
-  instructions per pixel instead of about 56. Output is identical. On
-  BBC One's 192x108 stream on an A1200 with a 68060/50 this step cost
-  about 28 ms per picture; expect roughly a third of that, but that is
-  not yet measured on the machine.
-  The same speedup now applies to the 32- and 16-colour ECS/OCS palettes
-  (ECS screens and Window mode on a shallow Workbench): about 53
-  instructions per pixel down to about 20. EHB and HAM use other
-  converters and are unchanged.
-- **Faster MPEG-1/MPEG-2 decoding.** Motion compensation now handles four
-  pixels at a time instead of one, and the inverse DCT skips the work that
-  is always zero in sparse blocks. Picture output is unchanged, byte for
-  byte. On VCD-style 352x240 clips, decoding takes 19-29% fewer 68k
-  instructions. Not yet timed on a real 68060.
-
-### Fixed
-
-- **Turbo+ showed one picture, then stalled, on streams with B-frames.**
-  This hit live IPTV like BBC One. The decoder held each keyframe back
-  until two more had been decoded, and in Turbo+ those are the next
-  keyframes. On BBC's 7.68-second GOPs every picture arrived about 15
-  seconds late, and the player dropped it as stale. Turbo+ now outputs
-  each keyframe as soon as it is decoded. YouTube's 360p stream has no
-  B-frames, which is why it was unaffected.
-- **Live HLS started at the oldest segment in the playlist.** For BBC
-  that was four hours behind live, on segments the CDN no longer had
-  cached. Live playback now starts about 30 seconds before the newest
-  segment, and never fewer than three segments back.
-- **HTTPS never resumed a TLS session, so every HLS segment paid a full
-  handshake.** On an A1200 that was about 4.5 seconds of CPU per
-  segment, taken from decoding while the next segment downloaded in the
-  background. The session is now saved once the server has sent its
-  resumption ticket, so later connections to the same host resume it.
-- **HLS no longer looks up the CDN host again for every segment.** The
-  last lookup is reused for up to five minutes, and dropped if
-  connecting to that address fails. `--time` logs gain an
-  `http fetches=` line that splits fetch time into DNS, connect, TLS,
-  headers and body.
-- **Live HLS stalled each time playback caught up with the playlist.**
-  The playlist was only re-read once the last known segment had been
-  played. Playback then waited for that re-read and for a segment nobody
-  had prefetched, about 2.8 seconds on BBC One, and the audio ran dry.
-  The playlist is now re-read in the background a few segments before
-  the end, so the next segments are already downloading when playback
-  gets there.
-
-## 1.4.0 - 2026-09-23
-
-### Highlights
-
-- **Stereo audio.** Paula now plays through a synchronized left/right
-  channel pair, so stereo sources keep their stereo image instead of being
-  mixed down to one channel. Mono sources, and the Mono audio option, play
-  the same signal on both speakers.
-- **PiStorm 600 plays YouTube.** On the tested Pi3-based PiStorm 600
-  (MintVID040), YouTube's 360p stream plays with VQ Turbo and the new
-  RTG (Half) display mode. The YUV-to-RGB step that used to cost about as
-  much as decoding fell from 57 ms to about 12 ms per 640x360 frame there,
-  and H.264 decode itself is faster too (see Performance).
-
-### Added
-
 - **RTG (Half)** display mode: the window opens at half the video's width
   and height, and colour conversion writes straight to that size, so the
   conversion and the copy to the graphics card each do about a quarter of
@@ -116,10 +59,11 @@
   the video keeps moving on a machine that cannot keep up. Audio comes
   first: pictures are also dropped while the audio buffer is low. Drops
   never run for more than a second, so the picture always advances.
-- **Video: Off** (`--no-video`): a third Video choice that plays only the
-  soundtrack. No video is decoded or shown. A small Workbench window shows
-  the position and takes ESC, space, seek and volume keys, for a machine
-  that is too slow for the picture but can still play the audio.
+- **No Video** (`--no-video`, the Display chooser's last row): plays only
+  the soundtrack. No video is decoded or shown. A small Workbench window
+  shows the position and takes ESC, space, seek and volume keys, for a
+  machine that is too slow for the picture but can still play the audio.
+  Video, Skip after and VQ grey out under it.
 - **Skip after** (`--skip-trigger=200..2000`): how far a Video: Skip
   Frames session may fall behind before it starts skipping (default 0.7 s).
 - **P96 Output Format** menu item (YVYU for WinUAE, YUYV for Voodoo) to
@@ -154,6 +98,39 @@
 
 ### Fixed
 
+- **GadTools Scale could not be turned back off.** With a C2P that doesn't
+  support Copper 2x (Kalms, Standard, Direct), clicking Scale from 2x went
+  to Copper 2x, which was immediately put back to 2x, so None was never
+  reached. The click now skips the unavailable row. The ReAction
+  edition's pop-up list was not affected.
+- **Turbo+ showed one picture, then stalled, on streams with B-frames.**
+  This hit live IPTV like BBC One. The decoder held each keyframe back
+  until two more had been decoded, and in Turbo+ those are the next
+  keyframes. On BBC's 7.68-second GOPs every picture arrived about 15
+  seconds late, and the player dropped it as stale. Turbo+ now outputs
+  each keyframe as soon as it is decoded. YouTube's 360p stream has no
+  B-frames, which is why it was unaffected.
+- **Live HLS started at the oldest segment in the playlist.** For BBC
+  that was four hours behind live, on segments the CDN no longer had
+  cached. Live playback now starts about 30 seconds before the newest
+  segment, and never fewer than three segments back.
+- **HTTPS never resumed a TLS session, so every HLS segment paid a full
+  handshake.** On an A1200 that was about 4.5 seconds of CPU per
+  segment, taken from decoding while the next segment downloaded in the
+  background. The session is now saved once the server has sent its
+  resumption ticket, so later connections to the same host resume it.
+- **HLS no longer looks up the CDN host again for every segment.** The
+  last lookup is reused for up to five minutes, and dropped if
+  connecting to that address fails. `--time` logs gain an
+  `http fetches=` line that splits fetch time into DNS, connect, TLS,
+  headers and body.
+- **Live HLS stalled each time playback caught up with the playlist.**
+  The playlist was only re-read once the last known segment had been
+  played. Playback then waited for that re-read and for a segment nobody
+  had prefetched, about 2.8 seconds on BBC One, and the audio ran dry.
+  The playlist is now re-read in the background a few segments before
+  the end, so the next segments are already downloading when playback
+  gets there.
 - Turbo+ no longer skips audio. With only keyframes shown the video queue
   sat empty between them, so the player read ahead as fast as it could and
   audio beyond the 4 s Paula buffer was thrown away - on a YouTube clip
@@ -206,6 +183,27 @@
 
 ### Performance
 
+- **Faster H.264 on 16-bit P96 screens.** When the P96 overlay isn't
+  available, P96 plays on a 16-bit screen. H.264 pictures are now
+  converted straight to that screen's 16-bit format and copied a row at
+  a time. Before, every pixel was converted twice and written
+  separately. On a WinUAE 720p YouTube stream that step took about 34 ms
+  of every frame. The video queue also needs a third less memory.
+- **Faster AGA colour conversion.** Converting each H.264 or MPEG-1/2
+  picture to the 256-colour AGA palette now takes about 20 68k
+  instructions per pixel instead of about 56. Output is identical. On
+  BBC One's 192x108 stream on an A1200 with a 68060/50 this step cost
+  about 28 ms per picture; expect roughly a third of that, but that is
+  not yet measured on the machine.
+  The same speedup now applies to the 32- and 16-colour ECS/OCS palettes
+  (ECS screens and Window mode on a shallow Workbench): about 53
+  instructions per pixel down to about 20. EHB and HAM use other
+  converters and are unchanged.
+- **Faster MPEG-1/MPEG-2 decoding.** Motion compensation now handles four
+  pixels at a time instead of one, and the inverse DCT skips the work that
+  is always zero in sparse blocks. Picture output is unchanged, byte for
+  byte. On VCD-style 352x240 clips, decoding takes 19-29% fewer 68k
+  instructions. Not yet timed on a real 68060.
 - Reworked the shared YUV420->RGB24/BGR24 conversion tables (used by
   every RTG display path, not just the new overlay format): the luma
   table is now indexed directly by the raw Y byte with the limited-range
