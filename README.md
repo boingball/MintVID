@@ -126,7 +126,7 @@ Amiga-specific layers. MP3/AAC decoding reuses the proven MintAMP/Helix code,
 with audio output through Paula.
 
 The goal is to go **beyond MPEG-1** on accelerated 68k Amigas — from
-68030-class ECS/AGA systems through 68040/060 machines to PiStorm/RTG.
+68030-class OCS/ECS/AGA systems through 68040/060 machines to PiStorm/RTG.
 MintVID provides a broad range of codecs, but what is practical in real time
 depends heavily on CPU speed, codec complexity, resolution, bitrate and
 display mode. Codec support does not imply real-time playback on every CPU.
@@ -135,9 +135,12 @@ For a repeatable real-hardware baseline, see **[68060 @ 50 MHz codec performance
 
 ### Hardware and performance expectations
 
-- **68030-class ECS/AGA:** best suited to lightweight codecs and modest frame
-  sizes. Cinepak is the natural starting point; heavier formats may decode
-  correctly without being practical in real time.
+- **68030-class OCS/ECS/AGA:** best suited to lightweight codecs and modest
+  frame sizes. Cinepak is the natural starting point; heavier formats may
+  decode correctly without being practical in real time. OCS and ECS
+  machines get 32-colour, EHB, HAM6 and Window modes, but only AGA has been
+  tested on real hardware so far. Every build needs a 68030 or better, so a
+  68000 machine needs an accelerator.
 - **68040/060:** older codecs such as Cinepak, MJPEG, MPEG-1/2, MPEG-4 Part 2
   and WMV7/8 become more practical at modest resolutions, especially with RTG.
   H.264/AVC remains extremely demanding, but the 1.2.0 H.264 and AAC work moved
