@@ -217,6 +217,11 @@
   (ECS screens and Window mode on a shallow Workbench): about 53
   instructions per pixel down to about 20. EHB and HAM use other
   converters and are unchanged.
+- **Faster HAM6/HAM8.** HAM encoding is now hand-written 68k assembly,
+  for both the plain and Dither modes. Converting an H.264 or MPEG-1/2
+  picture to HAM8 takes about 61 68k instructions per pixel instead of
+  about 87, and HAM6 about 73 instead of about 107. Output is identical,
+  byte for byte. Not yet timed on real hardware.
 - **Faster MPEG-1/MPEG-2 decoding.** Motion compensation now handles four
   pixels at a time instead of one, and the inverse DCT skips the work that
   is always zero in sparse blocks. Picture output is unchanged, byte for

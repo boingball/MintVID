@@ -117,6 +117,9 @@
 #      (parser, VLC, the sparse-block IDCT and the word-at-a-time motion
 #      compensation in motion_comp_swar.c) - the decode path is portable C,
 #      so this is the only check that the compiler emitted nothing trapping.
+#   9. HAM6/HAM8 encoding: core/mr_ham_m68k.S (the hand-written rows),
+#      core/mr_ham.c (tables and dispatch) and core/mr_yuv_ham.c (the
+#      YUV420 entry point that feeds those rows), whole objects.
 set -e
 cd "$(dirname "$0")/.."
 
@@ -299,5 +302,16 @@ done
 
 echo "== scanning MPEG-1/2 video (vendor/libmpeg2, whole objects) =="
 python3 tests/scan_m68060_forbidden.py $MPEG2_OBJS
+
+echo "== building HAM6/HAM8 encoder at the real 68060 production flags =="
+for f in core/mr_ham_m68k.S core/mr_ham.c core/mr_yuv_ham.c; do
+    base=$(basename "$f")
+    $M68K_CC -mcpu=68060 -O2 -std=c99 -DMR_M68K_ASM=1 -Iinclude -Icore \
+        -c -o "$BUILD/${base%.*}_060.o" "$f"
+done
+
+echo "== scanning HAM6/HAM8 encoder (whole objects) =="
+python3 tests/scan_m68060_forbidden.py "$BUILD/mr_ham_m68k_060.o" \
+    "$BUILD/mr_ham_060.o" "$BUILD/mr_yuv_ham_060.o"
 
 echo "68060 disassembly check: OK"

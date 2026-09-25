@@ -15,6 +15,62 @@ static uint8_t q4[256], s4[256], serr8[256];
 static uint8_t grey_q[766], grey_v[766], grey_dist[16][256];
 static int     ham_lut_ready = 0;
 
+#if defined(MR_M68K_ASM) && !defined(MR_HAM_NO_ASM)
+/* core/mr_ham_m68k.S - the same rows in hand-written m68k, every value in a
+ * register (see its header). Bound with __asm__ to the bare .globl names,
+ * so m68k-amigaos-gcc's underscore prefix never applies. Arguments: source
+ * row, destination row, width, &g_m68k_abs[255], the depth's aux table,
+ * and the row's four dither thresholds packed low byte first. */
+typedef void (*mr_ham_row_fn)(const uint8_t *src, uint8_t *dst, int32_t w,
+                              const int32_t *abs_centre, const int32_t *aux,
+                              uint32_t tw);
+void mr_ham8_row_m68k(const uint8_t *, uint8_t *, int32_t, const int32_t *,
+                      const int32_t *, uint32_t) __asm__("mr_ham8_row_m68k");
+void mr_ham8d_row_m68k(const uint8_t *, uint8_t *, int32_t, const int32_t *,
+                       const int32_t *, uint32_t) __asm__("mr_ham8d_row_m68k");
+void mr_ham6_row_m68k(const uint8_t *, uint8_t *, int32_t, const int32_t *,
+                      const int32_t *, uint32_t) __asm__("mr_ham6_row_m68k");
+void mr_ham6d_row_m68k(const uint8_t *, uint8_t *, int32_t, const int32_t *,
+                       const int32_t *, uint32_t) __asm__("mr_ham6d_row_m68k");
+
+/* |i| for i = -255..255; the kernel indexes from entry 255. */
+static int32_t g_m68k_abs[511];
+/* HAM8, byte offsets as in mr_ham_m68k.S: longs serr8, q4, -4 * s4 (a
+ * held-colour pointer offset) and -4 * (v & ~3) (the held offset after a
+ * modify), then the three channels' modify output bytes, 0x80/0xc0/0x40 |
+ * v >> 2. 1216 longs = 4864 bytes. */
+static int32_t g_m68k_aux8[1216];
+/* HAM6: longs grey value[766] and grey index[766] by R+G+B, -4 * (v & ~15),
+ * then the modify output bytes 0x20/0x30/0x10 | v >> 4. 1980 longs. */
+static int32_t g_m68k_aux6[1980];
+
+static void build_m68k_tables(void)
+{
+    static const uint8_t code8[3] = { 0x80, 0xc0, 0x40 };
+    static const uint8_t code6[3] = { 0x20, 0x30, 0x10 };
+    uint8_t *bytes8 = (uint8_t *)&g_m68k_aux8[1024];
+    uint8_t *bytes6 = (uint8_t *)&g_m68k_aux6[1788];
+    int i, c;
+    for (i = 0; i < 511; i++)
+        g_m68k_abs[i] = iabs(i - 255);
+    for (i = 0; i < 256; i++) {
+        g_m68k_aux8[i]       = serr8[i];
+        g_m68k_aux8[256 + i] = q4[i];
+        g_m68k_aux8[512 + i] = -4 * (int32_t)s4[i];
+        g_m68k_aux8[768 + i] = -4 * (int32_t)(i & ~3);
+        g_m68k_aux6[1532 + i] = -4 * (int32_t)(i & ~15);
+        for (c = 0; c < 3; c++) {
+            bytes8[c * 256 + i] = (uint8_t)(code8[c] | (i >> 2));
+            bytes6[c * 256 + i] = (uint8_t)(code6[c] | (i >> 4));
+        }
+    }
+    for (i = 0; i < 766; i++) {
+        g_m68k_aux6[i]       = grey_v[i];
+        g_m68k_aux6[766 + i] = grey_q[i];
+    }
+}
+#endif
+
 static void build_ham_lut(void)
 {
     int v, q, sum;
@@ -31,6 +87,9 @@ static void build_ham_lut(void)
         grey_q[sum] = (uint8_t)q;
         grey_v[sum] = (uint8_t)(q * 17);
     }
+#if defined(MR_M68K_ASM) && !defined(MR_HAM_NO_ASM)
+    build_m68k_tables();
+#endif
     ham_lut_ready = 1;
 }
 
@@ -134,6 +193,30 @@ void mr_ham_encode_ex(const uint8_t *rgb, int w, int h, int rgb_stride,
     int x, y;
 
     if (!ham_lut_ready) build_ham_lut();
+#if defined(MR_M68K_ASM) && !defined(MR_HAM_NO_ASM)
+    {
+        mr_ham_row_fn fn;
+        const int32_t *aux;
+        if (bits >= 8) {
+            fn = dither ? mr_ham8d_row_m68k : mr_ham8_row_m68k;
+            aux = g_m68k_aux8;
+        } else {
+            fn = dither ? mr_ham6d_row_m68k : mr_ham6_row_m68k;
+            aux = g_m68k_aux6;
+        }
+        for (y = 0; y < h; y++) {
+            const uint8_t *trow = bits >= 8 ? ham_bayer4_8[(y_base + y) & 3]
+                                            : ham_bayer4[(y_base + y) & 3];
+            uint32_t tw = (uint32_t)trow[0] | ((uint32_t)trow[1] << 8) |
+                          ((uint32_t)trow[2] << 16) |
+                          ((uint32_t)trow[3] << 24);
+            fn(rgb + (size_t)y * rgb_stride, out + (size_t)y * out_stride, w,
+               &g_m68k_abs[255], aux, tw);
+        }
+        (void)x;
+        return;
+    }
+#endif
     for (y = 0; y < h; y++) {
         const uint8_t *sr = rgb + (size_t)y * rgb_stride;
         uint8_t       *dr = out + (size_t)y * out_stride;

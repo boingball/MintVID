@@ -8,6 +8,12 @@
  * The RGB triple exists only in registers between the first and the last.
  */
 #include "mr_yuv_ham.h"
+#if defined(MR_M68K_ASM) && !defined(MR_HAM_NO_ASM) && !defined(MR_YUV_NO_ASM)
+#define MR_YUV_HAM_VIA_ASM 1
+#include "mr_ham.h"
+#include "mr_yuv.h"
+#include <stdlib.h>
+#endif
 
 #if defined(__GNUC__)
 #define MR_FORCE_INLINE static inline __attribute__((always_inline))
@@ -263,6 +269,44 @@ void mr_yuv420_ham_encode_ex(const uint8_t *y_plane, int y_stride,
         return;
     ham_prepare(&bits);
     dst_h = height / vscale;
+
+#if defined(MR_YUV_HAM_VIA_ASM)
+    /* m68k: each chosen row goes through the hand-written YUV->RGB24 kernel
+     * (core/mr_yuv_m68k.S) into a row buffer, then the hand-written HAM row
+     * (core/mr_ham_m68k.S), which together cost far less than the fused C
+     * below. It is the three-stage path mr_yuv_ham_check compares against,
+     * so the output is the same; only the rows the geometry keeps are
+     * converted, as before. The fused C stays for host builds and in case
+     * the buffer cannot be allocated. */
+    {
+        static uint8_t *row_rgb;
+        static int row_cap;
+        if (row_cap < width) {
+            uint8_t *grown = (uint8_t *)realloc(row_rgb, (size_t)width * 3);
+            if (grown) {
+                row_rgb = grown;
+                row_cap = width;
+            }
+        }
+        if (row_cap >= width) {
+            for (oy = 0; oy < dst_h; oy++) {
+                int src_row = vscale * oy + vscale / 2;
+                int chroma_row = src_row >> 1;
+                mr_yuv420_to_rgb24(row_rgb, width * 3,
+                                   y_plane + (size_t)src_row * y_stride,
+                                   y_stride,
+                                   u_plane + (size_t)chroma_row * u_stride,
+                                   u_stride,
+                                   v_plane + (size_t)chroma_row * v_stride,
+                                   v_stride, width, 1, NULL, NULL);
+                mr_ham_encode_ex(row_rgb, width, 1, width * 3,
+                                 out + (size_t)oy * out_stride, out_stride,
+                                 bits, oy, dither);
+            }
+            return;
+        }
+    }
+#endif
 
     for (oy = 0; oy < dst_h; oy++) {
         int src_row = vscale * oy + vscale / 2;
