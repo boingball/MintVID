@@ -5017,6 +5017,15 @@ drain_decoded_output:
      * nothing worth avoiding. */
     if (use_yuv_indexed_queue || use_yuv422_queue || use_yuv_rgb_queue)
         mr_h264_set_yuv_output(&dec, 0);
+    /* MPEG-1/2 is not switched the same way: mr_mpeg2_set_yuv_output() drops
+     * pictures already decoded and waiting, and at EOF one of those can be
+     * the next-to-last frame. Its drained pictures stay YUV420P and are
+     * converted to RGB24 below instead. Showing them as they were drew the
+     * Y plane as RGB24 - three grey copies of the last picture side by side
+     * at the end of almost every MPEG-1 clip on AGA. */
+    {
+    unsigned char *drain_rgb = NULL;
+    size_t drain_rgb_cap = 0;
 
     /* MPEG-4 B-frame/display reordering holds the final anchor until EOF.
      * Drain it through the same pacing and display path so the player does not
@@ -5024,8 +5033,33 @@ drain_decoded_output:
     while (!quit) {
         uint64_t a = monotonic_us();
         mr_status ds = mr_decoder_flush(&dec);
+        const unsigned char *show_data;
+        int show_stride;
         total_decode_us += monotonic_us() - a;
         if (ds != MR_OK) break;
+        show_data = dec.frame.data;
+        show_stride = dec.frame.stride;
+        if (dec.frame.fmt == MR_PIX_YUV420P) {
+            size_t need = (size_t)dec.frame.width * 3u *
+                          (size_t)dec.frame.height;
+            if (need > drain_rgb_cap) {
+                unsigned char *grown = (unsigned char *)realloc(drain_rgb,
+                                                                 need);
+                if (!grown) break;
+                drain_rgb = grown;
+                drain_rgb_cap = need;
+            }
+            mr_yuv420_to_rgb24(drain_rgb, dec.frame.width * 3,
+                               dec.frame.data, dec.frame.stride,
+                               dec.frame.u_data, dec.frame.u_stride,
+                               dec.frame.v_data, dec.frame.v_stride,
+                               dec.frame.width, dec.frame.height,
+                               NULL, NULL);
+            show_data = drain_rgb;
+            show_stride = dec.frame.width * 3;
+        } else if (dec.frame.fmt != MR_PIX_RGB24) {
+            break;          /* nothing else is ever held back for the drain */
+        }
 
         if (audio) {
             /* Target audio raw time for frame N: invert the signed offset.
@@ -5051,18 +5085,20 @@ drain_decoded_output:
          * summary below - skip both monotonic_us() calls otherwise. */
         if (want_time) {
             a = monotonic_us();
-            display_show_rgb(disp, dec.frame.data, dec.frame.width,
-                             dec.frame.height, dec.frame.stride,
+            display_show_rgb(disp, show_data, dec.frame.width,
+                             dec.frame.height, show_stride,
                              dec.frame.dirty_y0, dec.frame.dirty_y1);
             player_first_frame_presented(disp, -1);
             total_display_us += monotonic_us() - a;
         } else {
-            display_show_rgb(disp, dec.frame.data, dec.frame.width,
-                             dec.frame.height, dec.frame.stride,
+            display_show_rgb(disp, show_data, dec.frame.width,
+                             dec.frame.height, show_stride,
                              dec.frame.dirty_y0, dec.frame.dirty_y1);
             player_first_frame_presented(disp, -1);
         }
         frames++;
+    }
+    free(drain_rgb);
     }
     }
     if (want_time && frames > 0) {
