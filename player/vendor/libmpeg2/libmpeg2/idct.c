@@ -24,6 +24,7 @@
 #include "config.h"
 
 #include <stdlib.h>
+#include <string.h>
 #include <inttypes.h>
 
 #include "mpeg2.h"
@@ -160,15 +161,101 @@ static inline void idct_col (int16_t * const block)
     block[8*7] = (a0 - b0) >> 17;
 }
 
-static void mpeg2_idct_copy_c (int16_t * block, uint8_t * dest,
-			       const int stride)
+/*
+ * MintVID: sparse-block shortcuts, all exact (tests/mr_mpeg2_idct_check.c
+ * compares against the imported code in tests/mr_mpeg2_idct_reference.h).
+ *
+ * The coefficient layout is permuted (see mpeg2_idct_init): storage row r
+ * holds vertical frequency 0,2,4,6,1,3,5,7 for r = 0..7. An all-zero input
+ * row stays zero through idct_row, so rows_pass() skips it and returns a
+ * mask of the rows it did transform. Most blocks at VCD bitrates only use
+ * vertical frequencies 0 and 1 (storage rows 0 and 4); for those the column
+ * pass reduces algebraically. Skipping multiplications by zero changes no
+ * value, so the output is bit-identical. The idea of skipping empty lines
+ * and picking a cheaper transform per block follows RiVA's 68k IDCT
+ * (MacrosIDCT68k.m), without its non-IEEE-1180 AAN arithmetic.
+ */
+static inline int rows_pass (int16_t * const block)
+{
+    int i, mask = 0;
+
+    for (i = 0; i < 8; i++) {
+	int32_t * const row = (int32_t *)(block + 8 * i);
+	if (row[0] | row[1] | row[2] | row[3]) {
+	    idct_row (block + 8 * i);
+	    mask |= 1 << i;
+	}
+    }
+    return mask;
+}
+
+/* idct_col when only storage rows 0 and 4 can be non-zero. */
+static inline void idct_col_r04 (int16_t * const block)
+{
+    int d0 = (block[8*0] << 11) + 65536;
+    int x = block[8*4];
+    int b0 = W1 * x;
+    int b3 = W7 * x;
+    int b1 = ((b0 + b3) >> 8) * 181;
+    int b2 = ((b0 - b3) >> 8) * 181;
+
+    block[8*0] = (d0 + b0) >> 17;
+    block[8*1] = (d0 + b1) >> 17;
+    block[8*2] = (d0 + b2) >> 17;
+    block[8*3] = (d0 + b3) >> 17;
+    block[8*4] = (d0 - b3) >> 17;
+    block[8*5] = (d0 - b2) >> 17;
+    block[8*6] = (d0 - b1) >> 17;
+    block[8*7] = (d0 - b0) >> 17;
+}
+
+static inline void cols_pass (int16_t * const block, const int mask)
+{
+    int i;
+
+    if (!(mask & ~0x11))
+	for (i = 0; i < 8; i++)
+	    idct_col_r04 (block + i);
+    else
+	for (i = 0; i < 8; i++)
+	    idct_col (block + i);
+}
+
+/* Only storage row 0 is non-zero: idct_col's output is
+ * ((v << 11) + 65536) >> 17 = (v + 32) >> 6 down the whole column. Returns
+ * the eight column values in col[] and clears row 0 (the rest is zero). */
+static inline void row0_only (int16_t * const block, int * const col)
 {
     int i;
 
     for (i = 0; i < 8; i++)
-	idct_row (block + 8 * i);
-    for (i = 0; i < 8; i++)
-	idct_col (block + i);
+	col[i] = (block[i] + 32) >> 6;
+    ((int32_t *)block)[0] = 0;	((int32_t *)block)[1] = 0;
+    ((int32_t *)block)[2] = 0;	((int32_t *)block)[3] = 0;
+}
+
+static void mpeg2_idct_copy_c (int16_t * block, uint8_t * dest,
+			       const int stride)
+{
+    int i;
+    int mask = rows_pass (block);
+
+    if (!(mask & ~1)) {
+	int col[8];
+	uint8_t line[8];
+
+	row0_only (block, col);
+	for (i = 0; i < 8; i++)
+	    line[i] = CLIP (col[i]);
+	i = 8;
+	do {
+	    memcpy (dest, line, 8);
+	    dest += stride;
+	} while (--i);
+	return;
+    }
+    cols_pass (block, mask);
+    i = 8;
     do {
 	dest[0] = CLIP (block[0]);
 	dest[1] = CLIP (block[1]);
@@ -193,10 +280,28 @@ static void mpeg2_idct_add_c (const int last, int16_t * block,
     int i;
 
     if (last != 129 || (block[0] & (7 << 4)) == (4 << 4)) {
-	for (i = 0; i < 8; i++)
-	    idct_row (block + 8 * i);
-	for (i = 0; i < 8; i++)
-	    idct_col (block + i);
+	int mask = rows_pass (block);
+
+	if (!(mask & ~1)) {
+	    int col[8];
+
+	    row0_only (block, col);
+	    i = 8;
+	    do {
+		dest[0] = CLIP (col[0] + dest[0]);
+		dest[1] = CLIP (col[1] + dest[1]);
+		dest[2] = CLIP (col[2] + dest[2]);
+		dest[3] = CLIP (col[3] + dest[3]);
+		dest[4] = CLIP (col[4] + dest[4]);
+		dest[5] = CLIP (col[5] + dest[5]);
+		dest[6] = CLIP (col[6] + dest[6]);
+		dest[7] = CLIP (col[7] + dest[7]);
+		dest += stride;
+	    } while (--i);
+	    return;
+	}
+	cols_pass (block, mask);
+	i = 8;
 	do {
 	    dest[0] = CLIP (block[0] + dest[0]);
 	    dest[1] = CLIP (block[1] + dest[1]);

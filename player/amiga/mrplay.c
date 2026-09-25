@@ -39,6 +39,7 @@
 #include "mr_audio.h"
 #include "mr_player_status.h"
 #include "mintvid_version.h"
+#include "mr_tls_pref.h"
 
 MINTVID_DECLARE_VERSION(mrplay_version_tag, "mrplay");
 
@@ -1312,6 +1313,22 @@ static void report_stats(playback_stats *st, mr_audio *audio, mr_demux *demux,
         printf("hls fetch: hits=%lu misses=%lu worst-wait=%lu ms\n",
                hits, misses, worst_wait_ms);
     }
+    {
+        /* Where each network fetch spends its time, all fetches so far:
+         * sums in ms, so dividing by the counts gives per-fetch averages. */
+        mr_http_timing ht;
+        mr_http_timing_get(&ht);
+        if (ht.connects)
+            printf("http fetches=%lu total=%lu max=%lu ms | connects=%lu "
+                   "dns=%lu ms (cached %lu) tcp=%lu ms | tls=%lu ms over %lu "
+                   "(resumed %lu, TLS 1.3 %lu, max %s) | headers=%lu ms "
+                   "body=%lu ms\n",
+                   ht.fetches, ht.fetch_ms, ht.max_fetch_ms, ht.connects,
+                   ht.dns_ms, ht.dns_cached, ht.tcp_ms, ht.tls_ms,
+                   ht.tls_handshakes, ht.tls_resumed, ht.tls13,
+                   mr_http_tls_max() == MR_HTTP_TLS_12 ? "1.2" : "1.3",
+                   ht.header_ms, ht.body_ms);
+    }
     if (audio) service_audio_for_display(trace);
     if (st->decoded) {
 #if defined(MR_H264_STAGE_PROFILE)
@@ -2124,6 +2141,9 @@ int main(int argc, char **argv)
      * live_diag_report() and its call sites below, and the g_verbose wiring
      * into core/mr_hls.c's own segment-open prints just below. */
     int live_diag = 0;
+    /* HTTPS version cap: the saved menu preference (amiga/mr_tls_pref.h,
+     * TLS 1.2 unless the user picked 1.3), overridable with --tls=. */
+    int tls_max = MR_TLS_PREF_HTTP_MAX();
     /* --throughput/--no-throughput: override this session's throughput-mode
      * default (network_source - see its own computation below) instead of
      * following it. -1 means "not overridden, use the default". Throughput
@@ -2262,7 +2282,8 @@ int main(int argc, char **argv)
                "[--dv-speed=quality|fast] "
                "[--mpeg2-speed=quality|fast] "
                "[--audio-rate=normal|low] [--no-audio] [--no-video] [--audio-mono] "
-               "[--time] [--live-diag] [--throughput|--no-throughput]\n");
+               "[--time] [--live-diag] [--throughput|--no-throughput] "
+               "[--tls=1.2|1.3]\n");
         return mrplay_exit(5);
     }
     {   /* display options anywhere on the command line */
@@ -2319,6 +2340,15 @@ int main(int argc, char **argv)
                 net_queue = (int)strtoul(argv[i] + 12, NULL, 10);
             else if (!strcmp(argv[i], "--live-resync")) live_resync = 1;
             else if (!strcmp(argv[i], "--live-diag")) live_diag = 1;
+            else if (!strncmp(argv[i], "--tls=", 6)) {
+                const char *ver = argv[i] + 6;
+                if (!strcmp(ver, "1.2")) tls_max = MR_HTTP_TLS_12;
+                else if (!strcmp(ver, "1.3")) tls_max = MR_HTTP_TLS_AUTO;
+                else {
+                    printf("invalid --tls version (1.2 or 1.3): %s\n", ver);
+                    return mrplay_exit(5);
+                }
+            }
             else if (!strcmp(argv[i], "--throughput")) throughput_flag = 1;
             else if (!strncmp(argv[i], "--skip-trigger=", 15)) {
                 char *end;
@@ -2438,6 +2468,7 @@ int main(int argc, char **argv)
      * interrupted rather than only ever timing out on its own; the full
      * hook takes over once real playback state exists (see the
      * hls_fetch_set_service() call further down). */
+    mr_http_set_tls_max(tls_max);
     if (mr_source_is_url(media_path)) {
         hls_fetch_start(want_time);
         hls_fetch_set_service(service_early_quit_check, NULL);

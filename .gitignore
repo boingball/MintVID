@@ -1,6 +1,7 @@
 # Host build artifacts
 player/mr_decode
 player/mr_decode_ssl
+player/mr_http_resume_check
 player/mr_audio_check
 player/mr_ac3_check
 player/mr_aac_decim_check
@@ -18,6 +19,8 @@ player/mr_mpeg1_probe_check
 player/mr_mpeg1_timing_check
 player/mr_mpeg2_yuv_check
 player/mr_mpeg2_bskip_check
+player/mr_mpeg2_mc_check
+player/mr_mpeg2_idct_check
 player/mr_h264_smoosh_check
 player/mr_ps_check
 player/mr_ps_pts_check

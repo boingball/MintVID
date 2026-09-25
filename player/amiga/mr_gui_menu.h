@@ -17,7 +17,10 @@ enum {
     MR_GUI_MENU_NONE = 0,
     MR_GUI_MENU_ABOUT,
     MR_GUI_MENU_QUIT,
-    MR_GUI_MENU_GUIDE
+    MR_GUI_MENU_GUIDE,
+    /* The HTTPS TLS preference changed (amiga/mr_tls_pref.h). Already saved;
+     * a program that makes its own HTTPS fetches re-applies it. */
+    MR_GUI_MENU_TLS
 };
 
 int mr_gui_menu_open(mr_gui_menu *menu, struct Window *window);

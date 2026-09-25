@@ -6,12 +6,13 @@ instructions a real 68060 cannot execute in hardware:
     always 3 operands; there is no 2-register "safe" degenerate case, unlike
     divide below, so any 3-operand muls*/mulu* is unconditionally forbidden.
   - the extended-dividend DIVS.L/DIVU.L (64-bit dividend, register-pair
-    input) - also 3 operands, but the *same* mnemonic and operand count also
-    covers the ordinary, hardware-everywhere-since-68020 32-bit-dividend
-    form: objdump renders that safe form with its remainder and quotient
-    operands equal (e.g. "divsl %d2,%d0,%d0"), and the trapping 64-bit form
-    with them different (e.g. "divsl %d2,%d1,%d0"). Only the latter is
-    forbidden.
+    input). objdump prints three operands for every long divide, including
+    the ordinary 32-bit-dividend forms the 68060 implements, so the operand
+    list cannot tell them apart. The extension word's size bit (bit 10) can:
+    set is the trapping 64-bit dividend ("divsl"/"divul"), clear is the
+    32-bit dividend ("divsll"/"divull"), whether or not the remainder and
+    quotient registers differ. The same bit marks the 64-bit-result
+    multiply, so both are decoded from the instruction bytes.
   - any reference to libgcc's __muldi3/__divdi3/__udivdi3 (the 64-bit
     multiply/divide helpers GCC reaches for when it can't use the above
     hardware forms - the trap-avoidance these kernels exist for would be
@@ -86,11 +87,21 @@ def scan_disasm(dis_text, label):
             continue
         mnem, operand_str = m.group(1).lower(), m.group(2)
         ops = [o.strip() for o in split_top_level_commas(operand_str)] if operand_str else []
-        if mnem.startswith(('muls', 'mulu')) and len(ops) == 3:
-            bad.append(f"{label}: extended-result multiply: {line.strip()}")
-        elif mnem.startswith(('divs', 'divu')) and len(ops) == 3:
-            if ops[1] != ops[2]:
-                bad.append(f"{label}: extended-dividend divide: {line.strip()}")
+        if not mnem.startswith(('muls', 'mulu', 'divs', 'divu')) or len(ops) != 3:
+            continue
+        # Long multiply/divide: opcode word 0x4c00-0x4c7f, then the
+        # extension word; bit 10 selects the 64-bit product/dividend.
+        words = parts[1].split()
+        try:
+            opcode, ext = int(words[0], 16), int(words[1], 16)
+        except (IndexError, ValueError):
+            bad.append(f"{label}: cannot decode long multiply/divide: {line.strip()}")
+            continue
+        if opcode & 0xff80 != 0x4c00 or not ext & 0x0400:
+            continue
+        kind = "extended-result multiply" if opcode & 0x40 == 0 \
+            else "extended-dividend divide"
+        bad.append(f"{label}: {kind}: {line.strip()}")
     return bad
 
 

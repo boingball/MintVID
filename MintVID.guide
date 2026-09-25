@@ -310,7 +310,9 @@ bar, visible even with the controller window elsewhere.
 
 @{b}Every GUI@{ub} has a MintVID title-bar menu with @{b}Guide...@{ub}
 (this manual), @{b}About MintVID...@{ub} with the project credits and
-support link, and @{b}Quit@{ub} to close that frontend cleanly. The
+support link, the @{b}HTTPS@{ub} TLS version (see
+@{" Live streaming and networking " LINK Live}), and @{b}Quit@{ub} to
+close that frontend cleanly. The
 controller's file gadget identifies the selected file and now also
 remembers the last drawer a video was picked from, reopening there next
 time instead of always starting fresh. On launch mrplay reports the
@@ -653,6 +655,16 @@ Plain HTTP is always available; HTTPS needs a build with SSL=1
 (amisslmaster.library/AmiSSL v5) - add SSLCERTS=1 for certificate
 verification, the recommended setting for a packaged release build.
 
+@{b}HTTPS version:@{ub} the MintVID menu's @{b}HTTPS@{ub} submenu chooses
+between @{b}TLS 1.2 (faster)@{ub}, the default, and @{b}TLS 1.3@{ub}.
+Every HLS segment is a new connection. Under TLS 1.2 a repeat connection
+to the same server is a short handshake with no key exchange, which saves
+most of a second of 68060 time per segment. TLS 1.3 still does a key
+exchange on every connection. The choice is saved, applies to the
+IPTV/YouTube browsers straight away and to mrplay from the next stream,
+and @{b}--tls=1.2@{ub} or @{b}--tls=1.3@{ub} overrides it for one mrplay
+run. Pick TLS 1.3 only if a server refuses TLS 1.2.
+
 @{" Back to Contents " LINK "MAIN"}
 @endnode
 
@@ -677,6 +689,7 @@ Every GUI is a front end over mrplay, which also runs directly:
   mrplay --aga-window "DH0:Videos/clip.avi"
   mrplay --aga-window-half "DH0:Videos/clip.mp4"
   mrplay --no-video "DH0:Videos/concert.mp4"
+  mrplay --tls=1.3 "https://example.net/live/master.m3u8"
 
 mrplay carries a $STACK:320000 AmigaOS stack cookie because libavc needs
 substantially more stack than the classic Shell default - see

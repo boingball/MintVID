@@ -18,6 +18,15 @@
   straight to that size, so conversion and drawing each do about a quarter
   of the work.
 
+- **HTTPS menu: TLS 1.2 or TLS 1.3.** The MintVID menu in every GUI has
+  an HTTPS submenu. The default, **TLS 1.2 (faster)**, makes each repeat
+  connection to a streaming server a short handshake. On an A1200/68060
+  a resumed TLS 1.3 connection still took about 0.9 seconds per HLS
+  segment, because it still does a key exchange. The choice is saved and
+  used by the IPTV/YouTube browsers and mrplay. `mrplay --tls=1.2|1.3`
+  overrides it for one run, and `--time` logs now show how many
+  connections used TLS 1.3.
+
 ### Changed
 
 - **Audio-only playback moved to the Display chooser.** "Video: Off" is now
@@ -25,6 +34,55 @@
   find. Video (All Frames / Skip Frames), Skip after and VQ grey out under
   it. `--no-video` is unchanged, and a saved "Video: Off" setting comes
   back as No Video.
+
+### Performance
+
+- **Faster AGA colour conversion.** Converting each H.264 or MPEG-1/2
+  picture to the 256-colour AGA palette now takes about 20 68k
+  instructions per pixel instead of about 56. Output is identical. On
+  BBC One's 192x108 stream on an A1200 with a 68060/50 this step cost
+  about 28 ms per picture; expect roughly a third of that, but that is
+  not yet measured on the machine.
+  The same speedup now applies to the 32- and 16-colour ECS/OCS palettes
+  (ECS screens and Window mode on a shallow Workbench): about 53
+  instructions per pixel down to about 20. EHB and HAM use other
+  converters and are unchanged.
+- **Faster MPEG-1/MPEG-2 decoding.** Motion compensation now handles four
+  pixels at a time instead of one, and the inverse DCT skips the work that
+  is always zero in sparse blocks. Picture output is unchanged, byte for
+  byte. On VCD-style 352x240 clips, decoding takes 19-29% fewer 68k
+  instructions. Not yet timed on a real 68060.
+
+### Fixed
+
+- **Turbo+ showed one picture, then stalled, on streams with B-frames.**
+  This hit live IPTV like BBC One. The decoder held each keyframe back
+  until two more had been decoded, and in Turbo+ those are the next
+  keyframes. On BBC's 7.68-second GOPs every picture arrived about 15
+  seconds late, and the player dropped it as stale. Turbo+ now outputs
+  each keyframe as soon as it is decoded. YouTube's 360p stream has no
+  B-frames, which is why it was unaffected.
+- **Live HLS started at the oldest segment in the playlist.** For BBC
+  that was four hours behind live, on segments the CDN no longer had
+  cached. Live playback now starts about 30 seconds before the newest
+  segment, and never fewer than three segments back.
+- **HTTPS never resumed a TLS session, so every HLS segment paid a full
+  handshake.** On an A1200 that was about 4.5 seconds of CPU per
+  segment, taken from decoding while the next segment downloaded in the
+  background. The session is now saved once the server has sent its
+  resumption ticket, so later connections to the same host resume it.
+- **HLS no longer looks up the CDN host again for every segment.** The
+  last lookup is reused for up to five minutes, and dropped if
+  connecting to that address fails. `--time` logs gain an
+  `http fetches=` line that splits fetch time into DNS, connect, TLS,
+  headers and body.
+- **Live HLS stalled each time playback caught up with the playlist.**
+  The playlist was only re-read once the last known segment had been
+  played. Playback then waited for that re-read and for a segment nobody
+  had prefetched, about 2.8 seconds on BBC One, and the audio ran dry.
+  The playlist is now re-read in the background a few segments before
+  the end, so the next segments are already downloading when playback
+  gets there.
 
 ## 1.4.0 - 2026-09-23
 

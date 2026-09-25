@@ -64,6 +64,15 @@ static mr_source *hls_open(const char *url, const mr_http_options *options,
 #define HLS_LIVE_REFETCH_WAIT_MS 1000
 #define HLS_VOD_LOOKAHEAD_SEGMENTS 8
 #define HLS_LIVE_LOOKAHEAD_SEGMENTS 3
+/* Where live playback starts when the caller names no segment count: about
+ * this much media before the newest segment, and never fewer than three
+ * segments (RFC 8216 6.3.3 asks clients to start at least three target
+ * durations from the end). Starting at the oldest entry instead is wrong for
+ * a DVR-style window: BBC's IPTV playlists list 1875 7.68 s segments, so
+ * playback began four hours behind live, on segments the CDN no longer had
+ * cached (the first took 4.9 s to arrive on an A1200). */
+#define HLS_LIVE_START_DEFAULT_MS 30000UL
+#define HLS_LIVE_START_MIN_SEGMENTS 3
 
 typedef struct {
     char   **segs;        /* resolved segment URLs                            */
@@ -78,6 +87,7 @@ typedef struct {
     unsigned target_ms;   /* EXT-X-TARGETDURATION: paces live re-fetch polls  */
     char    *playlist_url;/* media playlist URL to re-fetch for new segments  */
     unsigned long next_seq; /* media-sequence of the next not-yet-queued seg  */
+    int      refresh_hinted; /* playlist re-fetch queued with the fetch worker */
     mr_http_options options; /* inherited by playlists and segments            */
     int      have_options;
 } hls_source;
@@ -398,6 +408,8 @@ static mr_status merge_playlist(char *text, const char *base_url,
 
 /* ---- segment stream ---------------------------------------------------- */
 
+static void refresh_live_ahead(hls_source *h, size_t i, size_t lookahead);
+
 /* Open segment `i`, recording its length so seg_start stays contiguous. Must
  * be opened in order for its start offset to be known. */
 static int open_seg(hls_source *h, size_t i)
@@ -479,15 +491,63 @@ static int open_seg(hls_source *h, size_t i)
      * requested. Live stays close to the broadcast; VOD can fill farther
      * ahead. The worker applies the byte budget and fetches serially. */
     {
-        size_t next, end = i + 1 + (h->options.source_buffer_bytes ?
+        size_t lookahead = h->options.source_buffer_bytes ?
             (h->live ? HLS_LIVE_LOOKAHEAD_SEGMENTS :
-                       HLS_VOD_LOOKAHEAD_SEGMENTS) : 1);
+                       HLS_VOD_LOOKAHEAD_SEGMENTS) : 1;
+        size_t next, end;
+        refresh_live_ahead(h, i, lookahead);
+        end = i + 1 + lookahead;
         if (end > h->nsegs) end = h->nsegs;
         for (next = i + 1; next < end; next++)
             mr_http_prefetch_hint(h->segs[next],
                                   h->have_options ? &h->options : NULL);
+        if (h->refresh_hinted == 1) {
+            /* Queued after the segment hints: those are needed sooner. */
+            mr_http_prefetch_hint(h->playlist_url,
+                                  h->have_options ? &h->options : NULL);
+            h->refresh_hinted = 2;
+        }
     }
     return 1;
+}
+
+/* Re-read a live playlist before playback reaches its last known segment.
+ * Otherwise the next segment only becomes known at the edge, where playback
+ * waits for the playlist poll and then for a segment nobody prefetched: on a
+ * BBC IPTV stream that was ~2.8 s with the audio cushion at ~1.9 s, so audio
+ * ran dry and live-resync fired every 30 s or so.
+ *
+ * With a fetch worker (amiga/hls_fetch.c) the playlist is hinted like a
+ * segment, fetched in the background, and taken - normally already complete -
+ * at the next segment open. Segments are then in-memory buffers, so no second
+ * connection is ever open. Without a worker (host streaming sources) nothing
+ * changes and the edge poll in hls_refetch_live() still does the work.
+ * refresh_hinted: 0 idle, 1 hint wanted after this open's segment hints,
+ * 2 hinted and not yet taken. */
+static void refresh_live_ahead(hls_source *h, size_t i, size_t lookahead)
+{
+    if (!h->live || !h->playlist_url || !mr_http_fetch_override_active())
+        return;
+    if (h->refresh_hinted == 2) {
+        size_t before = h->nsegs;
+        char *text = fetch_text(h->playlist_url,
+                                h->have_options ? &h->options : NULL);
+        int added = 0, fetched = text != NULL;
+        h->refresh_hinted = 0;
+        if (text) {
+            merge_playlist(text, h->playlist_url, h, &added);
+            mr_free(text);
+        }
+        if (g_verbose)
+            printf("HLS: live playlist refreshed ahead of the edge: %s "
+                   "(%lu -> %lu known segments)\n",
+                   fetched ? (added ? "grew" : "no new segments")
+                           : "fetch failed",
+                   (unsigned long)before, (unsigned long)h->nsegs);
+        if (!h->live) return;                      /* ENDLIST: nothing to poll */
+    }
+    if (!h->refresh_hinted && h->nsegs - (i + 1) <= lookahead)
+        h->refresh_hinted = 1;
 }
 
 /* Return the segment index whose byte range contains `off`, opening segments
@@ -539,6 +599,9 @@ static int hls_refetch_live(hls_source *h)
          * returns nonzero if the user asked to quit. */
         if (tries && g_wait_fn && g_wait_fn(g_wait_opaque, wait_ms))
             return 0;
+        /* The first attempt may take a background refresh that was queued
+         * ahead of the edge (see refresh_live_ahead()). */
+        h->refresh_hinted = 0;
         text = fetch_text(h->playlist_url,
                           h->have_options ? &h->options : NULL);
         if (!text) {
@@ -668,13 +731,21 @@ mr_source *mr_hls_source_open_ex(const char *url,
         mr_source_set_error("HLS playlist has no segments");
         return NULL;
     }
-    if (h->live && options && options->hls_live_start_segments &&
-        h->nsegs > options->hls_live_start_segments) {
-        size_t before = h->nsegs;
-        keep_live_tail(h, options->hls_live_start_segments);
-        if (g_verbose)
-            printf("HLS: skipped %lu stale startup segments\n",
-                   (unsigned long)(before - h->nsegs));
+    if (h->live) {
+        size_t keep = options ? options->hls_live_start_segments : 0;
+        if (!keep) {
+            unsigned long target = h->target_ms ? h->target_ms : 10000UL;
+            keep = (size_t)((HLS_LIVE_START_DEFAULT_MS + target - 1) / target);
+            if (keep < HLS_LIVE_START_MIN_SEGMENTS)
+                keep = HLS_LIVE_START_MIN_SEGMENTS;
+        }
+        if (h->nsegs > keep) {
+            size_t before = h->nsegs;
+            keep_live_tail(h, keep);
+            if (g_verbose)
+                printf("HLS: skipped %lu stale startup segments\n",
+                       (unsigned long)(before - h->nsegs));
+        }
     }
     if (g_verbose)
         printf("HLS: %lu initial segments (%s)\n",

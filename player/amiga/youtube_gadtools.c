@@ -5,6 +5,7 @@
 #include "../core/mr_source.h"
 #include "../youtube/mr_youtube_search.h"
 #include "mr_gui_menu.h"
+#include "mr_tls_pref.h"
 #include "mr_master_options.h"
 #include "mr_player_status.h"
 
@@ -626,6 +627,7 @@ int main(int argc, char **argv)
     if (!IntuitionBase || !GadToolsBase || !window_open(&app)) goto out;
     mr_play_options_summary(&app.options,summary,sizeof(summary));
     set_text(&app,app.summary,summary);
+    mr_http_set_tls_max(MR_TLS_PREF_HTTP_MAX());
     mr_gui_menu_open(&app.menu,app.window);
     load_search_cache(&app);
     if (timer_open(&app)) { timermask=1UL<<app.timer_port->mp_SigBit; timer_start(&app); }
@@ -649,6 +651,7 @@ int main(int argc, char **argv)
                 int action=mr_gui_menu_action(&app.menu,code);
                 if (action==MR_GUI_MENU_ABOUT) mr_gui_show_about(app.window,"YouTube GadTools edition (OS 3.0)");
                 else if (action==MR_GUI_MENU_GUIDE) mr_gui_open_guide(&app.menu,app.window);
+                else if (action==MR_GUI_MENU_TLS) mr_http_set_tls_max(MR_TLS_PREF_HTTP_MAX());
                 else if (action==MR_GUI_MENU_QUIT) done=1;
             } else if (cls==IDCMP_GADGETUP) {
                 if (id==G_CLOSE) done=1;

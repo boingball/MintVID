@@ -62,7 +62,9 @@ void mpeg2_mc_init (uint32_t accel)
 	mpeg2_mc = mpeg2_mc_arm;
     else
 #endif
-	mpeg2_mc = mpeg2_mc_c;
+	/* MintVID: the four-pixels-a-word C version, bit-identical to
+	 * mpeg2_mc_c (kept for tests/mr_mpeg2_mc_check.c). */
+	mpeg2_mc = mpeg2_mc_swar;
 }
 
 #define avg2(a,b) ((a+b+1)>>1)

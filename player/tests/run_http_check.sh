@@ -199,4 +199,9 @@ if "$decoder" "$base/media/test_mpeg2.ts" --user-agent "$overlong" \
     --check tests/assets/ref_mpeg2_ts >/dev/null 2>&1; then
     echo 'overlong User-Agent was accepted' >&2; exit 1
 fi
+# Consecutive HTTPS fetches must resume the TLS session (a full handshake
+# per HLS segment cost ~4.5 s on a 68060).
+if test "$mode" = https && test -x ./mr_http_resume_check; then
+    ./mr_http_resume_check "$base/media/test_mpeg2.ts"
+fi
 echo "$mode URL checks passed"

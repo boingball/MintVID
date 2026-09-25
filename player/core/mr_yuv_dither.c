@@ -102,6 +102,42 @@ static void build_dither_lut(int depth)
     dither_lut_depth = depth;
 }
 
+#if defined(MR_M68K_ASM)
+/* Tables for the kernel in mr_yuv_dither_m68k.S (see its comment for the
+ * layout), built from the current depth's LUTs. Named with __asm__ so the
+ * assembly can reference them without the AmigaOS underscore prefix. */
+#define Q6_SUMS 793                     /* channel sums -258..534 */
+int32_t mr_yuv_dither_q6_block[0x600] __asm__("mr_yuv_dither_q6_block");
+uint8_t mr_yuv_dither_q6_tab[16 * Q6_SUMS * 4]
+    __asm__("mr_yuv_dither_q6_tab");
+static int g_q6_depth = 0;          /* depth the tables hold, 0 = none */
+
+static void build_q6_tables(void)
+{
+    int i, t, s;
+    for (i = 0; i < 256; i++) {
+        int luma = i - 16 < 0 ? 0 : i - 16;
+        mr_yuv_dither_q6_block[i] = g_luma_x298[luma] + 128;
+        mr_yuv_dither_q6_block[0x200 + 2 * i] = g_e_x409[i];
+        mr_yuv_dither_q6_block[0x200 + 2 * i + 1] = g_e_xm208[i];
+        mr_yuv_dither_q6_block[0x400 + 2 * i] = g_d_x516[i];
+        mr_yuv_dither_q6_block[0x400 + 2 * i + 1] = g_d_xm100[i];
+    }
+    /* Same clip, dither and quantise as the C loop below: each channel's
+     * LUT entry for the clipped sum, so one byte lookup per channel. */
+    for (t = 0; t < 16; t++)
+        for (s = -258; s <= 534; s++) {
+            uint8_t *e = &mr_yuv_dither_q6_tab[(t * Q6_SUMS + s + 258) * 4];
+            unsigned c = clip8(s);
+            e[0] = lut_r[t][c];
+            e[1] = lut_g[t][c];
+            e[2] = lut_b[t][c];
+            e[3] = 0;
+        }
+    g_q6_depth = dither_lut_depth;
+}
+#endif
+
 void mr_yuv420_dither_indexed(const uint8_t *y_plane, int y_stride,
                               const uint8_t *u_plane, int u_stride,
                               const uint8_t *v_plane, int v_stride,
@@ -118,6 +154,7 @@ void mr_yuv420_dither_indexed(const uint8_t *y_plane, int y_stride,
 
     dst_h = height / vscale;
 #if defined(MR_M68K_ASM)
+    if (g_q6_depth != depth) build_q6_tables();
     mr_yuv420_dither8_m68k(y_plane, y_stride, u_plane, u_stride, v_plane,
                            v_stride, width, dst_h, vscale, out, out_stride,
                            y_base, g_luma_x298, g_e_x409, g_d_xm100,

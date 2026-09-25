@@ -635,10 +635,10 @@ extended-result `MULS.L`/`MULU.L` always shows 3 operands (there is no
 2-register-safe degenerate case, unlike divide, so any 3-operand
 `muls*`/`mulu*` is unconditionally forbidden); `DIVS.L`/`DIVU.L` also shows
 3 operands for *both* the trapping 64-bit-dividend form and the ordinary
-32-bit form hardware since 68020 - objdump's own disassembly distinguishes
-them by whether the remainder and quotient registers are the same register
-(safe) or different registers (the operands genuinely span a 64-bit
-dividend - forbidden); libgcc calls are found via relocations against
+32-bit form hardware since 68020, so the scanner decodes the extension
+word's size bit (bit 10: `divsl`/`divul` set, `divsll`/`divull` clear) - see
+the correction in "MPEG-1/2 decode: what RiVA had to offer" below, the
+first version judged by register names and was wrong both ways; libgcc calls are found via relocations against
 `__muldi3`/`__divdi3`/`__udivdi3`. `tests/check_m68060_asm.sh` runs it two
 ways: the whole object for each standalone kernel (nothing else lives in
 those files), and, for `core/mr_mpeg1.c` built with the real production
@@ -5498,6 +5498,213 @@ Turbo+ output is byte-identical with and without the drop on that clip,
 yet measured on the A1200. There most of the saving should show as idle
 CPU between keyframes, not faster keyframes.
 
+## Turbo+ on B-frame streams: libavc's display delay, and live HLS start
+A real A1200 run of BBC One IPTV (192x108 High profile, 7.68 s segments,
+Turbo+, HAM8) showed one picture, then nothing. Audio stuttered, and
+micro-rescue entered over and over with `late=` 5-12 s. YouTube's 360p
+stream played fine on the same settings.
+
+The cause was libavc's display-order output (`IVD_DISPLAY_FRAME_OUT`). It
+holds a picture until `num_reorder_frames + 1` later ones are decoded.
+Under Turbo+ the later pictures are the next keyframes, so on a B-frame
+stream each keyframe came out **two GOPs late**. That is 15.4 s on BBC,
+and the player dropped every such picture as stale. A host probe on a
+BBC-like clip (High, `-bf 3`, 192-frame GOP) showed it: keyframe 1 came
+out when keyframe 3 went in. The 2-keyframe fixtures only produced
+pictures at the EOF flush. YouTube itag 18 is Baseline, with no
+reordering, so it never showed.
+
+`mr_h264_set_speed_mode()` now picks `IVD_DECODE_FRAME_OUT` (low delay)
+whenever the base skip mode is `IVD_SKIP_PB`. With only I pictures
+decoded, decode order is display order. Output is byte-identical to the
+old Turbo+ output, with the same pts, just immediate.
+
+libavc sets `i4_display_delay` once, at the first picture
+(`ih264d_init_pic()`), so the mode must be chosen before decoding starts.
+mrplay already sets the speed right after open and after every reset.
+`mr_h264_set_dynamic_skip()` (Skip Frames' escalation) keeps whatever
+output mode the speed mode chose. So on a B-frame stream, an escalated
+keyframe still waits until normal decoding resumes. That is a freeze,
+not a permanent loss. `check_turbo_plus_low_delay()` in
+`tests/mr_h264_smoosh_check.c` pins it: every Turbo+ picture must come
+out of the decode call that consumed it, and nothing may be left for
+the flush.
+
+The same log also showed `HLS: 1875 initial segments`, then
+`opening segment 1 of 1875`. BBC lists a four-hour DVR window, and
+without `hls_live_start_segments` (only YouTube sets it) playback began
+at its oldest entry. That first segment took 4.9 s to fetch. A live
+playlist now starts `HLS_LIVE_START_DEFAULT_MS` (30 s) before the newest
+segment, and at least 3 segments back (RFC 8216 6.3.3). An explicit
+count still wins. Pinned in `tests/mr_hls_override_check.c`.
+
+**Follow-up A1200 logs, with #235 in the build.** The live start worked:
+`skipped 1867 stale startup segments`, then `8 initial segments`, so
+BBC's target duration is 4 s, not 8. Two more findings:
+- **The CPU cannot keep up with this stream at stereo 24 kHz.** Per
+  3-second window with All Frames and Turbo: ~47 ms decode, ~29 ms dither
+  and ~5 ms display per frame, and AAC ~95 ms per audio PES (about 0.17 s
+  of sound). Audio alone is ~55% of the CPU. Smoosh read packets at real
+  time and dropped 515 P/B access units (451 to protect audio), but the
+  audio cushion still never passed ~250 ms, and live-resync fired every
+  segment. Turbo+ built a 2 s audio cushion and starvations stopped
+  after startup. Mono and low audio rate have not been tried yet.
+- **Every segment the lookahead had not prefetched took a steady
+  ~4.9 s**: segment 1 on an idle machine, and segment 9 after the live
+  playlist refresh (segment 10 then took 14 s). The TLS context is
+  already shared and sessions are offered for resumption, so the
+  constant looked like a resolver timeout. `connect_socket()` now reuses
+  the last lookup for the same host for up to 5 minutes, dropping it
+  and resolving again if a connect to the cached address fails. It also
+  counts per-phase wall time (DNS, TCP, TLS handshakes and how many were
+  resumed, request-to-headers, body) into `mr_http_timing`, which mrplay
+  prints under `--time` as an `http fetches=...` line. That line will
+  show whether DNS really was the 4.9 s. The counters are written by the
+  hls_fetch worker task and read by the main task. They are only
+  diagnostics, so a read one fetch stale does not matter.
+
+**It was TLS, not DNS.** The next A1200 log (Turbo+, mono, 12 kHz) read
+`dns=1 ms (cached 9) tcp=731 ms | tls=45346 ms over 10 (resumed 0)`:
+every segment paid a full ~4.5 s handshake and none was ever resumed.
+Because that runs in the hls_fetch worker at the same priority as
+playback, it also takes CPU from decode and dither while segments
+prefetch. In some windows `yuv-indexed` jumped from ~28 to 67-108 ms.
+The session was saved straight after `SSL_connect()`. A TLS 1.3 server
+sends its resumption ticket after the handshake, and OpenSSL only takes
+it in while reading the response, so the saved session had no ticket.
+`remember_tls_session()` now saves the session when the connection
+closes healthily, and only if `SSL_SESSION_is_resumable()`. The context
+also sets `SSL_OP_ALLOW_NO_DHE_KEX`, so a server that accepts PSK-only
+resumption can skip the key exchange too. That gives up forward secrecy
+for resumed connections, which is fine for public media. Reproduced on
+the host first: four fetches from the TLS fixture server, 0 resumed
+before the fix, 3 after, against both `openssl s_server -tls1_2` and
+`-tls1_3`. `tests/mr_http_resume_check.c` (run by `make check-https`)
+pins it. How much a resumption saves on the 060, and whether Akamai
+accepts PSK-only, is for the next hardware log to show.
+
+**It worked, and exposed a stall at the live edge.** The next log had
+segment 1 in 1382 ms (was 4.9 s), `tls=22218 ms over 19 (resumed 18)`,
+and a steady ~1.85 s audio cushion with no starvations for segments
+2-8. Then `mr_hls.c` only re-read the playlist once segment 8, the last
+known one, had been consumed. The poll took ~1.4 s, and segment 9 had
+never been hinted, so it was fetched on demand (1412 ms). Audio ran dry
+(`clock-holdover`, audio-rescue with 0 packets for 1.09 s), and
+live-resync fired at segment 10. The poll found 9 new segments: starting
+30 s back means the server is always well ahead of the list we hold.
+
+`refresh_live_ahead()` now hints the playlist URL to the fetch worker,
+like a segment, when an opened segment leaves no more than the lookahead
+count of known segments after it. The next segment open takes the result
+(normally already complete) and merges it, so the new segments get
+hinted before playback reaches them. This only runs with a fetch
+override installed. Segments are then in-memory buffers, so the playlist
+fetch never opens a second connection. Host streaming sources keep the
+edge poll in `hls_refetch_live()`, which also takes a queued refresh
+first if one is outstanding. Pinned in `tests/mr_hls_override_check.c`
+(reading 8 segments of a growing live playlist costs 3 playlist fetches
+and 2 playlist hints; before the fix it was 2 and 0, with the second
+fetch at the edge).
+
+**A Turbo, All Frames, stereo run showed the CPU limit, and a TLS cost that
+remained.** The video needed ~80 ms per 40 ms frame (decode ~47,
+`yuv-indexed` ~28, display ~5), so audio starved (61 starvations,
+live-resync every segment). Networking was fine. But a resumed TLS 1.3
+connection still cost ~0.9 s per segment, on a worker that shares the
+main task's priority: TLS 1.3 resumption still runs an (EC)DHE key
+exchange unless the server accepts PSK-only, and Akamai evidently does
+not. A TLS 1.2 resumption has no key exchange at all.
+
+`mr_http_set_tls_max(MR_HTTP_TLS_12)` caps the context with
+`SSL_CTX_set_max_proto_version()`, applied at context creation and to a
+live context, and drops the cached session on a change. Core default is
+AUTO; on Amiga the saved preference `ENVARC:MintVID.tls`
+(`amiga/mr_tls_pref.h`, missing file = TLS 1.2) is set from a shared
+menu submenu (`mr_gui_menu.c`, MintVID > HTTPS), applied by mrplay before
+`hls_fetch_start()` (`--tls=1.2|1.3` overrides) and by both browsers at
+startup and on `MR_GUI_MENU_TLS`. The controller GUIs don't link
+mr_http, so the header's apply step is a macro, `MR_TLS_PREF_HTTP_MAX()`.
+`mr_http_timing.tls13` counts TLS 1.3 handshakes and the `http fetches=`
+line prints it with the cap, so a log shows the cap took effect.
+`tests/mr_http_resume_check.c` checks auto (4 TLS 1.3), then the cap on
+the live context (3 resumed, none TLS 1.3), then auto again. YouTube is
+affected the same way: googlevideo and the API hosts accept TLS 1.2. How
+much a TLS 1.2 resumption costs on the 060 is for the next log.
+
+**The AGA dither was the next biggest cost, at ~56 instructions per
+pixel.** With TLS fixed, a BBC One run (Turbo, stereo 12 kHz, All Frames)
+spent per decoded picture ~45 ms in `vdecode`, ~28 ms in `yuv-indexed`
+and ~5 ms in Kalms C2P. It decoded ~8.6 pictures a second. That may be every non-B picture
+this stream has (the GOP structure isn't known from here), but either
+way the loop could not also keep audio fed. `tools/qemu_tbprof.sh` on a
+192x108 benchmark put `mr_yuv420_dither8_m68k` at 55.7 m68k
+instructions per pixel (1.15M per frame, which at 50 MHz matches the
+28 ms). The 6x6x6 path reloaded every table pointer from the stack for
+every pixel and clipped each channel with compare-and-branch.
+
+It is now a separate kernel (`.Lyd_q6_kernel` in
+`core/mr_yuv_dither_m68k.S`) at 20.4 instructions per pixel, using the
+RGB24 kernel's layout. `mr_yuv_dither.c` builds two tables for it
+(`build_q6_tables()`), exported with `__asm__` names so the AmigaOS
+underscore prefix never applies:
+- A 6 KB luma/chroma addend block, indexed with the slot-plus-sample
+  trick.
+- A 50 KB `{36q, 6q, q, 0}` table, indexed by Bayer threshold and
+  channel sum. Clip, dither and quantise are then one lookup per
+  channel.
+
+Each pixel's threshold is fixed per row and `x & 3`. So the kernel
+works in 4-pixel groups and adds a per-lane `(t*793) << 8` to the luma
+value, which turns the shifted sum straight into the table index. The
+function's arguments are unchanged, so the direct-planar dispatcher and
+its fallback need no change.
+
+**The same kernel now serves the ECS/OCS palettes too (depth 5, 4x4x2,
+and depth 4, 2x4x2), replacing the old weighted-LUT kernel, which had
+measured 52.7 instructions per pixel on them.** Each table longword
+holds each channel's own `lut_*` entry, `{lut_r, lut_g, lut_b}[t][c]`,
+and the kernel adds the three bytes. Nothing in it is specific to 6x6x6.
+The only differences between palettes were the per-channel dither
+amplitudes and weights, and those are already inside the LUTs. So
+`build_q6_tables()` just builds from the current depth's LUTs, and
+`g_q6_depth` rebuilds them when the depth changes. The largest index
+is 215 (6x6x6), so the byte adds never carry.
+
+The ECS palettes are used by the AGA backend on ECS/OCS screens and by
+the Window backend on 16/32-colour Workbenches. Their bench cost went
+from 52.7 to 20.4 instructions per pixel, the same as depth 8, with
+identical output. A mutation test fails with 256 mismatches:
+`tests/mr_yuv_dither_check.c` runs depths 4, 5 and 8 in turn, and
+building the table only once fails it.
+
+EHB (6 planes, 64 colours) does not use this path. Its dither
+(`mr_dither_rgb_ehb()`, RGB24 input) picks, per pixel, whichever of
+the bright and half-bright cubes is nearer by squared RGB distance. That
+decision couples all three channels, so it doesn't split into
+per-channel lookups. A YUV-direct EHB path would need its own design.
+HAM6/HAM8 go through `mr_yuv420_ham_encode()`, a different encoder
+altogether.
+
+Output is bit-identical: `tests/mr_yuv_dither_check.c` passes on 68030
+and 68060 builds, and gained widths with `w % 4` of 1 and 3 for the
+kernel's tails. Breaking the 3-pixel tail makes it fail. The table is
+50 KB against the 060's 8 KB data cache. Each row touches only its four
+thresholds' entries for the values present, but per the qemu note at
+the top, the real-060 time still needs a hardware log to confirm.
+
+A remaining lever, not taken: under All Frames the presentation
+catch-up drops queued pictures that were already dithered (`dropped=`
+in the `rtg timing` lines), so dithering at presentation instead of at
+queue time would skip that work.
+
+A note on the `--time` output: `audio-gap=` measures the time between
+calls to `service_audio_for_display()`, and those only happen during
+decode, conversion and network waits. Under Turbo+ it reads multi-second
+"gaps" while the loop is simply idle, so it is not a stall indicator
+there.
+
+Not yet rerun on the A1200.
+
 ## Video: Off (`--no-video`), audio-only playback
 For machines too slow for the picture that only want to listen, e.g. to
 a YouTube video. The GUI puts it on the existing Video chooser as a third
@@ -5607,3 +5814,76 @@ are scaled down while drawing.
 against stub NDK headers, then confirmed working on WinUAE (AGA, plenty
 of CPU). ECS/OCS Workbenches and Window Half have not run anywhere yet.
 Not done yet: a direct C2P fast path for when the window is unobscured.
+
+## MPEG-1/2 decode: what RiVA had to offer
+A 68060 user asked whether RiVA 0.54 (the fastest 68k MPEG player, whose
+source is still in this repo's history: `src/`, deleted in `b8f1516`) had
+anything to speed up MPEG decoding. Profile first (`tools/qemu_tbprof.sh`,
+68060 flags, VCD-style 352x240 1150 kbps MPEG-1 with B-frames; the harness's
+RGB24 conversion excluded, since AGA playback uses the YUV path): motion
+compensation 42% of decode, IDCT 35%, bitstream/VLC 19%.
+
+RiVA's own IDCT (`MacrosIDCT68k.m`) was **not** ported. It is a 16-bit
+fixed-point scaled AAN, and its own comments say it is not IEEE-1180
+compliant. A decoder IDCT that differs from the encoder's drifts on P/B
+pictures until the next I picture, and output would stop matching ffmpeg.
+Two of its ideas were taken instead, both exact. The RiVA macros are
+GPL-2.0-or-later, like libmpeg2.
+
+- **Motion compensation, four pixels per register**
+  (`vendor/libmpeg2/libmpeg2/motion_comp_swar.c`, `mpeg2_mc_swar`, selected
+  in `mpeg2_mc_init()`). libmpeg2's C version works a byte at a time. The
+  two-way average is `(a|b) - (((a^b)&0xfe..)>>1)`. The four-way average
+  splits each byte into its top six and low two bits, the RiVA
+  `MacrosInterpol68k.m` technique (Henryk Richter). The vertical and
+  four-way cases walk each 4-pixel column down the block, so every source
+  row is loaded, and its horizontal pair summed, once. The 16-wide columns
+  are spelled out as four statements: GCC did not unroll
+  `for (i = 0; i < 16; i += 4)`, and the index loop made plain copy slower
+  than the byte version. Unaligned reference rows use `memcpy`, which is one
+  `move.l` on 68020+. MC dropped from 97.3M to 45.4M guest instructions on
+  the noisy clip (-53%).
+- **Sparse-block IDCT shortcuts** (`libmpeg2/idct.c`). The coefficient
+  storage is permuted: storage row r holds vertical frequency 0,2,4,6,1,3,5,7.
+  An all-zero row is now skipped instead of transformed. Blocks with only
+  storage row 0 (every column constant, `(v + 32) >> 6`) or only rows 0 and
+  4 (vertical frequencies 0 and 1) get reduced column passes. Measured on
+  those clips: about 40-80% of intra blocks have only row 0, and 15-25% of
+  inter blocks have only rows 0 and 4. 36% of the blocks that still need
+  the full column pass are fully dense, so more mask-specific variants
+  were not worth it. Fusing the column pass with the add/clip, writing
+  straight to the picture, measured 2-5% *slower* even with
+  `always_inline`, and was dropped.
+
+Result, decode only: 233.6M -> 170.0M (noisy mandelbrot, -27%),
+218.5M -> 155.3M (clean mandelbrot, -29%), 125.3M -> 101.4M (testsrc2,
+-19%). Output is byte-identical to the unmodified libmpeg2 on those clips
+and on every MPEG-1/2 fixture. The whole-program comparison: `--ppm` output
+diffed from two host builds. Per function:
+- `tests/mr_mpeg2_mc_check.c` runs every `mpeg2_mc_swar` entry against
+  `mpeg2_mc_c`: all heights 1..16, odd strides, all reference alignments,
+  and values that exercise the low-bit carries.
+- `tests/mr_mpeg2_idct_check.c` runs the IDCT against the imported code
+  (`tests/mr_mpeg2_idct_reference.h`) on blocks shaped like each shortcut,
+  plus random sparse and dense blocks.
+Mutating the rounding constant, a mask, the row-0 formula or the zero-row
+test makes them fail. Both run on the host and on 68030 and 68060 builds
+in `make check-m68k`. What is left: VLC ~20% of decode, and the remaining
+IDCT is mostly dense inter blocks. Nothing here has been timed on a real
+68060 yet.
+
+**The 68060 disassembly gate had its divide rule wrong, in both
+directions.** Adding every `vendor/libmpeg2/libmpeg2/*.c` object to
+`check_m68060_asm.sh` (item 8, whole objects) flagged two
+`divull %d1,%d1,%d0` in `header.c`. The scanner called a divide trapping
+whenever its remainder and quotient registers differed. Assembling each form
+shows objdump's spelling instead:
+- `divull`/`divsll` (extension-word bit 10 clear) are the 32-bit-dividend
+  `DIVU.L`/`DIVUL.L`, which the 68060 implements, whatever the registers.
+- `divul`/`divsl` (bit 10 set) are the 64-bit-dividend forms that trap.
+So the gate also passed a trapping `divul %d1,%d1,%d0` (same registers).
+`scan_m68060_forbidden.py` now decodes bit 10 from the instruction bytes,
+for multiplies too. Every existing object still passes, `header.o`
+passes, and hand-assembled test objects flag exactly the three 64-bit
+multiplies and three 64-bit divides among them.
+

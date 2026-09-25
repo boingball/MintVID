@@ -106,7 +106,7 @@ CORE="core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
       vendor/libmpeg2/libmpeg2/alloc.c vendor/libmpeg2/libmpeg2/cpu_accel.c \
       vendor/libmpeg2/libmpeg2/cpu_state.c vendor/libmpeg2/libmpeg2/decode.c \
       vendor/libmpeg2/libmpeg2/header.c vendor/libmpeg2/libmpeg2/idct.c \
-      vendor/libmpeg2/libmpeg2/motion_comp.c vendor/libmpeg2/libmpeg2/slice.c \
+      vendor/libmpeg2/libmpeg2/motion_comp.c vendor/libmpeg2/libmpeg2/motion_comp_swar.c vendor/libmpeg2/libmpeg2/slice.c \
       core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_wmv.c core/mr_wmv2.c core/mr_h263.c core/mr_h264.c \
       core/mr_msvideo1.c core/mr_rle.c core/mr_rawvideo.c core/mr_yuv.c \
       core/mr_yuv_m68k.S core/mr_dv.c $LIBDV_SRC"
@@ -126,7 +126,7 @@ CORE_060="core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
       vendor/libmpeg2/libmpeg2/alloc.c vendor/libmpeg2/libmpeg2/cpu_accel.c \
       vendor/libmpeg2/libmpeg2/cpu_state.c vendor/libmpeg2/libmpeg2/decode.c \
       vendor/libmpeg2/libmpeg2/header.c vendor/libmpeg2/libmpeg2/idct.c \
-      vendor/libmpeg2/libmpeg2/motion_comp.c vendor/libmpeg2/libmpeg2/slice.c \
+      vendor/libmpeg2/libmpeg2/motion_comp.c vendor/libmpeg2/libmpeg2/motion_comp_swar.c vendor/libmpeg2/libmpeg2/slice.c \
       core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_wmv.c core/mr_wmv2.c core/mr_h263.c core/mr_h264.c \
       core/mr_msvideo1.c core/mr_rle.c core/mr_rawvideo.c core/mr_yuv.c \
       core/mr_yuv_m68k.S core/mr_dv.c $LIBDV_SRC"
@@ -596,6 +596,19 @@ run "$BUILD/mr_decode.m68k" tests/assets/test_dv_ntsc.avi --dv-speed=fast \
 echo "[MPEG-TS: MPEG-2 Main Profile + B-frames, real m68k/big-endian]"
 run "$BUILD/mr_decode.m68k" tests/assets/test_mpeg2.ts \
     --check tests/assets/ref_mpeg2_ts
+echo "== building mr_mpeg2_mc_check / mr_mpeg2_idct_check (68030 and 68060) =="
+MPEG2_MC_SRC="tests/mr_mpeg2_mc_check.c vendor/libmpeg2/libmpeg2/motion_comp.c vendor/libmpeg2/libmpeg2/motion_comp_swar.c"
+MPEG2_IDCT_SRC="tests/mr_mpeg2_idct_check.c vendor/libmpeg2/libmpeg2/idct.c"
+$CC -o "$BUILD/mr_mpeg2_mc_check.m68k" $MPEG2_MC_SRC
+$CC_060 -o "$BUILD/mr_mpeg2_mc_check_060.m68k" $MPEG2_MC_SRC
+$CC -o "$BUILD/mr_mpeg2_idct_check.m68k" $MPEG2_IDCT_SRC
+$CC_060 -o "$BUILD/mr_mpeg2_idct_check_060.m68k" $MPEG2_IDCT_SRC
+echo "[libmpeg2 word-at-a-time motion compensation vs mpeg2_mc_c, real m68k/big-endian]"
+run "$BUILD/mr_mpeg2_mc_check.m68k"
+run "$BUILD/mr_mpeg2_mc_check_060.m68k"
+echo "[libmpeg2 sparse-block IDCT vs the imported IDCT, real m68k/big-endian]"
+run "$BUILD/mr_mpeg2_idct_check.m68k"
+run "$BUILD/mr_mpeg2_idct_check_060.m68k"
 echo "== building mr_mpeg2_bskip_check.m68k =="
 $CC -o "$BUILD/mr_mpeg2_bskip_check.m68k" tests/mr_mpeg2_bskip_check.c \
     $CORE $LIBAVC_SRC \
@@ -649,7 +662,7 @@ $CC -o "$BUILD/mr_mpeg2_yuv_check.m68k" tests/mr_mpeg2_yuv_check.c \
     vendor/libmpeg2/libmpeg2/alloc.c vendor/libmpeg2/libmpeg2/cpu_accel.c \
     vendor/libmpeg2/libmpeg2/cpu_state.c vendor/libmpeg2/libmpeg2/decode.c \
     vendor/libmpeg2/libmpeg2/header.c vendor/libmpeg2/libmpeg2/idct.c \
-    vendor/libmpeg2/libmpeg2/motion_comp.c vendor/libmpeg2/libmpeg2/slice.c
+    vendor/libmpeg2/libmpeg2/motion_comp.c vendor/libmpeg2/libmpeg2/motion_comp_swar.c vendor/libmpeg2/libmpeg2/slice.c
 echo "[MPEG-1/2 YUV420P output handoff, real m68k/big-endian]"
 run "$BUILD/mr_mpeg2_yuv_check.m68k" tests/assets/test_mpeg1_odd.mpg 134 100
 

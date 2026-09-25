@@ -79,6 +79,11 @@ typedef struct {
      * and back, so de-escalating restores whatever the chosen performance
      * mode actually asked for rather than always falling back to NONE. */
     IVD_FRAME_SKIP_MODE_T base_skip_mode;
+    /* IVD_DECODE_FRAME_OUT (low delay) under Turbo+, else display order.
+     * libavc sizes its display delay from this at the first picture only,
+     * so it follows the speed mode chosen at open and never changes with
+     * mr_h264_set_dynamic_skip(). See mr_h264_set_speed_mode(). */
+    IVD_DISPLAY_FRAME_OUT_MODE_T frame_out_mode;
     int       timing_enabled;
     int       yuv_output;
     int       input_annexb;
@@ -518,7 +523,7 @@ static IV_API_CALL_STATUS_T set_decode_mode(h264_state *s,
     in.s_ivd_ctl_set_config_ip_t.e_vid_dec_mode = mode;
     in.s_ivd_ctl_set_config_ip_t.u4_disp_wd = 0;
     in.s_ivd_ctl_set_config_ip_t.e_frm_skip_mode = skip_mode;
-    in.s_ivd_ctl_set_config_ip_t.e_frm_out_mode = IVD_DISPLAY_FRAME_OUT;
+    in.s_ivd_ctl_set_config_ip_t.e_frm_out_mode = s->frame_out_mode;
     out.s_ivd_ctl_set_config_op_t.u4_size = sizeof out;
     return ih264d_api_function(s->handle, &in, &out);
 }
@@ -1322,6 +1327,17 @@ int mr_h264_set_speed_mode(mr_decoder *dec, mr_h264_speed_mode mode)
      * boundary bookkeeping rather than reaching into dec_struct_t here.
      */
     s->base_skip_mode = skip_mode;
+    /* Turbo+ decodes keyframes only, and in display-order mode libavc holds
+     * each picture back until num_reorder_frames + 1 later ones have been
+     * decoded. On a stream with B-frames those later pictures are the next
+     * keyframes, so every picture came out two GOPs late: 15 s on BBC's
+     * 7.68 s GOPs, which the player then dropped as stale. With only I
+     * pictures decoded, decode order is display order, so low-delay output
+     * is exact. libavc fixes the display delay at the first picture, so this
+     * must be chosen before decoding starts (mrplay sets the speed right
+     * after open and after every reset). */
+    s->frame_out_mode = skip_mode == IVD_SKIP_PB ? IVD_DECODE_FRAME_OUT
+                                                 : IVD_DISPLAY_FRAME_OUT;
     return set_decode_mode(s, IVD_DECODE_FRAME, skip_mode) == IV_SUCCESS;
 }
 
