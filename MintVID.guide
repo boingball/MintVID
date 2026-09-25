@@ -234,13 +234,13 @@ out on its own.
 @{b}Playing a video@{ub}
 
 Run the controller, choose a movie, and select a display mode: AGA, ECS,
-EHB, HAM6, HAM8, Window, Window Half, RTG (WritePixel), RTG (Half), P96
-(Windowed) or P96 (Fullscreen). Laced and 2x apply to the chipset modes;
-RTG playback opens a size-gadget window and scales the video as that window
-is resized. RTG
-(Half) opens that window at half the video's width and height and converts
-H.264 straight to that size, which cuts colour conversion and the copy to
-the card to about a quarter; other codecs play at full size.
+EHB, HAM6, HAM6 (Dither), HAM8, HAM8 (Dither), Window, Window Half, RTG
+(WritePixel), RTG (Half), P96 (Windowed) or P96 (Fullscreen). Laced and
+2x apply to the chipset modes; RTG playback opens a size-gadget window
+and scales the video as that window is resized. RTG (Half) opens that
+window at half the video's width and height and converts H.264 straight
+to that size, which cuts colour conversion and the copy to the card to
+about a quarter; other codecs play at full size.
 Window (listed as AGA, ECS or OCS Window, after your chipset) is offered
 when Workbench is not an RTG screen. It plays in a sizeable window on the
 Workbench instead of opening its own screen. It shares Workbench's colours:
@@ -265,6 +265,17 @@ produces), H.264 is converted straight from YUV to HAM pixel bytes rather
 than through a full-resolution RGB24 frame - only the rows the downscale
 keeps are converted, cutting that conversion by about 45%. Other HAM
 geometries keep the established route.
+
+@{b}HAM6 (Dither)@{ub} and @{b}HAM8 (Dither)@{ub} add an ordered dither to
+HAM. A HAM pixel either picks a base colour or changes one of red, green
+or blue from the pixel to its left, and that change is rounded down to the
+nearest step (16 levels per channel on HAM6, 64 on HAM8). Rounding the same
+way everywhere shows as bands in smooth areas like skies and faces, and a
+slightly dark picture. The Dither modes spread that rounding over a 4x4
+pattern, so smooth areas average to the right colour. The difference is
+clear on HAM6 and subtle on HAM8. Edges are handled exactly as before, so
+HAM's colour smear at sharp edges does not change. HAM encoding costs about
+15% more per frame with dither on.
 
   Play          starts the selected movie
   Pause         toggles playback

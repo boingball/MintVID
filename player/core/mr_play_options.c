@@ -87,6 +87,21 @@ int mr_display_has_screen_options(mr_display_mode display)
            display != MR_DISPLAY_AGA_WINDOW_HALF && display != MR_DISPLAY_NONE;
 }
 
+int mr_display_ham_bits(mr_display_mode display)
+{
+    if (display == MR_DISPLAY_HAM8 || display == MR_DISPLAY_HAM8_DITHER)
+        return 8;
+    if (display == MR_DISPLAY_HAM6 || display == MR_DISPLAY_HAM6_DITHER)
+        return 6;
+    return 0;
+}
+
+int mr_display_ham_dither(mr_display_mode display)
+{
+    return display == MR_DISPLAY_HAM6_DITHER ||
+           display == MR_DISPLAY_HAM8_DITHER;
+}
+
 int mr_play_options_no_video(const mr_play_options *o)
 {
     return o && (o->no_video || o->display == MR_DISPLAY_NONE);
@@ -137,6 +152,8 @@ static const char *display_name(mr_display_mode display)
     switch (display) {
     case MR_DISPLAY_HAM6: return "ham6";
     case MR_DISPLAY_HAM8: return "ham8";
+    case MR_DISPLAY_HAM6_DITHER: return "ham6-dither";
+    case MR_DISPLAY_HAM8_DITHER: return "ham8-dither";
     case MR_DISPLAY_CGX: return "cgx";
     case MR_DISPLAY_P96: return "p96";
     case MR_DISPLAY_P96_FULLSCREEN: return "p96-fullscreen";
@@ -204,6 +221,12 @@ static int append_playback_flags(char *out, size_t cap,
             (!append_option(out, cap, "--aga") || !append_option(out, cap, "--ham6"))) return 0;
         if (o->display == MR_DISPLAY_HAM8 &&
             (!append_option(out, cap, "--aga") || !append_option(out, cap, "--ham"))) return 0;
+        if (o->display == MR_DISPLAY_HAM6_DITHER &&
+            (!append_option(out, cap, "--aga") || !append_option(out, cap, "--ham6") ||
+             !append_option(out, cap, "--ham-dither"))) return 0;
+        if (o->display == MR_DISPLAY_HAM8_DITHER &&
+            (!append_option(out, cap, "--aga") || !append_option(out, cap, "--ham") ||
+             !append_option(out, cap, "--ham-dither"))) return 0;
         if (o->display == MR_DISPLAY_AGA_ECS32 &&
             (!append_option(out, cap, "--aga") || !append_option(out, cap, "--ecs32"))) return 0;
         if (o->display == MR_DISPLAY_AGA_ECS16 &&
@@ -378,6 +401,8 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             if (!strcmp(value, "aga")) o->display = MR_DISPLAY_AGA;
             else if (!strcmp(value, "ham6")) o->display = MR_DISPLAY_HAM6;
             else if (!strcmp(value, "ham8")) o->display = MR_DISPLAY_HAM8;
+            else if (!strcmp(value, "ham6-dither")) o->display = MR_DISPLAY_HAM6_DITHER;
+            else if (!strcmp(value, "ham8-dither")) o->display = MR_DISPLAY_HAM8_DITHER;
             else if (!strcmp(value, "cgx") || !strcmp(value, "rtg")) o->display = MR_DISPLAY_CGX;
             else if (!strcmp(value, "p96")) o->display = MR_DISPLAY_P96;
             else if (!strcmp(value, "p96-fullscreen")) o->display = MR_DISPLAY_P96_FULLSCREEN;
@@ -579,6 +604,8 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
                  "Playback: %s / %s / Lace %s / 2x %s%s / %s / H264 %s / Audio %s / Fast buffer %s%s / Video %s",
                  o->display == MR_DISPLAY_HAM6 ? "HAM6" :
                  o->display == MR_DISPLAY_HAM8 ? "HAM8" :
+                 o->display == MR_DISPLAY_HAM6_DITHER ? "HAM6 (Dither)" :
+                 o->display == MR_DISPLAY_HAM8_DITHER ? "HAM8 (Dither)" :
                  o->display == MR_DISPLAY_AGA_ECS32 ? "ECS (32)" :
                  o->display == MR_DISPLAY_AGA_ECS16 ? "ECS (16)" :
                  o->display == MR_DISPLAY_AGA_EHB ? "ECS (EHB)" : "Native planar",

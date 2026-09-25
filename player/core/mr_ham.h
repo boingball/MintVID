@@ -26,6 +26,19 @@ void mr_ham_palette(uint8_t *pal, int bits);
 void mr_ham_encode(const uint8_t *rgb, int w, int h, int rgb_stride,
                    uint8_t *out, int out_stride, int bits);
 
+/* The same, optionally with ordered dither ("HAM8 (Dither)"/"HAM6
+ * (Dither)"). Only the value a pixel writes when it modifies one channel is
+ * dithered: a 4x4 Bayer threshold (0..3 for HAM8's 6-bit steps, 0..15 for
+ * HAM6's 4-bit ones) is added before the truncation, so over each 4x4 block
+ * the written values average to the true colour instead of always rounding
+ * down. Channel choice and base-colour picks are unchanged, so edges fringe
+ * exactly as in the plain encoder. y_base is the row index of rgb's first
+ * row in the whole picture, keeping the pattern continuous when a frame is
+ * encoded in row bands. dither == 0 is bit-identical to mr_ham_encode(). */
+void mr_ham_encode_ex(const uint8_t *rgb, int w, int h, int rgb_stride,
+                      uint8_t *out, int out_stride, int bits, int y_base,
+                      int dither);
+
 /* Reconstruct RGB24 from HAM bytes (hardware simulation) - for validation. */
 void mr_ham_decode(const uint8_t *ham, int w, int h, int in_stride,
                    const uint8_t *pal, uint8_t *rgb, int rgb_stride, int bits);

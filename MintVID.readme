@@ -57,6 +57,9 @@ WHAT'S NEW IN 1.4.0
   - Fast buffer adds 32 and 64 MB, and YouTube/IPTV HLS now downloads
     several segments ahead of playback.
   - HTTPS menu: TLS 1.2 (the faster default) or TLS 1.3.
+  - HAM6 (Dither) and HAM8 (Dither) display modes: an ordered dither on
+    each HAM colour change, so skies and other smooth areas stop banding.
+    Clear on HAM6, subtle on HAM8; edges look the same as plain HAM.
   - Faster P96 on 16-bit screens: when the overlay is refused, H.264 is
     copied straight to the 16-bit screen format. On WinUAE 720p YouTube
     the display step fell from about 34 ms to about 17 ms per frame.

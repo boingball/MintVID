@@ -29,6 +29,7 @@ static int g_force_p96 = 0;
 int g_aga_window = 0;  /* 0 off, 1 Window, 2 Window (Half); shared with
                         * display_aga_window.c */
 int g_aga_ham   = 0;   /* shared with the AGA backend */
+int g_aga_ham_dither = 0;  /* HAM (Dither): ordered dither on modify writes */
 int g_aga_scale = 1;
 int g_aga_c2p   = 3;   /* CPU-matched Kalms by default; its runtime checks
                         * fall back safely to WritePixelArray8. --wpa selects
@@ -49,6 +50,7 @@ void display_set_aga_window(int mode)
     g_aga_window = mode == 2 ? 2 : mode ? 1 : 0;
 }
 void display_set_ham(int bits) { g_aga_ham = bits; if (bits) g_force_aga = 1; }
+void display_set_ham_dither(int on) { g_aga_ham_dither = on ? 1 : 0; }
 void display_set_scale(int n)  { g_aga_scale = (n == 2) ? 2 : 1; }
 void display_set_c2p(int on)   { g_aga_c2p = on ? 1 : 0; }
 void display_set_riva_c2p(int on) { g_aga_c2p = on ? 2 : 0; }

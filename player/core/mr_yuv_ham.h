@@ -58,6 +58,15 @@ void mr_yuv420_ham_encode(const uint8_t *y_plane, int y_stride,
                           int width, int height, int vscale, int bits,
                           uint8_t *out, int out_stride);
 
+/* The same with the HAM (Dither) ordered dither on the modify writes, as
+ * mr_ham_encode_ex() applies it; the pattern row is the output row. dither
+ * == 0 is bit-identical to mr_yuv420_ham_encode(). */
+void mr_yuv420_ham_encode_ex(const uint8_t *y_plane, int y_stride,
+                             const uint8_t *u_plane, int u_stride,
+                             const uint8_t *v_plane, int v_stride,
+                             int width, int height, int vscale, int bits,
+                             int dither, uint8_t *out, int out_stride);
+
 /*
  * There is deliberately no general resize form, and no vscale==1 identity
  * user, even though both are straightforward to write: see the header comment

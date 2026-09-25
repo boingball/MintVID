@@ -240,6 +240,7 @@ typedef struct {
     int             depth;
     int             x0, y0, x0byte;
     int             ham, ehb, scale, resize, use_c2p, use_riva_c2p, use_akiko;
+    int             ham_dither;     /* HAM (Dither), captured at open    */
     int             kalms_kind;
     long            kalms_plane_spacing;
     int             kalms_src_width; /* aligned C2P input width             */
@@ -600,6 +601,7 @@ static void *aga_open(int w, int h, const char *title)
     if (!s) return NULL;
     s->w = w; s->h = h; s->dw = dw; s->dh = dh;
     s->ham = ham; s->ehb = ehb; s->scale = scale; s->resize = resize;
+    s->ham_dither = ham ? g_aga_ham_dither : 0;
     s->depth = depth; s->use_c2p = c2p; s->use_riva_c2p = riva_c2p_mode;
     s->use_akiko = akiko;
     s->kalms_kind = KALMS_NONE;
@@ -993,7 +995,8 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
         mr_scale_resize_rgb24(rgb, w, h, stride, s->scaled,
                               dw, s->dh, dw * 3);
         uint8_t *encoded = s->chunky + aga_chunky_visible_offset(s);
-        if (s->ham) mr_ham_encode(s->scaled, dw, s->dh, dw * 3, encoded, pw, s->ham);
+        if (s->ham) mr_ham_encode_ex(s->scaled, dw, s->dh, dw * 3, encoded,
+                                     pw, s->ham, 0, s->ham_dither);
         else if (s->ehb) mr_dither_rgb_ehb(s->scaled, dw, s->dh, dw * 3,
                                           encoded, pw, 0);
         else mr_dither_rgb_indexed(s->scaled, dw, s->dh, dw * 3,
@@ -1018,8 +1021,9 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
             uint8_t *enc_dst = s->enc +
                                (s->kalms_kind == KALMS_2X2_8
                                 ? s->kalms_pad_left : 0);
-            if (s->ham) mr_ham_encode(src, w, rows, stride, enc_dst,
-                                      enc_stride, s->ham);
+            if (s->ham) mr_ham_encode_ex(src, w, rows, stride, enc_dst,
+                                         enc_stride, s->ham, dy0,
+                                         s->ham_dither);
             else if (s->ehb) mr_dither_rgb_ehb(src, w, rows, stride, enc_dst,
                                                enc_stride, dy0);
             else mr_dither_rgb_indexed(src, w, rows, stride, enc_dst,
@@ -1043,7 +1047,8 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
         } else {
             uint8_t *dst = s->chunky + (size_t)dy0 * pw +
                             aga_chunky_visible_offset(s);
-            if (s->ham) mr_ham_encode(src, w, rows, stride, dst, pw, s->ham);
+            if (s->ham) mr_ham_encode_ex(src, w, rows, stride, dst, pw,
+                                         s->ham, dy0, s->ham_dither);
             else if (s->ehb) mr_dither_rgb_ehb(src, w, rows, stride, dst, pw, dy0);
             else mr_dither_rgb_indexed(src, w, rows, stride, dst, pw,
                                        dy0, s->depth);

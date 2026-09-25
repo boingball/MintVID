@@ -82,8 +82,8 @@ typedef struct gt_app {
     struct FileRequester *requester;
     mr_master_options_port *master;
     mr_gui_menu menu;
-    mr_display_mode modes[12];
-    STRPTR mode_labels[13];
+    mr_display_mode modes[16];
+    STRPTR mode_labels[17];
     unsigned mode_count;
     mr_c2p_mode c2p_modes[5];
     STRPTR c2p_labels[6];
@@ -454,9 +454,9 @@ static void update_mode_controls(gt_app *app, int output_changed)
      * the selection so returning to AGA restores the faster default. */
     kalms_available = selected < app->mode_count &&
                       ((app->modes[selected] == MR_DISPLAY_AGA && aga()) ||
-                       app->modes[selected] == MR_DISPLAY_HAM8
+                       mr_display_ham_bits(app->modes[selected]) == 8
 #ifdef MR_KALMS_040
-                       || app->modes[selected] == MR_DISPLAY_HAM6
+                       || mr_display_ham_bits(app->modes[selected]) == 6
                        || app->modes[selected] == MR_DISPLAY_AGA_EHB
 #endif
                       );
@@ -1076,9 +1076,13 @@ static int build_window(gt_app *app)
     }
     app->mode_labels[app->mode_count] = (STRPTR)"Display: HAM6";
     app->modes[app->mode_count++] = MR_DISPLAY_HAM6;
+    app->mode_labels[app->mode_count] = (STRPTR)"Display: HAM6 (Dither)";
+    app->modes[app->mode_count++] = MR_DISPLAY_HAM6_DITHER;
     if (aga()) {
         app->mode_labels[app->mode_count] = (STRPTR)"Display: HAM8";
         app->modes[app->mode_count++] = MR_DISPLAY_HAM8;
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: HAM8 (Dither)";
+        app->modes[app->mode_count++] = MR_DISPLAY_HAM8_DITHER;
     }
     if (!screen_is_rtg(app->screen)) {
         /* Video in a Workbench window with shared pens, full or half size.

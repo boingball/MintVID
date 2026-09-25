@@ -61,7 +61,13 @@ typedef enum {
      * below (mrplay gets --no-video); as a display choice it sits where
      * people look for "how do I show this", and the frame/VQ controls grey
      * out under it. */
-    MR_DISPLAY_NONE
+    MR_DISPLAY_NONE,
+    /* HAM6/HAM8 with an ordered dither on each pixel's modify write, so
+     * smooth colour averages out instead of banding (see
+     * core/mr_ham.h's mr_ham_encode_ex()). --ham6/--ham plus --ham-dither;
+     * appended to keep saved display values. */
+    MR_DISPLAY_HAM6_DITHER,
+    MR_DISPLAY_HAM8_DITHER
 } mr_display_mode;
 
 typedef enum {
@@ -181,6 +187,13 @@ int mr_display_is_rtg(mr_display_mode display);
  * 2x and Copper 2x options apply: everything except RTG and the Workbench
  * window modes. */
 int mr_display_has_screen_options(mr_display_mode display);
+
+/* HAM depth of a display mode: 8 for HAM8/HAM8 (Dither), 6 for HAM6/HAM6
+ * (Dither), 0 for everything else. */
+int mr_display_ham_bits(mr_display_mode display);
+
+/* True for the HAM (Dither) modes. */
+int mr_display_ham_dither(mr_display_mode display);
 
 /* True when the session plays audio only: no_video set directly (--no-video)
  * or the "No Video" display (MR_DISPLAY_NONE). */

@@ -51,8 +51,85 @@ void mr_ham_palette(uint8_t *pal, int bits)
     }
 }
 
-void mr_ham_encode(const uint8_t *rgb, int w, int h, int rgb_stride,
-                   uint8_t *out, int out_stride, int bits)
+/* 4x4 ordered-dither thresholds for the modify writes (see mr_ham.h).
+ * HAM6 modifies in steps of 16 and uses them as they are (0..15); HAM8
+ * modifies in steps of 4 and uses them >> 2 (0..3), pre-shifted below. */
+static const uint8_t ham_bayer4[4][4] = {
+    {  0,  8,  2, 10 }, { 12,  4, 14,  6 },
+    {  3, 11,  1,  9 }, { 15,  7, 13,  5 }
+};
+/* The same scaled to one HAM8 modify step (values >> 2), so the pixel loop
+ * reads a ready threshold instead of shifting one. */
+static const uint8_t ham_bayer4_8[4][4] = {
+    { 0, 2, 0, 2 }, { 3, 1, 3, 1 },
+    { 0, 2, 0, 2 }, { 3, 1, 3, 1 }
+};
+
+/* One encoder row. `T` is the dither threshold expression for pixel x: the
+ * literal 0 for the plain encoder (the compiler folds every "+ 0" and
+ * "> 255" test away), or a table read for the dithered one. The dither only
+ * moves the value written when a pixel modifies one channel: that write is
+ * a truncation (R >> 2, R >> 4), and adding a threshold that cycles through
+ * 0..step-1 over a 4x4 block first makes it average to the true value
+ * instead of always rounding down. The channel decision and the base-colour
+ * ("set") choice stay undithered, so edges are handled exactly as before. */
+#define HAM8_ROW(T)                                                          \
+    for (x = 0; x < w; x++, sr += 3) {                                       \
+        int R = sr[0], G = sr[1], B = sr[2];                                 \
+        int dpr = iabs(R - pr), dpg = iabs(G - pg), dpb = iabs(B - pb);      \
+        int er = (R & 3) + dpg + dpb;                                        \
+        int eg = dpr + (G & 3) + dpb;                                        \
+        int eb = dpr + dpg + (B & 3);                                        \
+        int e_set = serr8[R] + serr8[G] + serr8[B];                          \
+        int v;                                                               \
+                                                                             \
+        if (e_set <= er && e_set <= eg && e_set <= eb) {                     \
+            *dr++ = (uint8_t)((q4[R] << 4) | (q4[G] << 2) | q4[B]);          \
+            pr = s4[R]; pg = s4[G]; pb = s4[B];                              \
+        } else if (er <= eg && er <= eb) {                                   \
+            v = R + (T); if (v > 255) v = 255;                               \
+            *dr++ = (uint8_t)(0x80 | (v >> 2)); pr = v & ~3;                 \
+        } else if (eg <= eb) {                                               \
+            v = G + (T); if (v > 255) v = 255;                               \
+            *dr++ = (uint8_t)(0xc0 | (v >> 2)); pg = v & ~3;                 \
+        } else {                                                             \
+            v = B + (T); if (v > 255) v = 255;                               \
+            *dr++ = (uint8_t)(0x40 | (v >> 2)); pb = v & ~3;                 \
+        }                                                                    \
+    }
+
+#define HAM6_ROW(T)                                                          \
+    for (x = 0; x < w; x++, sr += 3) {                                       \
+        int R = sr[0], G = sr[1], B = sr[2];                                 \
+        int dpr = iabs(R - pr), dpg = iabs(G - pg), dpb = iabs(B - pb);      \
+        int held = dpr + dpg + dpb;                                          \
+        int best = (R & 15) - dpr, channel = 0;                              \
+        int delta = (G & 15) - dpg;                                          \
+        int sum = R + G + B, qi = grey_q[sum];                               \
+        int e_set = grey_dist[qi][R] + grey_dist[qi][G] + grey_dist[qi][B];  \
+        int v;                                                               \
+        if (delta < best) { best = delta; channel = 1; }                     \
+        delta = (B & 15) - dpb;                                              \
+        if (delta < best) { best = delta; channel = 2; }                     \
+                                                                             \
+        if (e_set <= held + best) {                                          \
+            *dr++ = (uint8_t)qi;                                             \
+            pr = pg = pb = grey_v[sum];                                      \
+        } else if (channel == 0) {                                           \
+            v = R + (T); if (v > 255) v = 255;                               \
+            *dr++ = (uint8_t)(0x20 | (v >> 4)); pr = v & ~15;                \
+        } else if (channel == 1) {                                           \
+            v = G + (T); if (v > 255) v = 255;                               \
+            *dr++ = (uint8_t)(0x30 | (v >> 4)); pg = v & ~15;                \
+        } else {                                                             \
+            v = B + (T); if (v > 255) v = 255;                               \
+            *dr++ = (uint8_t)(0x10 | (v >> 4)); pb = v & ~15;                \
+        }                                                                    \
+    }
+
+void mr_ham_encode_ex(const uint8_t *rgb, int w, int h, int rgb_stride,
+                      uint8_t *out, int out_stride, int bits, int y_base,
+                      int dither)
 {
     int x, y;
 
@@ -60,53 +137,26 @@ void mr_ham_encode(const uint8_t *rgb, int w, int h, int rgb_stride,
     for (y = 0; y < h; y++) {
         const uint8_t *sr = rgb + (size_t)y * rgb_stride;
         uint8_t       *dr = out + (size_t)y * out_stride;
+        const uint8_t *trow = bits >= 8 ? ham_bayer4_8[(y_base + y) & 3]
+                                        : ham_bayer4[(y_base + y) & 3];
         int pr = 0, pg = 0, pb = 0;           /* held colour (line start = 0)*/
         if (bits >= 8) {
-            for (x = 0; x < w; x++, sr += 3) {
-                int R = sr[0], G = sr[1], B = sr[2];
-                int dpr = iabs(R - pr), dpg = iabs(G - pg), dpb = iabs(B - pb);
-                int er = (R & 3) + dpg + dpb;
-                int eg = dpr + (G & 3) + dpb;
-                int eb = dpr + dpg + (B & 3);
-                int e_set = serr8[R] + serr8[G] + serr8[B];
-
-                if (e_set <= er && e_set <= eg && e_set <= eb) {
-                    *dr++ = (uint8_t)((q4[R] << 4) | (q4[G] << 2) | q4[B]);
-                    pr = s4[R]; pg = s4[G]; pb = s4[B];
-                } else if (er <= eg && er <= eb) {
-                    *dr++ = (uint8_t)(0x80 | (R >> 2)); pr = R & ~3;
-                } else if (eg <= eb) {
-                    *dr++ = (uint8_t)(0xc0 | (G >> 2)); pg = G & ~3;
-                } else {
-                    *dr++ = (uint8_t)(0x40 | (B >> 2)); pb = B & ~3;
-                }
-            }
+            if (dither) HAM8_ROW(trow[x & 3])
+            else        HAM8_ROW(0)
         } else {
-            for (x = 0; x < w; x++, sr += 3) {
-                int R = sr[0], G = sr[1], B = sr[2];
-                int dpr = iabs(R - pr), dpg = iabs(G - pg), dpb = iabs(B - pb);
-                int held = dpr + dpg + dpb;
-                int best = (R & 15) - dpr, channel = 0;
-                int delta = (G & 15) - dpg;
-                int sum = R + G + B, qi = grey_q[sum];
-                int e_set = grey_dist[qi][R] + grey_dist[qi][G] + grey_dist[qi][B];
-                if (delta < best) { best = delta; channel = 1; }
-                delta = (B & 15) - dpb;
-                if (delta < best) { best = delta; channel = 2; }
-
-                if (e_set <= held + best) {
-                    *dr++ = (uint8_t)qi;
-                    pr = pg = pb = grey_v[sum];
-                } else if (channel == 0) {
-                    *dr++ = (uint8_t)(0x20 | (R >> 4)); pr = R & ~15;
-                } else if (channel == 1) {
-                    *dr++ = (uint8_t)(0x30 | (G >> 4)); pg = G & ~15;
-                } else {
-                    *dr++ = (uint8_t)(0x10 | (B >> 4)); pb = B & ~15;
-                }
-            }
+            if (dither) HAM6_ROW(trow[x & 3])
+            else        HAM6_ROW(0)
         }
     }
+}
+
+#undef HAM8_ROW
+#undef HAM6_ROW
+
+void mr_ham_encode(const uint8_t *rgb, int w, int h, int rgb_stride,
+                   uint8_t *out, int out_stride, int bits)
+{
+    mr_ham_encode_ex(rgb, w, h, rgb_stride, out, out_stride, bits, 0, 0);
 }
 
 void mr_ham_decode(const uint8_t *ham, int w, int h, int in_stride,

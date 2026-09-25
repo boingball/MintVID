@@ -28,6 +28,16 @@
 
 ### Added
 
+- **HAM6 (Dither)** and **HAM8 (Dither)** display modes (`--ham-dither`
+  with `--ham6`/`--ham`). When a HAM pixel changes one colour channel, the
+  new value used to be rounded down to the nearest step (16 levels on
+  HAM6, 64 on HAM8). That banded smooth gradients and darkened the picture
+  slightly. The Dither modes spread the rounding over a 4x4 ordered
+  pattern, so smooth areas average to the right colour. On test frames the
+  error seen at normal viewing distance halves on HAM6 gradients, and
+  HAM8's horizontal banding goes. Edges fringe exactly as before, since the
+  choice of what each pixel does is unchanged. HAM encoding costs about 15%
+  more with dither on.
 - **Window** display mode (`--aga-window`, listed as AGA/ECS/OCS Window
   after the chipset): plays in a sizeable window on a native-chipset
   Workbench instead of opening its own screen.

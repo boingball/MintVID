@@ -5937,3 +5937,47 @@ depends on how WinUAE and the board handle the writes, and needs a
 Even with display nearly free, decode plus conversion (~12 ms) leaves
 little of a 60 fps stream's 16.7 ms frame.
 
+
+## HAM6 (Dither) / HAM8 (Dither)
+`MR_DISPLAY_HAM6_DITHER`/`MR_DISPLAY_HAM8_DITHER` (appended to the enum,
+`--display ham6-dither|ham8-dither` in the browser hand-off, mrplay
+`--ham6|--ham` plus `--ham-dither`, `display_set_ham_dither()`). Both
+encoders gained a dithered form: `mr_ham_encode_ex(..., y_base, dither)`
+and `mr_yuv420_ham_encode_ex(..., dither, ...)`. With `dither == 0` they are
+bit-identical to the old functions, which now just call them.
+
+Only the modify write is dithered. HAM loses precision when a pixel
+changes one channel, because the new value is truncated (`R >> 2` on HAM8,
+`R >> 4` on HAM6). Adding a 4x4 Bayer threshold (0..3 on HAM8, 0..15 on
+HAM6) before the truncation makes each 4x4 block average to the true
+value. It also removes the old always-round-down bias, which was as large
+as -8 levels on HAM6. The base-colour ("set") choice and the choice of
+channel to modify are left undithered, so edge fringing is unchanged.
+`y_base` keeps the pattern continuous when `aga_show()` encodes dirty row
+bands; the fused YUV path uses the output row.
+
+Measured with `mr_ham_decode()` on synthetic frames, as the error after a
+4x4 box blur (roughly what the eye sees):
+- HAM6 gradient 8.7 -> 3.3 levels, sky 6.0 -> 2.8.
+- HAM8 1.4 -> 0.5 and 1.5 -> 0.7.
+- Per-pixel error also fell.
+
+HAM6 dither still looks blotchy with horizontal streaks, from the greedy
+encoder and HAM6's grey-only base palette. A per-channel error-carry
+variant (each channel's rounding error carried to its next write along the
+row) was prototyped and was no better: worse on the test card, about equal
+elsewhere.
+
+Cost: about 15% more m68k instructions per HAM encode (HAM8 640x360: 14.4M
+-> 16.6M per frame at 68060 flags). That is not the table read: the
+encoder is already register-starved and GCC spills throughout the loop, and
+the dither adds live values. Both a pre-shifted table and a rotating
+packed threshold word measured the same. The whole HAM encode is ~60
+instructions per pixel, against ~20 for the table-driven AGA dither
+kernel. A hand-written m68k HAM encoder is the lever if HAM speed matters.
+
+Pinned bit-exact in `tests/mr_ham_check.c`: its oracle takes the threshold
+and y_base, and a banded encode must match a whole-frame one.
+`tests/mr_yuv_ham_check.c` runs the fused-vs-three-stage comparison with
+dither on as well. Breaking the threshold scale, the row index or the clamp
+makes them fail. Not yet run on real hardware.

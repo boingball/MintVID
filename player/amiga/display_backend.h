@@ -110,6 +110,7 @@ extern const display_backend backend_aga_window;
 
 /* AGA backend configuration, set via the public display_set_* calls. */
 extern int g_aga_ham;    /* 0 = indexed planar, 6 = HAM6, 8 = AGA HAM8      */
+extern int g_aga_ham_dither; /* HAM (Dither): see display_set_ham_dither() */
 extern int g_aga_scale;  /* 1 or 2 (pixel doubling)                        */
 extern int g_aga_c2p;    /* 0 = WPA8, 1 = portable, 2 = RiVA, 3 = Kalms,
                           * 4 = Direct (single-kernel dither+C2P, 040/060
