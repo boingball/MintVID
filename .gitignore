@@ -10,6 +10,7 @@ player/.hostobj/
 player/mr_codec_registry_check
 player/mr_scale_check
 player/mr_yuv_check
+player/mr_rgb565_check
 player/mr_c2p_check
 player/mr_ham_check
 player/mr_dither_check

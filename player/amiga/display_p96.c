@@ -640,15 +640,19 @@ static void clear_pixel_rect(struct BitMap *bm, p96_fmt fmt, int x, int y,
     p96UnlockBitMap(bm, lock);
 }
 
+/* Source layouts p96_show_packed() accepts. */
+enum { P96_SRC_RGB24 = 0, P96_SRC_BGR24 = 1, P96_SRC_RGB565 = 2 };
+
 /* Lock the live bitmap and write `rows` into native screen memory, in
  * whichever of the three supported layouts `fmt` names (see the file header
- * comment). RGB callers retain the old per-pixel shuffle/pack; a caller that
- * already supplies BGR24 (the H.264 direct-YUV queue path) takes the row
- * memcpy route in the P96_FMT_BGR24 case, eliminating that complete
- * channel-shuffle pass - the other two formats always need a per-pixel pack
- * regardless of source order, since neither is a byte-for-byte reshuffle of
- * 24-bit RGB or BGR. Never holds the bitmap lock across a service() call -
- * see the file header comment.
+ * comment). A source already in the screen's own layout (BGR24 on
+ * RGBFB_B8G8R8, RGB565 on RGBFB_R5G6B5) is a row memcpy; the H.264 queue
+ * produces exactly that, so its frames need no per-pixel work here. Other
+ * combinations repack per pixel, with the layout chosen once per strip
+ * rather than per pixel. An RGB565 source only ever reaches an RGB565
+ * screen (display_supports_rgb565() gates it); if the screen changed under
+ * it the strip is refused. Never holds the bitmap lock across a service()
+ * call - see the file header comment.
  *
  * The 16/32-bit stores below are plain UWORD/ULONG writes at pixel-aligned
  * (even/4-byte) offsets - on this big-endian target that alone produces the
@@ -657,15 +661,18 @@ static void clear_pixel_rect(struct BitMap *bm, p96_fmt fmt, int x, int y,
  * one 32-bit word) document, with no separate byte-swap step needed. */
 static int write_pixel_strip(struct BitMap *bm, int dst_x, int dst_y,
                              const unsigned char *src, int src_stride,
-                             int w, int rows, int src_is_bgr, p96_fmt fmt)
+                             int w, int rows, int src_kind, p96_fmt fmt)
 {
     struct RenderInfo ri;
     LONG lock;
     int y, bpp = p96_fmt_bytes(fmt);
+    int ri_off = src_kind == P96_SRC_BGR24 ? 2 : 0;   /* red byte   */
+    int bi_off = 2 - ri_off;                            /* blue byte  */
     unsigned char *base;
     int bpr;
 
     if (!bpp) return 0;
+    if (src_kind == P96_SRC_RGB565 && fmt != P96_FMT_RGB565) return 0;
     lock = p96LockBitMap(bm, (UBYTE *)&ri, sizeof ri);
     if (!lock) return 0;
 
@@ -675,35 +682,40 @@ static int write_pixel_strip(struct BitMap *bm, int dst_x, int dst_y,
     for (y = 0; y < rows; y++) {
         const unsigned char *srow = src + (size_t)y * (size_t)src_stride;
         unsigned char *drow = base + (size_t)y * (size_t)bpr;
-        if (fmt == P96_FMT_BGR24 && src_is_bgr) {
-            memcpy(drow, srow, (size_t)w * 3u);
+        int x;
+        if ((fmt == P96_FMT_BGR24 && src_kind == P96_SRC_BGR24) ||
+            (fmt == P96_FMT_RGB565 && src_kind == P96_SRC_RGB565)) {
+            memcpy(drow, srow, (size_t)w * (size_t)bpp);
             continue;
         }
-        {
-            int x;
+        switch (fmt) {
+        case P96_FMT_BGR24:
             for (x = 0; x < w; x++) {
-                unsigned char r, g, b;
-                if (src_is_bgr) {
-                    b = srow[x * 3 + 0]; g = srow[x * 3 + 1]; r = srow[x * 3 + 2];
-                } else {
-                    r = srow[x * 3 + 0]; g = srow[x * 3 + 1]; b = srow[x * 3 + 2];
-                }
-                switch (fmt) {
-                case P96_FMT_BGR24:
-                    drow[x * 3 + 0] = b; drow[x * 3 + 1] = g; drow[x * 3 + 2] = r;
-                    break;
-                case P96_FMT_RGB565:
-                    *(UWORD *)(drow + x * 2) = (UWORD)
-                        (((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
-                    break;
-                case P96_FMT_ARGB32:
-                    *(ULONG *)(drow + x * 4) =
-                        ((ULONG)r << 16) | ((ULONG)g << 8) | (ULONG)b;
-                    break;
-                default:
-                    break;
-                }
+                drow[x * 3 + 0] = srow[x * 3 + bi_off];
+                drow[x * 3 + 1] = srow[x * 3 + 1];
+                drow[x * 3 + 2] = srow[x * 3 + ri_off];
             }
+            break;
+        case P96_FMT_RGB565: {
+            UWORD *d16 = (UWORD *)drow;
+            for (x = 0; x < w; x++) {
+                const unsigned char *sp = srow + x * 3;
+                d16[x] = (UWORD)(((sp[ri_off] & 0xF8) << 8) |
+                                 ((sp[1] & 0xFC) << 3) | (sp[bi_off] >> 3));
+            }
+            break;
+        }
+        case P96_FMT_ARGB32: {
+            ULONG *d32 = (ULONG *)drow;
+            for (x = 0; x < w; x++) {
+                const unsigned char *sp = srow + x * 3;
+                d32[x] = ((ULONG)sp[ri_off] << 16) | ((ULONG)sp[1] << 8) |
+                         (ULONG)sp[bi_off];
+            }
+            break;
+        }
+        default:
+            break;
         }
     }
 
@@ -712,7 +724,7 @@ static int write_pixel_strip(struct BitMap *bm, int dst_x, int dst_y,
 }
 
 static void p96_show_packed(void *h, const unsigned char *rgb, int w, int hh,
-                            int stride, int dy0, int dy1, int src_is_bgr,
+                            int stride, int dy0, int dy1, int src_kind,
                             mr_display_service_fn service, void *service_opaque)
 {
     p96_state *s = (p96_state *)h;
@@ -799,7 +811,8 @@ static void p96_show_packed(void *h, const unsigned char *rgb, int w, int hh,
     if (timing) {
         s->timing.src_w = w; s->timing.src_h = hh;
         s->timing.dst_w = s->dw; s->timing.dst_h = s->dh;
-        s->timing.src_format = src_is_bgr ? "BGR24" : "RGB24";
+        s->timing.src_format = src_kind == P96_SRC_RGB565 ? "RGB565" :
+                               src_kind == P96_SRC_BGR24 ? "BGR24" : "RGB24";
         s->timing.dst_format = s->fmt == P96_FMT_RGB565 ? "RGB565" :
                                s->fmt == P96_FMT_ARGB32 ? "ARGB32" : "BGR24";
     }
@@ -845,14 +858,22 @@ static void p96_show_packed(void *h, const unsigned char *rgb, int w, int hh,
             clock_t step;
 
             if (timing) step = clock();
-            scale_rgb24_strip(s, rgb, w, hh, stride, y, rows);
+            /* The strip buffer holds dw*3 bytes a row; 16-bit pixels use
+             * dw*2 of it, at an even stride. */
+            if (src_kind == P96_SRC_RGB565)
+                mr_scale_resize_u16_strip(rgb, w, hh, stride, s->scaled,
+                                          s->dw, s->dh, s->dw * 2, y, rows);
+            else
+                scale_rgb24_strip(s, rgb, w, hh, stride, y, rows);
             if (timing) s->timing.scale_us += elapsed_us(step);
 
             if (timing) step = clock();
             if (!write_pixel_strip(bm, s->win_x + s->bl + s->dx,
                                    s->win_y + s->bt + s->dy + y,
-                                   s->scaled, s->scaled_stride, s->dw, rows,
-                                   src_is_bgr, s->fmt))
+                                   s->scaled,
+                                   src_kind == P96_SRC_RGB565 ? s->dw * 2
+                                                              : s->scaled_stride,
+                                   s->dw, rows, src_kind, s->fmt))
                 printf("p96-error: p96LockBitMap failed - dropped strip\n");
             if (timing) s->timing.blit_us += elapsed_us(step);
 
@@ -889,7 +910,7 @@ static void p96_show_packed(void *h, const unsigned char *rgb, int w, int hh,
             if (!write_pixel_strip(bm, s->win_x + s->bl + s->dx,
                                    s->win_y + s->bt + s->dy + y,
                                    rgb + (size_t)y * stride, stride, w, rows,
-                                   src_is_bgr, s->fmt))
+                                   src_kind, s->fmt))
                 printf("p96-error: p96LockBitMap failed - dropped strip\n");
             if (timing) s->timing.copies++;
             if (service) service(service_opaque);
@@ -907,7 +928,7 @@ static void p96_show(void *h, const unsigned char *rgb, int w, int hh,
                      int stride, int dy0, int dy1,
                      mr_display_service_fn service, void *service_opaque)
 {
-    p96_show_packed(h, rgb, w, hh, stride, dy0, dy1, 0,
+    p96_show_packed(h, rgb, w, hh, stride, dy0, dy1, P96_SRC_RGB24,
                     service, service_opaque);
 }
 
@@ -915,7 +936,21 @@ static void p96_show_bgr(void *h, const unsigned char *bgr, int w, int hh,
                          int stride, int dy0, int dy1,
                          mr_display_service_fn service, void *service_opaque)
 {
-    p96_show_packed(h, bgr, w, hh, stride, dy0, dy1, 1,
+    p96_show_packed(h, bgr, w, hh, stride, dy0, dy1, P96_SRC_BGR24,
+                    service, service_opaque);
+}
+
+static int p96_supports_rgb565(void *h)
+{
+    p96_state *s = (p96_state *)h;
+    return s && s->fmt == P96_FMT_RGB565;
+}
+
+static void p96_show_rgb565(void *h, const unsigned char *pix, int w, int hh,
+                            int stride, int dy0, int dy1,
+                            mr_display_service_fn service, void *service_opaque)
+{
+    p96_show_packed(h, pix, w, hh, stride, dy0, dy1, P96_SRC_RGB565,
                     service, service_opaque);
 }
 
@@ -1080,6 +1115,8 @@ const display_backend backend_p96 = {
     .open = p96_open,
     .show = p96_show,
     .show_bgr = p96_show_bgr,
+    .supports_rgb565 = p96_supports_rgb565,
+    .show_rgb565 = p96_show_rgb565,
     .timing = p96_timing,
     .poll = p96_poll,
     .close = p96_close,

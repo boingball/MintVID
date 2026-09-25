@@ -51,6 +51,26 @@ void mr_yuv420_to_bgr24_half(uint8_t *dst, int dst_stride,
                              int width, int height,
                              mr_yuv_service_fn service, void *service_opaque);
 
+/* RGB565 for 16-bit Picasso96 screens (RGBFB_R5G6B5): each pixel is one
+ * native uint16_t, ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3), where
+ * r,g,b are exactly what mr_yuv420_to_rgb24()/_half() produce. On the
+ * big-endian Amiga a native store is the R5G6B5 byte order, so the display
+ * copies rows with no per-pixel work. dst_stride is in bytes and must be
+ * even; dst must be 2-byte aligned. Same service cadence as the RGB24
+ * converters. */
+void mr_yuv420_to_rgb565(uint8_t *dst, int dst_stride,
+                         const uint8_t *y_plane, int y_stride,
+                         const uint8_t *u_plane, int u_stride,
+                         const uint8_t *v_plane, int v_stride,
+                         int width, int height,
+                         mr_yuv_service_fn service, void *service_opaque);
+void mr_yuv420_to_rgb565_half(uint8_t *dst, int dst_stride,
+                              const uint8_t *y_plane, int y_stride,
+                              const uint8_t *u_plane, int u_stride,
+                              const uint8_t *v_plane, int v_stride,
+                              int width, int height,
+                              mr_yuv_service_fn service, void *service_opaque);
+
 /* Repack planar 4:2:0 as the packed 4:2:2 byte layout used by RiVA's
  * Picasso96 PIP path: Y0,V0,Y1,U0 (YVYU) by default, or
  * Y0,U0,Y1,V0 (YUYV) when configured for a different driver. No

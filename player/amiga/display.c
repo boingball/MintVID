@@ -84,9 +84,10 @@ struct amiga_display {
      * same geometry after the original one is closed. */
     int                    open_w, open_h;
     char                   open_title[128];
-    /* Scratch RGB24 buffer for display_show_yuv422()'s software fallback -
-     * only allocated the first time the active backend lacks show_yuv422
-     * (see switch_to_cgx_fallback()); NULL otherwise. */
+    /* Scratch RGB24 buffer for the software fallbacks of
+     * display_show_yuv422() and display_show_rgb565() - only allocated the
+     * first time the active backend cannot take that format natively (see
+     * switch_to_cgx_fallback()); NULL otherwise. */
     unsigned char         *yuv422_fallback_buf;
     size_t                 yuv422_fallback_cap;
     /* Set by switch_to_cgx_fallback() when it moves off backend_p96pip
@@ -296,6 +297,57 @@ void display_show_bgr24(amiga_display *d, const unsigned char *bgr,
     if (d && d->be->show_bgr)
         d->be->show_bgr(d->h, bgr, w, h, stride, dy0, dy1,
                         d->service, d->service_opaque);
+}
+
+int display_supports_rgb565(amiga_display *d)
+{
+    return d && d->be->show_rgb565 && d->be->supports_rgb565 &&
+           d->be->supports_rgb565(d->h);
+}
+
+void display_show_rgb565(amiga_display *d, const unsigned char *pix,
+                         int w, int h, int stride, int dy0, int dy1)
+{
+    size_t need;
+    unsigned char *p;
+    int x, y;
+
+    if (!d || !pix || w <= 0 || h <= 0) return;
+
+    if (display_supports_rgb565(d)) {
+        d->be->show_rgb565(d->h, pix, w, h, stride, dy0, dy1,
+                           d->service, d->service_opaque);
+        return;
+    }
+
+    /* The backend or its screen changed since the queue format was chosen
+     * (a fallback to CGX, or a screen that is no longer 16-bit). Unpack the
+     * dirty rows to RGB24, replicating each field's top bits into its low
+     * bits, and use the ordinary show(). Correctness only, not speed. The
+     * scratch buffer is shared with display_show_yuv422()'s fallback. */
+    if (dy0 < 0) dy0 = 0;
+    if (dy1 > h) dy1 = h;
+    if (dy1 <= dy0) return;
+    need = (size_t)w * 3u * (size_t)h;
+    if (d->yuv422_fallback_cap < need) {
+        p = (unsigned char *)realloc(d->yuv422_fallback_buf, need);
+        if (!p) return;
+        d->yuv422_fallback_buf = p;
+        d->yuv422_fallback_cap = need;
+    }
+    for (y = dy0; y < dy1; y++) {
+        const UWORD *src = (const UWORD *)(pix + (size_t)y * (size_t)stride);
+        unsigned char *o = d->yuv422_fallback_buf + (size_t)y * (size_t)w * 3u;
+        for (x = 0; x < w; x++) {
+            unsigned v = src[x];
+            unsigned r = (v >> 11) & 31, g = (v >> 5) & 63, b = v & 31;
+            o[0] = (unsigned char)((r << 3) | (r >> 2));
+            o[1] = (unsigned char)((g << 2) | (g >> 4));
+            o[2] = (unsigned char)((b << 3) | (b >> 2));
+            o += 3;
+        }
+    }
+    display_show_rgb(d, d->yuv422_fallback_buf, w, h, w * 3, dy0, dy1);
 }
 
 int display_supports_yuv422(amiga_display *d)

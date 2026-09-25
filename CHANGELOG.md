@@ -37,6 +37,12 @@
 
 ### Performance
 
+- **Faster H.264 on 16-bit P96 screens.** When the P96 overlay isn't
+  available, P96 plays on a 16-bit screen. H.264 pictures are now
+  converted straight to that screen's 16-bit format and copied a row at
+  a time. Before, every pixel was converted twice and written
+  separately. On a WinUAE 720p YouTube stream that step took about 34 ms
+  of every frame. The video queue also needs a third less memory.
 - **Faster AGA colour conversion.** Converting each H.264 or MPEG-1/2
   picture to the 256-colour AGA palette now takes about 20 68k
   instructions per pixel instead of about 56. Output is identical. On

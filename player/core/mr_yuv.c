@@ -74,6 +74,14 @@ static int g_d_x516[256];
 #define MR_YUV_CLIP_HI 540
 static uint8_t g_clip_store[MR_YUV_CLIP_LO + MR_YUV_CLIP_HI];
 #define g_clip (g_clip_store + MR_YUV_CLIP_LO)
+/* RGB565: the saturated channel already shifted into its field, same index
+ * range as g_clip, so a pixel is three lookups ORed together. */
+static uint16_t g_r565_store[MR_YUV_CLIP_LO + MR_YUV_CLIP_HI];
+static uint16_t g_g565_store[MR_YUV_CLIP_LO + MR_YUV_CLIP_HI];
+static uint16_t g_b565_store[MR_YUV_CLIP_LO + MR_YUV_CLIP_HI];
+#define g_r565 (g_r565_store + MR_YUV_CLIP_LO)
+#define g_g565 (g_g565_store + MR_YUV_CLIP_LO)
+#define g_b565 (g_b565_store + MR_YUV_CLIP_LO)
 #if defined(MR_M68K_ASM) && !defined(MR_YUV_NO_ASM)
 /* Layout, in ints, of the block mr_yuv_m68k.S indexes (its virtual index
  * minus 0x400, which the kernel subtracts once):
@@ -114,8 +122,13 @@ static void build_tables(void)
         g_e_xm208[i] = -208 * e;
         g_d_x516[i] = 516 * d + 128;
     }
-    for (i = -MR_YUV_CLIP_LO; i < MR_YUV_CLIP_HI; i++)
-        g_clip[i] = i < 0 ? 0 : i > 255 ? 255 : (uint8_t)i;
+    for (i = -MR_YUV_CLIP_LO; i < MR_YUV_CLIP_HI; i++) {
+        unsigned c = i < 0 ? 0 : i > 255 ? 255 : (unsigned)i;
+        g_clip[i] = (uint8_t)c;
+        g_r565[i] = (uint16_t)((c & 0xF8u) << 8);
+        g_g565[i] = (uint16_t)((c & 0xFCu) << 3);
+        g_b565[i] = (uint16_t)(c >> 3);
+    }
 #if defined(MR_M68K_ASM) && !defined(MR_YUV_NO_ASM)
     for (i = 0; i < 256; i++) {
         g_m68k_block[i] = g_m68k_block[256 + i] = g_luma_x298[i];
@@ -353,6 +366,98 @@ void mr_yuv420_to_bgr24_half(uint8_t *dst, int dst_stride,
     yuv420_to_packed24_half(dst, dst_stride, y_plane, y_stride, u_plane,
                             u_stride, v_plane, v_stride, width, height,
                             service, service_opaque, 2, 0);
+}
+
+/* One RGB565 pixel: the same sums as emit_pixel(), clipped and packed by
+ * the three field tables. */
+MR_YUV_INLINE uint16_t pixel565(int luma, int red_add, int green_add,
+                                int blue_add)
+{
+    int scaled_y = g_luma_x298[(unsigned)luma];
+    return (uint16_t)(g_r565[(scaled_y + red_add) >> 8] |
+                      g_g565[(scaled_y + green_add) >> 8] |
+                      g_b565[(scaled_y + blue_add) >> 8]);
+}
+
+/* yuv420_to_packed24() with 16-bit output: row pairs share one chroma
+ * row, pixel pairs one chroma sample. */
+void mr_yuv420_to_rgb565(uint8_t *dst, int dst_stride,
+                         const uint8_t *y_plane, int y_stride,
+                         const uint8_t *u_plane, int u_stride,
+                         const uint8_t *v_plane, int v_stride,
+                         int width, int height,
+                         mr_yuv_service_fn service, void *service_opaque)
+{
+    int row;
+
+    if (!dst || !y_plane || !u_plane || !v_plane ||
+        width <= 0 || height <= 0)
+        return;
+    if (!g_tables_ready) build_tables();
+
+    for (row = 0; row < height; row += 2) {
+        const uint8_t *y0 = y_plane + (size_t)row * y_stride;
+        const uint8_t *y1 = y0 + y_stride;
+        const uint8_t *su = u_plane + (size_t)(row >> 1) * u_stride;
+        const uint8_t *sv = v_plane + (size_t)(row >> 1) * v_stride;
+        uint16_t *o0 = (uint16_t *)(void *)(dst + (size_t)row * dst_stride);
+        uint16_t *o1 = (uint16_t *)(void *)((uint8_t *)o0 + dst_stride);
+        int pair = row + 1 < height, x;
+
+        for (x = 0; x + 1 < width; x += 2) {
+            unsigned uu = su[x >> 1], vv = sv[x >> 1];
+            int red_add = g_e_x409[vv];
+            int green_add = g_d_xm100[uu] + g_e_xm208[vv];
+            int blue_add = g_d_x516[uu];
+            o0[x] = pixel565(y0[x], red_add, green_add, blue_add);
+            o0[x + 1] = pixel565(y0[x + 1], red_add, green_add, blue_add);
+            if (pair) {
+                o1[x] = pixel565(y1[x], red_add, green_add, blue_add);
+                o1[x + 1] = pixel565(y1[x + 1], red_add, green_add, blue_add);
+            }
+        }
+        if (x < width) {
+            unsigned uu = su[x >> 1], vv = sv[x >> 1];
+            int red_add = g_e_x409[vv];
+            int green_add = g_d_xm100[uu] + g_e_xm208[vv];
+            int blue_add = g_d_x516[uu];
+            o0[x] = pixel565(y0[x], red_add, green_add, blue_add);
+            if (pair)
+                o1[x] = pixel565(y1[x], red_add, green_add, blue_add);
+        }
+        if (service && ((row + 1) & 15) == 15) service(service_opaque);
+    }
+}
+
+void mr_yuv420_to_rgb565_half(uint8_t *dst, int dst_stride,
+                              const uint8_t *y_plane, int y_stride,
+                              const uint8_t *u_plane, int u_stride,
+                              const uint8_t *v_plane, int v_stride,
+                              int width, int height,
+                              mr_yuv_service_fn service, void *service_opaque)
+{
+    int out_w = width >> 1, out_h = height >> 1, row;
+
+    if (!dst || !y_plane || !u_plane || !v_plane || width < 2 || height < 2)
+        return;
+    if (!g_tables_ready) build_tables();
+
+    for (row = 0; row < out_h; row++) {
+        const uint8_t *y0 = y_plane + (size_t)(row * 2) * y_stride;
+        const uint8_t *y1 = y0 + y_stride;
+        const uint8_t *su = u_plane + (size_t)row * u_stride;
+        const uint8_t *sv = v_plane + (size_t)row * v_stride;
+        uint16_t *o = (uint16_t *)(void *)(dst + (size_t)row * dst_stride);
+        int x;
+        for (x = 0; x < out_w; x++) {
+            unsigned uu = su[x], vv = sv[x];
+            int luma = ((int)y0[2 * x] + y0[2 * x + 1] +
+                        y1[2 * x] + y1[2 * x + 1] + 2) >> 2;
+            o[x] = pixel565(luma, g_e_x409[vv],
+                            g_d_xm100[uu] + g_e_xm208[vv], g_d_x516[uu]);
+        }
+        if (service && (row & 7) == 7) service(service_opaque);
+    }
 }
 
 /*
