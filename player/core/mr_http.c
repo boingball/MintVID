@@ -187,6 +187,7 @@ typedef struct {
 #if MR_HTTP_HAVE_TLS
     SSL_CTX *ssl_ctx;
     SSL     *ssl;
+    char     tls_host[HTTP_HOST_MAX]; /* host of the live TLS connection      */
 #endif
     size_t total_len;
     size_t body_pos;
@@ -575,6 +576,15 @@ static int tls_open(http_source *h)
     SSL_CTX_set_options(g_ssl_ctx, SSL_OP_IGNORE_UNEXPECTED_EOF);
 #endif
     SSL_CTX_set_session_cache_mode(g_ssl_ctx, SSL_SESS_CACHE_CLIENT);
+#ifdef SSL_OP_ALLOW_NO_DHE_KEX
+    /* A TLS 1.3 resumption normally still runs a fresh (EC)DHE key exchange,
+     * which on a 68060 is a large part of the ~4.5 s a full handshake costs.
+     * Also offering PSK-only resumption lets a server that accepts it skip
+     * that. The price is forward secrecy for resumed connections only, which
+     * is acceptable for fetching public media segments; a server that
+     * declines simply resumes with the key exchange as before. */
+    SSL_CTX_set_options(g_ssl_ctx, SSL_OP_ALLOW_NO_DHE_KEX);
+#endif
     g_tls_inited = 1;
     h->ssl_ctx = g_ssl_ctx;
     h->tls_ready = 1;
@@ -603,9 +613,38 @@ static void close_socket_only(http_source *h)
     h->socket_ready = 0;
 }
 
+#if MR_HTTP_HAVE_TLS
+/* Keep this connection's session so the next connection to the same host
+ * can resume it with an abbreviated handshake. It has to be taken at close,
+ * not straight after SSL_connect(): a TLS 1.3 server sends its resumption
+ * ticket after the handshake, and OpenSSL only picks it up while reading the
+ * response. The session SSL_connect() leaves behind has no ticket, so it can
+ * never be resumed. That is what an A1200 log showed: every HLS segment paid
+ * a full ~4.5 s handshake ("tls=45346 ms over 10 (resumed 0)"). A session
+ * that is still not resumable (the server sent no ticket) does not replace
+ * an older one that is. */
+static void remember_tls_session(http_source *h)
+{
+    SSL_SESSION *sess;
+    if (!h->ssl || !h->using_tls || !h->tls_host[0]) return;
+    sess = SSL_get1_session(h->ssl);
+    if (!sess) return;
+#if OPENSSL_VERSION_NUMBER >= 0x10101000L
+    if (!SSL_SESSION_is_resumable(sess)) {
+        SSL_SESSION_free(sess);
+        return;
+    }
+#endif
+    if (g_tls_session) SSL_SESSION_free(g_tls_session);
+    g_tls_session = sess;
+    strcpy(g_tls_session_host, h->tls_host);
+}
+#endif
+
 static void close_connection(http_source *h, int healthy)
 {
 #if MR_HTTP_HAVE_TLS
+    if (h->ssl && healthy) remember_tls_session(h);
     if (h->ssl) {
 #if MR_HTTP_AMIGA
         if (!healthy) {
@@ -866,17 +905,10 @@ static int connect_socket(http_source *h, const http_url *url)
         g_http_timing.tls_ms += http_ms_since(phase);
         if (SSL_session_reused(h->ssl)) g_http_timing.tls_resumed++;
         h->using_tls = 1;
-        /* Remember this handshake's session for the next same-host connection. */
-        {
-            SSL_SESSION *sess = SSL_get1_session(h->ssl);
-            if (sess) {
-                if (g_tls_session) SSL_SESSION_free(g_tls_session);
-                g_tls_session = sess;
-                strncpy(g_tls_session_host, url->host,
-                        sizeof g_tls_session_host - 1);
-                g_tls_session_host[sizeof g_tls_session_host - 1] = 0;
-            }
-        }
+        /* The session is saved for the next connection when this one closes
+         * (remember_tls_session()), not here: see the note there. */
+        strncpy(h->tls_host, url->host, sizeof h->tls_host - 1);
+        h->tls_host[sizeof h->tls_host - 1] = 0;
 #else
         mr_source_set_error(
             "HTTPS support was not compiled in; rebuild with SSL=1");

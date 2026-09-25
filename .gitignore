@@ -1,6 +1,7 @@
 # Host build artifacts
 player/mr_decode
 player/mr_decode_ssl
+player/mr_http_resume_check
 player/mr_audio_check
 player/mr_ac3_check
 player/mr_aac_decim_check

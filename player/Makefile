@@ -634,7 +634,11 @@ check-http: mr_decode mr_youtube_check mr_source_buffer_check
 	    || sh tests/gen_assets.sh
 	sh tests/run_http_check.sh ./mr_decode http
 
-check-https: mr_decode_ssl
+mr_http_resume_check: tests/mr_http_resume_check.c $(CORE) $(HEADERS) | check-libavc
+	$(CC) $(CFLAGS) -DMR_HTTP_HAVE_OPENSSL \
+	    -o $@ tests/mr_http_resume_check.c $(CORE) -lm -lssl -lcrypto
+
+check-https: mr_decode_ssl mr_http_resume_check
 	@test -d tests/assets/ref_mpeg2_ts \
 	    && test -d tests/assets/ref_h264_high \
 	    && test -d tests/assets/ref_mp42 \
@@ -655,7 +659,7 @@ check-m68k:
 	sh tests/run_m68k_check.sh
 
 clean:
-	rm -f mr_decode mr_decode_ssl mr_audio_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check \
+	rm -f mr_decode mr_decode_ssl mr_http_resume_check mr_audio_check mr_scale_check mr_yuv_check mr_c2p_check mr_ham_check \
 	      mr_ac3_check mr_aac_decim_check mr_mp2_synth_check mr_mp2_idct_check \
 	      mr_dither_check mr_yuv_dither_check mr_yuv_planar_queue_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg2_yuv_check mr_mpeg2_bskip_check mr_h264_smoosh_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_ts_video_pes_check mr_mkv_check \
 	      mr_mov_seek_check

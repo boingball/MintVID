@@ -5563,6 +5563,26 @@ BBC's target duration is 4 s, not 8. Two more findings:
   hls_fetch worker task and read by the main task. They are only
   diagnostics, so a read one fetch stale does not matter.
 
+**It was TLS, not DNS.** The next A1200 log (Turbo+, mono, 12 kHz) read
+`dns=1 ms (cached 9) tcp=731 ms | tls=45346 ms over 10 (resumed 0)`:
+every segment paid a full ~4.5 s handshake and none was ever resumed.
+Because that runs in the hls_fetch worker at the same priority as
+playback, it also takes CPU from decode and dither while segments
+prefetch. In some windows `yuv-indexed` jumped from ~28 to 67-108 ms.
+The session was saved straight after `SSL_connect()`. A TLS 1.3 server
+sends its resumption ticket after the handshake, and OpenSSL only takes
+it in while reading the response, so the saved session had no ticket.
+`remember_tls_session()` now saves the session when the connection
+closes healthily, and only if `SSL_SESSION_is_resumable()`. The context
+also sets `SSL_OP_ALLOW_NO_DHE_KEX`, so a server that accepts PSK-only
+resumption can skip the key exchange too. That gives up forward secrecy
+for resumed connections, which is fine for public media. Reproduced on
+the host first: four fetches from the TLS fixture server, 0 resumed
+before the fix, 3 after, against both `openssl s_server -tls1_2` and
+`-tls1_3`. `tests/mr_http_resume_check.c` (run by `make check-https`)
+pins it. How much a resumption saves on the 060, and whether Akamai
+accepts PSK-only, is for the next hardware log to show.
+
 A note on the `--time` output: `audio-gap=` measures the time between
 calls to `service_audio_for_display()`, and those only happen during
 decode, conversion and network waits. Under Turbo+ it reads multi-second
