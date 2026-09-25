@@ -98,6 +98,11 @@
 
 ### Fixed
 
+- **GadTools Scale could not be turned back off.** With a C2P that doesn't
+  support Copper 2x (Kalms, Standard, Direct), clicking Scale from 2x went
+  to Copper 2x, which was immediately put back to 2x, so None was never
+  reached. The click now skips the unavailable row. The ReAction
+  edition's pop-up list was not affected.
 - **Turbo+ showed one picture, then stalled, on streams with B-frames.**
   This hit live IPTV like BBC One. The decoder held each keyframe back
   until two more had been decoded, and in Turbo+ those are the next
