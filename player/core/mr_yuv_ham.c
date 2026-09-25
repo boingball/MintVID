@@ -91,10 +91,13 @@ static void build_ham_tables(void)
  */
 typedef struct { int r, g, b; uint8_t px; } ham_hold;
 
-/* One HAM8 pixel: base palette is a 4x4x4 RGB cube, modify is 6-bit. */
-MR_FORCE_INLINE ham_hold ham8_pixel(int R, int G, int B, ham_hold h)
+/* One HAM8 pixel: base palette is a 4x4x4 RGB cube, modify is 6-bit.
+ * t is the ordered-dither threshold added before a modify write's truncation
+ * (0 when not dithering - see mr_ham_encode_ex() in core/mr_ham.h). */
+MR_FORCE_INLINE ham_hold ham8_pixel(int R, int G, int B, int t, ham_hold h)
 {
     int pr = h.r, pg = h.g, pb = h.b;
+    int v;
     int dpr = iabs(R - pr), dpg = iabs(G - pg), dpb = iabs(B - pb);
     int er = (R & 3) + dpg + dpb;
     int eg = dpr + (G & 3) + dpb;
@@ -105,22 +108,26 @@ MR_FORCE_INLINE ham_hold ham8_pixel(int R, int G, int B, ham_hold h)
         h.r = s4[R]; h.g = s4[G]; h.b = s4[B];
         h.px = (uint8_t)((q4[R] << 4) | (q4[G] << 2) | q4[B]);
     } else if (er <= eg && er <= eb) {
-        h.r = R & ~3;
-        h.px = (uint8_t)(0x80 | (R >> 2));
+        v = R + t; if (v > 255) v = 255;
+        h.r = v & ~3;
+        h.px = (uint8_t)(0x80 | (v >> 2));
     } else if (eg <= eb) {
-        h.g = G & ~3;
-        h.px = (uint8_t)(0xc0 | (G >> 2));
+        v = G + t; if (v > 255) v = 255;
+        h.g = v & ~3;
+        h.px = (uint8_t)(0xc0 | (v >> 2));
     } else {
-        h.b = B & ~3;
-        h.px = (uint8_t)(0x40 | (B >> 2));
+        v = B + t; if (v > 255) v = 255;
+        h.b = v & ~3;
+        h.px = (uint8_t)(0x40 | (v >> 2));
     }
     return h;
 }
 
 /* One HAM6 pixel; the base palette is a 16-entry grey ramp. */
-MR_FORCE_INLINE ham_hold ham6_pixel(int R, int G, int B, ham_hold h)
+MR_FORCE_INLINE ham_hold ham6_pixel(int R, int G, int B, int t, ham_hold h)
 {
     int pr = h.r, pg = h.g, pb = h.b;
+    int v;
     int dpr = iabs(R - pr), dpg = iabs(G - pg), dpb = iabs(B - pb);
     int held = dpr + dpg + dpb;
     int best = (R & 15) - dpr, channel = 0;
@@ -136,14 +143,17 @@ MR_FORCE_INLINE ham_hold ham6_pixel(int R, int G, int B, ham_hold h)
         h.r = h.g = h.b = grey_v[sum];
         h.px = (uint8_t)qi;
     } else if (channel == 0) {
-        h.r = R & ~15;
-        h.px = (uint8_t)(0x20 | (R >> 4));
+        v = R + t; if (v > 255) v = 255;
+        h.r = v & ~15;
+        h.px = (uint8_t)(0x20 | (v >> 4));
     } else if (channel == 1) {
-        h.g = G & ~15;
-        h.px = (uint8_t)(0x30 | (G >> 4));
+        v = G + t; if (v > 255) v = 255;
+        h.g = v & ~15;
+        h.px = (uint8_t)(0x30 | (v >> 4));
     } else {
-        h.b = B & ~15;
-        h.px = (uint8_t)(0x10 | (B >> 4));
+        v = B + t; if (v > 255) v = 255;
+        h.b = v & ~15;
+        h.px = (uint8_t)(0x10 | (v >> 4));
     }
     return h;
 }
@@ -188,12 +198,29 @@ static void ham_prepare(int *bits)
  * was chosen because its ~45% saving comes from converting fewer rows and so
  * held steady across every one of those arrangements.
  */
-#define MR_HAM_ROW_FN(NAME, PIXEL)                                           \
+/* 4x4 ordered-dither thresholds, identical to core/mr_ham.c's. */
+static const uint8_t ham_bayer4[4][4] = {
+    {  0,  8,  2, 10 }, { 12,  4, 14,  6 },
+    {  3, 11,  1,  9 }, { 15,  7, 13,  5 }
+};
+/* The same scaled to one HAM8 modify step (values >> 2), so the pixel loop
+ * reads a ready threshold instead of shifting one. */
+static const uint8_t ham_bayer4_8[4][4] = {
+    { 0, 2, 0, 2 }, { 3, 1, 3, 1 },
+    { 0, 2, 0, 2 }, { 3, 1, 3, 1 }
+};
+
+/* DITHER is a constant 0 or 1 per generated function; trow is the pattern
+ * row, already scaled to one modify step (ham_bayer4_8 for HAM8,
+ * ham_bayer4 for HAM6). With DITHER 0 every threshold folds to 0. */
+#define MR_HAM_ROW_FN(NAME, PIXEL, DITHER)                                   \
 static void NAME(const uint8_t *src_y, const uint8_t *src_u,                 \
-                 const uint8_t *src_v, int width, uint8_t *dr)               \
+                 const uint8_t *src_v, int width, uint8_t *dr,               \
+                 const uint8_t *trow)                                        \
 {                                                                            \
     ham_hold h;                 /* hold-and-modify resets every scanline */  \
     int x, r, g, b;                                                          \
+    (void)trow;                                                              \
     h.r = h.g = h.b = 0; h.px = 0;                                           \
     for (x = 0; x + 1 < width; x += 2) {                                     \
         unsigned uu = src_u[x >> 1], vv = src_v[x >> 1];                     \
@@ -202,28 +229,33 @@ static void NAME(const uint8_t *src_y, const uint8_t *src_u,                 \
         int blue_add = g_d_x516[uu] + 128;                                   \
         yuv_sample_rgb((int)src_y[x] - 16, red_add, green_add, blue_add,     \
                        &r, &g, &b);                                          \
-        h = PIXEL(r, g, b, h); dr[x] = h.px;                                 \
+        h = PIXEL(r, g, b, (DITHER) ? trow[x & 3] : 0, h);       \
+        dr[x] = h.px;                                                        \
         yuv_sample_rgb((int)src_y[x + 1] - 16, red_add, green_add, blue_add, \
                        &r, &g, &b);                                          \
-        h = PIXEL(r, g, b, h); dr[x + 1] = h.px;                             \
+        h = PIXEL(r, g, b, (DITHER) ? trow[(x + 1) & 3] : 0, h); \
+        dr[x + 1] = h.px;                                                    \
     }                                                                        \
     if (x < width) {                                                         \
         unsigned uu = src_u[x >> 1], vv = src_v[x >> 1];                     \
         yuv_sample_rgb((int)src_y[x] - 16, g_e_x409[vv] + 128,               \
                        g_d_xm100[uu] + g_e_xm208[vv] + 128,                  \
                        g_d_x516[uu] + 128, &r, &g, &b);                      \
-        h = PIXEL(r, g, b, h); dr[x] = h.px;                                 \
+        h = PIXEL(r, g, b, (DITHER) ? trow[x & 3] : 0, h);       \
+        dr[x] = h.px;                                                        \
     }                                                                        \
 }
-MR_HAM_ROW_FN(ham_row8, ham8_pixel)
-MR_HAM_ROW_FN(ham_row6, ham6_pixel)
+MR_HAM_ROW_FN(ham_row8, ham8_pixel, 0)
+MR_HAM_ROW_FN(ham_row6, ham6_pixel, 0)
+MR_HAM_ROW_FN(ham_row8_dither, ham8_pixel, 1)
+MR_HAM_ROW_FN(ham_row6_dither, ham6_pixel, 1)
 #undef MR_HAM_ROW_FN
 
-void mr_yuv420_ham_encode(const uint8_t *y_plane, int y_stride,
-                          const uint8_t *u_plane, int u_stride,
-                          const uint8_t *v_plane, int v_stride,
-                          int width, int height, int vscale, int bits,
-                          uint8_t *out, int out_stride)
+void mr_yuv420_ham_encode_ex(const uint8_t *y_plane, int y_stride,
+                             const uint8_t *u_plane, int u_stride,
+                             const uint8_t *v_plane, int v_stride,
+                             int width, int height, int vscale, int bits,
+                             int dither, uint8_t *out, int out_stride)
 {
     int dst_h, oy;
     if (!y_plane || !u_plane || !v_plane || !out ||
@@ -238,8 +270,26 @@ void mr_yuv420_ham_encode(const uint8_t *y_plane, int y_stride,
         const uint8_t *ry = y_plane + (size_t)src_row * y_stride;
         const uint8_t *ru = u_plane + (size_t)chroma_row * u_stride;
         const uint8_t *rv = v_plane + (size_t)chroma_row * v_stride;
+        const uint8_t *trow = bits == 8 ? ham_bayer4_8[oy & 3]
+                                        : ham_bayer4[oy & 3];
         uint8_t *dr = out + (size_t)oy * out_stride;
-        if (bits == 8) ham_row8(ry, ru, rv, width, dr);
-        else           ham_row6(ry, ru, rv, width, dr);
+        if (dither) {
+            if (bits == 8) ham_row8_dither(ry, ru, rv, width, dr, trow);
+            else           ham_row6_dither(ry, ru, rv, width, dr, trow);
+        } else {
+            if (bits == 8) ham_row8(ry, ru, rv, width, dr, trow);
+            else           ham_row6(ry, ru, rv, width, dr, trow);
+        }
     }
+}
+
+void mr_yuv420_ham_encode(const uint8_t *y_plane, int y_stride,
+                          const uint8_t *u_plane, int u_stride,
+                          const uint8_t *v_plane, int v_stride,
+                          int width, int height, int vscale, int bits,
+                          uint8_t *out, int out_stride)
+{
+    mr_yuv420_ham_encode_ex(y_plane, y_stride, u_plane, u_stride, v_plane,
+                            v_stride, width, height, vscale, bits, 0, out,
+                            out_stride);
 }

@@ -443,7 +443,8 @@ parsers, playback settings, and status/control protocol:
 
 Keep one complete GUI set beside `mrplay` (or put `mrplay` on the command
 path), run the controller, choose a
-movie and select **AGA**, **EHB**, **HAM6**, **HAM8**, or **CGX**. **Laced** and **2x**
+movie and select **AGA**, **EHB**, **HAM6**, **HAM6 (Dither)**, **HAM8**,
+**HAM8 (Dither)**, or **CGX**. **Laced** and **2x**
 apply to the chipset modes, including HAM6 and HAM8. A laced screen is opened
 when the source height after the requested 2x scale exceeds the non-laced
 256-line canvas. Exact 2x eight-plane output, including HAM8, uses the fused
@@ -461,6 +462,16 @@ normally produces — the player converts the decoder's YUV planes straight to
 HAM pixel bytes instead of building a full-resolution RGB24 frame and encoding
 that, converting only the rows the downscale keeps and cutting the conversion
 by about 45%. Other HAM geometries keep the established RGB24 route.
+**HAM6 (Dither)** and **HAM8 (Dither)** (`--ham6 --ham-dither`,
+`--ham --ham-dither`) add a 4x4 ordered dither to the value each HAM pixel
+writes when it modifies one colour channel. That write used to be rounded
+down (to 16 levels on HAM6, 64 on HAM8), which bands smooth gradients and
+darkens the picture slightly; with dither the rounding averages out over
+each 4x4 block. The base-colour choice and the choice of which channel to
+modify are unchanged, so edges fringe exactly as in plain HAM. On test
+frames the error seen at normal viewing distance halves on HAM6 gradients
+(for example 8.7 to 3.3 levels) and HAM8 loses its horizontal banding. HAM
+encoding costs about 15% more 68k instructions with dither on.
 Changing output mode restores Kalms whenever the new mode has a matching
 kernel. CD32 is only offered when Akiko's hardware ID is detected; an explicit
 Akiko selection is preserved. The chooser is disabled for CGX. Play starts the

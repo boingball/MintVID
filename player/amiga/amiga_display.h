@@ -77,6 +77,10 @@ void display_set_aga_window(int mode);
  * forces the native planar backend. */
 void display_set_ham(int bits);
 
+/* HAM6/HAM8 only: ordered-dither each pixel's modify write ("HAM8
+ * (Dither)"/"HAM6 (Dither)", see core/mr_ham.h's mr_ham_encode_ex()). */
+void display_set_ham_dither(int on);
+
 /* Integer upscale for the AGA backend: 1 (default) or 2. */
 void display_set_scale(int n);
 

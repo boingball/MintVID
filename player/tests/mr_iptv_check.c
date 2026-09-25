@@ -686,8 +686,52 @@ int main(void) {
       assert(strstr(args, "--aga --ham") && !strstr(args, "--ham6"));
       assert(strstr(args, "--riva-c2p") && strstr(args, "--2x") &&
              strstr(args, "--copper-vdouble"));
+      assert(!strstr(args, "--ham-dither"));
       mr_play_options_summary(&parsed, summary, sizeof(summary));
       assert(strstr(summary, "HAM8") && strstr(summary, "2x on (copper)"));
+      assert(!strstr(summary, "Dither"));
+    }
+    {
+      /* HAM6 (Dither) / HAM8 (Dither): --display names round-trip through
+       * the browsers, mrplay gets its HAM flag plus --ham-dither, and the
+       * summary names the mode. */
+      static const struct {
+        const char *name; mr_display_mode mode; int bits;
+        const char *flags; const char *label;
+      } cases[] = {
+        { "ham6-dither", MR_DISPLAY_HAM6_DITHER, 6,
+          "--aga --ham6 --ham-dither", "HAM6 (Dither)" },
+        { "ham8-dither", MR_DISPLAY_HAM8_DITHER, 8,
+          "--aga --ham --ham-dither", "HAM8 (Dither)" }
+      };
+      unsigned ci;
+      for (ci = 0; ci < sizeof cases / sizeof cases[0]; ci++) {
+        char *inherited[] = {"iptvgui", "--display", (char *)cases[ci].name,
+                             "--c2p", "kalms"};
+        char summary[200], args[4096], error[128];
+        mr_play_options parsed;
+        mr_play_options_default(&parsed);
+        assert(mr_play_options_parse(&parsed, 5, inherited, error,
+                                     sizeof(error)));
+        assert(parsed.display == cases[ci].mode);
+        assert(mr_display_ham_bits(parsed.display) == cases[ci].bits);
+        assert(mr_display_ham_dither(parsed.display));
+        assert(mr_display_has_screen_options(parsed.display));
+        assert(mr_build_player_arguments(args, sizeof(args), &parsed,
+                                         launch.url, NULL, NULL));
+        assert(strstr(args, cases[ci].flags));
+        assert(strstr(args, "--kalms-c2p"));
+        mr_play_options_summary(&parsed, summary, sizeof(summary));
+        assert(strstr(summary, cases[ci].label));
+        assert(mr_build_iptv_arguments(args, sizeof(args), &parsed));
+        assert(strstr(args, "--display ") && strstr(args, cases[ci].name));
+      }
+      assert(mr_display_ham_bits(MR_DISPLAY_HAM8) == 8 &&
+             !mr_display_ham_dither(MR_DISPLAY_HAM8));
+      assert(mr_display_ham_bits(MR_DISPLAY_HAM6) == 6 &&
+             !mr_display_ham_dither(MR_DISPLAY_HAM6));
+      assert(!mr_display_ham_bits(MR_DISPLAY_AGA) &&
+             !mr_display_ham_dither(MR_DISPLAY_AGA));
     }
     {
       /* Regression: the pre-existing indexed AGA + --2x + --copper-vdouble

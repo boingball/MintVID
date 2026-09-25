@@ -114,7 +114,7 @@ enum {
 
 /* Chooser rows are chipset-dependent, so never infer a display mode from a
  * hard-coded row number. This map is populated alongside the labels. */
-static mr_display_mode mode_values[12];
+static mr_display_mode mode_values[16];
 static unsigned mode_count;
 /* "Skip after" chooser (--skip-trigger=). Kept file-level rather than
  * threaded through every read_play_options() caller's argument list, since
@@ -627,9 +627,9 @@ static void update_mode_controls(Object *mode, Object *c2p, Object *lace,
     kalms_available = selected < mode_count &&
                       ((mode_values[selected] == MR_DISPLAY_AGA &&
                         chipset_has_aga()) ||
-                       mode_values[selected] == MR_DISPLAY_HAM8
+                       mr_display_ham_bits(mode_values[selected]) == 8
 #ifdef MR_KALMS_040
-                       || mode_values[selected] == MR_DISPLAY_HAM6
+                       || mr_display_ham_bits(mode_values[selected]) == 6
                        || mode_values[selected] == MR_DISPLAY_AGA_EHB
 #endif
                       );
@@ -1454,8 +1454,11 @@ int main(void)
                               MR_DISPLAY_AGA_EHB))
         goto cleanup;
     if (!add_mode_node(&modes, "HAM6", MR_DISPLAY_HAM6) ||
+        !add_mode_node(&modes, "HAM6 (Dither)", MR_DISPLAY_HAM6_DITHER) ||
         (chipset_has_aga() &&
          !add_mode_node(&modes, "HAM8", MR_DISPLAY_HAM8)) ||
+        (chipset_has_aga() &&
+         !add_mode_node(&modes, "HAM8 (Dither)", MR_DISPLAY_HAM8_DITHER)) ||
         /* Video in a Workbench window with shared pens, full or half size.
          * Only offered on a native-chipset (AGA/ECS/OCS) Workbench: an RTG
          * one has RTG (WritePixel) and RTG (Half). */

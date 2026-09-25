@@ -1196,6 +1196,10 @@ static int queue_copy_indexed(queued_video *q, const mr_frame *fr, uint64_t pts,
  * nearest-neighbour path for every other resize shape, including an upscale
  * (e.g. a 192x108 mobile HLS variant fitted up to a 320x180 AGA screen).
  */
+/* --ham-dither: HAM (Dither), for the direct YUV->HAM queue path below. The
+ * display backend gets the same choice through display_set_ham_dither(). */
+static int g_ham_dither = 0;
+
 static int queue_copy_yuv_indexed(queued_video *q, const mr_frame *fr,
                                   uint64_t pts, uint64_t decoded_at,
                                   int dst_w, int dst_h, int vscale,
@@ -1211,10 +1215,10 @@ static int queue_copy_yuv_indexed(queued_video *q, const mr_frame *fr,
         /* aga_supports_yuv_indexed() only reports ham for the exact vertical
          * downscale, so vscale is always > 1 here - see core/mr_yuv_ham.h for
          * why the other shapes stay on aga_show()'s three-stage path. */
-        mr_yuv420_ham_encode(fr->data, fr->stride, fr->u_data,
-                             fr->u_stride, fr->v_data, fr->v_stride,
-                             fr->width, fr->height, vscale, ham,
-                             q->rgb, dst_w);
+        mr_yuv420_ham_encode_ex(fr->data, fr->stride, fr->u_data,
+                                fr->u_stride, fr->v_data, fr->v_stride,
+                                fr->width, fr->height, vscale, ham,
+                                g_ham_dither, q->rgb, dst_w);
     else if (vscale > 0)
         mr_yuv420_dither_indexed(fr->data, fr->stride, fr->u_data,
                                  fr->u_stride, fr->v_data, fr->v_stride,
@@ -2294,7 +2298,7 @@ int main(int argc, char **argv)
         printf("usage: mrplay [--user-agent <value>] [--referer <value>] "
                "<file.avi|file.mov|file.ts|file.m2ts|"
                "file.mjpeg|file.m4v> "
-               "[--aga] [--aga-window] [--aga-window-half] [--ham] [--ham6] [--p96] "
+               "[--aga] [--aga-window] [--aga-window-half] [--ham] [--ham6] [--ham-dither] [--p96] "
                "[--2x] [--lace] [--ecs-fast] [--ecs32] [--ehb] [--copper-vdouble] "
                "[--loop] "
                "[--wpa|--c2p|--riva-c2p|--kalms-c2p|--direct-c2p] "
@@ -2332,6 +2336,10 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--aga-window-half")) display_set_aga_window(2);
             else if (!strcmp(argv[i], "--ham"))  display_set_ham(8);
             else if (!strcmp(argv[i], "--ham6")) display_set_ham(6);
+            else if (!strcmp(argv[i], "--ham-dither")) {
+                display_set_ham_dither(1);
+                g_ham_dither = 1;
+            }
             else if (!strcmp(argv[i], "--2x"))   display_set_scale(2);
             else if (!strcmp(argv[i], "--wpa"))  display_set_c2p(0);
             else if (!strcmp(argv[i], "--c2p"))  display_set_c2p(1);
@@ -2938,9 +2946,11 @@ int main(int argc, char **argv)
                              &diag_resize, &diag_c2p, &diag_chipset,
                              &diag_copper, &diag_ehb);
         if (diag_depth >= 0)
-            printf("AGA path: chipset=%s depth=%d ham=%d ehb=%d scale=%d "
+            printf("AGA path: chipset=%s depth=%d ham=%d%s ehb=%d scale=%d "
                    "resize=%d c2p=%s yuv=%s copper=%d%s\n", diag_chipset,
-                   diag_depth, diag_ham, diag_ehb, diag_scale, diag_resize,
+                   diag_depth, diag_ham,
+                   diag_ham && g_ham_dither ? " (dither)" : "",
+                   diag_ehb, diag_scale, diag_resize,
                    diag_c2p,
                    use_yuv_indexed_queue ? "supported" : "unsupported",
                    diag_copper,

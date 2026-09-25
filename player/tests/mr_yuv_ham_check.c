@@ -69,7 +69,7 @@ static int report(const char *what, const uint8_t *ref, const uint8_t *got,
 
 static int run_case(int bits, int width, int height, int vscale,
                     int y_stride, int u_stride, int v_stride, int extreme,
-                    int seed)
+                    int seed, int dither)
 {
     int ch = (height + 1) / 2;
     int dst_h = height / vscale;
@@ -93,14 +93,20 @@ static int run_case(int bits, int width, int height, int vscale,
     else
         mr_scale_resize_rgb24(rgb_full, width, height, width * 3,
                               rgb_resized, width, dst_h, width * 3);
-    mr_ham_encode(rgb_resized, width, dst_h, width * 3, ref_out, width, bits);
+    mr_ham_encode_ex(rgb_resized, width, dst_h, width * 3, ref_out, width,
+                     bits, 0, dither);
 
     /* Under test: the direct fused path. */
-    mr_yuv420_ham_encode(y, y_stride, u, u_stride, v, v_stride, width,
-                         height, vscale, bits, got_out, width);
+    if (dither)
+        mr_yuv420_ham_encode_ex(y, y_stride, u, u_stride, v, v_stride, width,
+                                height, vscale, bits, 1, got_out, width);
+    else
+        mr_yuv420_ham_encode(y, y_stride, u, u_stride, v, v_stride, width,
+                             height, vscale, bits, got_out, width);
 
-    fails = report("vscale", ref_out, got_out, width * dst_h, bits, width,
-                   height, width, dst_h, vscale, extreme, seed);
+    fails = report(dither ? "vscale dither" : "vscale", ref_out, got_out,
+                   width * dst_h, bits, width, height, width, dst_h, vscale,
+                   extreme, seed);
 
     free(y); free(u); free(v);
     free(rgb_full); free(rgb_resized); free(ref_out); free(got_out);
@@ -119,8 +125,9 @@ int main(void)
         {  62,  30, 1 }    /* odd width - exercises the trailing-pixel tail */
     };
     static const int depths[] = { 6, 8 };
-    int fails = 0, gi, di, extreme, seed;
+    int fails = 0, gi, di, extreme, seed, dither;
 
+    for (dither = 0; dither <= 1; dither++)
     for (di = 0; di < 2; di++)
         for (gi = 0; gi < (int)(sizeof geoms / sizeof geoms[0]); gi++)
             for (extreme = 0; extreme < 2; extreme++)
@@ -131,11 +138,13 @@ int main(void)
                     int pad = seed & 1 ? 7 : 0;
                     fails |= run_case(depths[di], w, h, geoms[gi].vscale,
                                       w + pad, (w + 1) / 2 + pad,
-                                      (w + 1) / 2 + pad, extreme, seed);
+                                      (w + 1) / 2 + pad, extreme, seed,
+                                      dither);
                 }
 
     if (fails) { printf("YUV420->HAM fused encode checks FAILED\n"); return 1; }
     printf("YUV420->HAM direct encode checks passed "
-           "(HAM6/HAM8 bit-identical to yuv->rgb24->scale->ham_encode)\n");
+           "(HAM6/HAM8, plain and dithered, bit-identical to "
+           "yuv->rgb24->scale->ham_encode)\n");
     return 0;
 }
