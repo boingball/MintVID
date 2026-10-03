@@ -185,8 +185,54 @@ static int hex_value(char c)
     return -1;
 }
 
-/* Decode a JSON string into a display-safe byte string. Amiga system fonts do
- * not reliably render arbitrary Unicode, so non-Latin \u escapes become '?'. */
+static int json_hex4(const char *p, const char *end, unsigned *value)
+{
+    unsigned i, result = 0;
+    if ((size_t)(end - p) < 4)
+        return 0;
+    for (i = 0; i < 4; i++) {
+        int digit = hex_value(p[i]);
+        if (digit < 0)
+            return 0;
+        result = (result << 4) | (unsigned)digit;
+    }
+    *value = result;
+    return 1;
+}
+
+/* Decode one bounded UTF-8 scalar, rejecting overlong sequences, surrogate
+ * code points and values above U+10FFFF. No platform/locale dependencies. */
+static int utf8_scalar(const char **input, const char *end, unsigned *value)
+{
+    const unsigned char *p = (const unsigned char *)*input;
+    unsigned length, minimum, result, i;
+    if (p[0] >= 0xc2 && p[0] <= 0xdf) {
+        length = 2; minimum = 0x80; result = p[0] & 0x1f;
+    } else if (p[0] >= 0xe0 && p[0] <= 0xef) {
+        length = 3; minimum = 0x800; result = p[0] & 0x0f;
+    } else if (p[0] >= 0xf0 && p[0] <= 0xf4) {
+        length = 4; minimum = 0x10000; result = p[0] & 0x07;
+    } else {
+        return 0;
+    }
+    if ((size_t)(end - *input) < length)
+        return 0;
+    for (i = 1; i < length; i++) {
+        if ((p[i] & 0xc0) != 0x80)
+            return 0;
+        result = (result << 6) | (p[i] & 0x3f);
+    }
+    if (result < minimum || result > 0x10ffff ||
+        (result >= 0xd800 && result <= 0xdfff))
+        return 0;
+    *value = result;
+    *input += length;
+    return 1;
+}
+
+/* Decode raw UTF-8 and JSON escapes identically into Amiga ISO Latin-1.
+ * Unsupported scalars become one '?'; malformed strings are rejected.
+ * Truncation happens after conversion, so a multibyte character cannot split. */
 static int json_string(const char *quote, const char *end,
                        char *out, size_t cap)
 {
@@ -210,20 +256,33 @@ static int json_string(const char *quote, const char *end,
             case 'r': c = ' '; break;
             case 't': c = ' '; break;
             case 'u': {
-                int a, b, d, e;
-                unsigned value;
-                if (p + 4 >= end || (a = hex_value(p[1])) < 0 ||
-                    (b = hex_value(p[2])) < 0 ||
-                    (d = hex_value(p[3])) < 0 ||
-                    (e = hex_value(p[4])) < 0)
+                unsigned value, low;
+                if (!json_hex4(p + 1, end, &value))
                     return 0;
-                value = (unsigned)((a << 12) | (b << 8) | (d << 4) | e);
-                c = value >= 32 && value <= 255 ? (unsigned char)value : '?';
                 p += 4;
+                if (value >= 0xd800 && value <= 0xdbff) {
+                    if ((size_t)(end - (p + 1)) < 6 ||
+                        p[1] != '\\' || p[2] != 'u' ||
+                        !json_hex4(p + 3, end, &low) ||
+                        low < 0xdc00 || low > 0xdfff)
+                        return 0;
+                    value = 0x10000 + ((value - 0xd800) << 10) +
+                            (low - 0xdc00);
+                    p += 6;
+                } else if (value >= 0xdc00 && value <= 0xdfff) {
+                    return 0;
+                }
+                c = value >= 32 && value <= 255 ? (unsigned char)value : '?';
                 break;
             }
             default: return 0;
             }
+        } else if (c >= 0x80) {
+            unsigned value;
+            if (!utf8_scalar(&p, end, &value))
+                return 0;
+            p--; /* The loop advances past the decoded scalar. */
+            c = value <= 255 ? (unsigned char)value : '?';
         }
         if (c < 32)
             c = ' ';
