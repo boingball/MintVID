@@ -41,7 +41,9 @@ int mr_youtube_search_build_url_mode(char *output, size_t output_size,
                                      const char *query,
                                      mr_youtube_search_mode mode);
 
-/* Parse normal video and Shorts objects from YouTube's search-page JSON. */
+/* Parse normal video and Shorts objects from YouTube's UTF-8 search-page JSON.
+ * Titles, channel names and display rows are ISO Latin-1 for Amiga fonts;
+ * Unicode outside Latin-1 is replaced with '?'. */
 int mr_youtube_search_parse(mr_youtube_search_results *results,
                             const char *document, size_t document_size,
                             int live_only);
