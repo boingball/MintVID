@@ -1,5 +1,5 @@
 @database "MintVID.guide"
-@$VER: MintVID.guide 1.4 (20.9.2026)
+@$VER: MintVID.guide 1.4 (8.10.2026)
 @author "Darren \"boingball\" Banfi"
 @(c) "2026 Darren Banfi"
 @width 74
@@ -8,7 +8,7 @@
                               MintVID Guide
                               -------------
 
-@{b}MintVID 1.4.0@{ub} - a codec-agnostic video player for accelerated 68k
+@{b}MintVID 1.4.1@{ub} - a codec-agnostic video player for accelerated 68k
 AmigaOS hardware, from 68030-class ECS/AGA systems up to PiStorm/RTG
 machines.
 
@@ -16,7 +16,7 @@ This is the on-Amiga companion to the plain-text MintVID.readme. Pick a
 topic below (click, or press Return on a highlighted link):
 
   @{" Overview "            LINK Overview}
-  @{" What's new in 1.4.0 " LINK WhatsNew}
+  @{" What's new in 1.4.1 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" Video frame policy "   LINK FramePolicy}
@@ -47,7 +47,7 @@ page below also links back here.
 Topics:
 
   @{" Overview "            LINK Overview}
-  @{" What's new in 1.4.0 " LINK WhatsNew}
+  @{" What's new in 1.4.1 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" Video frame policy "   LINK FramePolicy}
@@ -67,10 +67,23 @@ Topics:
 @endnode
 
 
-@node WhatsNew "What's new in 1.4.0"
+@node WhatsNew "What's new in 1.4.1"
 @toc MAIN
-                           What's new in 1.4.0
+                           What's new in 1.4.1
                            -------------------
+
+@{b}MintVID 1.4.1@{ub}
+
+  - @{b}Titles in other languages read properly.@{ub} Amiga fonts are
+    ISO Latin-1, and YouTube titles and IPTV channel names used to show
+    a '?' for anything outside it - even a curly apostrophe. They are
+    now converted: Latin-1 accents show as they are, typographic quotes,
+    dashes and "..." become their plain forms, other accented letters
+    lose their accent, Cyrillic and Greek are transliterated, emoji are
+    dropped, and text in a script Latin-1 cannot show (Japanese,
+    Arabic, ...) becomes a single '?'. IPTV search matches the names as
+    shown.
+  - IPTV M3U playlists that start with a UTF-8 byte order mark load.
 
 @{b}MintVID 1.4.0@{ub}
 

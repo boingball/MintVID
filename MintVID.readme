@@ -2,7 +2,7 @@ Short:        Multi-codec video player and streamer
 Author:       Darren Banfi (boingball)
 Uploader:     boingball@gmail.com
 Type:         gfx/show
-Version:      1.4.0
+Version:      1.4.1
 Requires:     68030+; util/libs/AmiSSL-v5-OS3.lha for online features
 Architecture: m68k-amigaos >= 3.0.0
 
@@ -12,6 +12,18 @@ MintVID is a multi-codec video player for accelerated 68k Amigas, from
 68030-class ECS/AGA systems through 68040/060 machines to PiStorm/Emu68.
 It supports native chipset and RTG output, local files, HTTP/HTTPS, HLS,
 IPTV and public YouTube playback.
+
+WHAT'S NEW IN 1.4.1
+
+  - Titles in other languages, and curly apostrophes, quotes, dashes and
+    "...", no longer show as '?'. Amiga fonts are ISO Latin-1, so
+    YouTube titles and IPTV channel names are now converted for them:
+    accented Latin-1 letters show as they are, typographic punctuation
+    becomes its plain form, other accented letters lose their accent,
+    Cyrillic and Greek are transliterated, emoji are dropped, and text
+    in a script Latin-1 cannot show (Japanese, Arabic, ...) becomes a
+    single '?'. IPTV search matches the names as shown.
+  - IPTV M3U playlists that start with a UTF-8 byte order mark load.
 
 WHAT'S NEW IN 1.4.0
 

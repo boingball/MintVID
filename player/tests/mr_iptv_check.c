@@ -148,7 +148,7 @@ int main(void) {
   assert(!strstr(d.channels[0].streams[0].url, ".mpd"));
   assert(!strstr(d.channels[0].streams[1].url, ".mpd"));
   assert(d.channels[1].stream_count == 1);
-  assert(!strcmp(d.channels[1].name, "Fun ?"));
+  assert(!strcmp(d.channels[1].name, "Fun"));
   f.country = "UK";
   f.category = "news";
   f.search = "world";
@@ -195,12 +195,45 @@ int main(void) {
   assert(!mr_iptv_parse_m3u(&d, "bad", 3));
   assert(d.channel_count == 1);
   mr_iptv_free(&d);
+  {
+    /* Names are display text for Latin-1 fonts; ids and URLs keep bytes. */
+    const char *um =
+        "\xef\xbb\xbf#EXTM3U\n#EXTINF:-1 tvg-id=\"Perviy.ru\" group-title=\"\xd0\x9d"
+        "\xd0\xbe\xd0\xb2\xd0\xbe\xd1\x81\xd1\x82\xd0\xb8\",\xd0\x9f"
+        "\xd0\xb5\xd1\x80\xd0\xb2\xd1\x8b\xd0\xb9 \xd0\xba\xd0\xb0"
+        "\xd0\xbd\xd0\xb0\xd0\xbb\nhttps://ru.test/\xd0\xbf.m3u8\n"
+        "#EXTINF:-1,T\xe9l\xe9 \x96 Info\nhttps://fr.test/a.m3u8\n";
+    const char *uj =
+        "[{\"id\":\"Ert.gr\",\"name\":\"\\u0395\\u03a1\\u03a4 "
+        "News \\ud83d\\udcfa\",\"alt_names\":[\"\\u039a\\u03b1\\u03bb\\u03b7"
+        "\\u03bc\\u03ad\\u03c1\\u03b1\"],\"network\":\"T\xc3\xa9l\xc3\xa9"
+        "\xe2\x80\x99s\",\"country\":\"GR\",\"categories\":[\"news\"],"
+        "\"is_nsfw\":false},{\"id\":\"Nhk.jp\",\"name\":\"NHK \xe7\xb7\x8f"
+        "\xe5\x90\x88\",\"alt_names\":[],\"country\":\"JP\","
+        "\"categories\":[],\"is_nsfw\":false}]";
+    mr_iptv_init(&d);
+    assert(mr_iptv_parse_m3u(&d, um, strlen(um)));
+    assert(d.channel_count == 2);
+    assert(!strcmp(d.channels[0].name, "Pervyy kanal"));
+    assert(!strcmp(d.channels[0].categories[0], "Novosti"));
+    assert(!strcmp(d.channels[0].streams[0].url, "https://ru.test/\xd0\xbf.m3u8"));
+    assert(!strcmp(d.channels[1].name, "T\xe9l\xe9 - Info"));
+    mr_iptv_free(&d);
+    mr_iptv_init(&d);
+    assert(mr_iptv_parse_channels(&d, uj, strlen(uj)));
+    assert(d.channel_count == 2);
+    assert(!strcmp(d.channels[0].name, "ERT News"));
+    assert(!strcmp(d.channels[0].alt_names[0], "Kalimera"));
+    assert(!strcmp(d.channels[0].network, "T\xe9l\xe9's"));
+    assert(!strcmp(d.channels[1].name, "NHK ?"));
+    mr_iptv_free(&d);
+  }
   mr_iptv_init(&d);
   assert(
       mr_iptv_parse_channels(&d, nullable_channels, strlen(nullable_channels)));
   assert(d.channel_count == 1 && !d.channels[0].network[0]);
   assert(!d.channels[0].closed && !d.channels[0].replaced);
-  assert(!strcmp(d.channels[0].name, "Caf\xc3\xa9 TV"));
+  assert(!strcmp(d.channels[0].name, "Caf\xe9 TV"));
   assert(mr_iptv_join_streams(&d, nullable_streams, strlen(nullable_streams)));
   assert(d.channels[0].stream_count == 1);
   assert(!d.channels[0].streams[0].http_referrer[0]);

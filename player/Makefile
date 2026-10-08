@@ -416,7 +416,7 @@ mr_h264_intra_chroma_check: tests/mr_h264_intra_chroma_check.c $(LIBAVC_SRC)
 
 mr_iptv_check: tests/mr_iptv_check.c iptv/mr_iptv.c iptv/mr_iptv_json.c \
                iptv/mr_iptv_m3u.c iptv/mr_iptv_streaming.c iptv/mr_iptv.h \
-               core/mr_play_options.c core/mr_play_options.h
+               core/mr_play_options.c core/mr_play_options.h core/mr_text.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_iptv_check.c iptv/mr_iptv.c \
 	    iptv/mr_iptv_json.c iptv/mr_iptv_m3u.c iptv/mr_iptv_streaming.c \
 	    core/mr_play_options.c
@@ -438,7 +438,7 @@ mr_source_buffer_check: tests/mr_source_buffer_check.c core/mr_source.c \
 
 mr_youtube_search_check: tests/mr_youtube_search_check.c \
                          youtube/mr_youtube_search.c \
-                         youtube/mr_youtube_search.h
+                         youtube/mr_youtube_search.h core/mr_text.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_youtube_search_check.c \
 	    youtube/mr_youtube_search.c
 

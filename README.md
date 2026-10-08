@@ -35,6 +35,19 @@ Voodoo3/Permedia-class boards.
 
 ![MintVID playing an LGR YouTube video on AmigaOS](player/amiga/art/MintVID-YouTube.png)
 
+## What's new in 1.4.1
+
+- **Titles in other languages read properly:** Amiga fonts are ISO
+  Latin-1, and YouTube titles and IPTV channel names used to show `?` for
+  anything outside it, even a curly apostrophe. They are now converted:
+  Latin-1 accents show as they are, typographic quotes, dashes and `…`
+  become their plain forms, other accented letters lose their accent,
+  Cyrillic and Greek are transliterated (`Первый канал` reads
+  `Pervyy kanal`), emoji are dropped, and text in a script Latin-1 cannot
+  show (Japanese, Arabic, ...) becomes a single `?`. IPTV search matches
+  the names as shown.
+- IPTV M3U playlists that start with a UTF-8 byte order mark load.
+
 ## What's new in 1.4.0
 
 - **Stereo audio:** Paula now plays through a synchronized left/right
