@@ -1,5 +1,37 @@
 # MintVID changelog
 
+## 1.4.1 - 2026-10-08
+
+### Fixed
+
+- **Titles in other languages, and typographic punctuation, now read
+  properly.** Amiga system fonts are ISO Latin-1, so YouTube titles and
+  IPTV channel names used to show a `?` for any character outside it,
+  including the curly apostrophe in "it’s", curly quotes, dashes and
+  "…". Display text now goes through one converter (`core/mr_text.h`):
+  - Latin-1 characters (French, German, Spanish, Nordic, ...) show as
+    they are, including in IPTV names, which used to come out as
+    garbled UTF-8 bytes (`CafÃ©` for `Café`).
+  - Typographic punctuation becomes its plain form: `’` `'`, `“”` `"`,
+    `–—` `-`, `…` `...`, `€` `EUR`, `™` `TM`.
+  - Central European letters lose their accent (`Zażółć` reads
+    `Zazólc`), as do Vietnamese and pinyin, and Cyrillic and Greek are
+    transliterated (`Первый канал` reads `Pervyy kanal`, `Καλημέρα`
+    reads `Kalimera`). Fullwidth and "bold/italic" Unicode letters read
+    as plain letters.
+  - Emoji, flags, variation selectors and other invisible characters are
+    dropped instead of each leaving a `?`.
+  - Text in a script Latin-1 cannot spell (Japanese, Chinese, Korean,
+    Arabic, ...) shows a single `?` per run instead of one per character.
+  This covers YouTube search results and IPTV channel names, alternative
+  names, networks and categories from both the iptv-org JSON and M3U
+  playlists. Searching IPTV channels now also matches what is shown, so
+  typing `Café` on the Amiga, or `Pervyy`, finds those channels.
+- **IPTV M3U playlists saved with a UTF-8 byte order mark** are no longer
+  rejected as invalid.
+- YouTube titles with accented Latin-1 letters (`Café`) no longer show
+  `?` (#244).
+
 ## 1.4.0 - 2026-09-25
 
 ### Highlights

@@ -56,24 +56,61 @@ static void check_text(const char *text, const char *expected)
 static void check_unicode(void)
 {
     unsigned value;
-    char raw[3], escaped[7], expected[2];
+    char raw[5], escaped[9], expected[4];
+    /* Latin-1 letters pass through; NBSP is a space, soft hyphen and the
+     * C1 controls are dropped. */
     for (value = 128; value <= 255; value++) {
-        raw[0] = (char)(0xc0 | (value >> 6));
-        raw[1] = (char)(0x80 | (value & 63));
-        raw[2] = 0;
-        snprintf(escaped, sizeof(escaped), "\\u%04x", value);
-        expected[0] = (char)value;
-        expected[1] = 0;
+        raw[0] = 'A';
+        raw[1] = (char)(0xc0 | (value >> 6));
+        raw[2] = (char)(0x80 | (value & 63));
+        raw[3] = 'B';
+        raw[4] = 0;
+        snprintf(escaped, sizeof(escaped), "A\\u%04xB", value);
+        if (value < 0xa0 || value == 0xad)
+            strcpy(expected, "AB");
+        else if (value == 0xa0)
+            strcpy(expected, "A B");
+        else {
+            expected[0] = 'A';
+            expected[1] = (char)value;
+            expected[2] = 'B';
+            expected[3] = 0;
+        }
         check_text(raw, expected);
         check_text(escaped, expected);
     }
     check_text("Caf\xc3\xa9 \xc3\xa8 \xc3\xa0 \xc3\xb1 \xc3\xbc \xc3\x9f",
                "Caf\xe9 \xe8 \xe0 \xf1 \xfc \xdf");
-    check_text("A\xe2\x82\xac \xf0\x9f\x98\x80 Z", "A? ? Z");
-    check_text("A\\u20ac \\ud83d\\ude00 Z", "A? ? Z");
-    check_text("\xc2\x80\xdf\xbf\xe0\xa0\x80\xef\xbf\xbf"
-               "\xf0\x90\x80\x80\xf4\x8f\xbf\xbf", "\x80?????");
-    check_text("A\\u0000\\n\\tB", "A?  B");
+    /* Typographic punctuation (issue: a '?' in a MinteeGolf title). */
+    check_text("Minteegolf\xe2\x80\x99s \xe2\x80\x9c" "best\xe2\x80\x9d shot "
+               "\xe2\x80\x93 part 2\xe2\x80\xa6",
+               "Minteegolf's \"best\" shot - part 2...");
+    check_text("\\u2018A\\u2019 \\u2014 \\u2022 \\u2122", "'A' - \xb7 TM");
+    check_text("A\xe2\x82\xac \xf0\x9f\x98\x80 Z", "AEUR Z");
+    check_text("A\\u20ac \\ud83d\\ude00 Z", "AEUR Z");
+    /* Emoji sequences (ZWJ, variation selectors, keycaps, flags) vanish. */
+    check_text("Hi \\u2764\\ufe0f \\ud83d\\udc68\\u200d\\ud83d\\udc69 "
+               "1\\ufe0f\\u20e3 \\ud83c\\uddec\\ud83c\\udde7 !", "Hi 1 !");
+    check_text("\\ud83d\\ude00\\ud83d\\ude00", "?");
+    /* Other languages: transliterated where Latin-1 can spell them. */
+    check_text("Za\xc5\xbc\xc3\xb3\xc5\x82\xc4\x87 g\xc4\x99\xc5\x9bl\xc4\x85 "
+               "ja\xc5\xba\xc5\x84 \xc5\x92uvre \xc5\x9e\xc8\x9b",
+               "Zaz\xf3lc gesla jazn OEuvre St");
+    check_text("\xd0\x9f\xd1\x80\xd0\xb8\xd0\xb2\xd0\xb5\xd1\x82 "
+               "\xd0\xbc\xd0\xb8\xd1\x80 \xd0\xa9\xd0\xb8 \xd0\x96\xd1\x83\xd0\xba",
+               "Privet mir Shchi Zhuk");
+    check_text("\xce\x9a\xce\xb1\xce\xbb\xce\xb7\xce\xbc\xce\xad\xcf\x81\xce\xb1 "
+               "\xce\xb8\xce\xac\xce\xbb\xce\xb1\xcf\x83\xcf\x83\xce\xb1",
+               "Kalimera thalassa");
+    check_text("Vi\xe1\xbb\x87t Nam e\\u0301 \\uff21\\uff42 \\ud835\\udc00\\ud835\\udfce",
+               "Viet Nam e Ab A0");
+    /* Scripts Latin-1 cannot spell: one '?' per run, punctuation kept. */
+    check_text("\\u3010MV\\u3011 \xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e"
+               "\\u300c\xe6\x97\xa5\xe6\x9c\xac\\u300d",
+               "[MV] ?\"?\"");
+    check_text("\xc2\x80|\xdf\xbf|\xe0\xa0\x80|\xef\xbf\xbf|"
+               "\xf0\x90\x80\x80|\xf4\x8f\xbf\xbf", "|?|?|?|?|?");
+    check_text("  A\\u0000\\n\\tB\\u2003 ", "A B");
     check_text("\xc0\xaf", NULL);       /* overlong */
     check_text("\xe0\x80\xaf", NULL); /* overlong */
     check_text("\xf0\x80\x80\xaf", NULL);
@@ -215,8 +252,8 @@ int main(void)
         CHECK(!strcmp(results.items[0].row,
                       "[LIVE] Caf\xe9 \xe8 - Fran\xe7" "ais"),
               "live row preserves Latin-1 title and channel");
-        CHECK(!strcmp(results.items[1].row, "[SHORT] Espa\xf1" "a ?"),
-              "Shorts title converted with one placeholder per emoji");
+        CHECK(!strcmp(results.items[1].row, "[SHORT] Espa\xf1" "a"),
+              "Shorts title converted with emoji dropped");
     }
     mr_youtube_search_results_free(&results);
 

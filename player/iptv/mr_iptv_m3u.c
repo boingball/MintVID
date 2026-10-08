@@ -1,4 +1,5 @@
 #include "mr_iptv.h"
+#include "../core/mr_text.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -8,7 +9,12 @@ static void copy(char *d, size_t n, const char *s, size_t z) {
   memcpy(d, s, z);
   d[z] = 0;
 }
-static void attr(const char *line, const char *key, char *out, size_t cap) {
+/* Display text: converted to Latin-1 for the Amiga fonts. */
+static void copy_text(char *d, size_t n, const char *s, size_t z) {
+  mr_text_from_utf8(d, n, s, z);
+}
+static void attr(const char *line, const char *key, char *out, size_t cap,
+                 int display) {
   const char *p = strstr(line, key);
   const char *e;
   if (!p)
@@ -25,7 +31,10 @@ static void attr(const char *line, const char *key, char *out, size_t cap) {
   }
   if (!e)
     e = p + strlen(p);
-  copy(out, cap, p, (size_t)(e - p));
+  if (display)
+    copy_text(out, cap, p, (size_t)(e - p));
+  else
+    copy(out, cap, p, (size_t)(e - p));
 }
 static int append(mr_iptv_directory *d, const mr_iptv_channel *c) {
   void *p;
@@ -49,6 +58,8 @@ int mr_iptv_parse_m3u(mr_iptv_directory *out, const char *data, size_t len) {
   int have = 0, header = 0;
   mr_iptv_init(&d);
   memset(&pending, 0, sizeof(pending));
+  if (len >= 3 && !memcmp(p, "\xef\xbb\xbf", 3))
+    p += 3; /* UTF-8 byte order mark */
   while (p < end) {
     e = memchr(p, '\n', (size_t)(end - p));
     if (!e)
@@ -66,9 +77,9 @@ int mr_iptv_parse_m3u(mr_iptv_directory *out, const char *data, size_t len) {
       free(pending.streams);
       memset(&pending, 0, sizeof(pending));
       group[0] = 0;
-      attr(p, "tvg-id", pending.id, sizeof(pending.id));
-      attr(p, "tvg-name", pending.name, sizeof(pending.name));
-      attr(p, "group-title", group, sizeof(group));
+      attr(p, "tvg-id", pending.id, sizeof(pending.id), 0);
+      attr(p, "tvg-name", pending.name, sizeof(pending.name), 1);
+      attr(p, "group-title", group, sizeof(group), 1);
       if (group[0]) {
         pending.categories = calloc(1, sizeof(*pending.categories));
         if (!pending.categories)
@@ -78,8 +89,8 @@ int mr_iptv_parse_m3u(mr_iptv_directory *out, const char *data, size_t len) {
         pending.category_count = 1;
       }
       if (comma && comma + 1 < e && !pending.name[0])
-        copy(pending.name, sizeof(pending.name), comma + 1,
-             (size_t)(e - comma - 1));
+        copy_text(pending.name, sizeof(pending.name), comma + 1,
+                  (size_t)(e - comma - 1));
       have = 1;
     } else if (have && e > p && *p != '#') {
       char url[MR_IPTV_URL_MAX];

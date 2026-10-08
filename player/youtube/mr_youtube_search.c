@@ -1,4 +1,5 @@
 #include "mr_youtube_search.h"
+#include "../core/mr_text.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -230,19 +231,19 @@ static int utf8_scalar(const char **input, const char *end, unsigned *value)
     return 1;
 }
 
-/* Decode raw UTF-8 and JSON escapes identically into Amiga ISO Latin-1.
- * Unsupported scalars become one '?'; malformed strings are rejected.
+/* Decode raw UTF-8 and JSON escapes identically into Amiga ISO Latin-1
+ * display text (see mr_text.h); malformed strings are rejected.
  * Truncation happens after conversion, so a multibyte character cannot split. */
 static int json_string(const char *quote, const char *end,
                        char *out, size_t cap)
 {
     const char *p;
-    size_t used = 0;
+    mr_text text;
     if (!quote || quote >= end || *quote != '"' || !cap)
         return 0;
-    out[0] = 0;
+    mr_text_begin(&text, out, cap);
     for (p = quote + 1; p < end && *p != '"'; p++) {
-        unsigned char c = (unsigned char)*p;
+        unsigned long c = (unsigned char)*p;
         if (c == '\\') {
             if (++p >= end)
                 return 0;
@@ -272,7 +273,7 @@ static int json_string(const char *quote, const char *end,
                 } else if (value >= 0xdc00 && value <= 0xdfff) {
                     return 0;
                 }
-                c = value >= 32 && value <= 255 ? (unsigned char)value : '?';
+                c = value;
                 break;
             }
             default: return 0;
@@ -282,17 +283,16 @@ static int json_string(const char *quote, const char *end,
             if (!utf8_scalar(&p, end, &value))
                 return 0;
             p--; /* The loop advances past the decoded scalar. */
-            c = value <= 255 ? (unsigned char)value : '?';
+            c = value;
         }
-        if (c < 32)
-            c = ' ';
-        if (used + 1 < cap)
-            out[used++] = (char)c;
+        mr_text_put(&text, c);
     }
     if (p >= end || *p != '"')
         return 0;
-    out[used] = 0;
-    return used != 0;
+    /* A title of nothing but emoji still names a video. */
+    if (!mr_text_end(&text) && p > quote + 1 && cap > 1)
+        strcpy(out, "?");
+    return out[0] != 0;
 }
 
 static int field_string(const char *start, const char *end, const char *field,

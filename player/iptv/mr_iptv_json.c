@@ -1,4 +1,5 @@
 #include "mr_iptv.h"
+#include "../core/mr_text.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -68,17 +69,24 @@ static int hex(char c) {
          : c >= 'A' && c <= 'F' ? c - 'A' + 10
                                 : -1;
 }
-static int string(parser *j, char *out, size_t cap) {
+/* Reads a JSON string into out.  Display text (names, categories) is
+ * converted to Latin-1 for the Amiga fonts; other strings (ids, URLs) keep
+ * their bytes, with \u escapes beyond ASCII as '?'. */
+static int string_as(parser *j, char *out, size_t cap, int display) {
   size_t n = 0;
-  int a, b, c, d, cp;
+  int a, b, c, d;
+  unsigned long cp;
+  mr_text text;
   ws(j);
   if (j->p == j->end || *j->p != '"')
     return expected(j, "string");
   j->p++;
+  mr_text_begin(&text, out, cap);
   while (j->p < j->end && *j->p != '"') {
     unsigned char ch = (unsigned char)*j->p++;
     if (ch < 0x20)
       return j->error = 1, 0;
+    cp = ch;
     if (ch == '\\') {
       if (j->p == j->end)
         return j->error = 1, 0;
@@ -88,8 +96,19 @@ static int string(parser *j, char *out, size_t cap) {
             (b = hex(j->p[1])) < 0 || (c = hex(j->p[2])) < 0 ||
             (d = hex(j->p[3])) < 0)
           return j->error = 1, 0;
-        cp = (a << 12) | (b << 8) | (c << 4) | d;
+        cp = (unsigned long)((a << 12) | (b << 8) | (c << 4) | d);
         j->p += 4;
+        if (cp >= 0xd800 && cp <= 0xdbff && j->end - j->p >= 6 &&
+            j->p[0] == '\\' && j->p[1] == 'u' && (a = hex(j->p[2])) >= 0 &&
+            (b = hex(j->p[3])) >= 0 && (c = hex(j->p[4])) >= 0 &&
+            (d = hex(j->p[5])) >= 0) {
+          unsigned long low =
+              (unsigned long)((a << 12) | (b << 8) | (c << 4) | d);
+          if (low >= 0xdc00 && low <= 0xdfff) {
+            cp = 0x10000 + ((cp - 0xd800) << 10) + (low - 0xdc00);
+            j->p += 6;
+          }
+        }
         ch = cp < 128 ? (unsigned char)cp : '?';
       } else if (ch == 'n')
         ch = '\n';
@@ -103,16 +122,34 @@ static int string(parser *j, char *out, size_t cap) {
         ch = '\f';
       else if (ch != '"' && ch != '\\' && ch != '/')
         return j->error = 1, 0;
+      if (cp < 128)
+        cp = ch;
+    } else if (ch >= 0x80 && display) {
+      const char *q = j->p - 1, *close = q;
+      while (close < j->end && close < q + 4 && *close != '"' &&
+             *close != '\\')
+        close++;
+      j->p = q + mr_text_utf8_next(q, (size_t)(close - q), &cp);
     }
-    if (cap && n + 1 < cap)
+    if (display)
+      mr_text_put(&text, cp);
+    else if (cap && n + 1 < cap)
       out[n++] = (char)ch;
   }
   if (j->p == j->end)
     return j->error = 1, 0;
   j->p++;
-  if (cap)
+  if (display)
+    mr_text_end(&text);
+  else if (cap)
     out[n] = 0;
   return 1;
+}
+static int string(parser *j, char *out, size_t cap) {
+  return string_as(j, out, cap, 0);
+}
+static int text_string(parser *j, char *out, size_t cap) {
+  return string_as(j, out, cap, 1);
 }
 static int json_null(parser *j) {
   ws(j);
@@ -123,14 +160,15 @@ static int json_null(parser *j) {
   return 0;
 }
 
-static int nullable_string(parser *j, char *out, size_t cap) {
+static int nullable_string_as(parser *j, char *out, size_t cap,
+                              int display) {
   const char *value_start;
   ws(j);
   value_start = j->p;
   if (j->p >= j->end)
     return expected(j, "string or null");
   if (j->p < j->end && *j->p == '"')
-    return string(j, out, cap);
+    return string_as(j, out, cap, display);
   if (json_null(j)) {
     if (cap)
       out[0] = 0;
@@ -138,6 +176,9 @@ static int nullable_string(parser *j, char *out, size_t cap) {
   }
   j->p = value_start;
   return expected(j, "string or null");
+}
+static int nullable_string(parser *j, char *out, size_t cap) {
+  return nullable_string_as(j, out, cap, 0);
 }
 
 static int number(parser *j) {
@@ -239,7 +280,7 @@ static int str_array(parser *j, char (**a)[MR_IPTV_NAME_MAX], unsigned *count,
     return j->p++, 1;
   for (;;) {
     char tmp[MR_IPTV_NAME_MAX];
-    if (!string(j, tmp, sizeof(tmp)))
+    if (!text_string(j, tmp, sizeof(tmp)))
       return 0;
     if (*count < max) {
       void *items = realloc(*a, (*count + 1) * sizeof(**a));
@@ -314,7 +355,7 @@ static int channel_object_pass(const char *json, size_t length,
     if (!metadata && !strcmp(key, "id")) {
       if (!string(&j, channel->id, sizeof(channel->id))) return 0;
     } else if (!metadata && !strcmp(key, "name")) {
-      if (!string(&j, channel->name, sizeof(channel->name))) return 0;
+      if (!text_string(&j, channel->name, sizeof(channel->name))) return 0;
     } else if (!metadata && !strcmp(key, "country")) {
       if (!string(&j, channel->country, sizeof(channel->country))) return 0;
     } else if (!metadata && !strcmp(key, "is_nsfw")) {
@@ -329,7 +370,8 @@ static int channel_object_pass(const char *json, size_t length,
       if (!nullable_string(&j, value, sizeof(value))) return 0;
       channel->replaced = value[0] != 0;
     } else if (metadata && !strcmp(key, "network")) {
-      if (!nullable_string(&j, channel->network, sizeof(channel->network)))
+      if (!nullable_string_as(&j, channel->network, sizeof(channel->network),
+                              1))
         return 0;
     } else if (metadata && !strcmp(key, "alt_names")) {
       if (!str_array(&j, &channel->alt_names, &channel->alt_count, 2)) return 0;
@@ -531,10 +573,10 @@ int mr_iptv_parse_channels(mr_iptv_directory *out, const char *data,
         if (!string(&j, c.id, sizeof(c.id)))
           goto fail;
       } else if (!strcmp(key, "name")) {
-        if (!string(&j, c.name, sizeof(c.name)))
+        if (!text_string(&j, c.name, sizeof(c.name)))
           goto fail;
       } else if (!strcmp(key, "network")) {
-        if (!nullable_string(&j, c.network, sizeof(c.network)))
+        if (!nullable_string_as(&j, c.network, sizeof(c.network), 1))
           goto fail;
       } else if (!strcmp(key, "owner") || !strcmp(key, "website") ||
                  !strcmp(key, "logo")) {
