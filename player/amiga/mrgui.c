@@ -773,6 +773,9 @@ static struct timerequest *status_timer_io;
 static int status_timer_device_open;
 static int status_timer_running;
 static ULONG player_status_seq;
+static int player_status_live;
+static int external_launch_pending;
+static unsigned external_launch_ticks;
 
 static int status_timer_open(void)
 {
@@ -823,10 +826,26 @@ static void poll_player_status(Object *info, struct Window *window)
 {
     mr_player_status ps;
     char line[300];
+    int live = mr_player_status_read(&ps);
 
-    if (!mr_player_status_read(&ps)) { player_status_seq = 0; return; }
-    if (ps.seq == player_status_seq) return;
+    if (!live && !mr_player_status_read_final(&ps)) {
+        player_status_seq = 0;
+        if (external_launch_pending) {
+            ++external_launch_ticks;
+            if ((external_launch_ticks >= 8 && !find_player()) ||
+                external_launch_ticks >= 240) {
+                set_info(info, window, "mrberry gave no status; see "
+                         MR_EXTERNAL_PLAYER_LOG);
+                external_launch_pending = 0;
+            }
+        }
+        return;
+    }
+    external_launch_pending = 0;
+    /* Port and file have independent sequence counters. */
+    if (ps.seq == player_status_seq && live == player_status_live) return;
     player_status_seq = ps.seq;
+    player_status_live = live;
 
     if (ps.state == MR_PLAYER_STATE_PLAYING)
         snprintf(line, sizeof(line), "Playing%s%s%s%s", ps.codec[0] ? " (" : "",
@@ -837,6 +856,8 @@ static void poll_player_status(Object *info, struct Window *window)
         snprintf(line, sizeof(line), "Player error: %s", ps.text);
     else if (ps.state == MR_PLAYER_STATE_ENDED)
         snprintf(line, sizeof(line), "Playback ended");
+    else if (ps.state == MR_PLAYER_STATE_OPENING)
+        snprintf(line, sizeof(line), "%s", ps.text);
     else
         return;
     set_info(info, window, line);
@@ -896,6 +917,7 @@ static void start_player_path(const char *full_file, Object *mode,
     char seg_path[64];
     mr_play_options options;
     BPTR seglist;
+    BPTR log = 0;
     struct Process *process;
     const char *program;
     int external;
@@ -939,16 +961,34 @@ static void start_player_path(const char *full_file, Object *mode,
                  : "Could not load mrplay (keep it beside MintVID or in PATH).");
         return;
     }
+    if (external) {
+        log = Open((CONST_STRPTR)MR_EXTERNAL_PLAYER_LOG, MODE_NEWFILE);
+        if (!log) {
+            UnLoadSeg(seglist);
+            set_info(info, window, "Could not open " MR_EXTERNAL_PLAYER_LOG);
+            return;
+        }
+    }
+    mr_player_status_clear_snapshot();
+    player_status_seq = 0;
+    external_launch_pending = 0;
     process = CreateNewProcTags(
         NP_Seglist, seglist, NP_FreeSeglist, TRUE,
         NP_Arguments, (ULONG)args, NP_StackSize, MRPLAY_STACK_SIZE,
+        log ? NP_Output : TAG_IGNORE, (ULONG)log,
+        log ? NP_CloseOutput : TAG_IGNORE, TRUE,
         NP_Cli, TRUE, NP_CommandName, (ULONG)program,
         NP_Name, (ULONG)"MintVID player", TAG_END);
     if (!process) {
+        if (log) Close(log);
         UnLoadSeg(seglist);
         set_info(info, window, external
                  ? "Could not create the mrberry process."
                  : "Could not create the mrplay process.");
+    } else if (external) {
+        external_launch_pending = 1;
+        external_launch_ticks = 0;
+        set_info(info, window, "Starting PiStorm playback...");
     }
 }
 

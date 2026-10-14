@@ -19,8 +19,40 @@ There are two PiStorm modes. They differ only in where the sound goes:
   sound is decoded on the 68k by MintVID's own decoders (MintAMP AAC/MP3,
   MP2, AC-3, PCM) and played through Paula. A stock Emu68 kernel is enough.
 
+The external backend currently documents support for PiStorm Classic with
+a Raspberry Pi 3A+ (BCM2837); its BerryCore kernel patch targets Emu68
+1.0.7 specifically. An entry in MintVID's Display menu only means that
+`mrberry` exists, not that the Pi model, kernel or libraries are compatible.
+Follow the backend's installation instructions, including `gpu_mem=64`.
+P96 Workbench on HDMI is part of that backend's intended use, but does not
+establish compatibility with other Pi models or PiStorm boards.
+
 The IPTV and YouTube browsers still start `mrplay`. If the controller is set
 to PiStorm, they play in a P96 window.
+
+## Troubleshooting startup
+
+Both controllers read the player's terminal status file after it exits, so
+a quick startup failure is shown in the status line. Live and saved status
+have separate sequence counters; the handoff must not discard an error just
+because those counters happen to match. Old snapshots are cleared before
+each new playback launch.
+
+When launching `mrberry`, its standard output is captured in
+`T:MintVID-mrberry.log` (overwritten on the next PiStorm launch). This also
+captures its library/capability diagnostics when started from Workbench.
+If no status arrives, the controller points to this log after an early
+exit or after about 60 seconds; it does not kill the player.
+
+To separate controller issues from backend/setup issues, run the same file
+from an Amiga Shell in the MintVID drawer:
+
+    mrberry "NASDRIVE:MintVID-Codec-TestSuite/mintvid_h264_360p_25fps.mp4" --no-audio
+
+Then try `--paula` instead of `--no-audio` with the controls/Paula build.
+HDMI audio should only be tested with the matching BerryCore kernel and
+audio modules installed. If the direct command also fails, keep its output
+and check the backend requirements before changing the display setup.
 
 ## What the GUI does
 
