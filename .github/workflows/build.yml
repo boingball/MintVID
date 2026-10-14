@@ -103,6 +103,9 @@ jobs:
           file player/mrplay player/MintVID player/iptvgui player/ytgui \
             player/MintVID-GT player/iptvgui-GT player/ytgui-GT player/mr_decode || true
 
+      - name: Check GUI library startup names
+        run: python3 player/tests/check_gui_libraries.py player/MintVID player/iptvgui player/ytgui
+
       - name: Upload compiled programs
         uses: actions/upload-artifact@v4
         with:
@@ -176,6 +179,8 @@ jobs:
             do
               test -f "$dir/$program"
             done
+            python3 player/tests/check_gui_libraries.py \
+              "$dir/MintVID" "$dir/iptvgui" "$dir/ytgui"
           done
 
           license_dir="player/release/LICENSES"

@@ -2118,6 +2118,56 @@ bracketed by the sentinel, previous value restored after) is unchanged;
 only the mechanism for setting/restoring `pr_WindowPtr` moved from a
 library call to direct struct access.
 
+## Matroska seeking
+`mr_mkv_seek()` (`core/mr_mkv.c`) lands on the last video keyframe at or
+before the target, the same contract as `mr_mov_seek()`, and
+`mr_demux_can_seek()` is now true for local MKV files too. So `mrplay`'s
+cursor keys seek MKV as well. That path has not run on real hardware yet.
+
+The seek uses the Cues index when there is one. Its offset comes from the
+SeekHead, or from a Cues element before the first cluster. The table is
+loaded on the first seek. Without Cues (files written to a pipe, some
+recorders) it scans cluster timecodes and searches the clusters before the
+target backwards for a keyframe. Either way it then walks the chosen
+cluster's blocks: a SimpleBlock with flag 0x80, or a BlockGroup without a
+ReferenceBlock, is a keyframe. The cursor is put on that block, so audio
+blocks earlier in the cluster are skipped.
+
+`tests/mr_mkv_seek_check.c` seeks to fixed times and to one microsecond
+either side of every IDR. It requires the reported time and every packet
+after the seek to match a linear read. It runs on `test_h264_seek.mkv`
+(Cues) and `test_h264_seek_nocues.mkv` (none), on the host and m68k. The
+second file's timestamps start at 21 ms after ffmpeg's remux. That is why the
+targets around each IDR are taken from the file, not hard-coded.
+
+## External players (PiStorm / mrberry)
+The GUIs list "PiStorm (VideoCore)" (`MR_DISPLAY_PISTORM`, appended to the
+enum, same value as the PiStorm fork's saved setting) only when
+`PROGDIR:mrberry` exists. That display starts `mrberry` instead of
+`mrplay`, as task `MintVID player` with `"<file>" [--no-audio]`
+(`mr_build_external_player_arguments()`). The contract, the same signals,
+port and status as `mrplay`, is in `docs/EXTERNAL_PLAYER.md`. `mrberry`
+itself lives in MichiB210/MintVID-PiStorm, with `berryvp.library`, the CPU1
+audio modules and the patched Emu68 kernel it needs. Anything that still
+starts `mrplay` with this display (the IPTV/YouTube browsers) gets `--p96`.
+
+A second entry, "PiStorm (VideoCore, Amiga audio)" (`MR_DISPLAY_PISTORM_PAULA`,
+appended after it), starts `mrberry --paula`. The sound is then decoded on the
+68k with MintVID's own decoders and played through `audio_paula.c`, so it
+needs no BerryCore kernel. `--audio-rate=low` and `--audio-mono` are passed
+the same way as to mrplay. In mrberry (`amiga/mrb_paula.c`), the Pi's 1-MHz
+timer is the clock, anchored when the first video frame goes to the
+VideoCore. The end of Paula's queue is compared with where that clock will be
+when it plays, and silence is added or samples dropped there. A host mock
+harness with real MintAMP decode kept the error within 50 ms at Paula clock
+errors of up to 2%, through pause and jumps. When the VideoCore actually
+shows a frame relative to that anchor has not been measured on hardware, so
+`--av-offset=MS` exists to tune it.
+
+MP4 files whose `mp4a` track carries MP3 (object type 0x6B) are reported as
+AAC by `mr_mov.c`, which never reads the esds object type, so they play
+silent in mrplay too. Not fixed yet.
+
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4

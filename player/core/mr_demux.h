@@ -119,9 +119,9 @@ void         mr_demux_timing_get(mr_demux *d, mr_demux_timing *timing,
  * on any container other than TS. */
 void         mr_demux_set_timing_enabled(mr_demux *d, int enabled);
 void         mr_demux_rewind(mr_demux *d);
-/* True when mr_demux_seek() can reposition this demux instance - a local,
- * keyframe-indexed container (MOV/MP4 today). Streamed/live sources and
- * containers without a keyframe index (AVI, MKV, TS, PS, raw) return 0. */
+/* True when mr_demux_seek() can reposition this demux instance - a local
+ * MOV/MP4 or Matroska file. Streamed/live sources and the other containers
+ * (AVI, TS, PS, raw) return 0. */
 int          mr_demux_can_seek(const mr_demux *d);
 /* Reposition to the nearest video keyframe at or before target_us (media
  * timeline, microseconds). *out_us receives the keyframe actually reached,

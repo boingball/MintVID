@@ -345,6 +345,18 @@ static struct Task *find_player(void)
     return task;
 }
 
+/* The PiStorm display mode is only offered when its external player,
+ * mrberry, sits beside MintVID (see docs/EXTERNAL_PLAYER.md). */
+#define MR_PISTORM_PLAYER "mrberry"
+
+static int pistorm_player_available(void)
+{
+    BPTR lock = Lock((CONST_STRPTR)"PROGDIR:" MR_PISTORM_PLAYER, ACCESS_READ);
+    if (!lock) return 0;
+    UnLock(lock);
+    return 1;
+}
+
 static void signal_player(ULONG mask)
 {
     struct Task *task;
@@ -438,8 +450,12 @@ static void update_skip_after(Object *mode, Object *h264, Object *video_mode,
     GetAttr(CHOOSER_Selected, mode, &selected);
     GetAttr(CHOOSER_Selected, h264, &selected_h264);
     GetAttr(CHOOSER_Selected, video_mode, &selected_video_mode);
+    /* The frame and VQ choices mean nothing without video, or to the
+     * external PiStorm player, which plays every frame on the VideoCore. */
     no_video = selected < mode_count &&
-               mode_values[selected] == MR_DISPLAY_NONE ? TRUE : FALSE;
+               (mode_values[selected] == MR_DISPLAY_NONE ||
+                mr_display_uses_external_player(mode_values[selected]))
+               ? TRUE : FALSE;
     SetGadgetAttrs((struct Gadget *)video_mode, window, NULL,
                    GA_Disabled, no_video, TAG_DONE);
     SetGadgetAttrs((struct Gadget *)h264, window, NULL,
@@ -757,6 +773,9 @@ static struct timerequest *status_timer_io;
 static int status_timer_device_open;
 static int status_timer_running;
 static ULONG player_status_seq;
+static int player_status_live;
+static int external_launch_pending;
+static unsigned external_launch_ticks;
 
 static int status_timer_open(void)
 {
@@ -807,10 +826,26 @@ static void poll_player_status(Object *info, struct Window *window)
 {
     mr_player_status ps;
     char line[300];
+    int live = mr_player_status_read(&ps);
 
-    if (!mr_player_status_read(&ps)) { player_status_seq = 0; return; }
-    if (ps.seq == player_status_seq) return;
+    if (!live && !mr_player_status_read_final(&ps)) {
+        player_status_seq = 0;
+        if (external_launch_pending) {
+            ++external_launch_ticks;
+            if ((external_launch_ticks >= 8 && !find_player()) ||
+                external_launch_ticks >= 240) {
+                set_info(info, window, "mrberry gave no status; see "
+                         MR_EXTERNAL_PLAYER_LOG);
+                external_launch_pending = 0;
+            }
+        }
+        return;
+    }
+    external_launch_pending = 0;
+    /* Port and file have independent sequence counters. */
+    if (ps.seq == player_status_seq && live == player_status_live) return;
     player_status_seq = ps.seq;
+    player_status_live = live;
 
     if (ps.state == MR_PLAYER_STATE_PLAYING)
         snprintf(line, sizeof(line), "Playing%s%s%s%s", ps.codec[0] ? " (" : "",
@@ -821,6 +856,8 @@ static void poll_player_status(Object *info, struct Window *window)
         snprintf(line, sizeof(line), "Player error: %s", ps.text);
     else if (ps.state == MR_PLAYER_STATE_ENDED)
         snprintf(line, sizeof(line), "Playback ended");
+    else if (ps.state == MR_PLAYER_STATE_OPENING)
+        snprintf(line, sizeof(line), "%s", ps.text);
     else
         return;
     set_info(info, window, line);
@@ -877,9 +914,13 @@ static void start_player_path(const char *full_file, Object *mode,
 {
     char path[512];
     char args[1600];
+    char seg_path[64];
     mr_play_options options;
     BPTR seglist;
+    BPTR log = 0;
     struct Process *process;
+    const char *program;
+    int external;
 
     if (!full_file || !*full_file) {
         set_info(info, window, "Choose a video first.");
@@ -898,27 +939,56 @@ static void start_player_path(const char *full_file, Object *mode,
     path[sizeof(path) - 1] = 0;
     read_play_options(mode, c2p, h264, lace, scale, audio_rate, fast_buffer,
                       no_audio, mono_audio, video_mode, &options);
-    if (!mr_build_player_arguments(args, sizeof(args), &options, path,
-                                   NULL, NULL)) {
+    /* An external player (PiStorm: mrberry) runs under the same task name
+     * as mrplay and answers the same signals and status port, so Pause,
+     * Stop and the status line below need no special case. */
+    external = mr_display_uses_external_player(options.display);
+    program = external ? MR_PISTORM_PLAYER : "mrplay";
+    if (!(external ? mr_build_external_player_arguments(args, sizeof(args),
+                                                        &options, path)
+                   : mr_build_player_arguments(args, sizeof(args), &options,
+                                               path, NULL, NULL))) {
         set_info(info, window, "Could not build player arguments.");
         return;
     }
-    seglist = LoadSeg((CONST_STRPTR)"PROGDIR:mrplay");
+    snprintf(seg_path, sizeof(seg_path), "PROGDIR:%s", program);
+    seglist = LoadSeg((CONST_STRPTR)seg_path);
     if (!seglist)
-        seglist = LoadSeg((CONST_STRPTR)"mrplay");
+        seglist = LoadSeg((CONST_STRPTR)program);
     if (!seglist) {
-        set_info(info, window,
-                 "Could not load mrplay (keep it beside MintVID or in PATH).");
+        set_info(info, window, external
+                 ? "Could not load mrberry (keep it beside MintVID)."
+                 : "Could not load mrplay (keep it beside MintVID or in PATH).");
         return;
     }
+    if (external) {
+        log = Open((CONST_STRPTR)MR_EXTERNAL_PLAYER_LOG, MODE_NEWFILE);
+        if (!log) {
+            UnLoadSeg(seglist);
+            set_info(info, window, "Could not open " MR_EXTERNAL_PLAYER_LOG);
+            return;
+        }
+    }
+    mr_player_status_clear_snapshot();
+    player_status_seq = 0;
+    external_launch_pending = 0;
     process = CreateNewProcTags(
         NP_Seglist, seglist, NP_FreeSeglist, TRUE,
         NP_Arguments, (ULONG)args, NP_StackSize, MRPLAY_STACK_SIZE,
-        NP_Cli, TRUE, NP_CommandName, (ULONG)"mrplay",
+        log ? NP_Output : TAG_IGNORE, (ULONG)log,
+        log ? NP_CloseOutput : TAG_IGNORE, TRUE,
+        NP_Cli, TRUE, NP_CommandName, (ULONG)program,
         NP_Name, (ULONG)"MintVID player", TAG_END);
     if (!process) {
+        if (log) Close(log);
         UnLoadSeg(seglist);
-        set_info(info, window, "Could not create the mrplay process.");
+        set_info(info, window, external
+                 ? "Could not create the mrberry process."
+                 : "Could not create the mrplay process.");
+    } else if (external) {
+        external_launch_pending = 1;
+        external_launch_ticks = 0;
+        set_info(info, window, "Starting PiStorm playback...");
     }
 }
 
@@ -1484,6 +1554,15 @@ int main(void)
      * of plain WritePixel and AGA/HAM - default to it rather than
      * WritePixel. */
     if (have_rtg) default_mode = (int)mode_count - 1;
+    /* PiStorm VideoCore playback, only when the external player is here.
+     * Never the default. Sound through the Pi's HDMI needs the BerryCore
+     * Emu68 kernel; sound through Paula (MintVID's decoders) does not. */
+    if (pistorm_player_available() &&
+        (!add_mode_node(&modes, "PiStorm (VideoCore, Pi audio)",
+                        MR_DISPLAY_PISTORM) ||
+         !add_mode_node(&modes, "PiStorm (VideoCore, Amiga audio)",
+                        MR_DISPLAY_PISTORM_PAULA)))
+        goto cleanup;
     /* Audio only, listed last so it never becomes the hardware default.
      * It sits here rather than under Video so it is easy to find; Video,
      * Skip after and VQ grey out under it (update_skip_after()). */
