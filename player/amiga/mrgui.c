@@ -345,6 +345,18 @@ static struct Task *find_player(void)
     return task;
 }
 
+/* The PiStorm display mode is only offered when its external player,
+ * mrberry, sits beside MintVID (see docs/EXTERNAL_PLAYER.md). */
+#define MR_PISTORM_PLAYER "mrberry"
+
+static int pistorm_player_available(void)
+{
+    BPTR lock = Lock((CONST_STRPTR)"PROGDIR:" MR_PISTORM_PLAYER, ACCESS_READ);
+    if (!lock) return 0;
+    UnLock(lock);
+    return 1;
+}
+
 static void signal_player(ULONG mask)
 {
     struct Task *task;
@@ -438,8 +450,12 @@ static void update_skip_after(Object *mode, Object *h264, Object *video_mode,
     GetAttr(CHOOSER_Selected, mode, &selected);
     GetAttr(CHOOSER_Selected, h264, &selected_h264);
     GetAttr(CHOOSER_Selected, video_mode, &selected_video_mode);
+    /* The frame and VQ choices mean nothing without video, or to the
+     * external PiStorm player, which plays every frame on the VideoCore. */
     no_video = selected < mode_count &&
-               mode_values[selected] == MR_DISPLAY_NONE ? TRUE : FALSE;
+               (mode_values[selected] == MR_DISPLAY_NONE ||
+                mr_display_uses_external_player(mode_values[selected]))
+               ? TRUE : FALSE;
     SetGadgetAttrs((struct Gadget *)video_mode, window, NULL,
                    GA_Disabled, no_video, TAG_DONE);
     SetGadgetAttrs((struct Gadget *)h264, window, NULL,
@@ -877,9 +893,12 @@ static void start_player_path(const char *full_file, Object *mode,
 {
     char path[512];
     char args[1600];
+    char seg_path[64];
     mr_play_options options;
     BPTR seglist;
     struct Process *process;
+    const char *program;
+    int external;
 
     if (!full_file || !*full_file) {
         set_info(info, window, "Choose a video first.");
@@ -898,27 +917,38 @@ static void start_player_path(const char *full_file, Object *mode,
     path[sizeof(path) - 1] = 0;
     read_play_options(mode, c2p, h264, lace, scale, audio_rate, fast_buffer,
                       no_audio, mono_audio, video_mode, &options);
-    if (!mr_build_player_arguments(args, sizeof(args), &options, path,
-                                   NULL, NULL)) {
+    /* An external player (PiStorm: mrberry) runs under the same task name
+     * as mrplay and answers the same signals and status port, so Pause,
+     * Stop and the status line below need no special case. */
+    external = mr_display_uses_external_player(options.display);
+    program = external ? MR_PISTORM_PLAYER : "mrplay";
+    if (!(external ? mr_build_external_player_arguments(args, sizeof(args),
+                                                        &options, path)
+                   : mr_build_player_arguments(args, sizeof(args), &options,
+                                               path, NULL, NULL))) {
         set_info(info, window, "Could not build player arguments.");
         return;
     }
-    seglist = LoadSeg((CONST_STRPTR)"PROGDIR:mrplay");
+    snprintf(seg_path, sizeof(seg_path), "PROGDIR:%s", program);
+    seglist = LoadSeg((CONST_STRPTR)seg_path);
     if (!seglist)
-        seglist = LoadSeg((CONST_STRPTR)"mrplay");
+        seglist = LoadSeg((CONST_STRPTR)program);
     if (!seglist) {
-        set_info(info, window,
-                 "Could not load mrplay (keep it beside MintVID or in PATH).");
+        set_info(info, window, external
+                 ? "Could not load mrberry (keep it beside MintVID)."
+                 : "Could not load mrplay (keep it beside MintVID or in PATH).");
         return;
     }
     process = CreateNewProcTags(
         NP_Seglist, seglist, NP_FreeSeglist, TRUE,
         NP_Arguments, (ULONG)args, NP_StackSize, MRPLAY_STACK_SIZE,
-        NP_Cli, TRUE, NP_CommandName, (ULONG)"mrplay",
+        NP_Cli, TRUE, NP_CommandName, (ULONG)program,
         NP_Name, (ULONG)"MintVID player", TAG_END);
     if (!process) {
         UnLoadSeg(seglist);
-        set_info(info, window, "Could not create the mrplay process.");
+        set_info(info, window, external
+                 ? "Could not create the mrberry process."
+                 : "Could not create the mrplay process.");
     }
 }
 
@@ -1484,6 +1514,11 @@ int main(void)
      * of plain WritePixel and AGA/HAM - default to it rather than
      * WritePixel. */
     if (have_rtg) default_mode = (int)mode_count - 1;
+    /* PiStorm VideoCore playback, only when the external player is here.
+     * Never the default: it needs the BerryCore Emu68 kernel. */
+    if (pistorm_player_available() &&
+        !add_mode_node(&modes, "PiStorm (VideoCore)", MR_DISPLAY_PISTORM))
+        goto cleanup;
     /* Audio only, listed last so it never becomes the hardware default.
      * It sits here rather than under Video so it is easy to find; Video,
      * Skip after and VQ grey out under it (update_skip_after()). */

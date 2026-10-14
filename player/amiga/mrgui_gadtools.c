@@ -392,8 +392,12 @@ static void read_options(gt_app *app, mr_play_options *options)
 static void update_skip_after(gt_app *app)
 {
     ULONG selected = gad_value(app, app->mode, GTCY_Active);
+    /* The frame and VQ choices mean nothing without video, or to the
+     * external PiStorm player, which plays every frame on the VideoCore. */
     ULONG no_video = selected < app->mode_count &&
-                     app->modes[selected] == MR_DISPLAY_NONE ? TRUE : FALSE;
+                     (app->modes[selected] == MR_DISPLAY_NONE ||
+                      mr_display_uses_external_player(app->modes[selected]))
+                     ? TRUE : FALSE;
     ULONG not_skipping = gad_value(app, app->video_mode, GTCY_Active) != 1;
     ULONG smoosh = gad_value(app, app->h264, GTCY_Active) ==
                    MR_H264_PERF_SMOOSH;
@@ -561,6 +565,18 @@ static void stop_player(void)
         Delay(1);
 }
 
+/* The PiStorm display mode is only offered when its external player,
+ * mrberry, sits beside MintVID (see docs/EXTERNAL_PLAYER.md). */
+#define MR_PISTORM_PLAYER "mrberry"
+
+static int pistorm_player_available(void)
+{
+    BPTR lock = Lock((CONST_STRPTR)"PROGDIR:" MR_PISTORM_PLAYER, ACCESS_READ);
+    if (!lock) return 0;
+    UnLock(lock);
+    return 1;
+}
+
 static int launch(const char *program, const char *task_name,
                   const char *arguments)
 {
@@ -606,6 +622,18 @@ static void play_file(gt_app *app)
         return;
     }
     read_options(app, &options);
+    /* An external player (PiStorm: mrberry) runs under the same task name
+     * as mrplay and answers the same signals and status port, so Pause,
+     * Stop and the status line need no special case. */
+    if (mr_display_uses_external_player(options.display)) {
+        if (!mr_build_external_player_arguments(args, sizeof(args), &options,
+                                                app->path) ||
+            !launch(MR_PISTORM_PLAYER, "MintVID player", args))
+            set_info(app, "Could not start mrberry (keep it beside MintVID-GT).");
+        else
+            set_info(app, "Starting PiStorm playback...");
+        return;
+    }
     if (!mr_build_player_arguments(args, sizeof(args), &options, app->path,
                                    NULL, NULL) ||
         !launch("mrplay", "MintVID player", args))
@@ -1115,6 +1143,12 @@ static int build_window(gt_app *app)
          * ahead of plain WritePixel and AGA/HAM - default to it rather
          * than WritePixel. */
         default_mode = (int)app->mode_count - 1;
+    }
+    /* PiStorm VideoCore playback, only when the external player is here.
+     * Never the default: it needs the BerryCore Emu68 kernel. */
+    if (pistorm_player_available()) {
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: PiStorm (VC)";
+        app->modes[app->mode_count++] = MR_DISPLAY_PISTORM;
     }
     /* Audio only, listed last so it never becomes the hardware default.
      * It sits here rather than under Video so it is easy to find; Video,

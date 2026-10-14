@@ -78,7 +78,12 @@ int mr_display_is_rtg(mr_display_mode display)
 {
     return display == MR_DISPLAY_CGX || display == MR_DISPLAY_P96 ||
            display == MR_DISPLAY_P96_FULLSCREEN ||
-           display == MR_DISPLAY_RTG_HALF;
+           display == MR_DISPLAY_RTG_HALF || display == MR_DISPLAY_PISTORM;
+}
+
+int mr_display_uses_external_player(mr_display_mode display)
+{
+    return display == MR_DISPLAY_PISTORM;
 }
 
 int mr_display_has_screen_options(mr_display_mode display)
@@ -164,6 +169,7 @@ static const char *display_name(mr_display_mode display)
     case MR_DISPLAY_AGA_WINDOW: return "aga-window";
     case MR_DISPLAY_AGA_WINDOW_HALF: return "aga-window-half";
     case MR_DISPLAY_NONE: return "none";
+    case MR_DISPLAY_PISTORM: return "pistorm";
     default: return "aga";
     }
 }
@@ -233,8 +239,11 @@ static int append_playback_flags(char *out, size_t cap,
             (!append_option(out, cap, "--aga") || !append_option(out, cap, "--ecs-fast"))) return 0;
         if (o->display == MR_DISPLAY_AGA_EHB &&
             (!append_option(out, cap, "--aga") || !append_option(out, cap, "--ehb"))) return 0;
+        /* mrplay cannot play PiStorm mode itself (mrberry does): a browser
+         * that starts mrplay with these options gets windowed P96. */
         if ((o->display == MR_DISPLAY_P96 ||
-             o->display == MR_DISPLAY_P96_FULLSCREEN) &&
+             o->display == MR_DISPLAY_P96_FULLSCREEN ||
+             o->display == MR_DISPLAY_PISTORM) &&
             !append_option(out, cap, "--p96")) return 0;
         if (o->display == MR_DISPLAY_P96_FULLSCREEN &&
             !append_option(out, cap, "--fullscreen")) return 0;
@@ -367,6 +376,17 @@ int mr_build_player_arguments(char *out, size_t cap,
     return 1;
 }
 
+int mr_build_external_player_arguments(char *out, size_t cap,
+                                       const mr_play_options *o,
+                                       const char *path)
+{
+    if (!out || !cap || !path || !*path) return 0;
+    out[0] = 0;
+    if (!append_quoted(out, cap, path)) return 0;
+    if (o && o->no_audio && !append_option(out, cap, "--no-audio")) return 0;
+    return append_text(out, cap, "\n");
+}
+
 int mr_build_iptv_arguments(char *out, size_t cap, const mr_play_options *o)
 {
     mr_play_options defaults;
@@ -413,6 +433,7 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "aga-window")) o->display = MR_DISPLAY_AGA_WINDOW;
             else if (!strcmp(value, "aga-window-half")) o->display = MR_DISPLAY_AGA_WINDOW_HALF;
             else if (!strcmp(value, "none")) { o->display = MR_DISPLAY_NONE; o->no_video = 1; }
+            else if (!strcmp(value, "pistorm")) o->display = MR_DISPLAY_PISTORM;
             else goto bad;
         } else if (!strcmp(arg, "--c2p")) {
             if (i + 1 >= argc) goto bad;
@@ -589,6 +610,7 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
                  o->display == MR_DISPLAY_P96 ? "P96" :
                  o->display == MR_DISPLAY_P96_FULLSCREEN ? "P96 Fullscreen" :
                  o->display == MR_DISPLAY_RTG_HALF ? "Half" :
+                 o->display == MR_DISPLAY_PISTORM ? "PiStorm VideoCore" :
                  "WritePixel",
                  hls, h264, audio, fast_buffer_text(o),
                  o->live_resync ? " / Live-resync" : "", video);
