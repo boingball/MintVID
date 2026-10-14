@@ -1145,10 +1145,13 @@ static int build_window(gt_app *app)
         default_mode = (int)app->mode_count - 1;
     }
     /* PiStorm VideoCore playback, only when the external player is here.
-     * Never the default: it needs the BerryCore Emu68 kernel. */
+     * Never the default. Sound through the Pi's HDMI needs the BerryCore
+     * Emu68 kernel; sound through Paula (MintVID's decoders) does not. */
     if (pistorm_player_available()) {
-        app->mode_labels[app->mode_count] = (STRPTR)"Display: PiStorm (VC)";
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: PiStorm (HDMI)";
         app->modes[app->mode_count++] = MR_DISPLAY_PISTORM;
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: PiStorm (Paula)";
+        app->modes[app->mode_count++] = MR_DISPLAY_PISTORM_PAULA;
     }
     /* Audio only, listed last so it never becomes the hardware default.
      * It sits here rather than under Video so it is easy to find; Video,

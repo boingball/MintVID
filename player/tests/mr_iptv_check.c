@@ -946,6 +946,43 @@ int main(void) {
     assert(!mr_build_external_player_arguments(args, sizeof(args), &o, ""));
     assert(!mr_build_external_player_arguments(args, 8, &o, "DH0:a.mp4"));
 
+    /* PiStorm with the sound through Paula: mrberry --paula plus the audio
+     * options mrplay takes. No audio still wins. */
+    assert((int)MR_DISPLAY_PISTORM_PAULA == (int)MR_DISPLAY_PISTORM + 1);
+    mr_play_options_default(&o);
+    o.display = MR_DISPLAY_PISTORM_PAULA;
+    assert(mr_display_uses_external_player(o.display));
+    assert(mr_display_is_rtg(o.display));
+    assert(!mr_display_has_screen_options(o.display));
+    assert(mr_build_external_player_arguments(args, sizeof(args), &o,
+                                              "DH0:a.mp4"));
+    assert(!strcmp(args, "\"DH0:a.mp4\" --paula\n"));
+    o.audio_rate = MR_AUDIO_RATE_LOW;
+    o.mono_audio = 1;
+    assert(mr_build_external_player_arguments(args, sizeof(args), &o,
+                                              "DH0:a.mp4"));
+    assert(!strcmp(args,
+                   "\"DH0:a.mp4\" --paula --audio-rate=low --audio-mono\n"));
+    o.no_audio = 1;
+    assert(mr_build_external_player_arguments(args, sizeof(args), &o,
+                                              "DH0:a.mp4"));
+    assert(!strcmp(args, "\"DH0:a.mp4\" --no-audio\n"));
+    o.no_audio = 0;
+    assert(mr_build_player_arguments(args, sizeof(args), &o, url, NULL, NULL));
+    assert(strstr(args, "--p96") && !strstr(args, "pistorm") &&
+           !strstr(args, "--paula"));
+    mr_play_options_summary(&o, summary, sizeof(summary));
+    assert(strstr(summary, "Playback: RTG (PiStorm VideoCore, Amiga audio) /"));
+    assert(mr_build_iptv_arguments(buf, sizeof(buf), &o));
+    assert(strstr(buf, "--display pistorm-paula"));
+    argc_rt = 1;
+    for (p = strtok(buf, " \n"); p && argc_rt < 40; p = strtok(NULL, " \n"))
+      argv_rt[argc_rt++] = p;
+    mr_play_options_default(&parsed);
+    assert(mr_play_options_parse(&parsed, argc_rt, argv_rt, error,
+                                 sizeof(error)));
+    assert(parsed.display == MR_DISPLAY_PISTORM_PAULA);
+
     /* Range limits: 200..2000 ms accepted, anything else refused. */
     {
       char *lo[] = { "x", "--skip-trigger=200" };

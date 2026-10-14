@@ -75,8 +75,14 @@ typedef enum {
      * docs/EXTERNAL_PLAYER.md for the contract mrberry follows. Anything
      * that still starts mrplay with these options (the IPTV and YouTube
      * browsers) gets P96 instead. Same value as the PiStorm fork's
-     * MR_DISPLAY_PISTORM_HARD_FULLSCREEN, so its saved settings carry over. */
-    MR_DISPLAY_PISTORM
+     * MR_DISPLAY_PISTORM_HARD_FULLSCREEN, so its saved settings carry over.
+     * The sound goes to the Pi's HDMI, which needs the patched BerryCore
+     * Emu68 kernel. */
+    MR_DISPLAY_PISTORM,
+    /* The same, with the sound decoded on the 68k by MintVID's own decoders
+     * and played through Paula (mrberry --paula). Works on a stock Emu68
+     * kernel. */
+    MR_DISPLAY_PISTORM_PAULA
 } mr_display_mode;
 
 typedef enum {
@@ -198,7 +204,7 @@ int mr_display_is_rtg(mr_display_mode display);
 int mr_display_has_screen_options(mr_display_mode display);
 
 /* The display modes played by an external player instead of mrplay
- * (today only MR_DISPLAY_PISTORM, played by mrberry). */
+ * (today the two PiStorm modes, played by mrberry). */
 int mr_display_uses_external_player(mr_display_mode display);
 
 /* HAM depth of a display mode: 8 for HAM8/HAM8 (Dither), 6 for HAM6/HAM6
@@ -222,6 +228,7 @@ int mr_build_iptv_arguments(char *output, size_t output_size,
                             const mr_play_options *options);
 /* Command line for the external player of a local file:
  *   "<path>" [--no-audio]
+ *   "<path>" --paula [--audio-rate=low] [--audio-mono]   (PiStorm, Amiga audio)
  * Kept this small on purpose: see docs/EXTERNAL_PLAYER.md. */
 int mr_build_external_player_arguments(char *output, size_t output_size,
                                        const mr_play_options *options,

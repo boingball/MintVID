@@ -6,9 +6,18 @@ modes. Today there is one: **PiStorm (VideoCore)**, played by `mrberry` from
 It decodes H.264 on the Raspberry Pi's VideoCore and shows it full screen on
 the Pi's HDMI output.
 
-MintVID does not ship `mrberry`. The GUIs list the PiStorm mode only when a
+MintVID does not ship `mrberry`. The GUIs list the PiStorm modes only when a
 file called `mrberry` sits in the same drawer as MintVID (`PROGDIR:mrberry`).
 Without it nothing changes.
+
+There are two PiStorm modes. They differ only in where the sound goes:
+
+- **PiStorm (VideoCore, Pi audio)** / GadTools "PiStorm (HDMI)": the sound
+  is decoded on the Pi's second core and played over HDMI. This needs
+  Michi's patched Emu68 kernel (BerryCore).
+- **PiStorm (VideoCore, Amiga audio)** / GadTools "PiStorm (Paula)": the
+  sound is decoded on the 68k by MintVID's own decoders (MintAMP AAC/MP3,
+  MP2, AC-3, PCM) and played through Paula. A stock Emu68 kernel is enough.
 
 The IPTV and YouTube browsers still start `mrplay`. If the controller is set
 to PiStorm, they play in a P96 window.
@@ -19,7 +28,9 @@ The GUI starts the player as a new process:
 
 - task name `MintVID player`, the same as `mrplay`
 - `NP_Cli`, stack `MRPLAY_STACK_SIZE`
-- arguments: `"<file>" [--no-audio]`
+- arguments: `"<file>" [--no-audio]`, or for the Amiga-audio mode
+  `"<file>" --paula [--audio-rate=low] [--audio-mono]` (the same audio
+  options mrplay takes; with No audio ticked it is `--no-audio` instead)
 
 The file name is quoted. A `"` inside it is written as `*"`, and a `*` as
 `**`: the usual AmigaDOS rules, so `ReadArgs()` or the C runtime's `argv`

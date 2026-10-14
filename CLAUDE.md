@@ -2151,6 +2151,23 @@ itself lives in MichiB210/MintVID-PiStorm, with `berryvp.library`, the CPU1
 audio modules and the patched Emu68 kernel it needs. Anything that still
 starts `mrplay` with this display (the IPTV/YouTube browsers) gets `--p96`.
 
+A second entry, "PiStorm (VideoCore, Amiga audio)" (`MR_DISPLAY_PISTORM_PAULA`,
+appended after it), starts `mrberry --paula`. The sound is then decoded on the
+68k with MintVID's own decoders and played through `audio_paula.c`, so it
+needs no BerryCore kernel. `--audio-rate=low` and `--audio-mono` are passed
+the same way as to mrplay. In mrberry (`amiga/mrb_paula.c`), the Pi's 1-MHz
+timer is the clock, anchored when the first video frame goes to the
+VideoCore. The end of Paula's queue is compared with where that clock will be
+when it plays, and silence is added or samples dropped there. A host mock
+harness with real MintAMP decode kept the error within 50 ms at Paula clock
+errors of up to 2%, through pause and jumps. When the VideoCore actually
+shows a frame relative to that anchor has not been measured on hardware, so
+`--av-offset=MS` exists to tune it.
+
+MP4 files whose `mp4a` track carries MP3 (object type 0x6B) are reported as
+AAC by `mr_mov.c`, which never reads the esds object type, so they play
+silent in mrplay too. Not fixed yet.
+
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4

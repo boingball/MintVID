@@ -1515,9 +1515,13 @@ int main(void)
      * WritePixel. */
     if (have_rtg) default_mode = (int)mode_count - 1;
     /* PiStorm VideoCore playback, only when the external player is here.
-     * Never the default: it needs the BerryCore Emu68 kernel. */
+     * Never the default. Sound through the Pi's HDMI needs the BerryCore
+     * Emu68 kernel; sound through Paula (MintVID's decoders) does not. */
     if (pistorm_player_available() &&
-        !add_mode_node(&modes, "PiStorm (VideoCore)", MR_DISPLAY_PISTORM))
+        (!add_mode_node(&modes, "PiStorm (VideoCore, Pi audio)",
+                        MR_DISPLAY_PISTORM) ||
+         !add_mode_node(&modes, "PiStorm (VideoCore, Amiga audio)",
+                        MR_DISPLAY_PISTORM_PAULA)))
         goto cleanup;
     /* Audio only, listed last so it never becomes the hardware default.
      * It sits here rather than under Video so it is easy to find; Video,

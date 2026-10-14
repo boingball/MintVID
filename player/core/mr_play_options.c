@@ -78,12 +78,13 @@ int mr_display_is_rtg(mr_display_mode display)
 {
     return display == MR_DISPLAY_CGX || display == MR_DISPLAY_P96 ||
            display == MR_DISPLAY_P96_FULLSCREEN ||
-           display == MR_DISPLAY_RTG_HALF || display == MR_DISPLAY_PISTORM;
+           display == MR_DISPLAY_RTG_HALF ||
+           mr_display_uses_external_player(display);
 }
 
 int mr_display_uses_external_player(mr_display_mode display)
 {
-    return display == MR_DISPLAY_PISTORM;
+    return display == MR_DISPLAY_PISTORM || display == MR_DISPLAY_PISTORM_PAULA;
 }
 
 int mr_display_has_screen_options(mr_display_mode display)
@@ -170,6 +171,7 @@ static const char *display_name(mr_display_mode display)
     case MR_DISPLAY_AGA_WINDOW_HALF: return "aga-window-half";
     case MR_DISPLAY_NONE: return "none";
     case MR_DISPLAY_PISTORM: return "pistorm";
+    case MR_DISPLAY_PISTORM_PAULA: return "pistorm-paula";
     default: return "aga";
     }
 }
@@ -243,7 +245,7 @@ static int append_playback_flags(char *out, size_t cap,
          * that starts mrplay with these options gets windowed P96. */
         if ((o->display == MR_DISPLAY_P96 ||
              o->display == MR_DISPLAY_P96_FULLSCREEN ||
-             o->display == MR_DISPLAY_PISTORM) &&
+             mr_display_uses_external_player(o->display)) &&
             !append_option(out, cap, "--p96")) return 0;
         if (o->display == MR_DISPLAY_P96_FULLSCREEN &&
             !append_option(out, cap, "--fullscreen")) return 0;
@@ -383,7 +385,16 @@ int mr_build_external_player_arguments(char *out, size_t cap,
     if (!out || !cap || !path || !*path) return 0;
     out[0] = 0;
     if (!append_quoted(out, cap, path)) return 0;
-    if (o && o->no_audio && !append_option(out, cap, "--no-audio")) return 0;
+    if (o && o->no_audio) {
+        if (!append_option(out, cap, "--no-audio")) return 0;
+    } else if (o && o->display == MR_DISPLAY_PISTORM_PAULA) {
+        /* Sound through Paula with MintVID's decoders: mrberry takes the
+         * same audio options as mrplay. */
+        if (!append_option(out, cap, "--paula")) return 0;
+        if (o->audio_rate == MR_AUDIO_RATE_LOW &&
+            !append_option(out, cap, "--audio-rate=low")) return 0;
+        if (o->mono_audio && !append_option(out, cap, "--audio-mono")) return 0;
+    }
     return append_text(out, cap, "\n");
 }
 
@@ -434,6 +445,7 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "aga-window-half")) o->display = MR_DISPLAY_AGA_WINDOW_HALF;
             else if (!strcmp(value, "none")) { o->display = MR_DISPLAY_NONE; o->no_video = 1; }
             else if (!strcmp(value, "pistorm")) o->display = MR_DISPLAY_PISTORM;
+            else if (!strcmp(value, "pistorm-paula")) o->display = MR_DISPLAY_PISTORM_PAULA;
             else goto bad;
         } else if (!strcmp(arg, "--c2p")) {
             if (i + 1 >= argc) goto bad;
@@ -611,6 +623,8 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
                  o->display == MR_DISPLAY_P96_FULLSCREEN ? "P96 Fullscreen" :
                  o->display == MR_DISPLAY_RTG_HALF ? "Half" :
                  o->display == MR_DISPLAY_PISTORM ? "PiStorm VideoCore" :
+                 o->display == MR_DISPLAY_PISTORM_PAULA ?
+                     "PiStorm VideoCore, Amiga audio" :
                  "WritePixel",
                  hls, h264, audio, fast_buffer_text(o),
                  o->live_resync ? " / Live-resync" : "", video);
