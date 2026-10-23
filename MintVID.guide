@@ -191,15 +191,18 @@ mode:
     the PiStorm's RTG has no P96 overlay. Faster PiStorm hardware should
     provide more headroom, but exact results depend on the stream and
     configuration.
-  - Vampire/Apollo 68080 - not yet validated by the MintVID project. No
-    optimised build is officially recommended yet, and the MintVID060
-    build should not be assumed to be correct solely from the CPU name.
+  - Vampire/Apollo 68080 - use MintVID040, not MintVID060. The 68080
+    runs the 64-bit multiply and divide instructions in hardware; the
+    68060 does not, so MintVID060 replaces them with slower code. MintVID
+    has no 68080-specific code yet (no AMMX, no SAGA display mode) and
+    has not been measured on Vampire hardware.
 
 MintVID uses the same feature set across its 68030, 68040 and 68060
 builds. For normal classic systems use MintVID030, MintVID040 or
-MintVID060 for the matching CPU. PiStorm/Emu68 uses MintVID040. There is
-no separate AGA, RTG or PiStorm feature edition; display mode and
-practical playback performance depend on the hardware underneath it.
+MintVID060 for the matching CPU. PiStorm/Emu68 and Vampire/Apollo 68080
+use MintVID040. There is no separate AGA, RTG or PiStorm feature edition;
+display mode and practical playback performance depend on the hardware
+underneath it.
 
 @{" Back to Contents " LINK "MAIN"}
 @endnode
@@ -212,11 +215,10 @@ practical playback performance depend on the hardware underneath it.
 @{b}Installing MintVID@{ub}
 
 For a normal 68030, 68040 or 68060 system use the MintVID030, MintVID040
-or MintVID060 drawer respectively. PiStorm/Emu68 users should use
-MintVID040. Vampire/Apollo 68080 has not yet been validated, so there is
-no official optimised-build recommendation for it yet. Copy the chosen
-drawer to your Amiga (or a shared PiStorm volume) and keep its contents
-together.
+or MintVID060 drawer respectively. PiStorm/Emu68 and Vampire/Apollo
+68080 users should use MintVID040; MintVID060 is for a real 68060 only.
+Copy the chosen drawer to your Amiga (or a shared PiStorm volume) and
+keep its contents together.
 
 Run @{b}MintVID@{ub} on systems with ReAction V44. A standard AmigaOS 3.0
 system without ReAction V44 should instead run @{b}MintVID-GT@{ub}, the

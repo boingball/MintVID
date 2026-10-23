@@ -6099,3 +6099,33 @@ Table footprint against the real 060's 8 KB data cache:
   R+G+B, and a frame touches only part of them.
 
 Not yet timed on real hardware.
+
+## Vampire/Apollo 68080
+Recommended build: MintVID040 (README, guide and DESIGN.md say so). The 68080
+Programmer's Reference Manual (June 2026 edition, user-supplied PDF, timings
+from a V4) shows the 64-bit `MULU.L`/`MULS.L Dn,Dh:Dl` forms in hardware at
+2-3 cycles and divides at up to 18. So everything MintVID060 does to avoid
+them (the MP2 `_060` kernels, MintAMP's 060 groups, the AC-3 FFT wrapper,
+GCC's `-m68060` lowering to libgcc) only costs time on an 080. Not yet
+measured on Vampire hardware.
+
+Facts for future 080 work, from that manual and RiVA's own source (in git
+history before `b8f1516`, `src/RiVA-0.54a0.s`):
+- 128 KB data cache, 32 KB instruction cache, 64-bit bus. The 060-sized
+  cache cautions above do not apply.
+- Three pipes from core ~11350, but MUL/DIV/MOVEM only issue in the first.
+- AMMX (64-bit SIMD, `-m68080` in vasm; GNU as does not know it): `PAVGB`
+  is exactly the MPEG/H.264 rounded average `(a+b+1)>>1` on 8 bytes;
+  `PMUL88` (word multiply, bits 23..8), `PADDW` and `PACKUSWB` (saturate to
+  0..255) fit YUV->RGB; `PACK3216` is ARGB->RGB565; `C2P` transposes 8
+  chunky bytes; `BFLY`/`TRANS` for the IDCT.
+- Registers are 64-bit but AmigaOS saves only 32 bits on a task switch:
+  code using AMMX must set the Apollo bit, SR bit 11 (`ori #$800,sr`, legal
+  in user mode on the 080), as RiVA did.
+- Detection: Exec `AttnFlags` bit 10 (`AFB_68080`).
+- SAGA shows YUYV 4:2:2 directly: RiVA wrote `$0006` (plus doubling bits in
+  the high byte) to `$DFF1F4` and its own triple-buffered frame address to
+  `$DFF1EC`, restoring `$0002` (RGB565) on exit. That would skip colour
+  conversion like the P96 overlay does.
+Nothing here can execute 68080 code (qemu has no 68080), so any AMMX or SAGA
+change needs a Vampire owner to test it.
