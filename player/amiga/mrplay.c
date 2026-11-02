@@ -228,6 +228,9 @@ static uint64_t skip_trigger_exit_us(unsigned long entry_us)
 /* How often the scheduler reads input on its own when no frame is queued -
  * see last_idle_poll_us. */
 #define IDLE_EVENT_POLL_US       40000ULL
+/* How often a converting decoder's output is checked against the display's
+ * size and layout - see last_output_check_us. */
+#define OUTPUT_CHECK_US         250000ULL
 #define MICRO_RESCUE_MAX_US    2500000ULL  /* bail to the existing catastrophic
                                              * path if shedding output alone
                                              * hasn't recovered within this   */
@@ -529,6 +532,7 @@ static uint64_t s64_to_us(int64_t v) { return v > 0 ? (uint64_t)v : 0; }
 typedef struct queued_video {
     unsigned char *rgb;
     size_t capacity;
+    int fmt;                 /* a converting decoder's MR_PIX_* layout */
     int width, height, stride, dirty_y0, dirty_y1;
     uint64_t pts_us;
     uint64_t decoded_at_us;
@@ -788,7 +792,7 @@ static void present_service_frame(video_presenter *vp)
         display_show_indexed(vp->disp, front->rgb, front->width, front->height,
                              front->stride, front->dirty_y0, front->dirty_y1);
     else if (vp->codec_fmt >= 0)
-        display_show_native(vp->disp, vp->codec_fmt, front->rgb, front->width,
+        display_show_native(vp->disp, front->fmt, front->rgb, front->width,
                             front->height, front->stride, front->dirty_y0,
                             front->dirty_y1);
     else if (vp->use_bgr)
@@ -1023,6 +1027,7 @@ static int queue_copy(queued_video *q, const mr_frame *fr, uint64_t pts,
         q->rgb = p; q->capacity = bytes;
     }
     memcpy(q->rgb, fr->data, bytes);
+    q->fmt = fr->fmt;
     q->width = fr->width; q->height = fr->height; q->stride = fr->stride;
     q->dirty_y0 = fr->dirty_y0; q->dirty_y1 = fr->dirty_y1;
     q->pts_us = pts; q->decoded_at_us = decoded_at;
@@ -2806,6 +2811,7 @@ int main(int argc, char **argv)
      * SMOOSH_MAX_DROP_RUN_US. */
     uint64_t smoosh_last_decode_us = 0;
     uint64_t last_idle_poll_us = 0;
+    uint64_t last_output_check_us = 0;
     uint64_t last_hls_poll_us = 0;
 
     /* No-ops for a non-H.264 codec (mr_h264_set_timing_enabled checks
@@ -3478,6 +3484,41 @@ int main(int argc, char **argv)
                 deferred_player_event = ev;
             if (deferred_player_event == MR_EV_QUIT) { quit = 1; break; }
         }
+        /* A converting decoder writes what the display shows. After a
+         * window resize or a fullscreen toggle it is asked again: for the
+         * new size in the screen's own layout, or for RGB24 at the source
+         * size when the display takes no native rows now. Queued frames
+         * keep the size and layout they were made in (queued_video.fmt)
+         * and are shown as they are. */
+        if (codec_screen_fmt >= 0 && disp &&
+            now - last_output_check_us >= OUTPUT_CHECK_US) {
+            int out_w = vi->width, out_h = vi->height, source_size = 0;
+            int out_fmt = display_native_format(disp);
+            last_output_check_us = now;
+            if (out_fmt < 0 ||
+                !display_present_size(disp, vi->width, vi->height,
+                                      &out_w, &out_h)) {
+                out_fmt = MR_PIX_RGB24;
+                out_w = vi->width;
+                out_h = vi->height;
+                source_size = 1;
+            }
+            if ((out_fmt != codec_screen_fmt || out_w != codec_screen_w ||
+                 out_h != codec_screen_h) &&
+                mr_decoder_set_output(&dec, (mr_pixfmt)out_fmt,
+                                      source_size ? 0 : out_w,
+                                      source_size ? 0 : out_h) == MR_OK) {
+                if (want_time)
+                    printf("video path: decoder output now %dx%d %s\n",
+                           out_w, out_h,
+                           out_fmt == MR_PIX_BGRA32 ? "BGRA32" :
+                           out_fmt == MR_PIX_RGB565LE ? "RGB565LE" :
+                           out_fmt == MR_PIX_BGR24 ? "BGR24" : "RGB24");
+                codec_screen_fmt = out_fmt;
+                codec_screen_w = out_w;
+                codec_screen_h = out_h;
+            }
+        }
         /* The worker's replies do not wake the player loop. Reclaim them
          * while decoding so queued segment downloads continue in the
          * background instead of waiting until the next segment boundary. */
@@ -3989,7 +4030,7 @@ int main(int argc, char **argv)
                 display_show_indexed(disp, front->rgb, front->width, front->height,
                                      front->stride, front->dirty_y0, front->dirty_y1);
             else if (codec_screen_fmt >= 0)
-                display_show_native(disp, codec_screen_fmt, front->rgb,
+                display_show_native(disp, front->fmt, front->rgb,
                                     front->width, front->height, front->stride,
                                     front->dirty_y0, front->dirty_y1);
             else if (use_yuv_bgr_queue)

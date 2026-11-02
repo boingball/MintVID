@@ -204,8 +204,9 @@ frame spent on decoding.
   decodes, MintVID opens a true-colour screen (32-bit B8G8R8A8 first, then
   24-bit) and falls back to 16-bit only when none opens. A 1080p screen at
   24 or 32 bits needs 32 MiB of RTG memory (`dtoverlay=videocore,mem=32` in
-  the Pi's `config.txt`). In a CGX window the VPU decodes too, and the
-  window scales as usual.
+  the Pi's `config.txt`). In a window (P96 (Windowed), shown through CGX)
+  the VPU also scales each picture to the window and converts it to the
+  screen's format, after every resize too, so the 68k only copies it in.
 - **Switching it off:** it is on whenever `videocodec.library` opens. The
   **VideoCore decoding** checkbox in both controllers (shown only when the
   library is installed) or `--no-videocore` turns it off.

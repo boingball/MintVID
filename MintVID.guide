@@ -806,7 +806,9 @@ as before. It needs the VideoCore stack from emu68-driver-stack
 cma overlay; its VCInfo command checks the setup. P96 (Fullscreen) is the
 fast display: while the VPU decodes, MintVID opens a 32- or 24-bit screen
 when one is available, which at 1080p needs 32 MiB of RTG memory
-(dtoverlay=videocore,mem=32 in the Pi's config.txt). It is on whenever
+(dtoverlay=videocore,mem=32 in the Pi's config.txt). In a window (P96
+(Windowed)) the VPU also scales each picture to the window and converts
+it, after every resize too, so the 68k only copies it in. It is on whenever
 videocodec.library is installed; the @{b}VideoCore decoding@{ub} checkbox or
 --no-videocore turns it off. If the VPU fails in the middle of a stream,
 playback stops rather than switching to software.

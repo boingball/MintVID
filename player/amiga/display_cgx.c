@@ -36,6 +36,7 @@
 #include "mr_aspect.h"
 #include "rtg_mode_pick.h"
 #include "../core/mr_scale.h"
+#include "../core/mr_types.h"
 
 #include <stddef.h>
 #include <exec/types.h>
@@ -44,6 +45,8 @@
 #include <intuition/screens.h>
 #include <graphics/displayinfo.h>
 #include <cybergraphx/cybergraphics.h>
+#include <libraries/Picasso96.h>
+#include <inline/Picasso96API.h>
 
 #include <proto/exec.h>
 #include <proto/intuition.h>
@@ -681,6 +684,24 @@ static void scale_rgb24_strip(cgx_state *s, const unsigned char *src, int sw,
                                 s->dh, s->scaled_stride, dst_y0, rows);
 }
 
+/* Rebuild RTG geometry when:
+ *   - geometry has never been built (geometry_valid == 0, handles first frame)
+ *   - the window's bitmap changed (screen mode flip)
+ *   - a resize has been pending long enough (Intuition quiet for 100 ms)   */
+static void cgx_follow_window(cgx_state *s)
+{
+    struct BitMap *cur_bm = s->win->RPort->BitMap;
+    int need_rebuild = !s->geometry_valid || cur_bm != s->cached_bitmap;
+    if (!need_rebuild &&
+        (s->pending_w != s->iw || s->pending_h != s->ih) &&
+        clock() - s->resize_at >= CLOCKS_PER_SEC / 10)
+        need_rebuild = 1;
+    if (need_rebuild)
+        cgx_rebuild_geometry(s, !s->geometry_valid ? "invalid" :
+                              cur_bm != s->cached_bitmap ? "bitmap-change"
+                                                          : "resize");
+}
+
 static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
                      int stride, int dy0, int dy1,
                      mr_display_service_fn service, void *service_opaque)
@@ -694,22 +715,7 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
         memset(&s->timing, 0, sizeof s->timing);
         total = mark = clock();
     }
-    /* Rebuild RTG geometry when:
-     *   - geometry has never been built (geometry_valid == 0, handles first frame)
-     *   - the window's bitmap changed (screen mode flip)
-     *   - a resize has been pending long enough (Intuition quiet for 100 ms)   */
-    {
-        struct BitMap *cur_bm = s->win->RPort->BitMap;
-        int need_rebuild = !s->geometry_valid || cur_bm != s->cached_bitmap;
-        if (!need_rebuild &&
-            (s->pending_w != s->iw || s->pending_h != s->ih) &&
-            clock() - s->resize_at >= CLOCKS_PER_SEC / 10)
-            need_rebuild = 1;
-        if (need_rebuild)
-            cgx_rebuild_geometry(s, !s->geometry_valid ? "invalid" :
-                                  cur_bm != s->cached_bitmap ? "bitmap-change"
-                                                              : "resize");
-    }
+    cgx_follow_window(s);
     if (timing) {
         s->timing.resize_us = elapsed_us(mark);
         report_slow("resize-handling", s->timing.resize_us,
@@ -910,6 +916,105 @@ static void cgx_show(void *h, const unsigned char *rgb, int w, int hh,
     }
 }
 
+/* The size a converting decoder should deliver: the picture fitted into the
+ * window, as cgx_rebuild_geometry() fits it, so cgx_show_native() only
+ * copies rows. A resize Intuition has finished with is taken in first. */
+static int cgx_present_size(void *h, int src_w, int src_h, int *w, int *hh)
+{
+    cgx_state *s = (cgx_state *)h;
+    mr_aspect_rect fit;
+    if (!s || !s->win || src_w <= 0 || src_h <= 0) return 0;
+    cgx_follow_window(s);
+    fit = mr_aspect_fit(src_w, src_h, s->iw, s->ih);
+    *w = fit.w;
+    *hh = fit.h;
+    return 1;
+}
+
+/* The window bitmap's layout as an MR_PIX_* value, for the layouts a
+ * converting decoder writes and p96WritePixelArray() copies as they are.
+ * Picasso96API.library is needed for that copy: without it frames stay
+ * RGB24, scaled here and converted by WritePixelArray(). */
+static int cgx_native_format(void *h)
+{
+    cgx_state *s = (cgx_state *)h;
+    if (!s || !s->win || !P96Base) return -1;
+    switch (p96GetBitMapAttr(s->win->RPort->BitMap, P96BMA_RGBFORMAT)) {
+    case RGBFB_B8G8R8A8: return MR_PIX_BGRA32;
+    case RGBFB_B8G8R8:   return MR_PIX_BGR24;
+    case RGBFB_R8G8B8:   return MR_PIX_RGB24;
+    case RGBFB_R5G6B5PC: return MR_PIX_RGB565LE;
+    default:             return -1;
+    }
+}
+
+/* A converting decoder's rows into the window, already its size and the
+ * screen's layout: p96WritePixelArray() copies them, clipped by the window's
+ * layer, with no scaling or conversion. A frame made for the size before a
+ * resize is shown unscaled, centred and cut to the window until frames of
+ * the new size arrive. */
+static void cgx_show_native(void *h, int fmt, const unsigned char *pix, int w,
+                            int hh, int stride, int dy0, int dy1,
+                            mr_display_service_fn service, void *service_opaque)
+{
+    cgx_state *s = (cgx_state *)h;
+    struct RenderInfo ri;
+    clock_t total = 0;
+    int timing, x0, y0, sx = 0, sy = 0, cw = w, y;
+    if (!s || !s->win || !P96Base) return;
+    timing = g_display_want_time;
+    if (timing) {
+        memset(&s->timing, 0, sizeof s->timing);
+        total = clock();
+    }
+    cgx_follow_window(s);
+    if (s->force_full_redraw) {
+        dy0 = 0;
+        dy1 = hh;
+        s->force_full_redraw = 0;
+    }
+    x0 = s->bl + s->dx;
+    y0 = s->bt + s->dy;
+    if (w != s->dw || hh != s->dh) {
+        int ch = hh < s->ih ? hh : s->ih;
+        cw = w < s->iw ? w : s->iw;
+        sx = (w - cw) / 2;
+        sy = (hh - ch) / 2;
+        x0 = s->bl + (s->iw - cw) / 2;
+        y0 = s->bt + (s->ih - ch) / 2 - sy;
+        dy0 = sy;
+        dy1 = sy + ch;
+    }
+    if (dy0 < 0) dy0 = 0;
+    if (dy1 > hh) dy1 = hh;
+    if (dy1 <= dy0 || cw <= 0) return;
+    ri.Memory = (APTR)pix;
+    ri.BytesPerRow = (WORD)stride;
+    ri.pad = 0;
+    ri.RGBFormat = fmt == MR_PIX_BGRA32   ? RGBFB_B8G8R8A8 :
+                   fmt == MR_PIX_BGR24    ? RGBFB_B8G8R8 :
+                   fmt == MR_PIX_RGB565LE ? RGBFB_R5G6B5PC : RGBFB_R8G8B8;
+    if (service) service(service_opaque);
+    for (y = dy0; y < dy1; y += MR_CGX_STRIP_ROWS) {
+        int rows = dy1 - y < MR_CGX_STRIP_ROWS ? dy1 - y : MR_CGX_STRIP_ROWS;
+        p96WritePixelArray(&ri, (UWORD)sx, (UWORD)y, s->win->RPort,
+                           (UWORD)x0, (UWORD)(y0 + y), (UWORD)cw, (UWORD)rows);
+        if (timing) s->timing.copies++;
+        if (service) service(service_opaque);
+    }
+    if (timing) {
+        s->timing.src_w = w; s->timing.src_h = hh;
+        s->timing.dst_w = cw; s->timing.dst_h = dy1 - dy0;
+        s->timing.src_format = s->timing.dst_format =
+            fmt == MR_PIX_BGRA32   ? "BGRA32" :
+            fmt == MR_PIX_BGR24    ? "BGR24" :
+            fmt == MR_PIX_RGB565LE ? "RGB565PC" : "RGB24";
+        s->timing.pixels = (unsigned long)cw * (unsigned long)(dy1 - dy0);
+        s->timing.bytes = (unsigned long)stride * (unsigned long)(dy1 - dy0);
+        s->timing.blit_us = s->timing.total_us = elapsed_us(total);
+    }
+}
+
 static int cgx_timing(void *h, mr_display_timing *timing)
 {
     cgx_state *s = (cgx_state *)h;
@@ -1082,7 +1187,10 @@ const display_backend backend_cgx = {
     .status = cgx_status,
     .wait_mask = cgx_wait_mask,
     .toggle_fullscreen = cgx_toggle_fullscreen,
-    .is_fullscreen = cgx_is_fullscreen
+    .is_fullscreen = cgx_is_fullscreen,
+    .present_size = cgx_present_size,
+    .native_format = cgx_native_format,
+    .show_native = cgx_show_native
     /* supports_indexed/show_indexed/supports_yuv_indexed left NULL - RTG
      * backends don't implement the AGA-only indexed fast paths. */
 };

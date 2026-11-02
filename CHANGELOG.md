@@ -8,8 +8,9 @@
   the VideoCore stack (`videocodec.library`), H.264 (8-bit 4:2:0
   Baseline, Main and High profile, up to 2032 pixels across) and MJPEG are
   decoded on the Pi's VPU. The VPU also scales each picture and converts it
-  to the screen's own pixel format, so on a Pi 4 1080p plays full screen at
-  its full 30 fps with **P96 (Fullscreen)**. Anything the VPU cannot take
+  to the screen's own pixel format, full screen and in a P96 window, where
+  it follows every resize, so on a Pi 4 1080p plays full screen at its full
+  30 fps with **P96 (Fullscreen)**. Anything the VPU cannot take
   plays in software as before. It is on whenever the library is installed;
   the new **VideoCore decoding** checkbox in both controllers, or
   `--no-videocore`, turns it off. Saved controller settings are reset once
