@@ -4831,7 +4831,13 @@ int main(int argc, char **argv)
                                 stats.dropped++;
                                 goto drain_decoded_output;
                             }
-                            if (skip_stale_output) {
+                            /* skip_stale_output was decided before this
+                             * packet went in, but a hardware decoder can
+                             * hand over a burst of pictures for one packet:
+                             * the queue is checked again for each, since one
+                             * queued past video_cap overwrites the front
+                             * slot. */
+                            if (skip_stale_output || qcount >= video_cap) {
                                 /* Queue full, or this frame already fell more
                                  * than a period behind wall-clock before it
                                  * was even decoded (see skip_stale_output's
@@ -4859,7 +4865,9 @@ int main(int argc, char **argv)
                                 }
                                 if (micro_rescue.active)
                                     stats.micro_rescue_frames_skipped++;
-                                if (skip_reason_queue_full) stats.skip_queue_full++;
+                                if (skip_reason_queue_full ||
+                                    qcount >= video_cap)
+                                    stats.skip_queue_full++;
                                 if (skip_reason_pts_late) stats.skip_pts_late++;
                                 if (skip_reason_micro_rescue)
                                     stats.skip_micro_rescue++;
