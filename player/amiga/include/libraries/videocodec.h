@@ -107,6 +107,35 @@
  *   case VCIT_FrameReturned:   draw into it.u.Frame, then VC_SendFrame(s, it.u.Frame);
  *   case VCIT_Packet:          Write() Data/Length, then VC_ReleasePacket(s, it.u.Packet);
  *
+ * An H.264 encoder takes every format of its VCCodecInfo.InputFormats, not only
+ * I420, and scales with VCA_OutputWidth/Height: the VideoCore backend puts the
+ * ISP in front of the encoder inside the VPU.  So a screen goes in as it is:
+ *
+ *   s = VC_OpenSessionTags(VCA_Codec, VCC_H264, VCA_Kind, VCK_Encoder,
+ *                          VCA_Width, 1920, VCA_Height, 1080, VCA_InputFormat, VCF_BGRA32,
+ *                          VCA_InputCount, 1, VCA_OutputWidth, 1280, VCA_OutputHeight, 720,
+ *                          VCA_SigMask, 1UL << sig, TAG_DONE);
+ *   frame = VC_ImportFrame(s, VCS_Input, bitmap);   // before the first send
+ *
+ * Example 5: a camera's pictures shown on an RGB screen
+ *
+ * A converter takes pictures and gives pictures, in another format and size.
+ * It reads the formats of its VCCodecInfo.InputFormats, a camera's YUYV and
+ * NV12 among them:
+ *
+ *   s = VC_OpenSessionTags(VCA_Codec, VCC_Raw, VCA_Kind, VCK_Converter,
+ *                          VCA_Width, 640, VCA_Height, 480, VCA_InputFormat, VCF_YUYV,
+ *                          VCA_OutputFormat, VCF_BGRA32,
+ *                          VCA_OutputWidth, 320, VCA_OutputHeight, 240,
+ *                          VCA_SigMask, 1UL << sig, TAG_DONE);
+ *   frame = VC_ImportFrame(s, VCS_Input, buffer);   // each camera buffer, before the first send
+ *   // VC_SendFrame() each picture as it comes; VCIT_FrameReturned gives the
+ *   // buffer back for the camera, VCIT_Frame the picture to draw
+ *
+ * NV12 goes as a camera sends it, the UV rows right after the picture's own.
+ * The VideoCore backend reads YUV as full-range BT.601 (VCCS_JPEG), so a
+ * camera's video-range picture (16 to 235) shows its blacks a little grey.
+ *
  *
  * The rules
  *
@@ -207,7 +236,7 @@ typedef long long VCTime; /* a timestamp in microseconds */
 #define VCF_YUYV 9   /* packed 4:2:2: Y U Y V [RGBFB_Y4U2V2] */
 #define VCF_UYVY 10  /* packed 4:2:2: U Y V Y */
 
-/* A format's bit in VCCodecInfo.Formats, as RGBFF_ is to RGBFB_ */
+/* A format's bit in VCCodecInfo.OutputFormats and InputFormats, as RGBFF_ is to RGBFB_ */
 #define VCF_MASK(f) (1UL << (f))
 
 /* H.264 profiles (VCA_Profile) */
@@ -216,6 +245,12 @@ typedef long long VCTime; /* a timestamp in microseconds */
 #define VCP_H264_ConstrainedBaseline 2
 #define VCP_H264_Main 3
 #define VCP_H264_High 4
+
+/* What YUV pictures hold (VCA_ColorSpace) */
+#define VCCS_Unknown 0
+#define VCCS_BT601 1 /* limited range, 16 to 235 */
+#define VCCS_BT709 2 /* limited range, 16 to 235 */
+#define VCCS_JPEG 3  /* BT.601, full range: what the hardware converter makes of RGB, on the VideoCore */
 
 /* Rate control (VCA_RateControl) */
 #define VCRC_Default 0
@@ -239,15 +274,16 @@ typedef long long VCTime; /* a timestamp in microseconds */
 
 /* Packet flags (VCPacket.Flags) */
 #define VCPF_KeyFrame (1UL << 0)    /* a key frame starts here */
-#define VCPF_Config (1UL << 1)      /* codec configuration (SPS/PPS), no picture */
+#define VCPF_Config (1UL << 1)      /* holds codec configuration (SPS/PPS); an encoder's first packet holds the first picture too */
 #define VCPF_FrameStart (1UL << 2)  /* the first bytes of a picture (VCA_Framed input) */
-#define VCPF_FrameEnd (1UL << 3)    /* the last bytes of a picture */
+#define VCPF_FrameEnd (1UL << 3)    /* the last bytes of a picture: an encoder's big ones come in several packets of one Pts */
 #define VCPF_EndOfStream (1UL << 4) /* input: the end, flush (JPEG: on the last picture's packet); output: the end went through */
 #define VCPF_Corrupt (1UL << 5)     /* input: these bytes are known damaged (a lost chunk); the decoder conceals */
 
 /* Frame flags (VCFrame.Flags, VCStreamInfo.Flags) */
 #define VCFF_KeyFrame (1UL << 0)
 #define VCFF_EndOfStream (1UL << 1)    /* input: the last picture, flush after it */
+#define VCFF_NoPicture (1UL << 2)      /* input, with VCFF_EndOfStream: the mark alone, the frame's pixels not read */
 #define VCFF_Interlaced (1UL << 16)
 #define VCFF_TopFieldFirst (1UL << 17)
 
@@ -345,10 +381,11 @@ struct VCCodecInfo
 	/* the largest 16:9 picture; a decoder may take other shapes of the same area */
 	ULONG MaxWidth, MaxHeight;
 	ULONG MaxLevel;    /* H.264 level times ten (42 = 4.2): the highest it keeps up with at the level's rates; 0 unknown */
-	ULONG Formats;     /* VCF_MASK() of each VCF_* a decoder or converter writes, an encoder reads */
+	ULONG OutputFormats; /* VCF_MASK() of each VCF_* a decoder or converter writes; 0 for an encoder */
 	UBYTE Backend[32]; /* the backend's name, for VCA_Backend */
 	LONG Priority;     /* 50 hardware, 0 software (VCB_PRIORITY_*): the row of the highest gets the session */
 	ULONG Flags;       /* VCCF_*: what the row serves */
+	ULONG InputFormats; /* VCF_MASK() of each VCF_* an encoder or converter reads, others refused; 0 for a decoder */
 };
 
 /* VCCodecInfo.Flags */
@@ -423,14 +460,16 @@ struct VCSession; /* opaque */
 /* Input pictures: encoder, converter */
 #define VCA_Width (VCA_Base + 3)       /* pixels; for a decoder, what imported native frames are checked against */
 #define VCA_Height (VCA_Base + 4)      /* rows; likewise */
-#define VCA_InputFormat (VCA_Base + 5) /* VCF_* [I420] */
+#define VCA_InputFormat (VCA_Base + 5) /* VCF_* [I420]: one of the session's VCCodecInfo.InputFormats; YUV is read as full-range BT.601 */
 #define VCA_InputPitch (VCA_Base + 6)  /* bytes per row [backend's for the width] */
 #define VCA_SourceRect (VCA_Base + 12) /* struct VCRect *: converter, the part to take [all] */
 
 /*
  * Output pictures: decoder, converter.  Changeable with VC_SetAttrsTags().
  * Hardware limits apply; the VideoCore backend wants rows of whole groups of
- * 32 pixels (64 for I420 and YV12) and an even number of rows.
+ * 32 pixels (64 for I420 and YV12) and an even number of rows.  An H.264
+ * encoder reads VCA_OutputWidth and VCA_OutputHeight at the open, the size
+ * it encodes, and refuses the rest of these.
  */
 #define VCA_OutputFormat (VCA_Base + 7) /* VCF_* [decoder: I420 at the stream's size, no scaling] */
 #define VCA_OutputWidth (VCA_Base + 8)  /* pixels [the source's] */
@@ -456,7 +495,7 @@ struct VCSession; /* opaque */
 
 /* Decoder */
 #define VCA_Framed (VCA_Base + 20)        /* BOOL: each packet holds whole pictures, marked VCPF_FrameStart/End [FALSE: any chunks] */
-#define VCA_Extradata (VCA_Base + 29)     /* APTR: codec configuration (H.264 SPS/PPS) when not in the stream; read by the open only */
+#define VCA_Extradata (VCA_Base + 29)     /* APTR: codec configuration (H.264 SPS/PPS, Annex-B) when not in the stream; read by the open only.  The open refuses a stream the hardware has no memory for (VCERR_DEVMEM); without it the first packet does */
 #define VCA_ExtradataSize (VCA_Base + 30) /* its bytes */
 
 /* Encoder (VCA_Bitrate and VCA_RequestKeyFrame also with VC_SetAttrsTags() while running) */
@@ -469,6 +508,7 @@ struct VCSession; /* opaque */
 #define VCA_Level (VCA_Base + 25)           /* H.264 level times ten: 31, 40, 41, 42 [backend's] */
 #define VCA_Quality (VCA_Base + 28)         /* JPEG: 1 to 100 [backend's] */
 #define VCA_RequestKeyFrame (VCA_Base + 33) /* BOOL, VC_SetAttrsTags() only: make the next picture a key frame */
+#define VCA_ColorSpace (VCA_Base + 39)      /* VCCS_*: what the input pictures hold, written into the stream for its players [unknown: they guess] */
 
 /* Image calls: VC_DecodeImageTags(), VC_EncodeImageTags(), VC_ConvertImageTags() */
 #define VCA_Data (VCA_Base + 34)     /* the source: compressed bytes, or a picture */
