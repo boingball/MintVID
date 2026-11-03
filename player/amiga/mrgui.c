@@ -1437,8 +1437,7 @@ int main(void)
     Object *skip_after_label;
     struct List audio_out_modes;
     Object *audio_out_label;
-    Object *controls_audio;
-    Object *controls_videocore;
+    Object *controls_extra;
     struct List audio_rate_modes;
     struct List fast_buffer_modes;
     struct List video_modes;
@@ -1527,11 +1526,10 @@ int main(void)
     audio_out_modes.lh_Tail = NULL;
     audio_out_modes.lh_TailPred = (struct Node *)&audio_out_modes.lh_Head;
     audio_out_label = NULL;
-    controls_audio = NULL;
     g_audio_out = NULL;
     audio_out_count = 0;
     g_videocore = NULL;
-    controls_videocore = NULL;
+    controls_extra = NULL;
     audio_rate_modes.lh_Head = (struct Node *)&audio_rate_modes.lh_Tail;
     audio_rate_modes.lh_Tail = NULL;
     audio_rate_modes.lh_TailPred = (struct Node *)&audio_rate_modes.lh_Head;
@@ -1943,34 +1941,30 @@ int main(void)
     if (!controls_bottom)
         goto cleanup;
 
-    /* The output chooser gets a third row rather than squeezing the full
-     * second one past 640 pixels, at its natural width on the left. */
-    if (g_audio_out) {
-        controls_audio = (Object *)NewObject(LAYOUT_GetClass(), NULL,
+    /* Audio output and VideoCore decoding get a third row rather than
+     * squeezing the full second one past 640 pixels, at their natural
+     * widths on the left; each is there only when its hardware is. */
+    if (g_audio_out || g_videocore) {
+        controls_extra = (Object *)NewObject(LAYOUT_GetClass(), NULL,
                                              LAYOUT_Orientation,
                                              LAYOUT_ORIENT_HORIZ,
                                              LAYOUT_HorizAlignment, LALIGN_LEFT,
                                              LAYOUT_SpaceInner, TRUE,
-                                             LAYOUT_AddChild, (ULONG)g_audio_out,
-                                             CHILD_Label, (ULONG)audio_out_label,
-                                             CHILD_WeightedWidth, 0,
+                                             g_audio_out ? LAYOUT_AddChild
+                                                         : TAG_IGNORE,
+                                             (ULONG)g_audio_out,
+                                             g_audio_out ? CHILD_Label
+                                                         : TAG_IGNORE,
+                                             (ULONG)audio_out_label,
+                                             g_audio_out ? CHILD_WeightedWidth
+                                                         : TAG_IGNORE, 0,
+                                             g_videocore ? LAYOUT_AddChild
+                                                         : TAG_IGNORE,
+                                             (ULONG)g_videocore,
+                                             g_videocore ? CHILD_WeightedWidth
+                                                         : TAG_IGNORE, 0,
                                              TAG_DONE);
-        if (!controls_audio)
-            goto cleanup;
-    }
-    /* A third row rather than squeezing the full second one past 640
-     * pixels, at its natural width on the left. */
-    if (g_videocore) {
-        controls_videocore = (Object *)NewObject(LAYOUT_GetClass(), NULL,
-                                                 LAYOUT_Orientation,
-                                                 LAYOUT_ORIENT_HORIZ,
-                                                 LAYOUT_HorizAlignment,
-                                                 LALIGN_LEFT,
-                                                 LAYOUT_AddChild,
-                                                 (ULONG)g_videocore,
-                                                 CHILD_WeightedWidth, 0,
-                                                 TAG_DONE);
-        if (!controls_videocore)
+        if (!controls_extra)
             goto cleanup;
     }
 
@@ -1981,12 +1975,8 @@ int main(void)
                                     CHILD_WeightedHeight, 0,
                                     LAYOUT_AddChild, (ULONG)controls_bottom,
                                     CHILD_WeightedHeight, 0,
-                                    controls_audio ? LAYOUT_AddChild : TAG_IGNORE,
-                                    (ULONG)controls_audio,
-                                    CHILD_WeightedHeight, 0,
-                                    controls_videocore ? LAYOUT_AddChild
-                                                       : TAG_IGNORE,
-                                    (ULONG)controls_videocore,
+                                    controls_extra ? LAYOUT_AddChild : TAG_IGNORE,
+                                    (ULONG)controls_extra,
                                     CHILD_WeightedHeight, 0,
                                     TAG_DONE);
     if (!controls)
@@ -2338,14 +2328,13 @@ cleanup:
                 if (g_skip_after) DisposeObject(g_skip_after);
                 if (skip_after_label) DisposeObject(skip_after_label);
             }
-            if (controls_audio) {
-                DisposeObject(controls_audio);
+            if (controls_extra) {
+                DisposeObject(controls_extra);
             } else {
                 if (g_audio_out) DisposeObject(g_audio_out);
                 if (audio_out_label) DisposeObject(audio_out_label);
+                if (g_videocore) DisposeObject(g_videocore);
             }
-            if (controls_videocore) DisposeObject(controls_videocore);
-            else if (g_videocore) DisposeObject(g_videocore);
         }
 
         if (buttons) {
