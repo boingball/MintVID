@@ -2,6 +2,7 @@
 #include "../core/mr_play_options.h"
 #include "../iptv/mr_iptv.h"
 #include "mr_akiko.h"
+#include "mr_ahi.h"
 #include "mr_gui_menu.h"
 #include "mr_last_dir.h"
 #include "mr_master_options.h"
@@ -52,7 +53,7 @@ enum {
     G_FILE = 1, G_BROWSE, G_MODE, G_C2P, G_H264, G_LACE, G_SCALE,
     G_AUDIO_RATE, G_FAST_BUFFER, G_NO_AUDIO, G_MONO_AUDIO, G_VIDEO_MODE,
     G_PLAY, G_PAUSE, G_STOP, G_FAST, G_IPTV, G_YOUTUBE, G_VOLUME, G_INFO,
-    G_PLAYLIST, G_SKIP_AFTER
+    G_PLAYLIST, G_SKIP_AFTER, G_AUDIO_OUT
 };
 
 typedef struct gt_app {
@@ -63,6 +64,13 @@ typedef struct gt_app {
     struct Gadget *file, *mode, *c2p, *h264, *lace, *scale, *info;
     struct Gadget *audio_rate, *fast_buffer, *no_audio, *mono_audio;
     struct Gadget *video_mode, *volume, *skip_after;
+    /* Audio output cycle: only when ahi.device opens (NULL otherwise, and
+     * Paula plays). Row i plays to audio_outs[i]. */
+    struct Gadget *audio_out;
+    mr_audio_output audio_outs[1 + MR_AUDIO_OUT_AHI_UNITS];
+    STRPTR audio_out_labels[2 + MR_AUDIO_OUT_AHI_UNITS];
+    char audio_out_text[1 + MR_AUDIO_OUT_AHI_UNITS][24];
+    unsigned audio_out_count;
     struct Gadget *iptv;
     /* Scale row after the last update_mode_controls(): tells a forward
      * click on the cycle gadget from a backward (shift) one. */
@@ -394,6 +402,11 @@ static void read_options(gt_app *app, mr_play_options *options)
                          : MR_FAST_BUFFER_AUTO;
     options->no_audio = gad_value(app, app->no_audio, GTCB_Checked) != 0;
     options->mono_audio = gad_value(app, app->mono_audio, GTCB_Checked) != 0;
+    if (app->audio_out) {
+        ULONG row = gad_value(app, app->audio_out, GTCY_Active);
+        options->audio_out = row < app->audio_out_count ? app->audio_outs[row]
+                                                       : MR_AUDIO_OUT_PAULA;
+    }
     {
         ULONG video = gad_value(app, app->video_mode, GTCY_Active);
         options->throughput = video != 1;
@@ -1115,6 +1128,7 @@ static int build_window(gt_app *app)
     ULONG initial_c2p, initial_h264, initial_laced, initial_scale;
     ULONG initial_audio_rate, initial_fast_buffer, initial_no_audio;
     ULONG initial_mono_audio, initial_video_mode, initial_skip_after;
+    ULONG initial_audio_out;
 
     app->screen = LockPubScreen(NULL);
     if (!app->screen)
@@ -1220,6 +1234,9 @@ static int build_window(gt_app *app)
      * open, already clamps any combination that isn't actually eligible
      * (Copper 2x needing a qualifying c2p/mode, etc.) - the same safety
      * net a manual click through these controls relies on. */
+    /* Defaults first: gcc cannot see that every field is only read when
+     * the load succeeded. */
+    mr_play_options_default(&saved_options);
     have_saved_options = mr_saved_options_load(&saved_options);
     if (have_saved_options) {
         /* Settings saved by the old Video: Off row have no_video set with
@@ -1256,6 +1273,30 @@ static int build_window(gt_app *app)
     initial_skip_after = skip_after_row(have_saved_options
                                         ? saved_options.skip_trigger_ms
                                         : MR_SKIP_TRIGGER_DEFAULT_MS);
+    /* Cycle labels can't change once the gadget exists, so the rows are
+     * fixed here: Paula, then AHI's four units when the device opens. */
+    app->audio_out = NULL;
+    app->audio_out_count = 0;
+    if (mr_ahi_available()) {
+        mr_audio_output out;
+        for (out = MR_AUDIO_OUT_PAULA;
+             out < MR_AUDIO_OUT_AHI0 + MR_AUDIO_OUT_AHI_UNITS;
+             out = (mr_audio_output)(out + 1)) {
+            unsigned n = app->audio_out_count++;
+            snprintf(app->audio_out_text[n], sizeof app->audio_out_text[n],
+                     "Output: %s", mr_audio_output_name(out));
+            app->audio_out_labels[n] = (STRPTR)app->audio_out_text[n];
+            app->audio_outs[n] = out;
+        }
+        app->audio_out_labels[app->audio_out_count] = NULL;
+    }
+    initial_audio_out = 0;
+    if (have_saved_options) {
+        ULONG row;
+        for (row = 0; row < app->audio_out_count; row++)
+            if (app->audio_outs[row] == saved_options.audio_out)
+                initial_audio_out = row;
+    }
 
     g = app->gadgets;
     app->file = g = add_gadget(app, g, STRING_KIND, G_FILE, 8, 20, 535, 15,
@@ -1308,6 +1349,12 @@ static int build_window(gt_app *app)
      * give their longest labels. */
     app->skip_after = g = add_gadget(app, g, CYCLE_KIND, G_SKIP_AFTER, 384, 92,
         176, 16, "", GTCY_Labels, (ULONG)skip_after_labels);
+    /* Audio output, only when ahi.device opens: the free row below the
+     * media buttons (where IPTV/YouTube used to be). "Output: AHI unit 3"
+     * is 18 topaz characters plus the cycle glyph. */
+    if (app->audio_out_count)
+        app->audio_out = g = add_gadget(app, g, CYCLE_KIND, G_AUDIO_OUT, 8,
+            140, 176, 16, "", GTCY_Labels, (ULONG)app->audio_out_labels);
 
     /* VLC-style lower strip: media buttons stay flush left, the volume
      * slider follows them, and IPTV/YouTube sit before Playlist in the
@@ -1368,6 +1415,9 @@ static int build_window(gt_app *app)
                          GTCY_Active, initial_video_mode, TAG_DONE);
         GT_SetGadgetAttrs(app->skip_after, app->window, NULL,
                          GTCY_Active, initial_skip_after, TAG_DONE);
+        if (app->audio_out)
+            GT_SetGadgetAttrs(app->audio_out, app->window, NULL,
+                             GTCY_Active, initial_audio_out, TAG_DONE);
         update_skip_after(app);
     }
     return app->window != NULL;
@@ -1497,7 +1547,7 @@ int main(void)
                 case G_LACE:
                 case G_AUDIO_RATE: case G_FAST_BUFFER:
                 case G_NO_AUDIO: case G_MONO_AUDIO:
-                case G_SKIP_AFTER:
+                case G_SKIP_AFTER: case G_AUDIO_OUT:
                     publish_options(&app); break;
                 default: break;
                 }

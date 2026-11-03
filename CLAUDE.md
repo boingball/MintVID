@@ -6129,3 +6129,33 @@ history before `b8f1516`, `src/RiVA-0.54a0.s`):
   conversion like the P96 overlay does.
 Nothing here can execute 68080 code (qemu has no 68080), so any AMMX or SAGA
 change needs a Vampire owner to test it.
+
+## AHI audio output
+
+- `mr_audio.h` is the one sink API; `amiga/audio.c` implements it once (NULL
+  checks and NULL-session defaults) and dispatches through an ops table
+  (`audio_backend.h`) to `audio_paula.c` or `audio_ahi.c`. A new output is a
+  new ops table, not a change to the player.
+- The AHI backend copies the Paula backend's proven shape on purpose, because
+  mrplay's rescue logic reads its diagnostics: a worker process at priority 5,
+  two requests of 200 ms (`AUDIO_RESCUE_*` are one or two requests), completed
+  requests committed in submission order, the clock interpolated across the
+  request in flight on the EClock timeline. Keep the two backends' meanings
+  identical when changing either.
+- ahi.device specifics: a completed `CMD_WRITE` trashes every field except
+  `io_Device`/`io_Unit`/`io_Command`, so each write sets them all again; the
+  next request is chained to the one still playing with `ahir_Link`; teardown
+  aborts the request sent last first, so aborting the playing one cannot start
+  the linked one. `AHIST_S16S` at the decoder's rate - AHI resamples, so
+  `mr_audio_decoder_open()` gets no ceiling (`max_rate` 0) for AHI and
+  `MR_AUDIO_PAULA_RATE_MAX` for Paula. AHI rates can pass 65535 Hz, so its
+  clock math uses `mr_u64_div_u24`, not Paula's `mr_u64_div_u16`.
+- The clock counts samples AHI's mixer has taken, not heard: it leads the
+  speaker by the driver's own buffer (tens of ms). Paula's has no such lead.
+- `open_audio_output()` in mrplay.c falls back to Paula (reopening the decoder
+  under Paula's ceiling) when the AHI unit cannot be opened.
+- The GUIs probe `OpenDevice(AHINAME, AHI_NO_UNIT, ...)` (`amiga/mr_ahi.c`) and
+  list Paula plus units 0-3 only when it opens; otherwise there is no Audio
+  output control and Paula plays.
+- `tests/amiga_audio_task_stress.c` takes an AHI unit (`audio_task_stress 3`)
+  for the same 100-cycle open/play/close soak as Paula.

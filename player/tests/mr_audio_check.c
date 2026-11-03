@@ -2,13 +2,17 @@
  * Host smoke test for the MintAMP packet adapter.  It demuxes a real A/V
  * container, feeds every compressed audio packet through Helix and checks
  * that a plausible amount of non-silent PCM is produced. Runs each fixture
- * three times - once at the normal decoded rate, once with --audio-rate=low's
- * low_rate flag, once with --audio-mono's mono flag.
+ * four times - once at the normal decoded rate (under Paula's ceiling), once
+ * with --audio-rate=low's low_rate flag, once with --audio-mono's mono flag,
+ * and once with no ceiling, as the AHI output opens it.
  *
  * The low-rate run's decoded_rate is checked against the normal run's, since
  * mr_audio_decoder_open()'s low_rate always doubles whatever stride normal
  * mode picked (see compute_stride() in audio/mr_audio_decode.c), so the two
  * must differ by exactly 2x.
+ *
+ * The uncapped run keeps the source's own rate: the same as the normal run's
+ * at or below MR_AUDIO_PAULA_RATE_MAX, exactly twice it above.
  *
  * The mono run must produce the same number of sample *frames* at the same
  * rate - mono changes how many channels each frame carries, never the
@@ -56,10 +60,11 @@ static void count_pcm(void *user, const int16_t *pcm,
     }
 }
 
-/* Decodes the whole file once under the given low_rate setting. Returns 0 on
- * success (and *decoded_rate_out is the decoder's effective output rate), or
- * a nonzero exit code on failure. */
+/* Decodes the whole file once under the given low_rate setting and output
+ * ceiling. Returns 0 on success (and *decoded_rate_out is the decoder's
+ * effective output rate), or a nonzero exit code on failure. */
 static int run_once(const char *path, const char *kind, int low_rate, int mono,
+                    unsigned max_rate,
                     unsigned *decoded_rate_out, unsigned long *frames_out,
                     struct pcm_stats *capture_out)
 {
@@ -91,7 +96,7 @@ static int run_once(const char *path, const char *kind, int low_rate, int mono,
                 (unsigned)ai->format_tag, (unsigned)ai->config_len);
         mr_demux_close(dx); return 1;
     }
-    dec = mr_audio_decoder_open(ai, low_rate, mono);
+    dec = mr_audio_decoder_open(ai, low_rate, mono, max_rate);
     if (!dec) {
         fprintf(stderr, "unsupported audio setup: tag=0x%04x config=%u\n",
                 (unsigned)ai->format_tag, (unsigned)ai->config_len);
@@ -123,7 +128,8 @@ static int run_once(const char *path, const char *kind, int low_rate, int mono,
     decoded_rate = mr_audio_decoder_rate(dec);
     printf("%s%s: %lu packets, %lu PCM frames at %u Hz, %lu nonzero samples, "
            "%u ch\n",
-           mr_audio_decoder_name(dec), low_rate ? " (low)" : mono ? " (mono)" : "",
+           mr_audio_decoder_name(dec), low_rate ? " (low)" : mono ? " (mono)" :
+           !max_rate ? " (no ceiling)" : "",
            packets, stats.frames, decoded_rate, stats.nonzero,
            stats.max_channels);
     if (mono && stats.max_channels != 1) {
@@ -155,7 +161,7 @@ static int run_once(const char *path, const char *kind, int low_rate, int mono,
 
 int main(int argc, char **argv)
 {
-    unsigned rate_normal = 0, rate_low = 0, rate_mono = 0;
+    unsigned rate_normal = 0, rate_low = 0, rate_mono = 0, rate_full = 0;
     unsigned long frames_normal = 0, frames_mono = 0;
     struct pcm_stats left, mono;
     unsigned long i, compare;
@@ -178,9 +184,13 @@ int main(int argc, char **argv)
     }
     left.capture_cap = mono.capture_cap = CAPTURE_FRAMES;
 
-    rc = run_once(argv[1], argv[2], 0, 0, &rate_normal, &frames_normal, &left);
-    if (!rc) rc = run_once(argv[1], argv[2], 1, 0, &rate_low, NULL, NULL);
-    if (!rc) rc = run_once(argv[1], argv[2], 0, 1, &rate_mono, &frames_mono,
+    rc = run_once(argv[1], argv[2], 0, 0, MR_AUDIO_PAULA_RATE_MAX,
+                  &rate_normal, &frames_normal, &left);
+    if (!rc) rc = run_once(argv[1], argv[2], 1, 0, MR_AUDIO_PAULA_RATE_MAX,
+                           &rate_low, NULL, NULL);
+    if (!rc) rc = run_once(argv[1], argv[2], 0, 0, 0, &rate_full, NULL, NULL);
+    if (!rc) rc = run_once(argv[1], argv[2], 0, 1, MR_AUDIO_PAULA_RATE_MAX,
+                           &rate_mono, &frames_mono,
                            &mono);
     if (rc) { free(left.capture); free(mono.capture); return rc; }
 
@@ -193,6 +203,15 @@ int main(int argc, char **argv)
         fprintf(stderr, "low-rate mismatch: normal=%u Hz low=%u Hz "
                         "(expected %u Hz)\n", rate_normal, rate_low,
                 rate_normal / 2);
+        free(left.capture); free(mono.capture);
+        return 1;
+    }
+    /* With no ceiling the source's rate survives: Paula's ceiling halves it
+     * only above MR_AUDIO_PAULA_RATE_MAX. */
+    if (rate_full > MR_AUDIO_PAULA_RATE_MAX ? rate_normal != rate_full / 2
+                                            : rate_normal != rate_full) {
+        fprintf(stderr, "ceiling mismatch: Paula=%u Hz none=%u Hz\n",
+                rate_normal, rate_full);
         free(left.capture); free(mono.capture);
         return 1;
     }

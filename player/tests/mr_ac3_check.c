@@ -175,7 +175,7 @@ int main(int argc, char **argv)
                 (unsigned)ai->format_tag);
         mr_demux_close(dx); free(ref); return 1;
     }
-    dec = mr_audio_decoder_open(ai, 0, 0);
+    dec = mr_audio_decoder_open(ai, 0, 0, MR_AUDIO_PAULA_RATE_MAX);
 #else
     raw = slurp(argv[1], &raw_len);
     if (!raw) { fprintf(stderr, "cannot read %s\n", argv[1]); free(ref); return 2; }
@@ -191,7 +191,7 @@ int main(int argc, char **argv)
     info.format_tag = MR_AUDIO_FORMAT_AC3;
     info.sample_rate = ref_rate;
     info.channels = (unsigned short)ref_channels;
-    dec = mr_audio_decoder_open(&info, 0, 0);
+    dec = mr_audio_decoder_open(&info, 0, 0, MR_AUDIO_PAULA_RATE_MAX);
 #endif
     if (!dec) {
         fprintf(stderr, "AC-3 decoder rejected the stream\n");

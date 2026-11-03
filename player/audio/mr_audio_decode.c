@@ -3,7 +3,8 @@
  *
  * No codec implementation lives here.  The build supplies MintAMP's public
  * mp3dec/aacdec APIs; this file handles AVI packet joins, MP4 AAC raw-block
- * setup and Paula-friendly 2:1 output decimation above its ~28 kHz ceiling.
+ * setup and 2:1 output decimation above the output's ceiling (Paula's
+ * ~28 kHz; AHI has none).
  */
 #include "mr_audio_decode.h"
 #include "mr_pcm.h"
@@ -20,17 +21,17 @@
 #include <string.h>
 
 #define PCM_SHORTS_MAX 4096
-#define PAULA_RATE_MAX 28000U
 #define AC3_OUTPUT_SHIFT 13         /* see feed_ac3()'s level comment */
 
-/* Base decimation stride (1 or 2, halving anything above Paula's ~28kHz
- * ceiling), doubled again under --audio-rate=low (mr_audio_decoder_open()'s
- * low_rate) for a further 2:1 reduction - 48kHz->12kHz, 44.1kHz->11.025kHz,
- * and a source already at/below 28kHz (e.g. 22.05kHz) drops to 11.025kHz
- * rather than being forced to a fixed absolute rate. */
-static unsigned compute_stride(unsigned rate, int low_rate)
+/* Base decimation stride (1 or 2, halving anything above the output's
+ * ceiling - Paula's ~28kHz, none for AHI), doubled again under
+ * --audio-rate=low (mr_audio_decoder_open()'s low_rate) for a further 2:1
+ * reduction - 48kHz->12kHz, 44.1kHz->11.025kHz under Paula, and a source
+ * already at/below 28kHz (e.g. 22.05kHz) drops to 11.025kHz rather than being
+ * forced to a fixed absolute rate. */
+static unsigned compute_stride(unsigned rate, unsigned max_rate, int low_rate)
 {
-    unsigned stride = rate > PAULA_RATE_MAX ? 2 : 1;
+    unsigned stride = max_rate && rate > max_rate ? 2 : 1;
     return low_rate ? stride * 2 : stride;
 }
 
@@ -61,6 +62,7 @@ struct mr_audio_decoder {
     unsigned aac_decim;             /* part of stride Helix's IMDCT already did */
     unsigned decim_phase;
     int low_rate;
+    unsigned max_rate;              /* output ceiling, 0 = none (AHI)       */
     int mono;                       /* --audio-mono: emit one channel only */
     unsigned char *pending;
     size_t pending_len;
@@ -295,7 +297,8 @@ static void mp3_enable_verified_fast_paths(void)
 }
 
 mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info,
-                                        int low_rate, int mono)
+                                        int low_rate, int mono,
+                                        unsigned max_rate)
 {
     mr_audio_decoder *d;
     if (!info || !info->valid) return NULL;
@@ -309,10 +312,11 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info,
     d = (mr_audio_decoder *)calloc(1, sizeof *d);
     if (!d) return NULL;
     d->low_rate = low_rate != 0;
+    d->max_rate = max_rate;
     d->mono = mono != 0;
     d->source_rate = info->sample_rate;
     d->channels = d->mono ? 1 : info->channels;
-    d->stride = compute_stride(info->sample_rate, d->low_rate);
+    d->stride = compute_stride(info->sample_rate, d->max_rate, d->low_rate);
     d->output_rate = info->sample_rate / d->stride;
 
     if (info->format_tag == MR_AUDIO_FORMAT_PCM) {
@@ -388,7 +392,7 @@ mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info,
             d->he_aac = he_aac;
             d->source_rate = output_rate;
             d->channels = d->mono ? 1 : channels;
-            d->stride = compute_stride(output_rate, d->low_rate);
+            d->stride = compute_stride(output_rate, d->max_rate, d->low_rate);
             d->output_rate = output_rate / d->stride;
         } else {
             d->kind = AUDIO_KIND_AAC_ADTS;
@@ -575,7 +579,7 @@ static long feed_ac3(mr_audio_decoder *d, const uint8_t *data, uint32_t len,
         channels = (flags & A52_CHANNEL_MASK) == A52_MONO ? 1 : 2;
         a52_dynrng(d->ac3, NULL, NULL);
         d->source_rate = (unsigned)rate;
-        d->stride = compute_stride((unsigned)rate, d->low_rate);
+        d->stride = compute_stride((unsigned)rate, d->max_rate, d->low_rate);
         d->output_rate = (unsigned)rate / d->stride;
         for (block = 0; block < 6; block++) {
             sample_t *samples;

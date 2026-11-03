@@ -1070,6 +1070,71 @@ int main(void) {
                                  sizeof(error)));
     assert(parsed.display == MR_DISPLAY_NONE && parsed.no_video);
   }
+  /* Audio output: Paula adds no flag (mrplay's default), each AHI unit adds
+   * --audio-out=ahi --ahi-unit=N and survives a browser's re-parse; the two
+   * flags take either order, and bad values are refused. */
+  {
+    mr_play_options o, parsed;
+    char *argv_rt[40];
+    char buf[1024], args[4096], summary[256], error[128];
+    const char *url = "https://example.test/watch";
+    char *bad_argv[] = {"ytgui", "--ahi-unit=4"};
+    char *bad_out_argv[] = {"ytgui", "--audio-out=hdmi"};
+    char *order_argv[] = {"ytgui", "--ahi-unit=2", "--audio-out=ahi"};
+    char *back_argv[] = {"ytgui", "--ahi-unit=1", "--audio-out=paula"};
+    mr_audio_output out;
+    int argc_rt;
+    char *p;
+
+    mr_play_options_default(&o);
+    assert(o.audio_out == MR_AUDIO_OUT_PAULA);
+    assert(mr_build_player_arguments(args, sizeof(args), &o, url,
+                                     NULL, NULL));
+    assert(!strstr(args, "--audio-out") && !strstr(args, "--ahi-unit"));
+    mr_play_options_summary(&o, summary, sizeof(summary));
+    assert(strstr(summary, "Audio Normal") && !strstr(summary, "Paula"));
+    for (out = MR_AUDIO_OUT_AHI0;
+         out < MR_AUDIO_OUT_AHI0 + MR_AUDIO_OUT_AHI_UNITS;
+         out = (mr_audio_output)(out + 1)) {
+      char unit_flag[16];
+      snprintf(unit_flag, sizeof unit_flag, "--ahi-unit=%d",
+               (int)(out - MR_AUDIO_OUT_AHI0));
+      mr_play_options_default(&o);
+      o.audio_out = out;
+      assert(mr_build_player_arguments(args, sizeof(args), &o, url,
+                                       NULL, NULL));
+      assert(strstr(args, "--audio-out=ahi") && strstr(args, unit_flag));
+      mr_play_options_summary(&o, summary, sizeof(summary));
+      assert(strstr(summary, mr_audio_output_name(out)));
+      assert(mr_build_iptv_arguments(buf, sizeof(buf), &o));
+      argv_rt[0] = "ytgui";
+      argc_rt = 1;
+      for (p = strtok(buf, " \n"); p && argc_rt < 40; p = strtok(NULL, " \n"))
+        argv_rt[argc_rt++] = p;
+      mr_play_options_default(&parsed);
+      assert(mr_play_options_parse(&parsed, argc_rt, argv_rt, error,
+                                   sizeof(error)));
+      assert(parsed.audio_out == out);
+    }
+    /* No audio wins: no output flags then. */
+    o.no_audio = 1;
+    assert(mr_build_player_arguments(args, sizeof(args), &o, url,
+                                     NULL, NULL));
+    assert(!strstr(args, "--audio-out") && !strstr(args, "--ahi-unit"));
+    mr_play_options_default(&parsed);
+    assert(mr_play_options_parse(&parsed, 3, order_argv, error,
+                                 sizeof(error)));
+    assert(parsed.audio_out == MR_AUDIO_OUT_AHI2);
+    mr_play_options_default(&parsed);
+    assert(mr_play_options_parse(&parsed, 3, back_argv, error,
+                                 sizeof(error)));
+    assert(parsed.audio_out == MR_AUDIO_OUT_PAULA);
+    mr_play_options_default(&parsed);
+    assert(!mr_play_options_parse(&parsed, 2, bad_argv, error,
+                                  sizeof(error)));
+    assert(!mr_play_options_parse(&parsed, 2, bad_out_argv, error,
+                                  sizeof(error)));
+  }
   remove("/tmp/mr_channels.json");
   remove("/tmp/mr_streams.json");
   mr_iptv_free(&d);

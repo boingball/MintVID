@@ -1961,9 +1961,38 @@ static int audio_only_hls_wait(void *opaque, unsigned wait_ms)
     }
 }
 
+/* Opens the audio decoder and the output the user picked. AHI gets the
+ * source's own rate; if that unit cannot be opened, the decoder is reopened
+ * under Paula's ceiling and Paula plays instead. Returns the output, or NULL
+ * when none could be opened: *dec is then the decoder if only the output
+ * failed, NULL if the stream itself was refused. */
+static mr_audio *open_audio_output(const mr_audio_info *ai,
+                                   mr_audio_output out, int low_rate,
+                                   int mono, mr_audio_decoder **dec)
+{
+    mr_audio *audio = NULL;
+    *dec = NULL;
+    if (out != MR_AUDIO_OUT_PAULA) {
+        *dec = mr_audio_decoder_open(ai, low_rate, mono, 0);
+        if (!*dec) return NULL;
+        audio = audio_open(out, mr_audio_decoder_rate(*dec),
+                           (int)mr_audio_decoder_channels(*dec), 16);
+        if (audio) return audio;
+        printf("audio: %s could not be opened, using Paula\n",
+               mr_audio_output_name(out));
+        mr_audio_decoder_close(*dec);
+    }
+    *dec = mr_audio_decoder_open(ai, low_rate, mono, MR_AUDIO_PAULA_RATE_MAX);
+    if (*dec)
+        audio = audio_open(MR_AUDIO_OUT_PAULA, mr_audio_decoder_rate(*dec),
+                           (int)mr_audio_decoder_channels(*dec), 16);
+    return audio;
+}
+
 static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
                            const char *audio_description, int audio_low_rate,
-                           int audio_mono, int loop, int auto_close_eof)
+                           int audio_mono, mr_audio_output audio_out,
+                           int loop, int auto_close_eof)
 {
     mr_audio_decoder *adec = NULL;
     mr_audio *audio = NULL;
@@ -1989,25 +2018,24 @@ static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
          ai->format_tag == MR_AUDIO_FORMAT_MP3 ||
          ai->format_tag == MR_AUDIO_FORMAT_AAC ||
          ai->format_tag == MR_AUDIO_FORMAT_AC3))
-        adec = mr_audio_decoder_open(ai, audio_low_rate, audio_mono);
-    if (adec)
-        audio = audio_open(mr_audio_decoder_rate(adec),
-                           (int)mr_audio_decoder_channels(adec), 16);
+        audio = open_audio_output(ai, audio_out, audio_low_rate, audio_mono,
+                                  &adec);
     if (!audio) {
         char reason[MR_PLAYER_STATUS_TEXT_MAX];
         snprintf(reason, sizeof reason, "video off, and audio %s %s",
                  audio_description,
                  !ai->valid || !strcmp(audio_description, "none detected")
                      ? "is missing" : !adec ? "is not supported"
-                     : "could not open Paula");
+                     : "could not open the audio output");
         printf("no-video: %s\n", reason);
         player_status(MR_PLAYER_STATE_UNSUPPORTED, "", reason);
         status_hold();
         if (adec) mr_audio_decoder_close(adec);
         return 10;
     }
-    printf("audio: Paula stereo pair, %u Hz (%s, %u decoded ch); "
+    printf("audio: %s, %u Hz (%s, %u decoded ch); "
            "video off (--no-video)\n",
+           audio_name(audio),
            mr_audio_decoder_rate(adec), mr_audio_decoder_name(adec),
            mr_audio_decoder_channels(adec));
     Flush(Output());
@@ -2199,6 +2227,8 @@ int main(int argc, char **argv)
     int no_audio = 0;       /* --no-audio: skip the decoder/Paula entirely   */
     int no_video = 0;       /* --no-video: audio only, no decoder/display    */
     int audio_mono = 0;     /* --audio-mono: decode one channel, not two     */
+    mr_audio_output audio_out = MR_AUDIO_OUT_PAULA; /* --audio-out=, --ahi-unit= */
+    int audio_out_arg;
     mr_fast_buffer_mode fast_buffer = MR_FAST_BUFFER_OFF;
     int fast_buffer_option_seen = 0;
     size_t fast_buffer_bytes = 0;
@@ -2309,6 +2339,7 @@ int main(int argc, char **argv)
                "[--dv-speed=quality|fast] "
                "[--mpeg2-speed=quality|fast] "
                "[--audio-rate=normal|low] [--no-audio] [--no-video] [--audio-mono] "
+               "[--audio-out=paula|ahi] [--ahi-unit=0..3] "
                "[--time] [--live-diag] [--throughput|--no-throughput] "
                "[--tls=1.2|1.3]\n");
         return mrplay_exit(5);
@@ -2440,6 +2471,13 @@ int main(int argc, char **argv)
                 else if (!strcmp(mode, "low")) audio_low_rate = 1;
                 else {
                     printf("invalid audio rate mode: %s\n", mode);
+                    return mrplay_exit(5);
+                }
+            }
+            else if ((audio_out_arg = mr_parse_audio_output(argv[i],
+                                                            &audio_out))) {
+                if (audio_out_arg < 0) {
+                    printf("invalid audio output: %s\n", argv[i]);
                     return mrplay_exit(5);
                 }
             }
@@ -2718,7 +2756,7 @@ int main(int argc, char **argv)
         if (no_audio)
             printf("no-video: ignoring --no-audio (nothing would play)\n");
         rc = play_audio_only(dx, ai, audio_description, audio_low_rate,
-                                 audio_mono, loop, auto_close_eof);
+                                 audio_mono, audio_out, loop, auto_close_eof);
         mr_demux_close(dx);
         free(buf);
         return mrplay_exit(rc);
@@ -3000,13 +3038,15 @@ int main(int argc, char **argv)
                    vi->width, vi->height);
     }
 
-    /* Every decoder feeds signed S16 to the common Paula sink.  In particular,
-     * PCM byte signedness is resolved before downmixing and S16-to-S8 output. */
+    /* Every decoder feeds signed S16 to the common audio sink.  In particular,
+     * PCM byte signedness is resolved before downmixing (and, for Paula,
+     * S16-to-S8 output). */
     {
         if (no_audio) {
             printf("audio: disabled (--no-audio)\n");
         } else if (ai->valid && ai->format_tag == MR_AUDIO_FORMAT_PCM) {
-            audio_dec = mr_audio_decoder_open(ai, audio_low_rate, audio_mono);
+            audio = open_audio_output(ai, audio_out, audio_low_rate,
+                                      audio_mono, &audio_dec);
             if (want_time && audio_dec) {
                 if (ai->codec_tag > 0xffff)
                     printf("audio: %s %s %lu Hz (%c%c%c%c)\n",
@@ -3023,20 +3063,18 @@ int main(int argc, char **argv)
                            ai->channels == 1 ? "mono" : "stereo",
                            (unsigned long)ai->sample_rate);
             }
-            if (audio_dec)
-                audio = audio_open(mr_audio_decoder_rate(audio_dec),
-                                   (int)mr_audio_decoder_channels(audio_dec), 16);
             if (audio && audio_dec)
-                printf("audio: Paula stereo pair, %u Hz (%s, %u decoded ch)\n",
+                printf("audio: %s, %u Hz (%s, %u decoded ch)\n",
+                       audio_name(audio),
                        mr_audio_decoder_rate(audio_dec),
                        mr_audio_decoder_name(audio_dec),
                        mr_audio_decoder_channels(audio_dec));
             else {
-                printf("audio: unsupported PCM layout or Paula open failed, "
-                       "playing silent\n");
+                printf("audio: unsupported PCM layout or audio output open "
+                       "failed, playing silent\n");
                 audio_unavailable = 1;
                 audio_failure = !audio_dec ? "decoder rejected stream setup"
-                                           : "Paula/audio.device open failed";
+                                           : "audio output open failed";
                 if (audio_dec) {
                     mr_audio_decoder_close(audio_dec);
                     audio_dec = NULL;
@@ -3047,24 +3085,23 @@ int main(int argc, char **argv)
                     ai->format_tag == MR_AUDIO_FORMAT_MP3 ||
                     ai->format_tag == MR_AUDIO_FORMAT_AAC ||
                     ai->format_tag == MR_AUDIO_FORMAT_AC3)) {
-            audio_dec = mr_audio_decoder_open(ai, audio_low_rate, audio_mono);
-            if (audio_dec)
-                audio = audio_open(mr_audio_decoder_rate(audio_dec),
-                                   (int)mr_audio_decoder_channels(audio_dec), 16);
+            audio = open_audio_output(ai, audio_out, audio_low_rate,
+                                      audio_mono, &audio_dec);
             if (audio && audio_dec)
-                printf("audio: Paula stereo pair, %u Hz (%s, %u decoded ch)\n",
+                printf("audio: %s, %u Hz (%s, %u decoded ch)\n",
+                       audio_name(audio),
                        mr_audio_decoder_rate(audio_dec),
                        mr_audio_decoder_name(audio_dec),
                        mr_audio_decoder_channels(audio_dec));
             else {
-                printf("audio: unsupported %s setup or Paula open failed, "
-                       "playing silent\n",
+                printf("audio: unsupported %s setup or audio output open "
+                       "failed, playing silent\n",
                        ai->format_tag == MR_AUDIO_FORMAT_MP2 ? "MP2" :
                        ai->format_tag == MR_AUDIO_FORMAT_MP3 ? "MP3" :
                        ai->format_tag == MR_AUDIO_FORMAT_AC3 ? "AC-3" : "AAC");
                 audio_unavailable = 1;
                 audio_failure = !audio_dec ? "decoder rejected stream setup"
-                                           : "Paula/audio.device open failed";
+                                           : "audio output open failed";
                 if (audio_dec) {
                     mr_audio_decoder_close(audio_dec);
                     audio_dec = NULL;
@@ -5156,7 +5193,7 @@ drain_decoded_output:
     shutdown_checkpoint(want_time, "close audio decoder");
     if (audio_dec) mr_audio_decoder_close(audio_dec);
     control_audio = NULL;
-    shutdown_checkpoint(want_time, "close Paula worker");
+    shutdown_checkpoint(want_time, "close audio output");
     if (audio) audio_close(audio);
     shutdown_checkpoint(want_time, "close display/P96 overlay");
     display_close(disp);

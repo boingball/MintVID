@@ -1,17 +1,20 @@
 /*
  * MintVID - Amiga audio output (abstract).
  *
- * A compact Paula (audio.device) PCM sink, modelled on MintAMP's proven
- * streaming/teardown patterns but self-contained. The player feeds it source
- * PCM (as the demuxer delivers it); the backend converts to Paula's signed
- * 8-bit left/right channels and double-buffers both. Mono is heard in both
- * speakers. Its played-milliseconds counter is the A/V master clock.
+ * A compact PCM sink with two backends, modelled on MintAMP's proven
+ * streaming/teardown patterns but self-contained: Paula (audio.device), whose
+ * backend converts to Paula's signed 8-bit left/right channels, and AHI
+ * (ahi.device), which takes signed 16-bit stereo at the source's own rate.
+ * The player feeds either the same PCM; each double-buffers it. Mono is heard
+ * in both speakers. Its played-milliseconds counter is the A/V master clock.
  *
  * MP2, MP3 and AAC decode to PCM before feeding this same sink.  MP3/AAC use
  * MintAMP/libhelix through the packet adapter in player/audio/.
  */
 #ifndef MR_AUDIO_H
 #define MR_AUDIO_H
+
+#include "../core/mr_play_options.h"
 
 #include <stdint.h>
 
@@ -51,9 +54,15 @@ static inline short audio_pcm_u8_to_s16(unsigned char sample)
     return (short)(((int)sample - 128) * 256);
 }
 
-/* Open Paula output for source PCM of this rate/channels/bits (8 or 16).
- * Returns NULL if unsupported or on failure. */
-mr_audio     *audio_open(unsigned rate, int channels, int bits);
+/* Open the output (Paula, or an AHI unit) for source PCM of this
+ * rate/channels/bits (8 or 16). Returns NULL if unsupported or on failure;
+ * the caller decides whether to fall back to Paula. */
+mr_audio     *audio_open(mr_audio_output out, unsigned rate, int channels,
+                         int bits);
+
+/* What is playing, for log and status lines: "Paula stereo pair",
+ * "AHI unit 3". */
+const char   *audio_name(mr_audio *a);
 
 /* Convert and enqueue a source-PCM buffer (a demuxer audio packet). */
 void          audio_write(mr_audio *a, const unsigned char *pcm, unsigned bytes);

@@ -148,7 +148,8 @@ WHAT IT PLAYS
     MPEG-4 Part 2 (ISO ASP and Microsoft MP42/DIV2), Windows Media Video 7
     (WMV1), Windows Media Video 8 (WMV2), H.264/AVC Baseline/Main/High
     Profile, and DV (IEC 61834/SMPTE 314M, PAL 4:2:0 and NTSC/DVCPRO 4:1:1).
-  - Audio to Paula in stereo: PCM, MP2, MP3, AAC-LC (raw/ADTS/LATM), and
+  - Audio to Paula in stereo, or to any AHI card at the source's own rate:
+    PCM, MP2, MP3, AAC-LC (raw/ADTS/LATM), and
     fixed-point AC-3 (stereo downmix). MP3/AAC decoding reuses the proven
     MintAMP/Helix code.
   - Two complete GUI sets over the same player: ReAction (V44) and plain
@@ -282,7 +283,7 @@ then play the result on the Amiga. Timeline seeking (cursor left/right,
 10 seconds at a time, landing on the nearest keyframe) works for local
 QuickTime MOV/MP4 files; AVI, MKV, and network/live sources don't have a
 keyframe index yet, so cursor-right stays a fast-forward toggle there instead.
-Cursor up/down adjust Paula's volume, and once playback starts, the
+Cursor up/down adjust the volume, and once playback starts, the
 controller's Info: field - and, on RTG (CGX/P96), the video window's own title
 bar - mirrors a live H:MM:SS/M:SS playhead so you can see where a seek actually
 landed.

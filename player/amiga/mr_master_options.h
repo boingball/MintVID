@@ -115,6 +115,7 @@ static inline int mr_master_options_apply(mr_play_options *options)
     options->fast_buffer = master.fast_buffer;
     options->no_audio = master.no_audio;
     options->mono_audio = master.mono_audio;
+    options->audio_out = master.audio_out;
     options->throughput = master.throughput;
     options->skip_trigger_ms = master.skip_trigger_ms;
     options->no_video = master.no_video;

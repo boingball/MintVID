@@ -1,5 +1,19 @@
 # MintVID changelog
 
+## Unreleased
+
+### Added
+
+- **AHI audio output.** Sound can play through any AHI card instead of
+  Paula: pick an AHI unit in the new **Audio output** list of both
+  controllers, or start mrplay with `--audio-out=ahi --ahi-unit=N`
+  (units 0-3, whichever card and mode AHI's preferences give them).
+  AHI plays the source's own sample rate, so 44.1 and 48 kHz sound is
+  no longer halved as it is for Paula; **Audio: Low** still halves it.
+  The list only appears when ahi.device is installed, Paula stays the
+  default, and mrplay plays through Paula when the chosen unit cannot
+  be opened. Saved controller settings are reset once by this update.
+
 ## 1.4.1 - 2026-10-08
 
 ### Fixed

@@ -322,6 +322,13 @@ static int append_playback_flags(char *out, size_t cap,
         if (o->audio_rate == MR_AUDIO_RATE_LOW &&
             !append_option(out, cap, "--audio-rate=low")) return 0;
         if (o->mono_audio && !append_option(out, cap, "--audio-mono")) return 0;
+        if (o->audio_out != MR_AUDIO_OUT_PAULA) {
+            char unit[16];
+            snprintf(unit, sizeof unit, "--ahi-unit=%d",
+                     (int)(o->audio_out - MR_AUDIO_OUT_AHI0));
+            if (!append_option(out, cap, "--audio-out=ahi") ||
+                !append_option(out, cap, unit)) return 0;
+        }
     }
     /* Always explicit, like --fast-buffer= above: a GUI-launched session's
      * choice (the "Video: All Frames / Skip Frames" control) should always
@@ -422,7 +429,7 @@ static int parse_uint(const char *text, unsigned *value)
 int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
                           char *error, size_t error_size)
 {
-    int i;
+    int i, taken;
     if (!o) return 0;
     for (i = 1; i < argc; i++) {
         const char *arg = argv[i], *value;
@@ -520,6 +527,9 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "low")) o->audio_rate = MR_AUDIO_RATE_LOW;
             else goto bad;
         }
+        else if ((taken = mr_parse_audio_output(arg, &o->audio_out)) != 0) {
+            if (taken < 0) goto bad;
+        }
         else if (!strcmp(arg, "--no-audio")) o->no_audio = 1;
         else if (!strcmp(arg, "--no-video")) o->no_video = 1;
         else if (!strcmp(arg, "--audio-mono")) o->mono_audio = 1;
@@ -568,13 +578,49 @@ static void hls_policy_text(const mr_play_options *o, char *out, size_t cap)
         snprintf(out, cap, "HLS best");
 }
 
-/* Short description of the audio output policy for the status line. */
-static const char *audio_policy_text(const mr_play_options *o)
+int mr_parse_audio_output(const char *arg, mr_audio_output *out)
 {
-    if (o->no_audio) return "off";
-    if (o->audio_rate == MR_AUDIO_RATE_LOW)
-        return o->mono_audio ? "Low mono" : "Low";
-    return o->mono_audio ? "Mono" : "Normal";
+    if (!strcmp(arg, "--audio-out=paula")) {
+        *out = MR_AUDIO_OUT_PAULA;
+        return 1;
+    }
+    if (!strcmp(arg, "--audio-out=ahi")) {
+        if (*out == MR_AUDIO_OUT_PAULA) *out = MR_AUDIO_OUT_AHI0;
+        return 1;
+    }
+    if (!strncmp(arg, "--audio-out=", 12)) return -1;
+    if (!strncmp(arg, "--ahi-unit=", 11)) {
+        const char *v = arg + 11;
+        if (v[0] < '0' || v[0] >= '0' + MR_AUDIO_OUT_AHI_UNITS || v[1])
+            return -1;
+        *out = (mr_audio_output)(MR_AUDIO_OUT_AHI0 + (v[0] - '0'));
+        return 1;
+    }
+    return 0;
+}
+
+const char *mr_audio_output_name(mr_audio_output out)
+{
+    static const char *const names[] = {
+        "Paula", "AHI unit 0", "AHI unit 1", "AHI unit 2", "AHI unit 3"
+    };
+    return (unsigned)out < sizeof names / sizeof names[0] ? names[out]
+                                                          : names[0];
+}
+
+/* Short description of the audio output policy for the status line; the
+ * output is named only when it is not Paula. */
+static void audio_policy_text(const mr_play_options *o, char *out, size_t cap)
+{
+    const char *policy;
+    if (o->no_audio) policy = "off";
+    else if (o->audio_rate == MR_AUDIO_RATE_LOW)
+        policy = o->mono_audio ? "Low mono" : "Low";
+    else policy = o->mono_audio ? "Mono" : "Normal";
+    if (o->no_audio || o->audio_out == MR_AUDIO_OUT_PAULA)
+        snprintf(out, cap, "%s", policy);
+    else
+        snprintf(out, cap, "%s %s", mr_audio_output_name(o->audio_out), policy);
 }
 
 static const char *fast_buffer_text(const mr_play_options *o)
@@ -592,8 +638,8 @@ static const char *fast_buffer_text(const mr_play_options *o)
 
 void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
 {
-    char hls[24], video[32];
-    const char *h264, *audio;
+    char hls[24], video[32], audio[32];
+    const char *h264;
     if (!out || !cap || !o) return;
     hls_policy_text(o, hls, sizeof hls);
     h264 = o->h264_performance == MR_H264_PERF_QUALITY ? "Quality" :
@@ -602,7 +648,7 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
            o->h264_performance == MR_H264_PERF_TURBO ? "Turbo" :
            o->h264_performance == MR_H264_PERF_TURBO_PLUS ? "Turbo+" :
            o->h264_performance == MR_H264_PERF_SMOOSH ? "Smoosh" : "Auto";
-    audio = audio_policy_text(o);
+    audio_policy_text(o, audio, sizeof audio);
     if (mr_play_options_no_video(o)) {
         snprintf(out, cap,
                  "Playback: No Video (audio only) / %s / Audio %s / Fast buffer %s%s",

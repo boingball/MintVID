@@ -130,6 +130,19 @@ typedef enum {
     MR_AUDIO_RATE_LOW
 } mr_audio_rate_mode;
 
+/* Where the sound goes: Paula, or one of ahi.device's four units - whichever
+ * card and mode AHI's preferences give that unit. AHI plays the source's own
+ * rate (it resamples itself), so it is not held to Paula's ~28kHz ceiling.
+ * Values are appended only, so saved settings keep their meaning. */
+typedef enum {
+    MR_AUDIO_OUT_PAULA = 0,
+    MR_AUDIO_OUT_AHI0,
+    MR_AUDIO_OUT_AHI1,
+    MR_AUDIO_OUT_AHI2,
+    MR_AUDIO_OUT_AHI3
+} mr_audio_output;
+#define MR_AUDIO_OUT_AHI_UNITS 4
+
 typedef enum {
     MR_FAST_BUFFER_AUTO = 0,
     MR_FAST_BUFFER_OFF,
@@ -192,6 +205,8 @@ typedef struct mr_play_options {
      * chooser's "No Video" row (MR_DISPLAY_NONE); see
      * mr_play_options_no_video(). */
     int no_video;
+    /* --audio-out=paula|ahi, --ahi-unit=N: see mr_audio_output. */
+    mr_audio_output audio_out;
 } mr_play_options;
 
 /* The display modes that play through an RTG window rather than a native
@@ -236,5 +251,13 @@ int mr_build_external_player_arguments(char *output, size_t output_size,
 void mr_play_options_summary(const mr_play_options *options, char *output,
                              size_t output_size);
 int mr_path_is_audio_only(const char *path);
+
+/* --audio-out=paula|ahi and --ahi-unit=0..3, for every parser that takes them
+ * (mrplay has its own): 1 = taken into *out, 0 = not one of these, -1 = bad
+ * value. --ahi-unit implies AHI; --audio-out=ahi keeps a unit already chosen
+ * (unit 0 if none), so the two can come in either order. */
+int mr_parse_audio_output(const char *arg, mr_audio_output *out);
+/* "Paula" or "AHI unit N", as the GUIs list them. */
+const char *mr_audio_output_name(mr_audio_output out);
 
 #endif

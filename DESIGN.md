@@ -3,7 +3,7 @@
 A codec-agnostic video player for 68k AmigaOS, in the spirit of **MintAMP**
 (the libhelix-based audio player): small, portable C at the core and thin
 Amiga-specific layers around it. MP3/AAC decoding reuses the proven
-MintAMP/Helix code, with audio output through Paula.
+MintAMP/Helix code, with audio output through Paula or AHI.
 
 The project was inspired by **RiVA 0.54** (Fellner / Török / Richter) — the
 fastest 68k MPEG-1 player, written in hand-tuned 68k/AMMX assembly. Its
@@ -71,7 +71,7 @@ than available RAM. Adding a container is a backend, like adding a codec.
 
 ```
              +------------------ platform (Amiga) ------------------+
-  file/async | RTG chunky blit   | AGA C2P + dither | Paula audio   |
+  file/async | RTG chunky blit   | AGA C2P + dither | Paula/AHI     |
    reader ---+-------------------+------------------+---------------+
       |            ^ frames             ^ frames          ^ pcm
       v            |                    |                 |
@@ -85,7 +85,7 @@ than available RAM. Adding a container is a backend, like adding a codec.
 - **Portable core** (`player/core/`): demux, decoder registry + decoders, pixel
   formats. Builds and is tested on the dev host; no Amiga dependencies.
 - **Platform layer** (`player/amiga/`): screen/RTG setup and chunky blit, AGA
-  C2P + dither, file-backed packet IO, Paula output, and the MintAMP/Helix
+  C2P + dither, file-backed packet IO, Paula or AHI output, and the MintAMP/Helix
   decoder integration used for MP3/AAC.
 - **Sync**: audio is the master clock; video drops/repeats frames to track it —
   the same broad principle RiVA settled on.
@@ -207,6 +207,9 @@ mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
       MP3/AAC use the pinned MintAMP/Helix sources through
       `player/audio/mr_audio_decode.c`; host regression tests pass, and
       AC-3/general audio quality is confirmed good on real hardware.
+- [x] AHI audio backend (`audio_ahi.c`) beside Paula's, behind the same
+      `mr_audio.h` (`audio.c` dispatches): any AHI card and unit, at the
+      source's own rate.
 - [x] Moon-shot heavier codec, gated to PiStorm-class practical streaming:
       delivered as H.264/AVC above
 ```
