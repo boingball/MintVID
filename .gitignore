@@ -8,6 +8,9 @@ player/mr_aac_decim_check
 player/mr_mp2_check
 player/.hostobj/
 player/mr_codec_registry_check
+player/mr_codec_fallback_check
+player/mr_avc_check
+player/mr_hwdec_check
 player/mr_scale_check
 player/mr_yuv_check
 player/mr_rgb565_check
