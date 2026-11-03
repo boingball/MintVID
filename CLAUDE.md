@@ -2118,6 +2118,56 @@ bracketed by the sentinel, previous value restored after) is unchanged;
 only the mechanism for setting/restoring `pr_WindowPtr` moved from a
 library call to direct struct access.
 
+## Matroska seeking
+`mr_mkv_seek()` (`core/mr_mkv.c`) lands on the last video keyframe at or
+before the target, the same contract as `mr_mov_seek()`, and
+`mr_demux_can_seek()` is now true for local MKV files too. So `mrplay`'s
+cursor keys seek MKV as well. That path has not run on real hardware yet.
+
+The seek uses the Cues index when there is one. Its offset comes from the
+SeekHead, or from a Cues element before the first cluster. The table is
+loaded on the first seek. Without Cues (files written to a pipe, some
+recorders) it scans cluster timecodes and searches the clusters before the
+target backwards for a keyframe. Either way it then walks the chosen
+cluster's blocks: a SimpleBlock with flag 0x80, or a BlockGroup without a
+ReferenceBlock, is a keyframe. The cursor is put on that block, so audio
+blocks earlier in the cluster are skipped.
+
+`tests/mr_mkv_seek_check.c` seeks to fixed times and to one microsecond
+either side of every IDR. It requires the reported time and every packet
+after the seek to match a linear read. It runs on `test_h264_seek.mkv`
+(Cues) and `test_h264_seek_nocues.mkv` (none), on the host and m68k. The
+second file's timestamps start at 21 ms after ffmpeg's remux. That is why the
+targets around each IDR are taken from the file, not hard-coded.
+
+## External players (PiStorm / mrberry)
+The GUIs list "PiStorm (VideoCore)" (`MR_DISPLAY_PISTORM`, appended to the
+enum, same value as the PiStorm fork's saved setting) only when
+`PROGDIR:mrberry` exists. That display starts `mrberry` instead of
+`mrplay`, as task `MintVID player` with `"<file>" [--no-audio]`
+(`mr_build_external_player_arguments()`). The contract, the same signals,
+port and status as `mrplay`, is in `docs/EXTERNAL_PLAYER.md`. `mrberry`
+itself lives in MichiB210/MintVID-PiStorm, with `berryvp.library`, the CPU1
+audio modules and the patched Emu68 kernel it needs. Anything that still
+starts `mrplay` with this display (the IPTV/YouTube browsers) gets `--p96`.
+
+A second entry, "PiStorm (VideoCore, Amiga audio)" (`MR_DISPLAY_PISTORM_PAULA`,
+appended after it), starts `mrberry --paula`. The sound is then decoded on the
+68k with MintVID's own decoders and played through `audio_paula.c`, so it
+needs no BerryCore kernel. `--audio-rate=low` and `--audio-mono` are passed
+the same way as to mrplay. In mrberry (`amiga/mrb_paula.c`), the Pi's 1-MHz
+timer is the clock, anchored when the first video frame goes to the
+VideoCore. The end of Paula's queue is compared with where that clock will be
+when it plays, and silence is added or samples dropped there. A host mock
+harness with real MintAMP decode kept the error within 50 ms at Paula clock
+errors of up to 2%, through pause and jumps. When the VideoCore actually
+shows a frame relative to that anchor has not been measured on hardware, so
+`--av-offset=MS` exists to tune it.
+
+MP4 files whose `mp4a` track carries MP3 (object type 0x6B) are reported as
+AAC by `mr_mov.c`, which never reads the esds object type, so they play
+silent in mrplay too. Not fixed yet.
+
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
 - `cd player && make check` — full conformance suite (Cinepak, H.264, MPEG-4
@@ -6049,6 +6099,66 @@ Table footprint against the real 060's 8 KB data cache:
   R+G+B, and a frame touches only part of them.
 
 Not yet timed on real hardware.
+
+## Vampire/Apollo 68080
+Recommended build: MintVID040 (README, guide and DESIGN.md say so). The 68080
+Programmer's Reference Manual (June 2026 edition, user-supplied PDF, timings
+from a V4) shows the 64-bit `MULU.L`/`MULS.L Dn,Dh:Dl` forms in hardware at
+2-3 cycles and divides at up to 18. So everything MintVID060 does to avoid
+them (the MP2 `_060` kernels, MintAMP's 060 groups, the AC-3 FFT wrapper,
+GCC's `-m68060` lowering to libgcc) only costs time on an 080. Not yet
+measured on Vampire hardware.
+
+Facts for future 080 work, from that manual and RiVA's own source (in git
+history before `b8f1516`, `src/RiVA-0.54a0.s`):
+- 128 KB data cache, 32 KB instruction cache, 64-bit bus. The 060-sized
+  cache cautions above do not apply.
+- Three pipes from core ~11350, but MUL/DIV/MOVEM only issue in the first.
+- AMMX (64-bit SIMD, `-m68080` in vasm; GNU as does not know it): `PAVGB`
+  is exactly the MPEG/H.264 rounded average `(a+b+1)>>1` on 8 bytes;
+  `PMUL88` (word multiply, bits 23..8), `PADDW` and `PACKUSWB` (saturate to
+  0..255) fit YUV->RGB; `PACK3216` is ARGB->RGB565; `C2P` transposes 8
+  chunky bytes; `BFLY`/`TRANS` for the IDCT.
+- Registers are 64-bit but AmigaOS saves only 32 bits on a task switch:
+  code using AMMX must set the Apollo bit, SR bit 11 (`ori #$800,sr`, legal
+  in user mode on the 080), as RiVA did.
+- Detection: Exec `AttnFlags` bit 10 (`AFB_68080`).
+- SAGA shows YUYV 4:2:2 directly: RiVA wrote `$0006` (plus doubling bits in
+  the high byte) to `$DFF1F4` and its own triple-buffered frame address to
+  `$DFF1EC`, restoring `$0002` (RGB565) on exit. That would skip colour
+  conversion like the P96 overlay does.
+Nothing here can execute 68080 code (qemu has no 68080), so any AMMX or SAGA
+change needs a Vampire owner to test it.
+
+## AHI audio output
+
+- `mr_audio.h` is the one sink API; `amiga/audio.c` implements it once (NULL
+  checks and NULL-session defaults) and dispatches through an ops table
+  (`audio_backend.h`) to `audio_paula.c` or `audio_ahi.c`. A new output is a
+  new ops table, not a change to the player.
+- The AHI backend copies the Paula backend's proven shape on purpose, because
+  mrplay's rescue logic reads its diagnostics: a worker process at priority 5,
+  two requests of 200 ms (`AUDIO_RESCUE_*` are one or two requests), completed
+  requests committed in submission order, the clock interpolated across the
+  request in flight on the EClock timeline. Keep the two backends' meanings
+  identical when changing either.
+- ahi.device specifics: a completed `CMD_WRITE` trashes every field except
+  `io_Device`/`io_Unit`/`io_Command`, so each write sets them all again; the
+  next request is chained to the one still playing with `ahir_Link`; teardown
+  aborts the request sent last first, so aborting the playing one cannot start
+  the linked one. `AHIST_S16S` at the decoder's rate - AHI resamples, so
+  `mr_audio_decoder_open()` gets no ceiling (`max_rate` 0) for AHI and
+  `MR_AUDIO_PAULA_RATE_MAX` for Paula. AHI rates can pass 65535 Hz, so its
+  clock math uses `mr_u64_div_u24`, not Paula's `mr_u64_div_u16`.
+- The clock counts samples AHI's mixer has taken, not heard: it leads the
+  speaker by the driver's own buffer (tens of ms). Paula's has no such lead.
+- `open_audio_output()` in mrplay.c falls back to Paula (reopening the decoder
+  under Paula's ceiling) when the AHI unit cannot be opened.
+- The GUIs probe `OpenDevice(AHINAME, AHI_NO_UNIT, ...)` (`amiga/mr_ahi.c`) and
+  list Paula plus units 0-3 only when it opens; otherwise there is no Audio
+  output control and Paula plays.
+- `tests/amiga_audio_task_stress.c` takes an AHI unit (`audio_task_stress 3`)
+  for the same 100-cycle open/play/close soak as Paula.
 
 ## VideoCore decoding (PiStorm)
 

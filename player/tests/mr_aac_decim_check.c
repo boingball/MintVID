@@ -190,7 +190,7 @@ static int run(const unsigned char *aac, unsigned long aac_len,
     info.format_tag = MR_AUDIO_FORMAT_AAC;
     info.sample_rate = 48000;
     info.channels = 2;
-    dec = mr_audio_decoder_open(&info, low_rate, 0);
+    dec = mr_audio_decoder_open(&info, low_rate, 0, MR_AUDIO_PAULA_RATE_MAX);
     if (!dec) { fprintf(stderr, "AAC decoder rejected the stream\n"); return 0; }
 
     memset(&cap, 0, sizeof cap);

@@ -2,6 +2,7 @@
 #include "../core/mr_play_options.h"
 #include "../iptv/mr_iptv.h"
 #include "mr_akiko.h"
+#include "mr_ahi.h"
 #include "mr_videocore.h"
 #include "mr_gui_menu.h"
 #include "mr_last_dir.h"
@@ -53,7 +54,7 @@ enum {
     G_FILE = 1, G_BROWSE, G_MODE, G_C2P, G_H264, G_LACE, G_SCALE,
     G_AUDIO_RATE, G_FAST_BUFFER, G_NO_AUDIO, G_MONO_AUDIO, G_VIDEO_MODE,
     G_PLAY, G_PAUSE, G_STOP, G_FAST, G_IPTV, G_YOUTUBE, G_VOLUME, G_INFO,
-    G_PLAYLIST, G_SKIP_AFTER, G_VIDEOCORE
+    G_PLAYLIST, G_SKIP_AFTER, G_AUDIO_OUT, G_VIDEOCORE
 };
 
 typedef struct gt_app {
@@ -66,6 +67,13 @@ typedef struct gt_app {
     struct Gadget *video_mode, *volume, *skip_after;
     /* "VideoCore decoding": only when videocodec.library opens. */
     struct Gadget *videocore;
+    /* Audio output cycle: only when ahi.device opens (NULL otherwise, and
+     * Paula plays). Row i plays to audio_outs[i]. */
+    struct Gadget *audio_out;
+    mr_audio_output audio_outs[1 + MR_AUDIO_OUT_AHI_UNITS];
+    STRPTR audio_out_labels[2 + MR_AUDIO_OUT_AHI_UNITS];
+    char audio_out_text[1 + MR_AUDIO_OUT_AHI_UNITS][24];
+    unsigned audio_out_count;
     struct Gadget *iptv;
     /* Scale row after the last update_mode_controls(): tells a forward
      * click on the cycle gadget from a backward (shift) one. */
@@ -96,6 +104,9 @@ typedef struct gt_app {
     struct timerequest *timer_io;
     int timer_open, timer_running;
     ULONG status_seq;
+    int status_live;
+    int external_launch_pending;
+    unsigned external_launch_ticks;
 } gt_app;
 
 /* "VQ" (Video Quality), not "H.264" - see mrgui.c's own h264_label comment:
@@ -228,13 +239,30 @@ static void set_info(gt_app *app, const char *text)
  * once a second - see mrplay.c's player_update_position(). Leaves Info:
  * alone once no player is running, so it keeps showing whatever file/type
  * text set_info() last set from play_file(). */
+static struct Task *find_player(void);
+
 static void poll_status(gt_app *app)
 {
     mr_player_status ps;
     char line[300];
-    if (!mr_player_status_read(&ps)) { app->status_seq = 0; return; }
-    if (ps.seq == app->status_seq) return;
+    int live = mr_player_status_read(&ps);
+    if (!live && !mr_player_status_read_final(&ps)) {
+        app->status_seq = 0;
+        if (app->external_launch_pending) {
+            ++app->external_launch_ticks;
+            if ((app->external_launch_ticks >= 8 && !find_player()) ||
+                app->external_launch_ticks >= 240) {
+                set_info(app, "mrberry gave no status; see " MR_EXTERNAL_PLAYER_LOG);
+                app->external_launch_pending = 0;
+            }
+        }
+        return;
+    }
+    app->external_launch_pending = 0;
+    /* Port and file have independent sequence counters. */
+    if (ps.seq == app->status_seq && live == app->status_live) return;
     app->status_seq = ps.seq;
+    app->status_live = live;
     if (ps.state == MR_PLAYER_STATE_PLAYING)
         snprintf(line, sizeof(line), "Playing%s%s%s%s", ps.codec[0] ? " (" : "",
                  ps.codec, ps.codec[0] ? "): " : "", ps.text);
@@ -244,6 +272,8 @@ static void poll_status(gt_app *app)
         snprintf(line, sizeof(line), "Player error: %s", ps.text);
     else if (ps.state == MR_PLAYER_STATE_ENDED)
         snprintf(line, sizeof(line), "Playback ended");
+    else if (ps.state == MR_PLAYER_STATE_OPENING)
+        snprintf(line, sizeof(line), "%s", ps.text);
     else
         return; /* STARTING/OPENING: leave whatever Info: already shows */
     set_info(app, line);
@@ -378,6 +408,11 @@ static void read_options(gt_app *app, mr_play_options *options)
     if (app->videocore)
         options->no_videocore =
             gad_value(app, app->videocore, GTCB_Checked) == 0;
+    if (app->audio_out) {
+        ULONG row = gad_value(app, app->audio_out, GTCY_Active);
+        options->audio_out = row < app->audio_out_count ? app->audio_outs[row]
+                                                       : MR_AUDIO_OUT_PAULA;
+    }
     {
         ULONG video = gad_value(app, app->video_mode, GTCY_Active);
         options->throughput = video != 1;
@@ -398,8 +433,12 @@ static void read_options(gt_app *app, mr_play_options *options)
 static void update_skip_after(gt_app *app)
 {
     ULONG selected = gad_value(app, app->mode, GTCY_Active);
+    /* The frame and VQ choices mean nothing without video, or to the
+     * external PiStorm player, which plays every frame on the VideoCore. */
     ULONG no_video = selected < app->mode_count &&
-                     app->modes[selected] == MR_DISPLAY_NONE ? TRUE : FALSE;
+                     (app->modes[selected] == MR_DISPLAY_NONE ||
+                      mr_display_uses_external_player(app->modes[selected]))
+                     ? TRUE : FALSE;
     ULONG not_skipping = gad_value(app, app->video_mode, GTCY_Active) != 1;
     ULONG smoosh = gad_value(app, app->h264, GTCY_Active) ==
                    MR_H264_PERF_SMOOSH;
@@ -567,11 +606,24 @@ static void stop_player(void)
         Delay(1);
 }
 
+/* The PiStorm display mode is only offered when its external player,
+ * mrberry, sits beside MintVID (see docs/EXTERNAL_PLAYER.md). */
+#define MR_PISTORM_PLAYER "mrberry"
+
+static int pistorm_player_available(void)
+{
+    BPTR lock = Lock((CONST_STRPTR)"PROGDIR:" MR_PISTORM_PLAYER, ACCESS_READ);
+    if (!lock) return 0;
+    UnLock(lock);
+    return 1;
+}
+
 static int launch(const char *program, const char *task_name,
                   const char *arguments)
 {
     char path[64];
     BPTR seglist;
+    BPTR log = 0;
     struct Process *process;
     snprintf(path, sizeof(path), "PROGDIR:%s", program);
     seglist = LoadSeg((CONST_STRPTR)path);
@@ -579,12 +631,20 @@ static int launch(const char *program, const char *task_name,
         seglist = LoadSeg((CONST_STRPTR)program);
     if (!seglist)
         return 0;
+    if (!strcmp(program, MR_PISTORM_PLAYER)) {
+        log = Open((CONST_STRPTR)MR_EXTERNAL_PLAYER_LOG, MODE_NEWFILE);
+        if (!log) { UnLoadSeg(seglist); return 0; }
+    }
     process = CreateNewProcTags(NP_Seglist, seglist, NP_FreeSeglist, TRUE,
         NP_Arguments, (ULONG)(arguments ? arguments : ""),
+        log ? NP_Output : TAG_IGNORE, (ULONG)log,
+        log ? NP_CloseOutput : TAG_IGNORE, TRUE,
         NP_StackSize, MRPLAY_STACK_SIZE, NP_Cli, TRUE,
         NP_CommandName, (ULONG)program, NP_Name, (ULONG)task_name, TAG_END);
-    if (!process)
+    if (!process) {
+        if (log) Close(log);
         UnLoadSeg(seglist);
+    }
     return process != NULL;
 }
 
@@ -612,6 +672,24 @@ static void play_file(gt_app *app)
         return;
     }
     read_options(app, &options);
+    mr_player_status_clear_snapshot();
+    app->status_seq = 0;
+    app->external_launch_pending = 0;
+    /* An external player (PiStorm: mrberry) runs under the same task name
+     * as mrplay and answers the same signals and status port, so Pause,
+     * Stop and the status line need no special case. */
+    if (mr_display_uses_external_player(options.display)) {
+        if (!mr_build_external_player_arguments(args, sizeof(args), &options,
+                                                app->path) ||
+            !launch(MR_PISTORM_PLAYER, "MintVID player", args))
+            set_info(app, "Could not start mrberry (keep it beside MintVID-GT).");
+        else {
+            app->external_launch_pending = 1;
+            app->external_launch_ticks = 0;
+            set_info(app, "Starting PiStorm playback...");
+        }
+        return;
+    }
     if (!mr_build_player_arguments(args, sizeof(args), &options, app->path,
                                    NULL, NULL) ||
         !launch("mrplay", "MintVID player", args))
@@ -1056,6 +1134,7 @@ static int build_window(gt_app *app)
     ULONG initial_c2p, initial_h264, initial_laced, initial_scale;
     ULONG initial_audio_rate, initial_fast_buffer, initial_no_audio;
     ULONG initial_mono_audio, initial_video_mode, initial_skip_after;
+    ULONG initial_audio_out;
 
     app->screen = LockPubScreen(NULL);
     if (!app->screen)
@@ -1122,6 +1201,15 @@ static int build_window(gt_app *app)
          * than WritePixel. */
         default_mode = (int)app->mode_count - 1;
     }
+    /* PiStorm VideoCore playback, only when the external player is here.
+     * Never the default. Sound through the Pi's HDMI needs the BerryCore
+     * Emu68 kernel; sound through Paula (MintVID's decoders) does not. */
+    if (pistorm_player_available()) {
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: PiStorm (HDMI)";
+        app->modes[app->mode_count++] = MR_DISPLAY_PISTORM;
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: PiStorm (Paula)";
+        app->modes[app->mode_count++] = MR_DISPLAY_PISTORM_PAULA;
+    }
     /* Audio only, listed last so it never becomes the hardware default.
      * It sits here rather than under Video so it is easy to find; Video,
      * Skip after and VQ grey out under it (update_skip_after()). */
@@ -1152,6 +1240,9 @@ static int build_window(gt_app *app)
      * open, already clamps any combination that isn't actually eligible
      * (Copper 2x needing a qualifying c2p/mode, etc.) - the same safety
      * net a manual click through these controls relies on. */
+    /* Defaults first: gcc cannot see that every field is only read when
+     * the load succeeded. */
+    mr_play_options_default(&saved_options);
     have_saved_options = mr_saved_options_load(&saved_options);
     if (have_saved_options) {
         /* Settings saved by the old Video: Off row have no_video set with
@@ -1188,6 +1279,30 @@ static int build_window(gt_app *app)
     initial_skip_after = skip_after_row(have_saved_options
                                         ? saved_options.skip_trigger_ms
                                         : MR_SKIP_TRIGGER_DEFAULT_MS);
+    /* Cycle labels can't change once the gadget exists, so the rows are
+     * fixed here: Paula, then AHI's four units when the device opens. */
+    app->audio_out = NULL;
+    app->audio_out_count = 0;
+    if (mr_ahi_available()) {
+        mr_audio_output out;
+        for (out = MR_AUDIO_OUT_PAULA;
+             out < MR_AUDIO_OUT_AHI0 + MR_AUDIO_OUT_AHI_UNITS;
+             out = (mr_audio_output)(out + 1)) {
+            unsigned n = app->audio_out_count++;
+            snprintf(app->audio_out_text[n], sizeof app->audio_out_text[n],
+                     "Output: %s", mr_audio_output_name(out));
+            app->audio_out_labels[n] = (STRPTR)app->audio_out_text[n];
+            app->audio_outs[n] = out;
+        }
+        app->audio_out_labels[app->audio_out_count] = NULL;
+    }
+    initial_audio_out = 0;
+    if (have_saved_options) {
+        ULONG row;
+        for (row = 0; row < app->audio_out_count; row++)
+            if (app->audio_outs[row] == saved_options.audio_out)
+                initial_audio_out = row;
+    }
 
     g = app->gadgets;
     app->file = g = add_gadget(app, g, STRING_KIND, G_FILE, 8, 20, 535, 15,
@@ -1240,6 +1355,12 @@ static int build_window(gt_app *app)
      * give their longest labels. */
     app->skip_after = g = add_gadget(app, g, CYCLE_KIND, G_SKIP_AFTER, 384, 92,
         176, 16, "", GTCY_Labels, (ULONG)skip_after_labels);
+    /* Audio output, only when ahi.device opens: the free row below the
+     * media buttons (where IPTV/YouTube used to be). "Output: AHI unit 3"
+     * is 18 topaz characters plus the cycle glyph. */
+    if (app->audio_out_count)
+        app->audio_out = g = add_gadget(app, g, CYCLE_KIND, G_AUDIO_OUT, 8,
+            140, 176, 16, "", GTCY_Labels, (ULONG)app->audio_out_labels);
     /* The free row below the media buttons (where IPTV/YouTube used to
      * be), right of where an audio output cycle would go. */
     app->videocore = NULL;
@@ -1307,6 +1428,9 @@ static int build_window(gt_app *app)
                          GTCY_Active, initial_video_mode, TAG_DONE);
         GT_SetGadgetAttrs(app->skip_after, app->window, NULL,
                          GTCY_Active, initial_skip_after, TAG_DONE);
+        if (app->audio_out)
+            GT_SetGadgetAttrs(app->audio_out, app->window, NULL,
+                             GTCY_Active, initial_audio_out, TAG_DONE);
         update_skip_after(app);
     }
     return app->window != NULL;
@@ -1436,7 +1560,7 @@ int main(void)
                 case G_LACE:
                 case G_AUDIO_RATE: case G_FAST_BUFFER:
                 case G_NO_AUDIO: case G_MONO_AUDIO:
-                case G_SKIP_AFTER: case G_VIDEOCORE:
+                case G_SKIP_AFTER: case G_AUDIO_OUT: case G_VIDEOCORE:
                     publish_options(&app); break;
                 default: break;
                 }

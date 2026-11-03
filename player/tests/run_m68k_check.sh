@@ -503,6 +503,10 @@ $CC -o "$BUILD/mr_hwdec_check.m68k" tests/mr_hwdec_check.c core/mr_hwdec.c \
 echo "== building mr_micro_rescue_check.m68k =="
 $CC -o "$BUILD/mr_micro_rescue_check.m68k" tests/mr_micro_rescue_check.c
 
+echo "== building mr_mkv_seek_check.m68k =="
+# EBML parsing and the Cues/cluster-scan seek on big-endian m68k.
+$CC -o "$BUILD/mr_mkv_seek_check.m68k" tests/mr_mkv_seek_check.c core/mr_mkv.c
+
 run() { echo "[qemu-m68k] $*"; "$QEMU_M68K" "$@"; }
 
 run "$BUILD/mr_h264_m68k_check.m68k"
@@ -557,6 +561,8 @@ for f in test_h264_high.mp4 test_h264_gop.mp4 test_h264_aac.mkv; do
         "tests/assets/ref_annexb/$f.h264"
 done
 run "$BUILD/mr_avc_check.m68k" tests/assets/test_h264_aac.ts -
+run "$BUILD/mr_mkv_seek_check.m68k" tests/assets/test_h264_seek.mkv
+run "$BUILD/mr_mkv_seek_check.m68k" tests/assets/test_h264_seek_nocues.mkv
 
 echo "[AC-3 vs ffmpeg, real m68k/big-endian]"
 run "$BUILD/mr_ac3_check.m68k" tests/assets/test_ac3.ac3 \

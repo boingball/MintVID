@@ -193,15 +193,18 @@ mode:
     configuration. With a Raspberry Pi 4 or CM4 and the Emu68
     VideoCore stack, H.264 and Motion-JPEG decode on the Pi's VPU instead -
     see @{" Supported formats " LINK Formats}.
-  - Vampire/Apollo 68080 - not yet validated by the MintVID project. No
-    optimised build is officially recommended yet, and the MintVID060
-    build should not be assumed to be correct solely from the CPU name.
+  - Vampire/Apollo 68080 - use MintVID040, not MintVID060. The 68080
+    runs the 64-bit multiply and divide instructions in hardware; the
+    68060 does not, so MintVID060 replaces them with slower code. MintVID
+    has no 68080-specific code yet (no AMMX, no SAGA display mode) and
+    has not been measured on Vampire hardware.
 
 MintVID uses the same feature set across its 68030, 68040 and 68060
 builds. For normal classic systems use MintVID030, MintVID040 or
-MintVID060 for the matching CPU. PiStorm/Emu68 uses MintVID040. There is
-no separate AGA, RTG or PiStorm feature edition; display mode and
-practical playback performance depend on the hardware underneath it.
+MintVID060 for the matching CPU. PiStorm/Emu68 and Vampire/Apollo 68080
+use MintVID040. There is no separate AGA, RTG or PiStorm feature edition;
+display mode and practical playback performance depend on the hardware
+underneath it.
 
 @{" Back to Contents " LINK "MAIN"}
 @endnode
@@ -214,11 +217,10 @@ practical playback performance depend on the hardware underneath it.
 @{b}Installing MintVID@{ub}
 
 For a normal 68030, 68040 or 68060 system use the MintVID030, MintVID040
-or MintVID060 drawer respectively. PiStorm/Emu68 users should use
-MintVID040. Vampire/Apollo 68080 has not yet been validated, so there is
-no official optimised-build recommendation for it yet. Copy the chosen
-drawer to your Amiga (or a shared PiStorm volume) and keep its contents
-together.
+or MintVID060 drawer respectively. PiStorm/Emu68 and Vampire/Apollo
+68080 users should use MintVID040; MintVID060 is for a real 68060 only.
+Copy the chosen drawer to your Amiga (or a shared PiStorm volume) and
+keep its contents together.
 
 Run @{b}MintVID@{ub} on systems with ReAction V44. A standard AmigaOS 3.0
 system without ReAction V44 should instead run @{b}MintVID-GT@{ub}, the
@@ -652,10 +654,14 @@ Build with SSL=1 and keep ytgui beside MintVID and mrplay.
 
 @{b}Audio output settings@{ub}
 
-  Audio rate    Normal, or Low to halve Paula's output rate again -
+  Audio output  Paula, or AHI unit 0-3 (listed when AHI is installed):
+                the card and mode AHI's preferences give that unit, at
+                the source's own sample rate. If the unit cannot be
+                opened, Paula plays instead.
+  Audio rate    Normal, or Low to halve the output rate again -
                 noticeably telephone-like, but a real CPU saving when
                 H.264 decode is starving the audio FIFO
-  No audio      skip the audio decoder and Paula entirely
+  No audio      skip the audio decoder and output entirely
   Mono audio    ask the codec for one channel instead of decoding both
                 - MP3/MP2/AC-3 skip roughly half their per-channel work
                 this way; Helix AAC only saves the downmix, since it has
@@ -671,9 +677,10 @@ Build with SSL=1 and keep ytgui beside MintVID and mrplay.
                 queue of downloaded segments ahead of playback (up to
                 eight for recorded videos, three for live streams).
 
-Audio plays in stereo through a synchronized pair of Paula channels. A
-stereo source keeps its left and right channels; a mono source, or Mono
-audio, plays the same signal on both speakers. When the source rate is
+Audio plays in stereo through a synchronized pair of Paula channels, or
+through AHI as 16-bit stereo. A stereo source keeps its left and right
+channels; a mono source, or Mono audio, plays the same signal on both
+speakers. When the source rate is
 above what Paula can play, or Audio is Low, AAC is decoded directly at
 the lower rate with a smaller transform instead of decoding at full rate
 and dropping samples.
@@ -751,6 +758,7 @@ Every GUI is a front end over mrplay, which also runs directly:
   mrplay --aga-window "DH0:Videos/clip.avi"
   mrplay --aga-window-half "DH0:Videos/clip.mp4"
   mrplay --no-video "DH0:Videos/concert.mp4"
+  mrplay --audio-out=ahi --ahi-unit=1 "DH0:Videos/movie.mp4"
   mrplay --tls=1.3 "https://example.net/live/master.m3u8"
 
 mrplay carries a $STACK:320000 AmigaOS stack cookie because libavc needs

@@ -52,6 +52,7 @@
 #include "../iptv/mr_iptv.h"
 #include "mr_master_options.h"
 #include "mr_akiko.h"
+#include "mr_ahi.h"
 #include "mr_videocore.h"
 #include "mr_gui_menu.h"
 #include "mr_last_dir.h"
@@ -111,6 +112,7 @@ enum {
     G_VOLUME,
     G_PLAYLIST,
     G_SKIP_AFTER,
+    G_AUDIO_OUT,
     G_VIDEOCORE
 };
 
@@ -138,6 +140,12 @@ static ULONG skip_after_row(unsigned ms)
     }
     return best;
 }
+/* "Audio output" chooser (--audio-out=, --ahi-unit=): created, on a row of
+ * its own, only when ahi.device opens - otherwise Paula is the only output
+ * and the window stays as it was. Row i plays to audio_out_values[i]. */
+static Object *g_audio_out;
+static mr_audio_output audio_out_values[1 + MR_AUDIO_OUT_AHI_UNITS];
+static unsigned audio_out_count;
 /* "VideoCore decoding" checkbox (--no-videocore when cleared): created, on a
  * row of its own, only when videocodec.library opens - otherwise there is
  * nothing to switch and the window stays as it was. */
@@ -351,6 +359,18 @@ static struct Task *find_player(void)
     return task;
 }
 
+/* The PiStorm display mode is only offered when its external player,
+ * mrberry, sits beside MintVID (see docs/EXTERNAL_PLAYER.md). */
+#define MR_PISTORM_PLAYER "mrberry"
+
+static int pistorm_player_available(void)
+{
+    BPTR lock = Lock((CONST_STRPTR)"PROGDIR:" MR_PISTORM_PLAYER, ACCESS_READ);
+    if (!lock) return 0;
+    UnLock(lock);
+    return 1;
+}
+
 static void signal_player(ULONG mask)
 {
     struct Task *task;
@@ -418,6 +438,12 @@ static void read_play_options(Object *mode, Object *c2p, Object *h264,
                          : MR_FAST_BUFFER_AUTO;
     options->no_audio = checked_no_audio != 0;
     options->mono_audio = checked_mono != 0;
+    if (g_audio_out) {
+        ULONG row = 0;
+        GetAttr(CHOOSER_Selected, g_audio_out, &row);
+        options->audio_out = row < audio_out_count ? audio_out_values[row]
+                                                   : MR_AUDIO_OUT_PAULA;
+    }
     if (g_videocore) {
         ULONG checked_videocore = 1;
         GetAttr(CHECKBOX_Checked, g_videocore, &checked_videocore);
@@ -449,8 +475,12 @@ static void update_skip_after(Object *mode, Object *h264, Object *video_mode,
     GetAttr(CHOOSER_Selected, mode, &selected);
     GetAttr(CHOOSER_Selected, h264, &selected_h264);
     GetAttr(CHOOSER_Selected, video_mode, &selected_video_mode);
+    /* The frame and VQ choices mean nothing without video, or to the
+     * external PiStorm player, which plays every frame on the VideoCore. */
     no_video = selected < mode_count &&
-               mode_values[selected] == MR_DISPLAY_NONE ? TRUE : FALSE;
+               (mode_values[selected] == MR_DISPLAY_NONE ||
+                mr_display_uses_external_player(mode_values[selected]))
+               ? TRUE : FALSE;
     SetGadgetAttrs((struct Gadget *)video_mode, window, NULL,
                    GA_Disabled, no_video, TAG_DONE);
     SetGadgetAttrs((struct Gadget *)h264, window, NULL,
@@ -768,6 +798,9 @@ static struct timerequest *status_timer_io;
 static int status_timer_device_open;
 static int status_timer_running;
 static ULONG player_status_seq;
+static int player_status_live;
+static int external_launch_pending;
+static unsigned external_launch_ticks;
 
 static int status_timer_open(void)
 {
@@ -818,10 +851,26 @@ static void poll_player_status(Object *info, struct Window *window)
 {
     mr_player_status ps;
     char line[300];
+    int live = mr_player_status_read(&ps);
 
-    if (!mr_player_status_read(&ps)) { player_status_seq = 0; return; }
-    if (ps.seq == player_status_seq) return;
+    if (!live && !mr_player_status_read_final(&ps)) {
+        player_status_seq = 0;
+        if (external_launch_pending) {
+            ++external_launch_ticks;
+            if ((external_launch_ticks >= 8 && !find_player()) ||
+                external_launch_ticks >= 240) {
+                set_info(info, window, "mrberry gave no status; see "
+                         MR_EXTERNAL_PLAYER_LOG);
+                external_launch_pending = 0;
+            }
+        }
+        return;
+    }
+    external_launch_pending = 0;
+    /* Port and file have independent sequence counters. */
+    if (ps.seq == player_status_seq && live == player_status_live) return;
     player_status_seq = ps.seq;
+    player_status_live = live;
 
     if (ps.state == MR_PLAYER_STATE_PLAYING)
         snprintf(line, sizeof(line), "Playing%s%s%s%s", ps.codec[0] ? " (" : "",
@@ -832,6 +881,8 @@ static void poll_player_status(Object *info, struct Window *window)
         snprintf(line, sizeof(line), "Player error: %s", ps.text);
     else if (ps.state == MR_PLAYER_STATE_ENDED)
         snprintf(line, sizeof(line), "Playback ended");
+    else if (ps.state == MR_PLAYER_STATE_OPENING)
+        snprintf(line, sizeof(line), "%s", ps.text);
     else
         return;
     set_info(info, window, line);
@@ -888,9 +939,13 @@ static void start_player_path(const char *full_file, Object *mode,
 {
     char path[512];
     char args[1600];
+    char seg_path[64];
     mr_play_options options;
     BPTR seglist;
+    BPTR log = 0;
     struct Process *process;
+    const char *program;
+    int external;
 
     if (!full_file || !*full_file) {
         set_info(info, window, "Choose a video first.");
@@ -909,27 +964,56 @@ static void start_player_path(const char *full_file, Object *mode,
     path[sizeof(path) - 1] = 0;
     read_play_options(mode, c2p, h264, lace, scale, audio_rate, fast_buffer,
                       no_audio, mono_audio, video_mode, &options);
-    if (!mr_build_player_arguments(args, sizeof(args), &options, path,
-                                   NULL, NULL)) {
+    /* An external player (PiStorm: mrberry) runs under the same task name
+     * as mrplay and answers the same signals and status port, so Pause,
+     * Stop and the status line below need no special case. */
+    external = mr_display_uses_external_player(options.display);
+    program = external ? MR_PISTORM_PLAYER : "mrplay";
+    if (!(external ? mr_build_external_player_arguments(args, sizeof(args),
+                                                        &options, path)
+                   : mr_build_player_arguments(args, sizeof(args), &options,
+                                               path, NULL, NULL))) {
         set_info(info, window, "Could not build player arguments.");
         return;
     }
-    seglist = LoadSeg((CONST_STRPTR)"PROGDIR:mrplay");
+    snprintf(seg_path, sizeof(seg_path), "PROGDIR:%s", program);
+    seglist = LoadSeg((CONST_STRPTR)seg_path);
     if (!seglist)
-        seglist = LoadSeg((CONST_STRPTR)"mrplay");
+        seglist = LoadSeg((CONST_STRPTR)program);
     if (!seglist) {
-        set_info(info, window,
-                 "Could not load mrplay (keep it beside MintVID or in PATH).");
+        set_info(info, window, external
+                 ? "Could not load mrberry (keep it beside MintVID)."
+                 : "Could not load mrplay (keep it beside MintVID or in PATH).");
         return;
     }
+    if (external) {
+        log = Open((CONST_STRPTR)MR_EXTERNAL_PLAYER_LOG, MODE_NEWFILE);
+        if (!log) {
+            UnLoadSeg(seglist);
+            set_info(info, window, "Could not open " MR_EXTERNAL_PLAYER_LOG);
+            return;
+        }
+    }
+    mr_player_status_clear_snapshot();
+    player_status_seq = 0;
+    external_launch_pending = 0;
     process = CreateNewProcTags(
         NP_Seglist, seglist, NP_FreeSeglist, TRUE,
         NP_Arguments, (ULONG)args, NP_StackSize, MRPLAY_STACK_SIZE,
-        NP_Cli, TRUE, NP_CommandName, (ULONG)"mrplay",
+        log ? NP_Output : TAG_IGNORE, (ULONG)log,
+        log ? NP_CloseOutput : TAG_IGNORE, TRUE,
+        NP_Cli, TRUE, NP_CommandName, (ULONG)program,
         NP_Name, (ULONG)"MintVID player", TAG_END);
     if (!process) {
+        if (log) Close(log);
         UnLoadSeg(seglist);
-        set_info(info, window, "Could not create the mrplay process.");
+        set_info(info, window, external
+                 ? "Could not create the mrberry process."
+                 : "Could not create the mrplay process.");
+    } else if (external) {
+        external_launch_pending = 1;
+        external_launch_ticks = 0;
+        set_info(info, window, "Starting PiStorm playback...");
     }
 }
 
@@ -1351,6 +1435,9 @@ int main(void)
     struct List scale_modes;
     struct List skip_after_modes;
     Object *skip_after_label;
+    struct List audio_out_modes;
+    Object *audio_out_label;
+    Object *controls_audio;
     Object *controls_videocore;
     struct List audio_rate_modes;
     struct List fast_buffer_modes;
@@ -1370,6 +1457,7 @@ int main(void)
     ULONG initial_c2p, initial_h264, initial_laced, initial_scale;
     ULONG initial_audio_rate, initial_fast_buffer, initial_no_audio;
     ULONG initial_mono_audio, initial_video_mode, initial_skip_after;
+    ULONG initial_audio_out;
 
     window_object = NULL;
     timermask = 0;
@@ -1435,6 +1523,13 @@ int main(void)
     skip_after_modes.lh_TailPred = (struct Node *)&skip_after_modes.lh_Head;
     skip_after_label = NULL;
     g_skip_after = NULL;
+    audio_out_modes.lh_Head = (struct Node *)&audio_out_modes.lh_Tail;
+    audio_out_modes.lh_Tail = NULL;
+    audio_out_modes.lh_TailPred = (struct Node *)&audio_out_modes.lh_Head;
+    audio_out_label = NULL;
+    controls_audio = NULL;
+    g_audio_out = NULL;
+    audio_out_count = 0;
     g_videocore = NULL;
     controls_videocore = NULL;
     audio_rate_modes.lh_Head = (struct Node *)&audio_rate_modes.lh_Tail;
@@ -1498,6 +1593,15 @@ int main(void)
      * of plain WritePixel and AGA/HAM - default to it rather than
      * WritePixel. */
     if (have_rtg) default_mode = (int)mode_count - 1;
+    /* PiStorm VideoCore playback, only when the external player is here.
+     * Never the default. Sound through the Pi's HDMI needs the BerryCore
+     * Emu68 kernel; sound through Paula (MintVID's decoders) does not. */
+    if (pistorm_player_available() &&
+        (!add_mode_node(&modes, "PiStorm (VideoCore, Pi audio)",
+                        MR_DISPLAY_PISTORM) ||
+         !add_mode_node(&modes, "PiStorm (VideoCore, Amiga audio)",
+                        MR_DISPLAY_PISTORM_PAULA)))
+        goto cleanup;
     /* Audio only, listed last so it never becomes the hardware default.
      * It sits here rather than under Video so it is easy to find; Video,
      * Skip after and VQ grey out under it (update_skip_after()). */
@@ -1545,6 +1649,16 @@ int main(void)
     if (!add_chooser_node(&audio_rate_modes, "Normal") ||
         !add_chooser_node(&audio_rate_modes, "Low"))
         goto cleanup;
+    if (mr_ahi_available()) {
+        mr_audio_output out;
+        for (out = MR_AUDIO_OUT_PAULA;
+             out < MR_AUDIO_OUT_AHI0 + MR_AUDIO_OUT_AHI_UNITS;
+             out = (mr_audio_output)(out + 1)) {
+            if (!add_chooser_node(&audio_out_modes, mr_audio_output_name(out)))
+                goto cleanup;
+            audio_out_values[audio_out_count++] = out;
+        }
+    }
     if (!add_chooser_node(&fast_buffer_modes, "Auto") ||
         !add_chooser_node(&fast_buffer_modes, "Off") ||
         !add_chooser_node(&fast_buffer_modes, "4 MB") ||
@@ -1609,6 +1723,13 @@ int main(void)
     initial_skip_after = skip_after_row(have_saved_options
                                         ? saved_options.skip_trigger_ms
                                         : MR_SKIP_TRIGGER_DEFAULT_MS);
+    initial_audio_out = 0;
+    if (have_saved_options) {
+        ULONG row;
+        for (row = 0; row < audio_out_count; row++)
+            if (audio_out_values[row] == saved_options.audio_out)
+                initial_audio_out = row;
+    }
 
     /* Seed the embedded file requester's starting drawer from the last one
      * used, saved via mr_last_dir_save() in update_file_info() below.
@@ -1711,6 +1832,19 @@ int main(void)
     skip_after_label = (Object *)NewObject(LABEL_GetClass(), NULL,
                                            LABEL_Text, (ULONG)"Skip after",
                                            TAG_DONE);
+    if (audio_out_count) {
+        g_audio_out = (Object *)NewObject(CHOOSER_GetClass(), NULL,
+                                          GA_ID, G_AUDIO_OUT,
+                                          GA_RelVerify, TRUE,
+                                          CHOOSER_Labels, (ULONG)&audio_out_modes,
+                                          CHOOSER_Selected, initial_audio_out,
+                                          TAG_DONE);
+        audio_out_label = (Object *)NewObject(LABEL_GetClass(), NULL,
+                                              LABEL_Text, (ULONG)"Audio output",
+                                              TAG_DONE);
+        if (!g_audio_out || !audio_out_label)
+            goto cleanup;
+    }
     if (mr_videocore_available()) {
         g_videocore = (Object *)NewObject(CHECKBOX_GetClass(), NULL,
                                           GA_ID, G_VIDEOCORE,
@@ -1809,6 +1943,21 @@ int main(void)
     if (!controls_bottom)
         goto cleanup;
 
+    /* The output chooser gets a third row rather than squeezing the full
+     * second one past 640 pixels, at its natural width on the left. */
+    if (g_audio_out) {
+        controls_audio = (Object *)NewObject(LAYOUT_GetClass(), NULL,
+                                             LAYOUT_Orientation,
+                                             LAYOUT_ORIENT_HORIZ,
+                                             LAYOUT_HorizAlignment, LALIGN_LEFT,
+                                             LAYOUT_SpaceInner, TRUE,
+                                             LAYOUT_AddChild, (ULONG)g_audio_out,
+                                             CHILD_Label, (ULONG)audio_out_label,
+                                             CHILD_WeightedWidth, 0,
+                                             TAG_DONE);
+        if (!controls_audio)
+            goto cleanup;
+    }
     /* A third row rather than squeezing the full second one past 640
      * pixels, at its natural width on the left. */
     if (g_videocore) {
@@ -1831,6 +1980,9 @@ int main(void)
                                     LAYOUT_AddChild, (ULONG)controls_top,
                                     CHILD_WeightedHeight, 0,
                                     LAYOUT_AddChild, (ULONG)controls_bottom,
+                                    CHILD_WeightedHeight, 0,
+                                    controls_audio ? LAYOUT_AddChild : TAG_IGNORE,
+                                    (ULONG)controls_audio,
                                     CHILD_WeightedHeight, 0,
                                     controls_videocore ? LAYOUT_AddChild
                                                        : TAG_IGNORE,
@@ -2069,6 +2221,7 @@ int main(void)
                 case G_NO_AUDIO:
                 case G_MONO_AUDIO:
                 case G_SKIP_AFTER:
+                case G_AUDIO_OUT:
                 case G_VIDEOCORE:
                     publish_play_options(master_options, mode, c2p, h264,
                                          lace, scale, audio_rate, fast_buffer,
@@ -2185,6 +2338,12 @@ cleanup:
                 if (g_skip_after) DisposeObject(g_skip_after);
                 if (skip_after_label) DisposeObject(skip_after_label);
             }
+            if (controls_audio) {
+                DisposeObject(controls_audio);
+            } else {
+                if (g_audio_out) DisposeObject(g_audio_out);
+                if (audio_out_label) DisposeObject(audio_out_label);
+            }
             if (controls_videocore) DisposeObject(controls_videocore);
             else if (g_videocore) DisposeObject(g_videocore);
         }
@@ -2226,7 +2385,9 @@ cleanup:
     free_chooser_nodes(&fast_buffer_modes);
     free_chooser_nodes(&video_modes);
     free_chooser_nodes(&skip_after_modes);
+    free_chooser_nodes(&audio_out_modes);
     g_skip_after = NULL;
+    g_audio_out = NULL;
     g_videocore = NULL;
     close_reaction_classes();
     return status;

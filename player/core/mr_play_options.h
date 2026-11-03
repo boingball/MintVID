@@ -67,7 +67,22 @@ typedef enum {
      * core/mr_ham.h's mr_ham_encode_ex()). --ham6/--ham plus --ham-dither;
      * appended to keep saved display values. */
     MR_DISPLAY_HAM6_DITHER,
-    MR_DISPLAY_HAM8_DITHER
+    MR_DISPLAY_HAM8_DITHER,
+    /* PiStorm/Emu68: H.264 decoded by the Raspberry Pi's VideoCore and shown
+     * full screen on the Pi's HDMI output. Played by the optional external
+     * player mrberry (MichiB210/MintVID-PiStorm), not by mrplay; the GUIs
+     * list it only when mrberry is beside MintVID. See
+     * docs/EXTERNAL_PLAYER.md for the contract mrberry follows. Anything
+     * that still starts mrplay with these options (the IPTV and YouTube
+     * browsers) gets P96 instead. Same value as the PiStorm fork's
+     * MR_DISPLAY_PISTORM_HARD_FULLSCREEN, so its saved settings carry over.
+     * The sound goes to the Pi's HDMI, which needs the patched BerryCore
+     * Emu68 kernel. */
+    MR_DISPLAY_PISTORM,
+    /* The same, with the sound decoded on the 68k by MintVID's own decoders
+     * and played through Paula (mrberry --paula). Works on a stock Emu68
+     * kernel. */
+    MR_DISPLAY_PISTORM_PAULA
 } mr_display_mode;
 
 typedef enum {
@@ -114,6 +129,19 @@ typedef enum {
     MR_AUDIO_RATE_NORMAL = 0,
     MR_AUDIO_RATE_LOW
 } mr_audio_rate_mode;
+
+/* Where the sound goes: Paula, or one of ahi.device's four units - whichever
+ * card and mode AHI's preferences give that unit. AHI plays the source's own
+ * rate (it resamples itself), so it is not held to Paula's ~28kHz ceiling.
+ * Values are appended only, so saved settings keep their meaning. */
+typedef enum {
+    MR_AUDIO_OUT_PAULA = 0,
+    MR_AUDIO_OUT_AHI0,
+    MR_AUDIO_OUT_AHI1,
+    MR_AUDIO_OUT_AHI2,
+    MR_AUDIO_OUT_AHI3
+} mr_audio_output;
+#define MR_AUDIO_OUT_AHI_UNITS 4
 
 typedef enum {
     MR_FAST_BUFFER_AUTO = 0,
@@ -181,6 +209,8 @@ typedef struct mr_play_options {
      * the Raspberry Pi's VideoCore (videocodec.library) could take the
      * stream. Off by default: the VPU is used whenever it accepts it. */
     int no_videocore;
+    /* --audio-out=paula|ahi, --ahi-unit=N: see mr_audio_output. */
+    mr_audio_output audio_out;
 } mr_play_options;
 
 /* The display modes that play through an RTG window rather than a native
@@ -191,6 +221,10 @@ int mr_display_is_rtg(mr_display_mode display);
  * 2x and Copper 2x options apply: everything except RTG and the Workbench
  * window modes. */
 int mr_display_has_screen_options(mr_display_mode display);
+
+/* The display modes played by an external player instead of mrplay
+ * (today the two PiStorm modes, played by mrberry). */
+int mr_display_uses_external_player(mr_display_mode display);
 
 /* HAM depth of a display mode: 8 for HAM8/HAM8 (Dither), 6 for HAM6/HAM6
  * (Dither), 0 for everything else. */
@@ -211,8 +245,23 @@ int mr_build_player_arguments(char *output, size_t output_size,
                               const char *user_agent, const char *referer);
 int mr_build_iptv_arguments(char *output, size_t output_size,
                             const mr_play_options *options);
+/* Command line for the external player of a local file:
+ *   "<path>" [--no-audio]
+ *   "<path>" --paula [--audio-rate=low] [--audio-mono]   (PiStorm, Amiga audio)
+ * Kept this small on purpose: see docs/EXTERNAL_PLAYER.md. */
+int mr_build_external_player_arguments(char *output, size_t output_size,
+                                       const mr_play_options *options,
+                                       const char *path);
 void mr_play_options_summary(const mr_play_options *options, char *output,
                              size_t output_size);
 int mr_path_is_audio_only(const char *path);
+
+/* --audio-out=paula|ahi and --ahi-unit=0..3, for every parser that takes them
+ * (mrplay has its own): 1 = taken into *out, 0 = not one of these, -1 = bad
+ * value. --ahi-unit implies AHI; --audio-out=ahi keeps a unit already chosen
+ * (unit 0 if none), so the two can come in either order. */
+int mr_parse_audio_output(const char *arg, mr_audio_output *out);
+/* "Paula" or "AHI unit N", as the GUIs list them. */
+const char *mr_audio_output_name(mr_audio_output out);
 
 #endif

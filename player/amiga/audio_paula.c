@@ -9,7 +9,7 @@
  * AbortIO'd and WaitIO'd (reaped) before the chip buffer it points at is freed
  * or the device is closed, so Paula never DMAs freed memory.
  */
-#include "mr_audio.h"
+#include "audio_backend.h"
 #include "mr_audio_rate.h"
 #include "../core/mr_muldiv64.h"
 
@@ -60,10 +60,6 @@
                                  * two of these requests and were doubled to
                                  * match - keep them in step with this. */
 
-/* See mr_audio.h's audio_set_timing_mode() comment. */
-static int g_audio_want_time = 0;
-void audio_set_timing_mode(int on) { g_audio_want_time = on ? 1 : 0; }
-
 typedef struct audio_request_timeline {
     uint64_t sequence;
     unsigned submitted_samples;
@@ -73,7 +69,8 @@ typedef struct audio_request_timeline {
 
 extern struct Device *TimerBase;
 
-struct mr_audio {
+typedef struct paula_audio {
+    mr_audio        base;          /* first: audio.c dispatches through it  */
     struct MsgPort *port;
     struct IOAudio *owner;      /* owns both allocated channels            */
     struct IOAudio *io[NBUF][SIDES];
@@ -119,42 +116,25 @@ struct mr_audio {
     int             hardware_starved;
     clock_t         no_active_since;
     clock_t         longest_no_active;
-};
+} paula_audio;
 
-static uint64_t audio_now_us(void)
-{
-    struct EClockVal value;
-    ULONG frequency = TimerBase ? ReadEClock(&value) : 0;
-    uint64_t ticks = ((uint64_t)value.ev_hi << 32) | value.ev_lo;
-    /* ticks grows for the whole session and frequency is only known at
-     * runtime, so plain `ticks * 1000000ULL / frequency` is a 64-bit
-     * multiply-then-divide by a runtime value on every call - GCC always
-     * routes that through libgcc's __muldi3/__udivdi3 on m68k, on every CPU
-     * tier (see core/mr_muldiv64.h). This is called at least once per
-     * audio_elapsed_us()/audio_buffered_ms()/audio_diagnostics() call, i.e.
-     * on essentially every displayed video frame while audio is playing -
-     * frequency (ReadEClock's tick rate, a few hundred kHz on real Amiga
-     * hardware) comfortably fits mr_u64_div_u24's 2^24 bound. The clock()
-     * fallback only runs when timer.device is unavailable and divides by
-     * the compile-time constant CLOCKS_PER_SEC, which the compiler can
-     * already fold into a cheap reciprocal - left alone. */
-    return frequency ? mr_u64_div_u24(mr_u64_mul_u32(ticks, 1000000u), frequency) :
-           (uint64_t)clock() * 1000000ULL / CLOCKS_PER_SEC;
-}
+static const mr_audio_ops paula_ops;
+static void paula_close(mr_audio *base);
+static unsigned long paula_buffered_ms(mr_audio *base);
 
-static int request_active(mr_audio *a, int i)
+static int request_active(paula_audio *a, int i)
 {
     return a->busy[i] && a->request[i].state != AUDIO_REQ_COMPLETE;
 }
 
-static int active_request_count(mr_audio *a)
+static int active_request_count(paula_audio *a)
 {
     int i, n = 0;
     for (i = 0; i < NBUF; i++) if (request_active(a, i)) n++;
     return n;
 }
 
-static int oldest_request(mr_audio *a)
+static int oldest_request(paula_audio *a)
 {
     int i, oldest = -1;
     for (i = 0; i < NBUF; i++) {
@@ -165,7 +145,7 @@ static int oldest_request(mr_audio *a)
     return oldest;
 }
 
-static uint64_t request_duration_us(mr_audio *a, unsigned samples)
+static uint64_t request_duration_us(paula_audio *a, unsigned samples)
 {
     /* a->output_rate is a Paula output rate, always well under 65536 (see
      * MIN_PERIOD above) - mr_u64_div_u16 avoids the __muldi3/__divdi3 pair
@@ -174,7 +154,7 @@ static uint64_t request_duration_us(mr_audio *a, unsigned samples)
     return mr_u64_div_u16(mr_u64_mul_u32(samples, 1000000u), a->output_rate);
 }
 
-static unsigned request_estimated_played(mr_audio *a, int i, uint64_t now)
+static unsigned request_estimated_played(paula_audio *a, int i, uint64_t now)
 {
     audio_request_timeline *r = &a->request[i];
     uint64_t elapsed, duration;
@@ -194,7 +174,7 @@ static void audio_worker_entry(void);
 
 /* ---- ring FIFO ---------------------------------------------------------- */
 
-static void fifo_push(mr_audio *a, signed char left, signed char right)
+static void fifo_push(paula_audio *a, signed char left, signed char right)
 {
     if (a->count >= a->fifo_size) {
         a->fifo_dropped_samples++;             /* explicit bounded overflow */
@@ -206,7 +186,7 @@ static void fifo_push(mr_audio *a, signed char left, signed char right)
     a->count++;
 }
 
-static int fifo_pop_into(mr_audio *a, signed char *left,
+static int fifo_pop_into(paula_audio *a, signed char *left,
                          signed char *right, int n)
 {
     int i = 0;
@@ -219,8 +199,9 @@ static int fifo_pop_into(mr_audio *a, signed char *left,
     return i;
 }
 
-void audio_flush(mr_audio *a)
+static void paula_flush(mr_audio *base)
 {
+    paula_audio *a = (paula_audio *)base;
     if (!a) return;
     /* Same Forbid() guard the push/pop paths use, so the worker task cannot be
      * mid-pop when the ring is reset. */
@@ -232,9 +213,9 @@ void audio_flush(mr_audio *a)
 
 /* ---- lifecycle ---------------------------------------------------------- */
 
-mr_audio *audio_open(unsigned rate, int channels, int bits)
+mr_audio *paula_audio_open(unsigned rate, int channels, int bits)
 {
-    mr_audio *a;
+    paula_audio *a;
     struct Process *worker;
     struct EClockVal eclock_value;
     ULONG eclock_frequency;
@@ -243,8 +224,9 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
     if (rate == 0 || (bits != 8 && bits != 16) || channels < 1)
         return NULL;
 
-    a = (mr_audio *)calloc(1, sizeof *a);
+    a = (paula_audio *)calloc(1, sizeof *a);
     if (!a) return NULL;
+    a->base.ops = &paula_ops;
     a->ready_sig = a->stopped_sig = a->wake_sig = -1;
     a->rate = rate;
     a->src_channels = channels;
@@ -277,12 +259,12 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
     a->fifo_size = a->output_rate * 4;          /* ~4 s cushion              */
     if (a->fifo_size < 8192) a->fifo_size = 8192;
     a->fifo = (signed char *)malloc((size_t)a->fifo_size * SIDES);
-    if (!a->fifo) { audio_close(a); return NULL; }
+    if (!a->fifo) { paula_close(&a->base); return NULL; }
 
     a->parent_task = FindTask(NULL);
     a->ready_sig = AllocSignal(-1);
     a->stopped_sig = AllocSignal(-1);
-    if (a->ready_sig < 0 || a->stopped_sig < 0) { audio_close(a); return NULL; }
+    if (a->ready_sig < 0 || a->stopped_sig < 0) { paula_close(&a->base); return NULL; }
     /* Back to 5 (its original value) - reverting a same-priority experiment
      * (0, matching the main task) that was tried as a fix for an MSMPEG4v2/
      * PCM audio-rescue cycling issue on WinUAE. That change was disproven on
@@ -308,7 +290,7 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
                                NP_StackSize, 16384UL,
                                TAG_END);
     if (!worker) {
-        audio_close(a); return NULL;
+        paula_close(&a->base); return NULL;
     }
     /* NP_UserData is not available in the AmigaOS 3.x NDK used by the
      * 68030 build.  Hand the context to the newly-created process through
@@ -321,13 +303,14 @@ mr_audio *audio_open(unsigned rate, int channels, int bits)
     Signal(a->worker_task, SIGBREAKF_CTRL_F);
     Permit();
     Wait(1UL << a->ready_sig);
-    if (!a->ready_ok) { audio_close(a); return NULL; }
+    if (!a->ready_ok) { paula_close(&a->base); return NULL; }
 
-    return a;
+    return &a->base;
 }
 
-void audio_close(mr_audio *a)
+static void paula_close(mr_audio *base)
 {
+    paula_audio *a = (paula_audio *)base;
     if (!a) return;
     if (a->worker_task) {
         Forbid();
@@ -344,15 +327,17 @@ void audio_close(mr_audio *a)
 
 /* ---- streaming ---------------------------------------------------------- */
 
-static void fifo_push_resampled(mr_audio *a, signed char left,
+static void fifo_push_resampled(paula_audio *a, signed char left,
                                 signed char right)
 {
     unsigned outputs = mr_audio_rate_outputs(&a->rate_state);
     while (outputs--) fifo_push(a, left, right);
 }
 
-void audio_write(mr_audio *a, const unsigned char *pcm, unsigned bytes)
+static void paula_write(mr_audio *base, const unsigned char *pcm,
+                        unsigned bytes)
 {
+    paula_audio *a = (paula_audio *)base;
     int bps, ch, framebytes;
     unsigned n, k;
 
@@ -382,9 +367,10 @@ void audio_write(mr_audio *a, const unsigned char *pcm, unsigned bytes)
         Signal(a->worker_task, 1UL << a->wake_sig);
 }
 
-void audio_write_s16(mr_audio *a, const short *pcm,
-                     unsigned frames, int channels)
+static void paula_write_s16(mr_audio *base, const short *pcm,
+                            unsigned frames, int channels)
 {
+    paula_audio *a = (paula_audio *)base;
     unsigned k;
     if (!a || !pcm || channels < 1) return;
     Forbid();
@@ -399,7 +385,7 @@ void audio_write_s16(mr_audio *a, const short *pcm,
         Signal(a->worker_task, 1UL << a->wake_sig);
 }
 
-static void audio_pump(mr_audio *a)
+static void audio_pump(paula_audio *a)
 {
     int i;
     /* service_now/last_service/no_active_since/longest_service_gap/
@@ -415,14 +401,14 @@ static void audio_pump(mr_audio *a)
     int active_at_entry;
     if (!a) return;
     now = audio_now_us();
-    if (g_audio_want_time) {
+    if (audio_want_time) {
         service_now = clock();
         if (a->last_service && service_now - a->last_service > a->longest_service_gap)
             a->longest_service_gap = service_now - a->last_service;
         a->last_service = service_now;
     }
     active_at_entry = active_request_count(a);
-    if (g_audio_want_time) {
+    if (audio_want_time) {
         if (a->running && active_at_entry == 0) {
             if (!a->no_active_since) a->no_active_since = service_now;
         } else a->no_active_since = 0;
@@ -521,7 +507,7 @@ static void audio_pump(mr_audio *a)
             }
         }
     }
-    buffered = audio_buffered_ms(a);
+    buffered = paula_buffered_ms(&a->base);
     if ((buffered || a->had_buffered_audio) &&
         buffered < a->minimum_buffered_ms)
         a->minimum_buffered_ms = buffered;
@@ -544,7 +530,7 @@ static void audio_pump(mr_audio *a)
                 a->hardware_starvations++;
                 a->hardware_starved = 1;
             }
-            if (g_audio_want_time) {
+            if (audio_want_time) {
                 clock_t gap;
                 if (!a->no_active_since) a->no_active_since = service_now;
                 gap = service_now - a->no_active_since;
@@ -552,27 +538,21 @@ static void audio_pump(mr_audio *a)
             }
         } else {
             a->hardware_starved = 0;
-            if (g_audio_want_time) a->no_active_since = 0;
+            if (audio_want_time) a->no_active_since = 0;
         }
     }
 }
 
-void audio_set_volume(mr_audio *a, int volume)
+static void paula_set_volume(mr_audio *base, int volume)
 {
+    paula_audio *a = (paula_audio *)base;
     if (!a) return;
     if (volume < 0) volume = 0;
     if (volume > 64) volume = 64;
     a->volume = volume;
 }
 
-void audio_service(mr_audio *a)
-{
-    /* Compatibility no-op. PCM writes and audio.device completions signal the
-     * worker directly; video scheduling is no longer part of output upkeep. */
-    (void)a;
-}
-
-static void audio_worker_cleanup(mr_audio *a)
+static void audio_worker_cleanup(paula_audio *a)
 {
     int i, side;
     for (i = 0; i < NBUF; i++) {
@@ -612,12 +592,12 @@ static void audio_worker_entry(void)
 {
     static UBYTE stereo_pairs[4] = { 3, 5, 10, 12 };
     struct Task *self = FindTask(NULL);
-    mr_audio *a;
+    paula_audio *a;
     int i, side;
     ULONG mask, channel[SIDES];
     /* Parent publishes tc_UserData after CreateNewProcTags() returns. */
     Wait(SIGBREAKF_CTRL_F);
-    a = (mr_audio *)self->tc_UserData;
+    a = (paula_audio *)self->tc_UserData;
     if (!a) return;
     a->worker_task = self;
     a->wake_sig = AllocSignal(-1);
@@ -684,8 +664,9 @@ failed:
     Signal(a->parent_task, 1UL << a->ready_sig);
 }
 
-uint64_t audio_elapsed_us(mr_audio *a)
+static uint64_t paula_elapsed_us(mr_audio *base)
 {
+    paula_audio *a = (paula_audio *)base;
     uint64_t samples, clock_us, now, step;
     int oldest, used = 0;
     if (!a || !a->output_rate) return 0;
@@ -725,13 +706,9 @@ uint64_t audio_elapsed_us(mr_audio *a)
     return clock_us;
 }
 
-unsigned long audio_elapsed_ms(mr_audio *a)
+static unsigned long paula_buffered_ms(mr_audio *base)
 {
-    return (unsigned long)(audio_elapsed_us(a) / 1000ULL);
-}
-
-unsigned long audio_buffered_ms(mr_audio *a)
-{
+    paula_audio *a = (paula_audio *)base;
     unsigned long samples;
     uint64_t now;
     int i;
@@ -751,20 +728,22 @@ unsigned long audio_buffered_ms(mr_audio *a)
     return samples;
 }
 
-unsigned long audio_capacity_ms(mr_audio *a)
+static unsigned long paula_capacity_ms(mr_audio *base)
 {
+    paula_audio *a = (paula_audio *)base;
     if (!a || !a->output_rate) return 0;
     return (unsigned long)a->fifo_size * 1000UL / a->output_rate;
 }
 
-void audio_diagnostics(mr_audio *a, mr_audio_diagnostics *diag)
+static void paula_diagnostics(mr_audio *base, mr_audio_diagnostics *diag)
 {
+    paula_audio *a = (paula_audio *)base;
     uint64_t now;
     uint64_t clock_snapshot;
     if (!diag) return;
     memset(diag, 0, sizeof *diag);
     if (!a) return;
-    clock_snapshot = audio_elapsed_us(a);
+    clock_snapshot = paula_elapsed_us(&a->base);
     Forbid();
     now = audio_now_us();
     diag->hardware_starvations = a->hardware_starvations;
@@ -815,16 +794,18 @@ void audio_diagnostics(mr_audio *a, mr_audio_diagnostics *diag)
     Permit();
 }
 
-int audio_active_requests(mr_audio *a)
+static int paula_active_requests(mr_audio *base)
 {
+    paula_audio *a = (paula_audio *)base;
     int n;
     if (!a) return 0;
     Forbid(); n = active_request_count(a); Permit();
     return n;
 }
 
-void audio_set_running(mr_audio *a, int running)
+static void paula_set_running(mr_audio *base, int running)
 {
+    paula_audio *a = (paula_audio *)base;
     int wake = 0;
     if (!a) return;
     Forbid();
@@ -845,10 +826,33 @@ void audio_set_running(mr_audio *a, int running)
         Signal(a->worker_task, 1UL << a->wake_sig);
 }
 
-int audio_starved(mr_audio *a)
+static int paula_starved(mr_audio *base)
 {
+    paula_audio *a = (paula_audio *)base;
     int starved;
     if (!a) return 1;
     Forbid(); starved = oldest_request(a) < 0 && a->count == 0; Permit();
     return starved;
 }
+
+static const char *paula_name(mr_audio *base)
+{
+    (void)base;
+    return "Paula stereo pair";
+}
+
+static const mr_audio_ops paula_ops = {
+    paula_name,
+    paula_close,
+    paula_write,
+    paula_write_s16,
+    paula_elapsed_us,
+    paula_starved,
+    paula_buffered_ms,
+    paula_capacity_ms,
+    paula_diagnostics,
+    paula_active_requests,
+    paula_set_running,
+    paula_set_volume,
+    paula_flush
+};

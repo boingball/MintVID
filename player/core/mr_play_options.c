@@ -78,7 +78,13 @@ int mr_display_is_rtg(mr_display_mode display)
 {
     return display == MR_DISPLAY_CGX || display == MR_DISPLAY_P96 ||
            display == MR_DISPLAY_P96_FULLSCREEN ||
-           display == MR_DISPLAY_RTG_HALF;
+           display == MR_DISPLAY_RTG_HALF ||
+           mr_display_uses_external_player(display);
+}
+
+int mr_display_uses_external_player(mr_display_mode display)
+{
+    return display == MR_DISPLAY_PISTORM || display == MR_DISPLAY_PISTORM_PAULA;
 }
 
 int mr_display_has_screen_options(mr_display_mode display)
@@ -164,6 +170,8 @@ static const char *display_name(mr_display_mode display)
     case MR_DISPLAY_AGA_WINDOW: return "aga-window";
     case MR_DISPLAY_AGA_WINDOW_HALF: return "aga-window-half";
     case MR_DISPLAY_NONE: return "none";
+    case MR_DISPLAY_PISTORM: return "pistorm";
+    case MR_DISPLAY_PISTORM_PAULA: return "pistorm-paula";
     default: return "aga";
     }
 }
@@ -233,8 +241,11 @@ static int append_playback_flags(char *out, size_t cap,
             (!append_option(out, cap, "--aga") || !append_option(out, cap, "--ecs-fast"))) return 0;
         if (o->display == MR_DISPLAY_AGA_EHB &&
             (!append_option(out, cap, "--aga") || !append_option(out, cap, "--ehb"))) return 0;
+        /* mrplay cannot play PiStorm mode itself (mrberry does): a browser
+         * that starts mrplay with these options gets windowed P96. */
         if ((o->display == MR_DISPLAY_P96 ||
-             o->display == MR_DISPLAY_P96_FULLSCREEN) &&
+             o->display == MR_DISPLAY_P96_FULLSCREEN ||
+             mr_display_uses_external_player(o->display)) &&
             !append_option(out, cap, "--p96")) return 0;
         if (o->display == MR_DISPLAY_P96_FULLSCREEN &&
             !append_option(out, cap, "--fullscreen")) return 0;
@@ -311,6 +322,13 @@ static int append_playback_flags(char *out, size_t cap,
         if (o->audio_rate == MR_AUDIO_RATE_LOW &&
             !append_option(out, cap, "--audio-rate=low")) return 0;
         if (o->mono_audio && !append_option(out, cap, "--audio-mono")) return 0;
+        if (o->audio_out != MR_AUDIO_OUT_PAULA) {
+            char unit[16];
+            snprintf(unit, sizeof unit, "--ahi-unit=%d",
+                     (int)(o->audio_out - MR_AUDIO_OUT_AHI0));
+            if (!append_option(out, cap, "--audio-out=ahi") ||
+                !append_option(out, cap, unit)) return 0;
+        }
     }
     /* Always explicit, like --fast-buffer= above: a GUI-launched session's
      * choice (the "Video: All Frames / Skip Frames" control) should always
@@ -369,6 +387,26 @@ int mr_build_player_arguments(char *out, size_t cap,
     return 1;
 }
 
+int mr_build_external_player_arguments(char *out, size_t cap,
+                                       const mr_play_options *o,
+                                       const char *path)
+{
+    if (!out || !cap || !path || !*path) return 0;
+    out[0] = 0;
+    if (!append_quoted(out, cap, path)) return 0;
+    if (o && o->no_audio) {
+        if (!append_option(out, cap, "--no-audio")) return 0;
+    } else if (o && o->display == MR_DISPLAY_PISTORM_PAULA) {
+        /* Sound through Paula with MintVID's decoders: mrberry takes the
+         * same audio options as mrplay. */
+        if (!append_option(out, cap, "--paula")) return 0;
+        if (o->audio_rate == MR_AUDIO_RATE_LOW &&
+            !append_option(out, cap, "--audio-rate=low")) return 0;
+        if (o->mono_audio && !append_option(out, cap, "--audio-mono")) return 0;
+    }
+    return append_text(out, cap, "\n");
+}
+
 int mr_build_iptv_arguments(char *out, size_t cap, const mr_play_options *o)
 {
     mr_play_options defaults;
@@ -393,7 +431,7 @@ static int parse_uint(const char *text, unsigned *value)
 int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
                           char *error, size_t error_size)
 {
-    int i;
+    int i, taken;
     if (!o) return 0;
     for (i = 1; i < argc; i++) {
         const char *arg = argv[i], *value;
@@ -415,6 +453,8 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "aga-window")) o->display = MR_DISPLAY_AGA_WINDOW;
             else if (!strcmp(value, "aga-window-half")) o->display = MR_DISPLAY_AGA_WINDOW_HALF;
             else if (!strcmp(value, "none")) { o->display = MR_DISPLAY_NONE; o->no_video = 1; }
+            else if (!strcmp(value, "pistorm")) o->display = MR_DISPLAY_PISTORM;
+            else if (!strcmp(value, "pistorm-paula")) o->display = MR_DISPLAY_PISTORM_PAULA;
             else goto bad;
         } else if (!strcmp(arg, "--c2p")) {
             if (i + 1 >= argc) goto bad;
@@ -489,6 +529,9 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "low")) o->audio_rate = MR_AUDIO_RATE_LOW;
             else goto bad;
         }
+        else if ((taken = mr_parse_audio_output(arg, &o->audio_out)) != 0) {
+            if (taken < 0) goto bad;
+        }
         else if (!strcmp(arg, "--no-audio")) o->no_audio = 1;
         else if (!strcmp(arg, "--no-video")) o->no_video = 1;
         else if (!strcmp(arg, "--audio-mono")) o->mono_audio = 1;
@@ -539,13 +582,49 @@ static void hls_policy_text(const mr_play_options *o, char *out, size_t cap)
         snprintf(out, cap, "HLS best");
 }
 
-/* Short description of the audio output policy for the status line. */
-static const char *audio_policy_text(const mr_play_options *o)
+int mr_parse_audio_output(const char *arg, mr_audio_output *out)
 {
-    if (o->no_audio) return "off";
-    if (o->audio_rate == MR_AUDIO_RATE_LOW)
-        return o->mono_audio ? "Low mono" : "Low";
-    return o->mono_audio ? "Mono" : "Normal";
+    if (!strcmp(arg, "--audio-out=paula")) {
+        *out = MR_AUDIO_OUT_PAULA;
+        return 1;
+    }
+    if (!strcmp(arg, "--audio-out=ahi")) {
+        if (*out == MR_AUDIO_OUT_PAULA) *out = MR_AUDIO_OUT_AHI0;
+        return 1;
+    }
+    if (!strncmp(arg, "--audio-out=", 12)) return -1;
+    if (!strncmp(arg, "--ahi-unit=", 11)) {
+        const char *v = arg + 11;
+        if (v[0] < '0' || v[0] >= '0' + MR_AUDIO_OUT_AHI_UNITS || v[1])
+            return -1;
+        *out = (mr_audio_output)(MR_AUDIO_OUT_AHI0 + (v[0] - '0'));
+        return 1;
+    }
+    return 0;
+}
+
+const char *mr_audio_output_name(mr_audio_output out)
+{
+    static const char *const names[] = {
+        "Paula", "AHI unit 0", "AHI unit 1", "AHI unit 2", "AHI unit 3"
+    };
+    return (unsigned)out < sizeof names / sizeof names[0] ? names[out]
+                                                          : names[0];
+}
+
+/* Short description of the audio output policy for the status line; the
+ * output is named only when it is not Paula. */
+static void audio_policy_text(const mr_play_options *o, char *out, size_t cap)
+{
+    const char *policy;
+    if (o->no_audio) policy = "off";
+    else if (o->audio_rate == MR_AUDIO_RATE_LOW)
+        policy = o->mono_audio ? "Low mono" : "Low";
+    else policy = o->mono_audio ? "Mono" : "Normal";
+    if (o->no_audio || o->audio_out == MR_AUDIO_OUT_PAULA)
+        snprintf(out, cap, "%s", policy);
+    else
+        snprintf(out, cap, "%s %s", mr_audio_output_name(o->audio_out), policy);
 }
 
 static const char *fast_buffer_text(const mr_play_options *o)
@@ -563,8 +642,8 @@ static const char *fast_buffer_text(const mr_play_options *o)
 
 void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
 {
-    char hls[24], video[32];
-    const char *h264, *audio;
+    char hls[24], video[32], audio[32];
+    const char *h264;
     if (!out || !cap || !o) return;
     hls_policy_text(o, hls, sizeof hls);
     h264 = o->h264_performance == MR_H264_PERF_QUALITY ? "Quality" :
@@ -573,7 +652,7 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
            o->h264_performance == MR_H264_PERF_TURBO ? "Turbo" :
            o->h264_performance == MR_H264_PERF_TURBO_PLUS ? "Turbo+" :
            o->h264_performance == MR_H264_PERF_SMOOSH ? "Smoosh" : "Auto";
-    audio = audio_policy_text(o);
+    audio_policy_text(o, audio, sizeof audio);
     if (mr_play_options_no_video(o)) {
         snprintf(out, cap,
                  "Playback: No Video (audio only) / %s / Audio %s / Fast buffer %s%s",
@@ -593,6 +672,9 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
                  o->display == MR_DISPLAY_P96 ? "P96" :
                  o->display == MR_DISPLAY_P96_FULLSCREEN ? "P96 Fullscreen" :
                  o->display == MR_DISPLAY_RTG_HALF ? "Half" :
+                 o->display == MR_DISPLAY_PISTORM ? "PiStorm VideoCore" :
+                 o->display == MR_DISPLAY_PISTORM_PAULA ?
+                     "PiStorm VideoCore, Amiga audio" :
                  "WritePixel",
                  hls, h264, audio, fast_buffer_text(o),
                  o->live_resync ? " / Live-resync" : "", video);

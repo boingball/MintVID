@@ -3,7 +3,7 @@
 A codec-agnostic video player for 68k AmigaOS, in the spirit of **MintAMP**
 (the libhelix-based audio player): small, portable C at the core and thin
 Amiga-specific layers around it. MP3/AAC decoding reuses the proven
-MintAMP/Helix code, with audio output through Paula.
+MintAMP/Helix code, with audio output through Paula or AHI.
 
 The project was inspired by **RiVA 0.54** (Fellner / Török / Richter) — the
 fastest 68k MPEG-1 player, written in hand-tuned 68k/AMMX assembly. Its
@@ -31,7 +31,7 @@ hardware:
 | Floor | 68030+ accelerated ECS/AGA | No SIMD and limited integer throughput. Lightweight codecs, modest frame sizes and efficient chipset conversion matter most. |
 | Mid | 68040/060, AGA or RTG | Older codecs become increasingly practical, but modern H.264 streaming remains well below real time on classic CPUs. A tested 68060 using AGA has managed roughly 7 fps at best at the lowest YouTube/IPTV resolutions. |
 | Moon | PiStorm / Emu68 | An ARM runs the 68k. Use the MintVID040 build; heavier codecs become physically practical, with results depending on the host Pi, display path and stream. With a Pi 4 or CM4 the Pi's VPU decodes H.264 and MJPEG itself (`videocodec.library`). |
-| Unverified | Vampire / Apollo 68080 | Not yet validated by the MintVID project. No optimised release build is officially recommended yet. |
+| Unmeasured | Vampire / Apollo 68080 | Use the MintVID040 build: the 68080 runs the 64-bit multiply/divide the 060 build works around. No AMMX or SAGA-specific code yet, and not yet measured on Vampire hardware. |
 
 Design consequence: **codec choice is a tier, not a fixed decision.** The
 player picks/loads a decoder; a weaker machine sticks to Cinepak or another
@@ -81,7 +81,7 @@ than available RAM. Adding a container is a backend, like adding a codec.
 
 ```
              +------------------ platform (Amiga) ------------------+
-  file/async | RTG chunky blit   | AGA C2P + dither | Paula audio   |
+  file/async | RTG chunky blit   | AGA C2P + dither | Paula/AHI     |
    reader ---+-------------------+------------------+---------------+
       |            ^ frames             ^ frames          ^ pcm
       v            |                    |                 |
@@ -95,7 +95,7 @@ than available RAM. Adding a container is a backend, like adding a codec.
 - **Portable core** (`player/core/`): demux, decoder registry + decoders, pixel
   formats. Builds and is tested on the dev host; no Amiga dependencies.
 - **Platform layer** (`player/amiga/`): screen/RTG setup and chunky blit, AGA
-  C2P + dither, file-backed packet IO, Paula output, and the MintAMP/Helix
+  C2P + dither, file-backed packet IO, Paula or AHI output, and the MintAMP/Helix
   decoder integration used for MP3/AAC.
 - **Sync**: audio is the master clock; video drops/repeats frames to track it —
   the same broad principle RiVA settled on.
@@ -206,8 +206,8 @@ mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
       is targeted at PiStorm/Emu68, using the MintVID040 build. On the tested
       Pi3-based PiStorm 600, low-resolution H.264 YouTube/IPTV streams below
       roughly 200p have played well. A faster PiStorm32/CM4 should provide more
-      headroom, but that has not been quantified yet. Vampire/Apollo 68080 has
-      not yet been validated.
+      headroom, but that has not been quantified yet. Vampire/Apollo 68080
+      uses the MintVID040 build and has not been measured yet.
 - [x] Internet streaming: HTTP/HTTPS URL input, HLS live/VOD, and native
       YouTube resolution (see README)
 - [~] RTG fullscreen toggle is implemented with a borderless screen-sized CGX
@@ -217,6 +217,9 @@ mean-absolute-error of **~0.13/255** (last-LSB YUV→RGB rounding).
       MP3/AAC use the pinned MintAMP/Helix sources through
       `player/audio/mr_audio_decode.c`; host regression tests pass, and
       AC-3/general audio quality is confirmed good on real hardware.
+- [x] AHI audio backend (`audio_ahi.c`) beside Paula's, behind the same
+      `mr_audio.h` (`audio.c` dispatches): any AHI card and unit, at the
+      source's own rate.
 - [x] Moon-shot heavier codec, gated to PiStorm-class practical streaming:
       delivered as H.264/AVC above
 - [x] VideoCore decoding on a PiStorm (Pi 4, CM4): H.264 and MJPEG on

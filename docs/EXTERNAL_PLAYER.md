@@ -1,0 +1,103 @@
+# External players
+
+MintVID's GUIs can start a player other than `mrplay` for some display
+modes. Today there is one: **PiStorm (VideoCore)**, played by `mrberry` from
+[MichiB210/MintVID-PiStorm](https://github.com/MichiB210/MintVID-PiStorm).
+It decodes H.264 on the Raspberry Pi's VideoCore and shows it full screen on
+the Pi's HDMI output.
+
+MintVID does not ship `mrberry`. The GUIs list the PiStorm modes only when a
+file called `mrberry` sits in the same drawer as MintVID (`PROGDIR:mrberry`).
+Without it nothing changes.
+
+There are two PiStorm modes. They differ only in where the sound goes:
+
+- **PiStorm (VideoCore, Pi audio)** / GadTools "PiStorm (HDMI)": the sound
+  is decoded on the Pi's second core and played over HDMI. This needs
+  Michi's patched Emu68 kernel (BerryCore).
+- **PiStorm (VideoCore, Amiga audio)** / GadTools "PiStorm (Paula)": the
+  sound is decoded on the 68k by MintVID's own decoders (MintAMP AAC/MP3,
+  MP2, AC-3, PCM) and played through Paula. A stock Emu68 kernel is enough.
+
+The external backend currently documents support for PiStorm Classic with
+a Raspberry Pi 3A+ (BCM2837); its BerryCore kernel patch targets Emu68
+1.0.7 specifically. An entry in MintVID's Display menu only means that
+`mrberry` exists, not that the Pi model, kernel or libraries are compatible.
+Follow the backend's installation instructions, including `gpu_mem=64`.
+P96 Workbench on HDMI is part of that backend's intended use, but does not
+establish compatibility with other Pi models or PiStorm boards.
+
+The IPTV and YouTube browsers still start `mrplay`. If the controller is set
+to PiStorm, they play in a P96 window.
+
+## Troubleshooting startup
+
+Both controllers read the player's terminal status file after it exits, so
+a quick startup failure is shown in the status line. Live and saved status
+have separate sequence counters; the handoff must not discard an error just
+because those counters happen to match. Old snapshots are cleared before
+each new playback launch.
+
+When launching `mrberry`, its standard output is captured in
+`T:MintVID-mrberry.log` (overwritten on the next PiStorm launch). This also
+captures its library/capability diagnostics when started from Workbench.
+If no status arrives, the controller points to this log after an early
+exit or after about 60 seconds; it does not kill the player.
+
+To separate controller issues from backend/setup issues, run the same file
+from an Amiga Shell in the MintVID drawer:
+
+    mrberry "NASDRIVE:MintVID-Codec-TestSuite/mintvid_h264_360p_25fps.mp4" --no-audio
+
+Then try `--paula` instead of `--no-audio` with the controls/Paula build.
+HDMI audio should only be tested with the matching BerryCore kernel and
+audio modules installed. If the direct command also fails, keep its output
+and check the backend requirements before changing the display setup.
+
+## What the GUI does
+
+The GUI starts the player as a new process:
+
+- task name `MintVID player`, the same as `mrplay`
+- `NP_Cli`, stack `MRPLAY_STACK_SIZE`
+- arguments: `"<file>" [--no-audio]`, or for the Amiga-audio mode
+  `"<file>" --paula [--audio-rate=low] [--audio-mono]` (the same audio
+  options mrplay takes; with No audio ticked it is `--no-audio` instead)
+
+The file name is quoted. A `"` inside it is written as `*"`, and a `*` as
+`**`: the usual AmigaDOS rules, so `ReadArgs()` or the C runtime's `argv`
+read it back correctly.
+
+Pause, Stop and the status line then work exactly as they do for `mrplay`.
+
+## What the player must do
+
+1. **Signals** (sent to the task named `MintVID player`):
+   - `Ctrl-F`: stop, clean up, exit. This is what the Stop button sends.
+     Treat `Ctrl-C` the same way.
+   - `Ctrl-D`: pause, or continue if already paused.
+   - `Ctrl-E`: read and clear `commands` in the control port below, then act
+     on the bits it understands. `MR_PLAYER_COMMAND_PAUSE` toggles pause,
+     and `MR_PLAYER_COMMAND_FAST` (or `Ctrl-E` with no bits set) jumps
+     forward. Ignore the other bits.
+
+2. **Control port.** Publish an `mr_player_control_port`
+   (`player/amiga/mr_player_status.h`) named `MintVID.player`
+   (`MR_IPTV_PLAYER_PORT`) while running, and remove it before exit. Do not
+   publish it if a port of that name already exists.
+
+3. **Status.** Keep `status` in that port up to date with
+   `mr_player_status_set()`: `OPENING` while starting, `PLAYING` with a short
+   codec name and a text line while playing (`"Paused"` in the text while
+   paused is fine), and `ENDED`, `ERROR` or `UNSUPPORTED` at the end.
+
+4. **Final status file.** On every way out, write the final state to
+   `T:MintVID.player-status` (an `mr_player_status_snapshot`, written to
+   `T:MintVID.player-status.tmp` first and then renamed over it). The GUI
+   reads it after the process has gone, so it can show why playback ended.
+
+5. **Clean exit.** Leave the screen and input as they were, on every path,
+   errors included.
+
+Keyboard control inside the player is up to the player. `mrplay` uses ESC
+to stop, Space to pause and the cursor keys to jump.

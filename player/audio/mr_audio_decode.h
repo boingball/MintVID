@@ -16,10 +16,16 @@ typedef struct mr_audio_decoder mr_audio_decoder;
 typedef void (*mr_audio_pcm_sink)(void *user, const int16_t *pcm,
                                   unsigned frames, unsigned channels);
 
-/* low_rate halves whatever output rate this would otherwise pick (see
- * PAULA_RATE_MAX's existing >28kHz halving in mr_audio_decode.c) - e.g.
+/* Paula's ceiling: the max_rate the Paula output passes. */
+#define MR_AUDIO_PAULA_RATE_MAX 28000U
+
+/* max_rate is the output's ceiling: a source above it is decimated 2:1 (48kHz
+ * -> 24kHz, 44.1kHz -> 22.05kHz for Paula's MR_AUDIO_PAULA_RATE_MAX). 0 means
+ * no ceiling - AHI resamples any rate itself, so it gets the source's own.
+ *
+ * low_rate halves whatever output rate this would otherwise pick - e.g.
  * 48kHz -> 12kHz instead of 24kHz, 44.1kHz -> 11.025kHz instead of
- * 22.05kHz. A real CPU saving on a heavily-loaded 68k (fewer samples to
+ * 22.05kHz under Paula's ceiling. A real CPU saving on a heavily-loaded 68k (fewer samples to
  * downmix, convert to 8-bit and queue to Paula) at the cost of noticeably
  * telephone-like audio, especially for music - an explicit opt-in, not a
  * new default.
@@ -36,7 +42,8 @@ typedef void (*mr_audio_pcm_sink)(void *user, const int16_t *pcm,
  * left channel rather than a centre mix, except where the codec's own mono
  * output is a downmix (AC-3 always, MP3 on mid/side frames). */
 mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info,
-                                        int low_rate, int mono);
+                                        int low_rate, int mono,
+                                        unsigned max_rate);
 void              mr_audio_decoder_close(mr_audio_decoder *dec);
 
 /* Feed one demuxed packet. Returns PCM sample frames produced, zero when the
