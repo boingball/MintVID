@@ -1,7 +1,11 @@
 name: Build
 
 # Compile MintVID for AmigaOS (m68k) on every push and pull request.
-# MintVID uses submodules for MintAMP and libavc, so checkout must recurse.
+# MintVID uses submodules for MintAMP and libavc. They are fetched two
+# levels deep, not with `submodules: recursive`: the third level
+# (esp8266audio's lib/opus and lib/TinySoundFont) is never built here, and
+# lib/opus comes from gitlab.xiph.org, whose outages used to fail every run
+# at checkout.
 # The all-in-one Amiga image includes the AmiSSL SDK used by the HTTPS build.
 #
 # The `build` job only proves the AmigaOS cross-compile links: it does not
@@ -41,10 +45,13 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Check out the code and submodules
+      - name: Check out the code
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Fetch the submodules MintVID builds
+        run: |
+          git submodule update --init --depth=1 player/vendor/libavc player/vendor/MintAMP
+          git -C player/vendor/MintAMP submodule update --init --depth=1
 
       - name: Install ffmpeg (conformance oracle) and the m68k cross toolchain
         run: |
@@ -76,10 +83,13 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Check out the code and submodules
+      - name: Check out the code
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Fetch the submodules MintVID builds
+        run: |
+          git submodule update --init --depth=1 player/vendor/libavc player/vendor/MintAMP
+          git -C player/vendor/MintAMP submodule update --init --depth=1
 
       - name: Compile with the Amiga cross-compiler
         run: |
@@ -141,10 +151,13 @@ jobs:
       cancel-in-progress: true
 
     steps:
-      - name: Check out the code and submodules
+      - name: Check out the code
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      - name: Fetch the submodules MintVID builds
+        run: |
+          git submodule update --init --depth=1 player/vendor/libavc player/vendor/MintAMP
+          git -C player/vendor/MintAMP submodule update --init --depth=1
 
       - name: Build 68030, 68040 and 68060 release sets
         run: |
