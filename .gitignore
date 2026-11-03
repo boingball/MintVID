@@ -28,6 +28,7 @@ player/mr_ps_pts_check
 player/mr_ts_mp2_check
 player/mr_ts_video_pes_check
 player/mr_mkv_check
+player/mr_mkv_seek_check
 player/mr_legacy_video_check
 player/mr_cinepak_indexed_check
 player/mr_rawvideo_check

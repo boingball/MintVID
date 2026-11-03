@@ -477,8 +477,11 @@ CFLAGS  = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wextra 
           -Wno-unused-but-set-variable -Wno-unused-but-set-parameter \
           -Wno-sign-compare \
           -Wno-implicit-fallthrough -Wno-maybe-uninitialized -Wno-type-limits
-GUI_CFLAGS = -O2 -std=c99 $(CPUFLAGS) -noixemul -fomit-frame-pointer -Wall -Wextra \
+GUI_CFLAGS = -O2 -std=c99 $(CPUFLAGS) -noixemul -fno-common -fomit-frame-pointer -Wall -Wextra \
              $(KALMS_CPPFLAGS)
+# The explicitly managed GUI library bases must be strong definitions.
+# Older GCC defaults to COMMON, which lets libnix pull in auto-openers for
+# the same bases (including the bogus window.library and label.gadget).
 # LIBAVC_M68K_LDFLAGS (libavc.mk): redirects ih264d_decode_bin to the m68k
 # asm via vendor/libavc_port/ih264d_cabac_wrap.c, without editing the
 # vendored ih264d_cabac.c inside the libavc submodule. Harmless on targets
@@ -575,7 +578,7 @@ endif
 # Aminet release; iptvgui/ytgui/the GadTools -GT set/mrplay/mr_decode are
 # support binaries it launches on demand and stay hidden in the release
 # tree (see the `release` target below).
-MintVID: check-cc $(GUI) amiga/mr_master_options.h $(VERSION_HEADER)
+MintVID: check-cc $(GUI) amiga/mr_master_options.h amiga/mr_player_status.h $(VERSION_HEADER)
 	$(CC) $(GUI_CFLAGS) -o $@ $(GUI) $(LDFLAGS)
 
 iptvgui: check-cc $(IPTVGUI) iptv/mr_iptv.h amiga/mr_master_options.h $(VERSION_HEADER)
@@ -584,7 +587,7 @@ iptvgui: check-cc $(IPTVGUI) iptv/mr_iptv.h amiga/mr_master_options.h $(VERSION_
 ytgui: check-cc $(YTGUI) youtube/mr_youtube_search.h amiga/mr_master_options.h $(VERSION_HEADER)
 	$(CC) $(GUI_CFLAGS) $(HTTP_SSL_FLAGS) -o $@ $(YTGUI) $(LDFLAGS)
 
-MintVID-GT: check-cc $(GUI_GT) amiga/mr_master_options.h $(VERSION_HEADER)
+MintVID-GT: check-cc $(GUI_GT) amiga/mr_master_options.h amiga/mr_player_status.h $(VERSION_HEADER)
 	$(CC) $(GUI_CFLAGS) -o $@ $(GUI_GT) $(LDFLAGS)
 
 iptvgui-GT: check-cc $(IPTVGUI_GT) iptv/mr_iptv.h amiga/mr_master_options.h $(VERSION_HEADER)

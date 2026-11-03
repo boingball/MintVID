@@ -169,9 +169,13 @@ For a repeatable real-hardware baseline, see **[68060 @ 50 MHz codec performance
   on a tested Pi3-based PiStorm 600, YouTube's 360p stream plays with VQ Turbo
   and RTG (Half). Faster PiStorm hardware should provide more headroom, but
   results still depend on the source and configuration.
-- **Vampire/Apollo 68080:** currently unvalidated by the MintVID project. No
-  optimised build is officially recommended yet, and the 68060 build should not
-  be assumed to be the right choice solely from the CPU name.
+- **Vampire/Apollo 68080:** use the **MintVID040** build, not MintVID060.
+  The 68080 runs the 64-bit multiply and divide instructions in hardware
+  (68080 Programmer's Reference Manual). The 68060 does not, so MintVID060
+  replaces them with slower code that only costs time on a 68080. MintVID
+  has no 68080-specific code yet (no AMMX, no SAGA display mode), and the
+  project has not measured it on Vampire hardware. A `--time` log of the
+  same clip with MintVID040 and MintVID060 is very welcome.
 
 This repository began life inspired by **RiVA 0.54**, the fastest 68k MPEG-1
 player (Stephen Fellner, László Török, Henryk Richter). RiVA's assembly source
@@ -244,9 +248,8 @@ make -f Makefile.amiga mrplay CPU=68060 AACASM=0
 ```
 
 For normal classic systems use the build matching the CPU. **PiStorm/Emu68
-users should use MintVID040.** Vampire/Apollo 68080 is not yet validated, so
-there is no official optimised-build recommendation for it. Use MintVID060 only
-on systems where a 68060-targeted build is known to be appropriate.
+and Vampire/Apollo 68080 users should use MintVID040.** MintVID060 is for a
+real 68060 only.
 `release/MintVID030`, `release/MintVID040` and `release/MintVID060` are
 ready-to-run sets with ordinary unsuffixed program names. Each contains
 `mrplay`, the ReAction `MintVID`/`iptvgui`/`ytgui` set, the GadTools

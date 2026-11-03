@@ -31,6 +31,7 @@
 #include <exec/types.h>
 #include <proto/exec.h>
 #include <dos/dos.h>
+#include <proto/dos.h>
 #include <string.h>
 
 #include "../iptv/mr_iptv.h" /* MR_IPTV_PLAYER_PORT */
@@ -169,5 +170,34 @@ static inline int mr_player_status_read(mr_player_status *out) {
   }
   return have;
 }
+
+/* Controller launch boundary: an earlier player's final result must not
+ * appear while the new child is starting. */
+static inline void mr_player_status_clear_snapshot(void) {
+  DeleteFile((CONST_STRPTR)MR_PLAYER_STATUS_FILE);
+  DeleteFile((CONST_STRPTR)MR_PLAYER_STATUS_TMP);
+}
+
+/* The child may exit between two GUI timer ticks. Only terminal states are
+ * useful here; an OPENING snapshot is not evidence of a running player. */
+static inline int mr_player_status_read_final(mr_player_status *out) {
+  mr_player_status_snapshot snapshot;
+  BPTR file = Open((CONST_STRPTR)MR_PLAYER_STATUS_FILE, MODE_OLDFILE);
+  LONG got;
+  if (!file) return 0;
+  got = Read(file, &snapshot, (LONG)sizeof snapshot);
+  Close(file);
+  if (got != (LONG)sizeof snapshot ||
+      !mr_player_status_snapshot_valid(&snapshot) ||
+      (snapshot.status.state != MR_PLAYER_STATE_ERROR &&
+       snapshot.status.state != MR_PLAYER_STATE_UNSUPPORTED &&
+       snapshot.status.state != MR_PLAYER_STATE_ENDED)) return 0;
+  *out = snapshot.status;
+  out->codec[sizeof(out->codec) - 1] = 0;
+  out->text[sizeof(out->text) - 1] = 0;
+  return 1;
+}
+
+#define MR_EXTERNAL_PLAYER_LOG "T:MintVID-mrberry.log"
 
 #endif /* MR_PLAYER_STATUS_H */

@@ -321,12 +321,15 @@ int mr_demux_can_seek(const mr_demux *d)
      * the target packet, which mr_mov_next_packet() already does via
      * file_read_at() - so this is future-proofing the contract, not masking
      * a real limitation today. */
-    return d && d->kind == MR_CONTAINER_MOV && !mr_source_is_streaming(d->owned_source);
+    return d && (d->kind == MR_CONTAINER_MOV || d->kind == MR_CONTAINER_MKV) &&
+           !mr_source_is_streaming(d->owned_source);
 }
 
 mr_status mr_demux_seek(mr_demux *d, uint64_t target_us, uint64_t *out_us)
 {
     if (!mr_demux_can_seek(d)) return MR_EUNSUPPORTED;
+    if (d->kind == MR_CONTAINER_MKV)
+        return mr_mkv_seek(&d->u.mkv, target_us, out_us);
     {
         uint64_t out_ms = 0;
         mr_status st = mr_mov_seek(&d->u.mov, target_us / 1000, &out_ms);

@@ -92,6 +92,18 @@ ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=12:duration=3 \
     -c:v libx264 -profile:v baseline -pix_fmt yuv420p -g 12 -keyint_min 12 \
     -sc_threshold 0 -crf 24 -movflags +faststart test_h264_gop.mp4 -y
 ffmpeg -v error -i test_h264_gop.mp4 -c copy -f mpegts test_h264_gop.ts -y
+# Matroska seek fixtures (tests/mr_mkv_seek_check.c): H.264 High with
+# B-frames and AAC, a keyframe every 37 frames (1.48 s) and ~1 s clusters, so
+# keyframes fall mid-cluster. The second copy is written to a pipe, which
+# makes ffmpeg leave out the Cues index and the segment size: mr_mkv_seek()
+# must then fall back to scanning cluster timecodes.
+ffmpeg -v error -f lavfi -i testsrc2=size=96x64:rate=25 \
+    -f lavfi -i sine=frequency=440:sample_rate=48000 -t 8 \
+    -c:v libx264 -profile:v high -bf 2 -g 37 -keyint_min 37 \
+    -sc_threshold 0 -crf 30 -c:a aac -b:a 32k -ac 2 \
+    -cluster_time_limit 1000 test_h264_seek.mkv -y
+ffmpeg -v error -i test_h264_seek.mkv -c copy -cluster_time_limit 1000 \
+    -f matroska pipe:1 > test_h264_seek_nocues.mkv
 # MPEG-2 Main Profile with B-frame reordering in a transport stream. This also
 # verifies that the decoder drains both delayed reference pictures at EOF.
 ffmpeg -v error -f lavfi -i testsrc2=size=128x96:rate=25:duration=2 \
