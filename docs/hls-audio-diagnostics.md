@@ -23,6 +23,11 @@ previously configured. It fixes these scheduler issues:
   At the real live edge, the existing serviced fetch/retry still applies, so
   a dropped hint cannot prevent progress. Synchronous overrides without a
   readiness probe retain their previous behavior.
+- TLS session tickets are retained for up to four host/port pairs rather
+  than only the last host contacted. Playlist and segment hosts can then
+  alternate without discarding each other's ticket. Least-recently-saved
+  entries are evicted; protocol-cap changes and shutdown release all entries.
+  Resumption remains best-effort and the server can require a full handshake.
 
 Audio output already has its own worker; adding `audio_service()` to the
 network callback would not fix delivery. The core HLS source already refreshes
@@ -133,3 +138,26 @@ separate comparison, `--hls-low` asks for the lowest-bandwidth supported HLS
 variant, reducing unwanted video traffic/TLS processing where the server
 provides a cheaper variant. Its audio characteristics may differ. Keep other
 options constant and label that run separately from the same-rendition test.
+
+## Low-rendition trace and TLS setup
+
+The subsequent low-rendition run recorded nine starvations in 140.772 seconds,
+with zero FIFO drops and 28.514 seconds of main-task worker waits. Starvation
+counts rose on roughly a 15-second cycle. HTTP counters, including resolver
+and startup requests, recorded 98.488 seconds of TLS handshake time versus
+18.172 seconds reading response bodies. Only 22 of 45 handshakes resumed.
+These are wall times, including CPU contention, rather than a CPU profile.
+The new counters point at setup cost even after reducing media traffic.
+
+The old single-ticket cache could forget the segment host's resumable session
+when a playlist on another host completed. The per-origin cache addresses
+that avoidable cache miss; it does not remove TCP connects, guarantee server
+resumption, or prove every remaining glitch is TLS-related. Compare the same
+low-rendition command and the changes in `tls` / `resumed` on hardware.
+
+`make -C player check-http-tls-cache` exercises production cache code for
+host/port isolation, replacement, bounded eviction, reference ownership,
+non-resumable sessions, protocol-cap changes and repeated cleanup.
+`make -C player check-https` additionally alternates real local HTTPS origins
+under automatic TLS and TLS 1.2: each origin has one initial full handshake,
+then resumes. The previous single-ticket implementation fails this test.

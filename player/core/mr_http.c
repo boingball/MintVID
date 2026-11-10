@@ -132,13 +132,38 @@ static void http_close_amissl(void)
  * http_platform_shutdown at process exit. */
 static SSL_CTX *g_ssl_ctx = NULL;
 static int      g_tls_inited = 0;
-/* Cached TLS session from the last successful handshake. Reusing it for the
- * next connection to the same host lets the server grant an abbreviated
- * handshake (no fresh key exchange), which is the bulk of the per-segment TLS
- * cost on 68k. Reuse is best-effort: a server that declines simply does a full
- * handshake, so this only ever speeds things up. */
-static SSL_SESSION *g_tls_session = NULL;
-static char         g_tls_session_host[HTTP_HOST_MAX];
+/* Keep a few origins' sessions: HLS alternates playlist and media hosts.
+ * One global last-session slot discarded the media ticket whenever a
+ * playlist completed, forcing another costly full handshake on 68k.
+ * Entries are MRU first, bounded and owned by this session's network task. */
+#define HTTP_TLS_SESSION_SLOTS 4
+typedef struct {
+    SSL_SESSION *session;
+    char host[HTTP_HOST_MAX];
+    unsigned short port;
+} http_tls_session;
+static http_tls_session g_tls_sessions[HTTP_TLS_SESSION_SLOTS];
+
+static void clear_tls_sessions(void)
+{
+    unsigned i;
+    for (i = 0; i < HTTP_TLS_SESSION_SLOTS; i++) {
+        if (g_tls_sessions[i].session)
+            SSL_SESSION_free(g_tls_sessions[i].session);
+    }
+    memset(g_tls_sessions, 0, sizeof g_tls_sessions);
+}
+
+static SSL_SESSION *find_tls_session(const char *host, unsigned short port)
+{
+    unsigned i;
+    for (i = 0; i < HTTP_TLS_SESSION_SLOTS; i++)
+        if (g_tls_sessions[i].session && g_tls_sessions[i].port == port &&
+            !strcmp(g_tls_sessions[i].host, host))
+            return g_tls_sessions[i].session; /* borrowed; SSL_set_session refs it */
+    return NULL;
+}
+
 #endif
 
 /* Per-phase fetch timing (see mr_http_timing in the header). */
@@ -179,7 +204,7 @@ void mr_http_set_tls_max(int version)
     g_tls_max = version;
 #if MR_HTTP_HAVE_TLS
     /* A session from the other protocol version cannot be resumed anyway. */
-    if (g_tls_session) { SSL_SESSION_free(g_tls_session); g_tls_session = NULL; }
+    clear_tls_sessions();
     if (g_ssl_ctx) apply_tls_max(g_ssl_ctx);
 #endif
 }
@@ -220,6 +245,7 @@ typedef struct {
     SSL_CTX *ssl_ctx;
     SSL     *ssl;
     char     tls_host[HTTP_HOST_MAX]; /* host of the live TLS connection      */
+    unsigned short tls_port;
 #endif
     size_t total_len;
     size_t body_pos;
@@ -463,7 +489,7 @@ int mr_http_resolve_url(const char *base_url, const char *rel,
 static void http_platform_shutdown(void)
 {
 #if MR_HTTP_HAVE_TLS
-    if (g_tls_session) { SSL_SESSION_free(g_tls_session); g_tls_session = NULL; }
+    clear_tls_sessions();
     if (g_tls_inited) {
         if (g_ssl_ctx) { SSL_CTX_free(g_ssl_ctx); g_ssl_ctx = NULL; }
 #if MR_HTTP_AMIGA
@@ -672,6 +698,7 @@ static void close_socket_only(http_source *h)
 static void remember_tls_session(http_source *h)
 {
     SSL_SESSION *sess;
+    unsigned slot;
     if (!h->ssl || !h->using_tls || !h->tls_host[0]) return;
     sess = SSL_get1_session(h->ssl);
     if (!sess) return;
@@ -681,9 +708,18 @@ static void remember_tls_session(http_source *h)
         return;
     }
 #endif
-    if (g_tls_session) SSL_SESSION_free(g_tls_session);
-    g_tls_session = sess;
-    strcpy(g_tls_session_host, h->tls_host);
+    for (slot = 0; slot < HTTP_TLS_SESSION_SLOTS; slot++) {
+        if (!g_tls_sessions[slot].session ||
+            (g_tls_sessions[slot].port == h->tls_port &&
+             !strcmp(g_tls_sessions[slot].host, h->tls_host))) break;
+    }
+    if (slot == HTTP_TLS_SESSION_SLOTS) slot--;
+    if (g_tls_sessions[slot].session)
+        SSL_SESSION_free(g_tls_sessions[slot].session);
+    memmove(g_tls_sessions + 1, g_tls_sessions, slot * sizeof *g_tls_sessions);
+    g_tls_sessions[0].session = sess;
+    strcpy(g_tls_sessions[0].host, h->tls_host);
+    g_tls_sessions[0].port = h->tls_port;
 }
 #endif
 
@@ -926,8 +962,10 @@ static int connect_socket(http_source *h, const http_url *url)
 #endif
         /* Offer the previous session for this host so the server can resume it
          * with an abbreviated handshake. */
-        if (g_tls_session && !strcmp(g_tls_session_host, url->host))
-            SSL_set_session(h->ssl, g_tls_session);
+        {
+            SSL_SESSION *session = find_tls_session(url->host, url->port);
+            if (session) SSL_set_session(h->ssl, session);
+        }
         /* SSL_connect() has no cancellation hook of its own, unlike
          * gethostbyname() above - deliberately: MintAMP's own hard-won
          * finding (see the comment above connect_socket()'s gethostbyname()
@@ -958,6 +996,7 @@ static int connect_socket(http_source *h, const http_url *url)
          * (remember_tls_session()), not here: see the note there. */
         strncpy(h->tls_host, url->host, sizeof h->tls_host - 1);
         h->tls_host[sizeof h->tls_host - 1] = 0;
+        h->tls_port = url->port;
 #else
         mr_source_set_error(
             "HTTPS support was not compiled in; rebuild with SSL=1");

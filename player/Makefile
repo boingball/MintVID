@@ -698,7 +698,10 @@ mr_http_resume_check: tests/mr_http_resume_check.c $(CORE) $(HEADERS) | check-li
 	$(CC) $(CFLAGS) -DMR_HTTP_HAVE_OPENSSL \
 	    -o $@ tests/mr_http_resume_check.c $(CORE) -lm -lssl -lcrypto
 
-check-https: mr_decode_ssl mr_http_resume_check
+check-http-tls-cache:
+	python3 tests/check_http_tls_cache.py
+
+check-https: check-http-tls-cache mr_decode_ssl mr_http_resume_check
 	@test -d tests/assets/ref_mpeg2_ts \
 	    && test -d tests/assets/ref_h264_high \
 	    && test -d tests/assets/ref_mp42 \
@@ -751,3 +754,5 @@ check-planar-modes: mr_planar_modes_check
 .PHONY: check-planar-modes
 
 .PHONY: check-hls-worker-lifecycle check-hls-fetch-scheduling check-audio-only-diagnostics
+
+.PHONY: check-http-tls-cache
