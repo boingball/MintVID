@@ -1,0 +1,13 @@
+--- a/libavutil/tx.c
++++ b/libavutil/tx.c
+@@ -338,8 +338,10 @@
+ 
+ /* Array of all compiled codelet lists. Order is irrelevant. */
+ static const FFTXCodelet * const * const codelet_list[] = {
++#if !defined(BERRY_EAC3_STANDALONE)
+     ff_tx_codelet_list_float_c,
+     ff_tx_codelet_list_double_c,
++#endif
+     ff_tx_codelet_list_int32_c,
+     ff_tx_null_list,
+ #if HAVE_X86ASM
