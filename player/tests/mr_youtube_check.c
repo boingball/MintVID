@@ -134,7 +134,7 @@ int main(int argc, char **argv)
            youtube_options.hls_max_width == 640 &&
            youtube_options.hls_max_height == 360 &&
            youtube_options.source_buffer_bytes == 8u * 1024u * 1024u &&
-           youtube_options.hls_live_start_segments == 2 &&
+           youtube_options.hls_live_start_segments == 5 &&
            youtube_options.hls_buffer_segments,
            "YouTube browser defaults, live edge and HLS limits applied");
     expect(mr_http_options_init(&base_options, "Custom Agent",

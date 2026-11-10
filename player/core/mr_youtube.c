@@ -20,7 +20,11 @@
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 #define YOUTUBE_REFERER "https://www.youtube.com/"
 #define MINT_VID_DEFAULT_UA "MintVID/0.1 AmigaOS"
-#define YOUTUBE_LIVE_START_SEGMENTS 2
+/* YouTube live playlists list only ~30 s (playlist_duration=30, 5 s
+ * segments). Starting at the newest two left at most ~10 s of compressed
+ * lookahead, which a single stalled fetch on an A1200 (one took 28 s) used
+ * up. Five segments back leaves four to prefetch. */
+#define YOUTUBE_LIVE_START_SEGMENTS 5
 #define YOUTUBE_ANDROID_VERSION "21.08.266"
 #define YOUTUBE_ANDROID_UA \
     "com.google.android.youtube/21.08.266 (Linux; U; Android 11) gzip"

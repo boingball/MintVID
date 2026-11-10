@@ -63,7 +63,9 @@ static mr_source *hls_open(const char *url, const mr_http_options *options,
 /* Fallback poll interval when the playlist declares no EXT-X-TARGETDURATION. */
 #define HLS_LIVE_REFETCH_WAIT_MS 1000
 #define HLS_VOD_LOOKAHEAD_SEGMENTS 8
-#define HLS_LIVE_LOOKAHEAD_SEGMENTS 3
+/* Live lookahead is capped by the live edge anyway; this lets it use the
+ * ~20 s YouTube's 30 s window leaves when playback starts five back. */
+#define HLS_LIVE_LOOKAHEAD_SEGMENTS 4
 /* Where live playback starts when the caller names no segment count: about
  * this much media before the newest segment, and never fewer than three
  * segments (RFC 8216 6.3.3 asks clients to start at least three target

@@ -5694,7 +5694,28 @@ it closed (stored, not resumable, no session, aborted, handshake failed).
 mrplay prints them as `tls-trace:` lines at the end of an audio-only
 diagnostic dump and after the `--time` summary. `mr_http_resume_check`
 requires the trace to match the counters in its alternating-hosts runs.
-Not yet read on hardware.
+
+**The trace showed TLS was fixed; the remaining stalls were the network.**
+A 5-minute audio-only YouTube live log, capped at TLS 1.2, resumed 86 of 90
+connections at ~100 ms each. One fetch still took 28.6 s: a resumed
+handshake of 10.8 s, then 17.5 s of body. Over the next minute three TCP
+connects took 5.95-6.3 s, against ~70 ms normally. That is the first SYN
+being lost and a BSD-derived stack waiting out its ~6 s initial retransmit
+timer. The audio ran dry because YouTube started only two segments
+(~10 s) behind its 30 s playlist window, so at most ~10 s of compressed
+audio could ever be prefetched. Three changes:
+- `connect_tcp()` in `mr_http.c` gives up on a connect after 2, then 3,
+  then 5 s, and sends a fresh SYN from a new socket. It keeps the 20 s
+  total. `mr_http_timing.tcp_retries` counts the restarts (`retries=` in
+  the `audio-net:` and `http fetches=` lines). Checked on the host with
+  iptables dropping SYNs: four attempts, then a clean failure after 20 s.
+- `YOUTUBE_LIVE_START_SEGMENTS` is 5 (was 2), so playback is ~25 s behind
+  live.
+- `HLS_LIVE_LOOKAHEAD_SEGMENTS` is 4 (was 3), so the lookahead can use those
+  segments: ~20 s compressed plus the 2.5 s PCM cushion.
+
+A 28 s outage is still longer than that, and nothing in the player can fix
+a lossy network. Not yet run on hardware.
 
 **The AGA dither was the next biggest cost, at ~56 instructions per
 pixel.** With TLS fixed, a BBC One run (Turbo, stereo 12 kHz, All Frames)

@@ -838,6 +838,13 @@ static void close_connection(http_source *h, int healthy)
 #endif
 #define HTTP_CONNECT_TIMEOUT_MS 20000  /* matches SO_RCVTIMEO/SO_SNDTIMEO   */
 #define HTTP_CONNECT_POLL_MS    40
+/* A lost SYN costs a BSD-derived stack (AmiTCP, Roadshow) its whole initial
+ * retransmit timer, about 6 s, before it tries again: an A1200 log of YouTube
+ * live showed three connects of 5.95-6.3 s in a minute, against ~70 ms
+ * normally. Give up on an attempt well before that and send a fresh SYN from
+ * a new socket instead. The limits grow, so a genuinely slow path still gets
+ * the full HTTP_CONNECT_TIMEOUT_MS in all. */
+static const unsigned short g_connect_attempt_ms[] = { 2000, 3000, 5000 };
 
 static void connect_poll_sleep(void)
 {
@@ -866,10 +873,12 @@ static long connect_last_errno(void)
 #endif
 }
 
+/* Returns 1 once connected, 0 when attempt_ms passed without a connection,
+ * -1 when the service hook asked to abort. */
 static int connect_with_timeout(int sock, const struct sockaddr *addr,
-                                socklen_t addrlen)
+                                socklen_t addrlen, unsigned attempt_ms)
 {
-    int tries, budget = HTTP_CONNECT_TIMEOUT_MS / HTTP_CONNECT_POLL_MS;
+    int tries, budget = (int)(attempt_ms / HTTP_CONNECT_POLL_MS);
     int ok = 0;
 #if MR_HTTP_AMIGA
     ULONG nb = 1, blk = 0;
@@ -878,11 +887,14 @@ static int connect_with_timeout(int sock, const struct sockaddr *addr,
     int flags = fcntl(sock, F_GETFL, 0);
     fcntl(sock, F_SETFL, flags | O_NONBLOCK);
 #endif
+    if (budget < 1) budget = 1;
     for (tries = 0; tries < budget; tries++) {
         int cr = connect(sock, addr, addrlen);
         if (cr == 0 || connect_last_errno() == EISCONN) { ok = 1; break; }
-        if (g_http_service && g_http_service(g_http_service_opaque))
-            break;                              /* caller asked to abort        */
+        if (g_http_service && g_http_service(g_http_service_opaque)) {
+            ok = -1;                            /* caller asked to abort        */
+            break;
+        }
         connect_poll_sleep();
     }
     /* net_read_some()/net_write_all() assume a blocking socket governed by
@@ -897,11 +909,61 @@ static int connect_with_timeout(int sock, const struct sockaddr *addr,
     return ok;
 }
 
+static int open_tcp_socket(http_source *h)
+{
+    struct timeval timeout;
+    h->sock = (int)socket(AF_INET, SOCK_STREAM, 0);
+    if (h->sock < 0) {
+        mr_source_set_error("cannot create HTTP socket");
+        return 0;
+    }
+    h->socket_ready = 1;
+    timeout.tv_sec = 20;
+    timeout.tv_usec = 0;
+    setsockopt(h->sock, SOL_SOCKET, SO_RCVTIMEO,
+               (const char *)&timeout, sizeof timeout);
+    setsockopt(h->sock, SOL_SOCKET, SO_SNDTIMEO,
+               (const char *)&timeout, sizeof timeout);
+    /* Ask the stack to buffer a big chunk of stream while the player is off
+     * decoding/pacing, so the proactive drain has plenty to pull in without
+     * blocking. Best-effort: the stack may clamp it. */
+    { int rcv = 1 << 20;
+      setsockopt(h->sock, SOL_SOCKET, SO_RCVBUF,
+                 (const char *)&rcv, sizeof rcv); }
+    return 1;
+}
+
+/* Connect, retrying from a fresh socket when an attempt stalls (see
+ * g_connect_attempt_ms). Leaves the socket open only on success. */
+static int connect_tcp(http_source *h, const struct sockaddr_in *sa)
+{
+    unsigned spent = 0, attempt = 0;
+    while (spent < HTTP_CONNECT_TIMEOUT_MS) {
+        unsigned limit = HTTP_CONNECT_TIMEOUT_MS - spent;
+        int r;
+        if (attempt < sizeof g_connect_attempt_ms / sizeof g_connect_attempt_ms[0] &&
+            g_connect_attempt_ms[attempt] < limit)
+            limit = g_connect_attempt_ms[attempt];
+        if (!open_tcp_socket(h)) return 0;
+        r = connect_with_timeout(h->sock, (const struct sockaddr *)sa,
+                                 sizeof *sa, limit);
+        if (r > 0) {
+            if (attempt) g_http_timing.tcp_retries += attempt;
+            return 1;
+        }
+        close_socket_only(h);
+        if (r < 0) return 0;
+        spent += limit;
+        attempt++;
+    }
+    g_http_timing.tcp_retries += attempt ? attempt - 1 : 0;
+    return 0;
+}
+
 static int connect_socket(http_source *h, const http_url *url)
 {
     struct hostent *he;
     struct sockaddr_in sa;
-    struct timeval timeout;
     /* gethostbyname() is a genuinely blocking bsdsocket.library call with no
      * non-blocking mode of its own, unlike connect() above - a stuck/slow
      * resolver can leave the calling task sitting inside it far longer than
@@ -960,32 +1022,13 @@ static int connect_socket(http_source *h, const http_url *url)
             g_dns_valid = 1;
         }
     }
-    h->sock = (int)socket(AF_INET, SOCK_STREAM, 0);
-    if (h->sock < 0) {
-        mr_source_set_error("cannot create HTTP socket");
-        return 0;
-    }
-    h->socket_ready = 1;
-    timeout.tv_sec = 20;
-    timeout.tv_usec = 0;
-    setsockopt(h->sock, SOL_SOCKET, SO_RCVTIMEO,
-               (const char *)&timeout, sizeof timeout);
-    setsockopt(h->sock, SOL_SOCKET, SO_SNDTIMEO,
-               (const char *)&timeout, sizeof timeout);
-    /* Ask the stack to buffer a big chunk of stream while the player is off
-     * decoding/pacing, so the proactive drain has plenty to pull in without
-     * blocking. Best-effort: the stack may clamp it. */
-    { int rcv = 1 << 20;
-      setsockopt(h->sock, SOL_SOCKET, SO_RCVBUF,
-                 (const char *)&rcv, sizeof rcv); }
     memset(&sa, 0, sizeof sa);
     sa.sin_family = AF_INET;
     sa.sin_port = htons(url->port);
     memcpy(&sa.sin_addr, addr, sizeof addr);
     phase = clock();
-    if (!connect_with_timeout(h->sock, (struct sockaddr *)&sa, sizeof sa)) {
+    if (!connect_tcp(h, &sa)) {
         g_http_timing.tcp_ms += http_ms_since(phase);
-        close_socket_only(h);
         if (from_cache) {
             /* The cached address may be stale: forget it and resolve once. */
             g_dns_valid = 0;

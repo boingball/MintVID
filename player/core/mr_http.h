@@ -164,10 +164,11 @@ void mr_http_set_service(mr_http_service_fn fn, void *opaque);
  * took effect). Written by
  * whichever task does the fetching (amiga/hls_fetch.c's worker), so read it
  * only as a diagnostic: a report may be one fetch out of date. dns_cached
- * counts connections that reused a recent lookup instead of resolving. */
+ * counts connections that reused a recent lookup instead of resolving;
+ * tcp_retries counts connect attempts restarted from a fresh socket. */
 typedef struct mr_http_timing {
     unsigned long fetches, fetch_ms, max_fetch_ms;
-    unsigned long connects, dns_ms, dns_cached, tcp_ms;
+    unsigned long connects, dns_ms, dns_cached, tcp_ms, tcp_retries;
     unsigned long tls_handshakes, tls_ms, tls_resumed, tls13;
     unsigned long header_ms, body_ms;
 } mr_http_timing;
