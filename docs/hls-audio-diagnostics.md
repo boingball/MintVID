@@ -34,14 +34,28 @@ mrplay "https://www.youtube.com/watch?v=YOUR_LIVE_ID" --no-video --audio-diag >N
 mrplay Work:local-aac.mp4 --no-video --audio-diag >NAS0:local-audio.txt
 ```
 
-Keep any other options from your usual command. Press Esc to stop; the final
-snapshot prints before output teardown. Do not add `--time`, `--live-diag`
-or `--benchmark`. `--audio-diag` requires `--no-video`, and does not enable
-verbose worker/HLS output. It writes one line about every five seconds,
-including during serviced network/live-edge waits, plus demux-stop/final
-snapshots. Even sparse output can affect a slow console or NAS, so judge
-smoothness on the quiet run first. Report cadence restarts after output flush
-so a slow NAS cannot trigger continuous reports.
+Keep any other options from your usual command. Press Esc to stop. The
+recorder takes a snapshot about every five seconds, including during
+serviced network/live-edge waits, plus demux-stop/final snapshots. It stores
+these in RAM and **prints only after audio output has closed**. Expect the
+NAS file to remain quiet during playback; wait for the player to finish
+writing after Esc. Normal EOF saves the trace when the ended window closes.
+Do not add `--time`, `--live-diag` or `--benchmark`.
+
+`--audio-diag` requires `--no-video` and does not enable verbose worker/HLS
+output. A bounded 128-entry ring retains roughly the latest ten minutes;
+its header reports overwritten snapshots. This allocation is for diagnostic
+records, with no change to PCM or compressed-media buffer sizes. If it
+cannot be allocated, a startup message says recording is disabled.
+
+The first hardware trace exposed a problem with the previous implementation:
+it formatted and flushed each snapshot during playback. Its nominal
+five-second reports arrived 6–10 seconds apart, with additional starvations
+even between completed HLS waits. Slow console/NAS output was a likely
+contributor and also inflated measured waits. The RAM recorder removes all
+per-snapshot formatting and output from the playback and network-wait paths.
+A clean trace is needed before assigning the remaining stalls to downloads,
+AAC decoding or live-edge handling.
 
 Fields are snapshots or cumulative since the audio-only loop opened:
 
@@ -76,5 +90,7 @@ simulated message delivery: demanded segment returns before later lookahead,
 queued demand ordering, playlist priority, READY hits, polling, failed
 segments, byte-budget fallback, stale generations, abort ownership, quiet
 counters and shutdown promotion suppression. It also checks the production
-audio-only polling and sparse report code against a simulated slow output.
+audio-only polling and RAM recorder against simulated slow output, asserting
+zero diagnostic writes while playing, bounded chronological retention and a
+post-stop dump.
 These checks do not measure real 68060 timing or prove live playback quality.

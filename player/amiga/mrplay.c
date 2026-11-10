@@ -1862,6 +1862,17 @@ static int hls_wait_service(void *opaque, unsigned wait_ms)
  * own, so this loop only keeps the FIFO topped up and reads input from a
  * small title-bar window on Workbench (ESC/close, space, cursor keys) and
  * from the controller's signals, exactly as the video window would. */
+/* Bounded diagnostic history, allocated only on request. No formatting,
+ * console or NAS writes are permitted while playback is running. */
+#define AUDIO_DIAG_SNAPSHOTS 128
+typedef struct audio_only_snapshot {
+    mr_audio_diagnostics audio;
+    hls_fetch_diagnostic hls;
+    mr_source_timing io;
+    unsigned long at_ms;
+    const char *tag, *phase;           /* static literals only */
+} audio_only_snapshot;
+
 typedef struct audio_only_ui {
     struct Window *win;
     int opened_intuition;   /* we opened IntuitionBase; close it again */
@@ -1870,39 +1881,75 @@ typedef struct audio_only_ui {
     int diagnostic;
     clock_t last_report_clock, diagnostic_started;
     const char *phase;
+    audio_only_snapshot *snapshots;
+    unsigned first_snapshot, snapshot_count, overwritten_snapshots;
+    int demux_stopped;
+    mr_status demux_status;
+    char last_source_error[192];
 } audio_only_ui;
 
-/* Sparse, opt-in snapshots, including while the main task waits for network
- * I/O. Do not enable the per-frame --time/verbose reports to collect these. */
+/* Capture cheaply, including inside serviced network/live-edge waits.
+ * The old live printf/Flush stalled feeding PCM on slow NAS/console output,
+ * contaminating both starvation counters and worker wait measurements. */
 static void audio_only_report(audio_only_ui *ui, const char *tag)
 {
-    mr_audio_diagnostics a;
-    hls_fetch_diagnostic h;
-    mr_source_timing io;
-    if (!ui->diagnostic || !ui->audio) return;
-    if (!tag && (unsigned long)(clock() - ui->last_report_clock) <
+    audio_only_snapshot *r;
+    unsigned slot;
+    clock_t now;
+    if (!ui->diagnostic || !ui->audio || !ui->snapshots) return;
+    now = clock();
+    if (!tag && (unsigned long)(now - ui->last_report_clock) <
                     5UL * CLOCKS_PER_SEC) return;
-    audio_diagnostics(ui->audio, &a);
-    hls_fetch_get_diagnostics(&h);
-    mr_source_timing_get(&io);
-    printf("audio-diag: %s at=%lu ms phase=%s pcm=%lu fifo=%lu hw=%lu+%lu ms "
-           "starves=%lu drops=%lu active=%u "
-           "hls=%lu/%lu ready=%u pending=%u busy=%d polls=%lu "
-           "waits=%lu wait=%lu last=%lu max=%lu total=%lu "
-           "segment=%lu playlist=%lu ms\n",
-           tag ? tag : "tick",
-           (unsigned long)((clock() - ui->diagnostic_started) * 1000UL /
-                           CLOCKS_PER_SEC), ui->phase,
-           a.total_buffered_ms, a.fifo_buffered_ms,
-           a.hardware_playing_remaining_ms, a.hardware_queued_ms,
-           a.hardware_starvations, a.fifo_dropped_samples,
-           (unsigned)a.active_requests, h.hits, h.misses, h.ready, h.pending,
-           h.busy, h.polls, h.waits, h.current_wait_ms, h.last_wait_ms,
-           h.worst_wait_ms, h.total_wait_ms, io.hls_segment_ms,
-           io.hls_playlist_ms);
-    Flush(Output());
-    /* Output to a slow console/NAS must not make another report due. */
+    if (ui->snapshot_count == AUDIO_DIAG_SNAPSHOTS) {
+        slot = ui->first_snapshot;
+        ui->first_snapshot = (slot + 1) % AUDIO_DIAG_SNAPSHOTS;
+        ui->overwritten_snapshots++;
+    } else {
+        slot = (ui->first_snapshot + ui->snapshot_count++) % AUDIO_DIAG_SNAPSHOTS;
+    }
+    r = &ui->snapshots[slot];
+    r->tag = tag ? tag : "tick";
+    r->phase = ui->phase;
+    r->at_ms = (unsigned long)((now - ui->diagnostic_started) * 1000UL /
+                               CLOCKS_PER_SEC);
+    audio_diagnostics(ui->audio, &r->audio);
+    hls_fetch_get_diagnostics(&r->hls);
+    mr_source_timing_get(&r->io);
     ui->last_report_clock = clock();
+}
+
+/* Only called after audio_close(): output latency cannot starve playback or
+ * lengthen a measured HLS wait. Keep the previous text fields for comparison. */
+static void audio_only_dump(const audio_only_ui *ui)
+{
+    unsigned i;
+    if (!ui->snapshots) return;
+    printf("audio-diag: RAM capture, %u snapshots, %u older snapshots overwritten\n",
+           ui->snapshot_count, ui->overwritten_snapshots);
+    for (i = 0; i < ui->snapshot_count; i++) {
+        const audio_only_snapshot *r = &ui->snapshots[
+            (ui->first_snapshot + i) % AUDIO_DIAG_SNAPSHOTS];
+        const mr_audio_diagnostics *a = &r->audio;
+        const hls_fetch_diagnostic *h = &r->hls;
+        const mr_source_timing *io = &r->io;
+        printf("audio-diag: %s at=%lu ms phase=%s pcm=%lu fifo=%lu hw=%lu+%lu ms "
+               "starves=%lu drops=%lu active=%u "
+               "hls=%lu/%lu ready=%u pending=%u busy=%d polls=%lu "
+               "waits=%lu wait=%lu last=%lu max=%lu total=%lu "
+               "segment=%lu playlist=%lu ms\n",
+               r->tag, r->at_ms, r->phase,
+               a->total_buffered_ms, a->fifo_buffered_ms,
+               a->hardware_playing_remaining_ms, a->hardware_queued_ms,
+               a->hardware_starvations, a->fifo_dropped_samples,
+               (unsigned)a->active_requests, h->hits, h->misses, h->ready, h->pending,
+               h->busy, h->polls, h->waits, h->current_wait_ms, h->last_wait_ms,
+               h->worst_wait_ms, h->total_wait_ms, io->hls_segment_ms,
+               io->hls_playlist_ms);
+    }
+    if (ui->demux_stopped)
+        printf("audio-diag: demux status=%ld last-source=%s\n",
+               (long)ui->demux_status, ui->last_source_error);
+    Flush(Output());
 }
 
 /* As in the video scheduler, advance compressed lookahead about every 20ms.
@@ -2135,10 +2182,19 @@ static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
     ui.audio = audio;
     ui.diagnostic = audio_diag;
     ui.phase = "buffering";
+    ui.first_snapshot = ui.snapshot_count = ui.overwritten_snapshots = 0;
+    ui.demux_stopped = 0;
+    ui.snapshots = audio_diag ? calloc(AUDIO_DIAG_SNAPSHOTS,
+                                      sizeof *ui.snapshots) : NULL;
+    if (audio_diag && !ui.snapshots) {
+        printf("audio-diag: insufficient RAM; recording disabled\n");
+        Flush(Output());
+        ui.diagnostic = 0;
+    }
     ui.last_report_clock = ui.diagnostic_started = clock();
-    hls_fetch_set_diagnostics(audio_diag);
+    hls_fetch_set_diagnostics(ui.diagnostic);
     mr_source_timing_reset();
-    mr_source_set_timing_enabled(audio_diag);
+    mr_source_set_timing_enabled(ui.diagnostic);
     mr_demux_set_service(dx, audio_only_io_service, &ui);
     mr_http_set_service(audio_only_io_service, &ui);
     hls_fetch_set_service(audio_only_io_service, &ui);
@@ -2199,12 +2255,13 @@ static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
             if (deferred_player_event == MR_EV_QUIT) { quit = 1; break; }
             if (st != MR_OK) {
                 eof = 1;
-                if (audio_diag) {
+                if (ui.diagnostic) {
                     audio_only_report(&ui, "demux-stop");
-                    printf("audio-diag: demux status=%ld last-source=%s\n",
-                           (long)st, mr_source_last_error());
-                    Flush(Output());
-                    ui.last_report_clock = clock();
+                    ui.demux_stopped = 1;
+                    ui.demux_status = st;
+                    strncpy(ui.last_source_error, mr_source_last_error(),
+                            sizeof ui.last_source_error - 1);
+                    ui.last_source_error[sizeof ui.last_source_error - 1] = 0;
                 }
             }
             else if (!pkt.is_video && pkt.len) {
@@ -2277,6 +2334,9 @@ static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
     audio_close(audio);
     mr_audio_decoder_close(adec);
     audio_only_ui_close(&ui);
+    audio_only_dump(&ui);
+    free(ui.snapshots);
+    ui.snapshots = NULL;
     return 0;
 }
 
