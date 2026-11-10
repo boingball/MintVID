@@ -81,6 +81,29 @@ static int run_alternating_phase(const char *name, const char *a, const char *b)
     }
     printf("mr_http_resume_check: %s alternating hosts: %lu/%lu resumed\n",
            name, res, hs);
+    /* The per-connection trace must tell the same story: the first visit to
+     * each origin offers nothing and is a full handshake, every later one
+     * offers the stored session and resumes, and all of them are kept. */
+    {
+        mr_http_conn_trace t[2 * FETCHES];
+        unsigned n = mr_http_conn_trace_get(t, 2 * FETCHES);
+        for (i = 0; i < (int)n; i++) {
+            int first = i < 2;
+            if (n != 2 * FETCHES || (i && t[i].seq != t[i - 1].seq + 1) ||
+                t[i].offered != !first || t[i].resumed != !first ||
+                t[i].close != MR_HTTP_CLOSE_STORED || !t[i].host[0] ||
+                t[i].port != t[i & 1].port || t[i].cached != (first ? i + 1 : 2)) {
+                fprintf(stderr, "FAIL: %s trace %d of %u: seq=%lu host=%s:%u "
+                        "offered=%u resumed=%u close=%s cached=%u\n", name, i, n,
+                        t[i].seq, t[i].host, t[i].port, t[i].offered,
+                        t[i].resumed, mr_http_close_name(t[i].close),
+                        t[i].cached);
+                return 0;
+            }
+        }
+        printf("mr_http_resume_check: %s trace: %u connections, 2 full, "
+               "the rest resumed and kept\n", name, n);
+    }
     return 1;
 }
 

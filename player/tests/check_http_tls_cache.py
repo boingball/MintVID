@@ -8,7 +8,7 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 s = (root / 'core/mr_http.c').read_text()
 def function(name):
-    start = s.index('static void ' + name + '(') if name == 'remember_tls_session' else s.index('void ' + name + '(')
+    start = s.index('static int ' + name + '(') if name == 'remember_tls_session' else s.index('void ' + name + '(')
     brace = s.index('{', start)
     end, depth = brace + 1, 1
     while depth:
@@ -41,17 +41,18 @@ typedef struct {
 } http_source;
 ''' + cache + function('remember_tls_session') + function('mr_http_set_tls_max') + r'''
 static SSL_SESSION sessions[16];
-static void save(unsigned id, const char *host, unsigned short port)
+static int save(unsigned id, const char *host, unsigned short port)
 {
     http_source h = {0};
     h.ssl = &sessions[id]; h.using_tls = 1; h.tls_port = port;
-    strcpy(h.tls_host, host); remember_tls_session(&h);
+    strcpy(h.tls_host, host); return remember_tls_session(&h);
 }
 int main(void)
 {
     unsigned i;
     for (i = 0; i < 16; i++) { sessions[i].refs = 1; sessions[i].resumable = 1; }
-    save(0, "a", 443); save(1, "b", 443); save(2, "c", 443); save(3, "d", 443);
+    assert(save(0, "a", 443) == MR_HTTP_CLOSE_STORED);
+    save(1, "b", 443); save(2, "c", 443); save(3, "d", 443);
     assert(find_tls_session("a", 443) == &sessions[0]);
     assert(!find_tls_session("a", 444) && !find_tls_session("other", 443));
     save(4, "a", 443); /* replacement refreshes recency and releases old ref */
@@ -64,7 +65,8 @@ int main(void)
     assert(find_tls_session("e", 443) == &sessions[5]);
     assert(find_tls_session("e", 444) == &sessions[6]);
     assert(!find_tls_session("c", 443) && sessions[2].refs == 1);
-    sessions[7].resumable = 0; save(7, "e", 443);
+    sessions[7].resumable = 0;
+    assert(save(7, "e", 443) == MR_HTTP_CLOSE_NOT_RESUMABLE);
     assert(find_tls_session("e", 443) == &sessions[5] && sessions[7].refs == 1);
     clear_tls_sessions(); clear_tls_sessions(); /* idempotent teardown */
     for (i = 0; i < 16; i++) assert(sessions[i].refs == 1);

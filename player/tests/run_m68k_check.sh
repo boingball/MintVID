@@ -442,7 +442,8 @@ echo "== building mr_yuv_dither_check.m68k =="
 # against - so on real m68k this also cross-checks the fused C path against
 # the real accelerated three-stage pipeline, not just a host-only reference.
 $CC -o "$BUILD/mr_yuv_dither_check.m68k" tests/mr_yuv_dither_check.c \
-    core/mr_yuv_dither.c core/mr_yuv_dither_m68k.S core/mr_yuv.c \
+    core/mr_yuv_dither.c core/mr_yuv_dither_m68k.S core/mr_yuv_fused32_m68k.S \
+    core/mr_yuv.c \
     core/mr_yuv_m68k.S core/mr_scale.c core/mr_dither.c core/mr_dither_m68k.S
 
 # The AGA direct-planar C2P kernel (mr_c2p_mode MR_C2P_DIRECT) - this is the
@@ -462,14 +463,14 @@ $CC -o "$BUILD/mr_yuv_dither_check.m68k" tests/mr_yuv_dither_check.c \
 # check_m68060_asm.sh for the disassembly side of that proof.
 echo "== building mr_yuv_planar_queue_check.m68k (68030) =="
 $CC -o "$BUILD/mr_yuv_planar_queue_check_030.m68k" tests/mr_yuv_planar_queue_check.c \
-    core/mr_yuv_dither.c core/mr_yuv_dither_planar_m68k.S \
+    core/mr_yuv_dither.c core/mr_yuv_dither_planar_m68k.S core/mr_yuv_fused32_m68k.S \
     core/mr_yuv_dither_planar_direct_m68k.S core/mr_yuv_planar_queue.c \
     core/mr_c2p.c core/mr_c2p_m68k.S core/mr_yuv.c core/mr_yuv_m68k.S \
     core/mr_scale.c core/mr_dither.c core/mr_dither_m68k.S
 
 echo "== building mr_yuv_planar_queue_check.m68k (68060) =="
 $CC_060 -o "$BUILD/mr_yuv_planar_queue_check_060.m68k" tests/mr_yuv_planar_queue_check.c \
-    core/mr_yuv_dither.c core/mr_yuv_dither_planar_m68k.S \
+    core/mr_yuv_dither.c core/mr_yuv_dither_planar_m68k.S core/mr_yuv_fused32_m68k.S \
     core/mr_yuv_dither_planar_direct_m68k.S core/mr_yuv_planar_queue.c \
     core/mr_c2p.c core/mr_c2p_m68k.S core/mr_yuv.c core/mr_yuv_m68k.S \
     core/mr_scale.c core/mr_dither.c core/mr_dither_m68k.S

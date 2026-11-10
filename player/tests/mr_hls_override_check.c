@@ -170,10 +170,15 @@ int main(void)
      * the sliding window and drifting away from the broadcast. */
     g_live = 1;
     g_hint_calls = 0;
+    g_playlist_hints = 0;
     s = mr_hls_source_open_ex("http://test.invalid/playlist.m3u8", &options);
+    /* Four segment hints (seg1..seg4, the live lookahead) and, since that
+     * reaches the last known segment, the playlist itself after them. */
     if (!s || !mr_source_read_at(s, 0, buf, 4) ||
-        g_hint_calls != 3 || !strstr(g_last_hint_url, "seg3.ts")) {
-        printf("FAIL: live HLS expected three lookahead hints through seg3.ts\n");
+        g_hint_calls - g_playlist_hints != 4 || g_playlist_hints != 1 ||
+        !strstr(g_last_hint_url, "playlist.m3u8")) {
+        printf("FAIL: live HLS expected four lookahead hints through seg4.ts "
+               "then the playlist\n");
         fails++;
     }
     if (s) mr_source_close(s);
@@ -224,11 +229,13 @@ int main(void)
     /* A live playlist is re-read in the background before playback reaches
      * its last known segment, so reading straight through never stalls at
      * the edge. 40 x 8 s keeps long36..long39. Opening long36 leaves three
-     * segments ahead, so the playlist is hinted then and taken when long37
-     * opens: 4 segments were added, so long36..long43 are known. Opening
-     * long40 leaves three ahead again, and long41's open takes the next
-     * refresh. Reading long36..long43 must therefore cost exactly three
-     * playlist fetches (open + two refreshes) and two playlist hints. */
+     * segments ahead, within the four-segment live lookahead, so the playlist
+     * is hinted then and taken when long37 opens: 4 segments were added, so
+     * long36..long43 are known. Opening long39 leaves four ahead, and long40's
+     * open takes that refresh (long36..long47). Opening long43 leaves four
+     * again and hints a third time. Reading long36..long43 must therefore
+     * cost exactly three playlist fetches (open + two refreshes) and three
+     * playlist hints. */
     {
         int k;
         g_long_count = 40;
@@ -250,9 +257,9 @@ int main(void)
                 break;
             }
         }
-        if (!s || g_playlist_fetches != 3 || g_playlist_hints != 2) {
+        if (!s || g_playlist_fetches != 3 || g_playlist_hints != 3) {
             printf("FAIL: early live refresh expected 3 playlist fetches and "
-                   "2 playlist hints, got %d and %d\n", g_playlist_fetches,
+                   "3 playlist hints, got %d and %d\n", g_playlist_fetches,
                    g_playlist_hints);
             fails++;
         }
