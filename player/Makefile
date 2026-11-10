@@ -327,7 +327,13 @@ check-amissl-lifecycle:
 # The HLS worker executes inside mrplay's own code segment. A bounded
 # "leak and continue" path lets main() unload that segment beneath the live
 # task and turns a slow stop into an #80000004 illegal-instruction alert.
-check-hls-worker-lifecycle:
+check-hls-fetch-scheduling:
+	python3 tests/check_hls_fetch_scheduling.py
+
+check-audio-only-diagnostics:
+	python3 tests/check_audio_only_diagnostics.py
+
+check-hls-worker-lifecycle: check-hls-fetch-scheduling check-audio-only-diagnostics
 	@! grep -Eq 'HLS_FETCH_STOP_BOUND_MS|hls_fetch_wait_busy_bounded|g_poisoned|hls_fetch_leaked' \
 	    amiga/hls_fetch.c amiga/hls_fetch.h amiga/mrplay.c || { \
 	  echo "ERROR: HLS worker teardown must not retain an abandon path"; exit 1; }
@@ -743,3 +749,5 @@ check-planar-modes: mr_planar_modes_check
 	./mr_planar_modes_check
 	python3 tests/check_reporting_cadence.py
 .PHONY: check-planar-modes
+
+.PHONY: check-hls-worker-lifecycle check-hls-fetch-scheduling check-audio-only-diagnostics

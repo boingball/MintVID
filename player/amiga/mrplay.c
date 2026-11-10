@@ -1866,7 +1866,59 @@ typedef struct audio_only_ui {
     struct Window *win;
     int opened_intuition;   /* we opened IntuitionBase; close it again */
     char title[64];
+    mr_audio *audio;                  /* cleared before output teardown */
+    int diagnostic;
+    clock_t last_report_clock, diagnostic_started;
+    const char *phase;
 } audio_only_ui;
+
+/* Sparse, opt-in snapshots, including while the main task waits for network
+ * I/O. Do not enable the per-frame --time/verbose reports to collect these. */
+static void audio_only_report(audio_only_ui *ui, const char *tag)
+{
+    mr_audio_diagnostics a;
+    hls_fetch_diagnostic h;
+    mr_source_timing io;
+    if (!ui->diagnostic || !ui->audio) return;
+    if (!tag && (unsigned long)(clock() - ui->last_report_clock) <
+                    5UL * CLOCKS_PER_SEC) return;
+    audio_diagnostics(ui->audio, &a);
+    hls_fetch_get_diagnostics(&h);
+    mr_source_timing_get(&io);
+    printf("audio-diag: %s at=%lu ms phase=%s pcm=%lu fifo=%lu hw=%lu+%lu ms "
+           "starves=%lu drops=%lu active=%u "
+           "hls=%lu/%lu ready=%u pending=%u busy=%d polls=%lu "
+           "waits=%lu wait=%lu last=%lu max=%lu total=%lu "
+           "segment=%lu playlist=%lu ms\n",
+           tag ? tag : "tick",
+           (unsigned long)((clock() - ui->diagnostic_started) * 1000UL /
+                           CLOCKS_PER_SEC), ui->phase,
+           a.total_buffered_ms, a.fifo_buffered_ms,
+           a.hardware_playing_remaining_ms, a.hardware_queued_ms,
+           a.hardware_starvations, a.fifo_dropped_samples,
+           (unsigned)a.active_requests, h.hits, h.misses, h.ready, h.pending,
+           h.busy, h.polls, h.waits, h.current_wait_ms, h.last_wait_ms,
+           h.worst_wait_ms, h.total_wait_ms, io.hls_segment_ms,
+           io.hls_playlist_ms);
+    Flush(Output());
+    /* Output to a slow console/NAS must not make another report due. */
+    ui->last_report_clock = clock();
+}
+
+/* As in the video scheduler, advance compressed lookahead about every 20ms.
+ * Kept outside the blocking-I/O callback: a demand wait owns its reply until
+ * it can consume it. The playback loop calls this during pause as well. */
+static void audio_only_poll_hls(clock_t *last_poll)
+{
+    if (hls_fetch_active()) {
+        clock_t now = clock();
+        if ((unsigned long)(now - *last_poll) >=
+                (CLOCKS_PER_SEC + 49UL) / 50UL) {
+            *last_poll = now;
+            hls_fetch_poll();
+        }
+    }
+}
 
 static void audio_only_ui_open(audio_only_ui *ui)
 {
@@ -1973,6 +2025,7 @@ static int audio_only_io_service(void *opaque)
 {
     int ev;
     if (FindTask(NULL) != g_main_task) return 0;
+    audio_only_report((audio_only_ui *)opaque, NULL);
     ev = audio_only_event((audio_only_ui *)opaque);
     if (ev != MR_EV_NONE &&
         (deferred_player_event == MR_EV_NONE || ev == MR_EV_QUIT))
@@ -1982,12 +2035,18 @@ static int audio_only_io_service(void *opaque)
 
 static int audio_only_hls_wait(void *opaque, unsigned wait_ms)
 {
+    audio_only_ui *ui = (audio_only_ui *)opaque;
+    const char *previous = ui->phase;
     uint64_t begin = monotonic_us();
+    int aborted = 0;
+    ui->phase = "live-edge";
     for (;;) {
-        if (audio_only_io_service(opaque)) return 1;
-        if (monotonic_us() - begin >= (uint64_t)wait_ms * 1000ULL) return 0;
+        if (audio_only_io_service(opaque)) { aborted = 1; break; }
+        if (monotonic_us() - begin >= (uint64_t)wait_ms * 1000ULL) break;
         Delay(1);
     }
+    ui->phase = previous;
+    return aborted;
 }
 
 /* Opens the audio decoder and the output the user picked. AHI gets the
@@ -2021,7 +2080,7 @@ static mr_audio *open_audio_output(const mr_audio_info *ai,
 static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
                            const char *audio_description, int audio_low_rate,
                            int audio_mono, mr_audio_output audio_out,
-                           int loop, int auto_close_eof)
+                           int loop, int auto_close_eof, int audio_diag)
 {
     mr_audio_decoder *adec = NULL;
     mr_audio *audio = NULL;
@@ -2038,6 +2097,7 @@ static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
     int64_t base_pts = -1;
     uint64_t base_elapsed = 0;
     unsigned long shown_secs = (unsigned long)-1;
+    clock_t last_hls_poll = clock();
 
     printf("no-video: opening audio decoder\n");
     Flush(Output());
@@ -2072,6 +2132,13 @@ static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
     audio_set_volume(audio, control_volume);
 
     audio_only_ui_open(&ui);
+    ui.audio = audio;
+    ui.diagnostic = audio_diag;
+    ui.phase = "buffering";
+    ui.last_report_clock = ui.diagnostic_started = clock();
+    hls_fetch_set_diagnostics(audio_diag);
+    mr_source_timing_reset();
+    mr_source_set_timing_enabled(audio_diag);
     mr_demux_set_service(dx, audio_only_io_service, &ui);
     mr_http_set_service(audio_only_io_service, &ui);
     hls_fetch_set_service(audio_only_io_service, &ui);
@@ -2090,6 +2157,10 @@ static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
     while (!quit) {
         unsigned long buffered = audio_buffered_ms(audio);
         int ev = audio_only_event(&ui);
+        audio_only_poll_hls(&last_hls_poll);
+        ui.phase = paused ? "paused" : eof ? "drain" :
+                   running ? "play" : "buffering";
+        audio_only_report(&ui, NULL);
         if (ev == MR_EV_QUIT) { quit = 1; break; }
         if (ev == MR_EV_PAUSE && running) {
             paused = !paused;
@@ -2122,12 +2193,24 @@ static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
         /* Keep the cushion topped up, never past what the FIFO holds. */
         if (!eof && buffered < AUDIO_CUSHION_TARGET_MS &&
             buffered + AUDIO_FIFO_HEADROOM_MS < audio_capacity_ms(audio)) {
-            mr_status st = mr_demux_next_packet(dx, &pkt);
+            mr_status st;
+            ui.phase = "demux";
+            st = mr_demux_next_packet(dx, &pkt);
             if (deferred_player_event == MR_EV_QUIT) { quit = 1; break; }
-            if (st != MR_OK) eof = 1;
+            if (st != MR_OK) {
+                eof = 1;
+                if (audio_diag) {
+                    audio_only_report(&ui, "demux-stop");
+                    printf("audio-diag: demux status=%ld last-source=%s\n",
+                           (long)st, mr_source_last_error());
+                    Flush(Output());
+                    ui.last_report_clock = clock();
+                }
+            }
             else if (!pkt.is_video && pkt.len) {
                 if (base_pts < 0 && pkt.has_pts)
                     base_pts = (int64_t)pkt.pts_us;
+                ui.phase = "decode";
                 mr_audio_decoder_feed(adec, pkt.data, pkt.len,
                                       decoded_audio_sink, audio);
             }
@@ -2178,6 +2261,11 @@ static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
             Delay(1);
     }
 
+    audio_only_report(&ui, quit ? "quit" : "ended");
+    ui.diagnostic = 0;
+    ui.audio = NULL;
+    hls_fetch_set_diagnostics(0);
+    mr_source_set_timing_enabled(0);
     audio_set_running(audio, 0);
     if (!quit && !auto_close_eof && ui.win) {
         audio_only_ui_title(&ui, "MintVID - ended (ESC to close)");
@@ -2224,7 +2312,7 @@ int main(int argc, char **argv)
      * --time's own per-frame monotonic_us()/clock() overhead. See
      * live_diag_report() and its call sites below, and the g_verbose wiring
      * into core/mr_hls.c's own segment-open prints just below. */
-    int live_diag = 0;
+    int live_diag = 0, audio_diag = 0;
     /* HTTPS version cap: the saved menu preference (amiga/mr_tls_pref.h,
      * TLS 1.2 unless the user picked 1.3), overridable with --tls=. */
     int tls_max = MR_TLS_PREF_HTTP_MAX();
@@ -2373,7 +2461,7 @@ int main(int argc, char **argv)
                "[--audio-rate=normal|low] [--no-audio] [--no-video] [--audio-mono] "
                "[--no-videocore] "
                "[--audio-out=paula|ahi] [--ahi-unit=0..3] "
-               "[--time|--benchmark] [--live-diag] [--throughput|--no-throughput] "
+               "[--time|--benchmark] [--live-diag] [--audio-diag] [--throughput|--no-throughput] "
                "[--tls=1.2|1.3]\n");
         return mrplay_exit(5);
     }
@@ -2447,6 +2535,7 @@ int main(int argc, char **argv)
                 net_queue = (int)strtoul(argv[i] + 12, NULL, 10);
             else if (!strcmp(argv[i], "--live-resync")) live_resync = 1;
             else if (!strcmp(argv[i], "--live-diag")) live_diag = 1;
+            else if (!strcmp(argv[i], "--audio-diag")) audio_diag = 1;
             else if (!strncmp(argv[i], "--tls=", 6)) {
                 const char *ver = argv[i] + 6;
                 if (!strcmp(ver, "1.2")) tls_max = MR_HTTP_TLS_12;
@@ -2554,6 +2643,10 @@ int main(int argc, char **argv)
     if (!media_path) {
         printf("no media URL or filename supplied\n");
         return mrplay_exit(5);
+    }
+    if (audio_diag && !no_video) {
+        printf("--audio-diag requires --no-video\n");
+        return mrplay_exit(10);
     }
     if (benchmark) auto_close_eof = 1;
     if (benchmark && no_video) {
@@ -2809,7 +2902,8 @@ int main(int argc, char **argv)
         if (no_audio)
             printf("no-video: ignoring --no-audio (nothing would play)\n");
         rc = play_audio_only(dx, ai, audio_description, audio_low_rate,
-                                 audio_mono, audio_out, loop, auto_close_eof);
+                                 audio_mono, audio_out, loop, auto_close_eof,
+                                 audio_diag);
         mr_demux_close(dx);
         free(buf);
         return mrplay_exit(rc);

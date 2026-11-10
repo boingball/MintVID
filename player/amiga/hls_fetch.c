@@ -168,6 +168,10 @@ static int              g_active;
 static int              g_stopping;         /* suppress lookahead promotion
                                              * while joining the worker      */
 static int              g_verbose;
+static int              g_diagnostics;
+static hls_fetch_diagnostic g_diag;
+static clock_t          g_wait_started;
+static int              g_waiting;
 static size_t           g_prefetch_budget; /* zero: legacy one-segment hint */
 static int              g_prefetch_blocked; /* undersized speculative fetch */
 static unsigned         g_generation;
@@ -288,8 +292,8 @@ static void hls_fetch_free_slots(void)
 }
 
 /* If the worker is free and a lookahead segment is queued, start the
- * earliest-hinted (lowest seq) one. Called after every reclaim so a slot
- * fetch that just completed immediately makes room for the next. */
+ * earliest-hinted (lowest seq) one. Poll/hint callers promote after reclaim;
+ * blocking demand callers consume their reply first, then promote. */
 static void hls_fetch_pump(void)
 {
     int i, best = -1;
@@ -320,8 +324,9 @@ static void hls_fetch_pump(void)
 
 /* Non-blocking: pull a completed reply into the matching lookahead slot (if
  * the in-flight fetch was one of mr_hls.c's hints) or the anonymous ready
- * cache (a direct, un-hinted fetch), then try to start the next queued
- * lookahead fetch. The one place a reply is ever interpreted - both the
+ * cache (a direct, un-hinted fetch). Promotion is explicit at the call site:
+ * a blocking demand must consume its reply before another fetch starts.
+ * The one place a reply is ever interpreted - both the
  * quit-ack skip and the stale-generation discard live here, so every caller
  * below (and hls_fetch_stop()'s drain) shares exactly this logic. */
 static void hls_fetch_reclaim(void)
@@ -373,7 +378,6 @@ static void hls_fetch_reclaim(void)
             memcpy(g_ready_error, g_req.error, sizeof g_ready_error);
         }
     }
-    hls_fetch_pump();
 }
 
 /* If the ready cache holds `url` at the current generation, consume it
@@ -400,20 +404,28 @@ static int hls_fetch_take_ready(const char *url, unsigned char **out,
  * stays legitimately busy for whoever asks next. */
 static int hls_fetch_wait_busy(void)
 {
-    clock_t started = g_verbose ? clock() : 0;
+    int ok = 1;
+    int timed = (g_verbose || g_diagnostics) && g_busy;
+    if (timed) {
+        g_wait_started = clock();
+        g_waiting = 1;
+        g_diag.waits++;
+    }
     for (;;) {
         hls_fetch_reclaim();
-        if (!g_busy) {
-            if (g_verbose) {
-                unsigned long ms = (unsigned long)
-                    ((clock() - started) * 1000UL / CLOCKS_PER_SEC);
-                if (ms > g_worst_wait_ms) g_worst_wait_ms = ms;
-            }
-            return 1;
-        }
-        if (g_service && g_service(g_service_opaque)) return 0;
+        if (!g_busy) break;
+        if (g_service && g_service(g_service_opaque)) { ok = 0; break; }
         Delay(1);                          /* ~20 ms; stay responsive to ESC */
     }
+    if (timed) {
+        unsigned long ms = (unsigned long)
+            ((clock() - g_wait_started) * 1000UL / CLOCKS_PER_SEC);
+        g_diag.last_wait_ms = ms;
+        g_diag.total_wait_ms += ms;
+        if (ms > g_worst_wait_ms) g_worst_wait_ms = ms;
+        g_waiting = 0;
+    }
+    return ok;
 }
 
 /* Wake a worker that might be wedged inside connect_socket()'s
@@ -510,14 +522,15 @@ static int hls_fetch_override(const char *url, const mr_http_options *options,
 
     /* Prefer an already-hinted lookahead slot: READY is an immediate hit.
      * PENDING or INFLIGHT means this exact segment is already queued or
-     * being fetched - worth waiting for (pump(), called from every reclaim()
-     * below, promotes PENDING to INFLIGHT as soon as the worker frees up)
+     * being fetched - worth waiting for (pump() in the loop below promotes
+     * PENDING to INFLIGHT as soon as the worker frees up)
      * rather than starting a second, competing fetch for the same URL. A
      * sustained backlog (fetches taking longer than segments play out - the
      * jitter this lookahead exists for) is exactly when a slot is still
      * PENDING here, so this has to wait it out rather than skip past it. */
     s = hls_fetch_find_slot(url);
     while (s && (s->state == HLS_SLOT_PENDING || s->state == HLS_SLOT_INFLIGHT)) {
+        hls_fetch_pump();
         if (s->state == HLS_SLOT_PENDING && !g_busy) {
             s->state = HLS_SLOT_EMPTY;
             break;
@@ -548,8 +561,10 @@ static int hls_fetch_override(const char *url, const mr_http_options *options,
     if (g_busy) {
         if (!hls_fetch_wait_busy()) return 0;      /* abort requested        */
         r = hls_fetch_take_ready(url, out, out_len);
-        if (r >= 0) { g_hits++; return r; }        /* it was already fetching
-                                                     * exactly this - a hit  */
+        if (r >= 0) {
+            g_hits++; g_prefetch_blocked = 0; hls_fetch_pump();
+            return r;                           /* resumed an aborted wait */
+        }
         hls_fetch_free_ready();
     }
 
@@ -573,11 +588,10 @@ static void hls_fetch_hint(const char *url, const mr_http_options *options)
     if (!g_active || !url) return;
     hls_fetch_reclaim();
     if (options) g_prefetch_budget = options->source_buffer_bytes;
-    if (hls_fetch_find_slot(url)) return;  /* already queued/fetching/ready */
+    if (hls_fetch_find_slot(url)) { hls_fetch_pump(); return; }
     for (i = 0; i < HLS_FETCH_LOOKAHEAD_DEPTH; i++)
         if (g_slots[i].state == HLS_SLOT_EMPTY) { slot = i; break; }
-    if (slot < 0) return;                  /* lookahead window full: best-
-                                            * effort, drop this hint         */
+    if (slot < 0) { hls_fetch_pump(); return; } /* lookahead window full */
     if (strlen(url) >= sizeof g_slots[slot].url) return;
     strcpy(g_slots[slot].url, url);
     if (options) { g_slots[slot].opts = *options; g_slots[slot].has_opts = 1; }
@@ -589,7 +603,11 @@ static void hls_fetch_hint(const char *url, const mr_http_options *options)
 
 void hls_fetch_poll(void)
 {
-    if (g_active && !g_stopping) hls_fetch_reclaim();
+    if (g_active && !g_stopping) {
+        if (g_diagnostics) g_diag.polls++;
+        hls_fetch_reclaim();
+        hls_fetch_pump();
+    }
 }
 
 /* ---- lifecycle (main task) ------------------------------------------------ */
@@ -634,6 +652,28 @@ void hls_fetch_stats(unsigned long *hits, unsigned long *misses,
     if (worst_wait_ms) *worst_wait_ms = g_worst_wait_ms;
 }
 
+void hls_fetch_set_diagnostics(int enabled)
+{
+    g_diagnostics = enabled;
+}
+
+void hls_fetch_get_diagnostics(hls_fetch_diagnostic *diag)
+{
+    int i;
+    *diag = g_diag;
+    diag->hits = g_hits;
+    diag->misses = g_misses;
+    diag->worst_wait_ms = g_worst_wait_ms;
+    diag->current_wait_ms = g_waiting ? (unsigned long)
+        ((clock() - g_wait_started) * 1000UL / CLOCKS_PER_SEC) : 0;
+    diag->busy = g_busy;
+    diag->ready = diag->pending = 0;
+    for (i = 0; i < HLS_FETCH_LOOKAHEAD_DEPTH; i++) {
+        if (g_slots[i].state == HLS_SLOT_READY) diag->ready++;
+        if (g_slots[i].state == HLS_SLOT_PENDING) diag->pending++;
+    }
+}
+
 int hls_fetch_start(int verbose)
 {
     if (g_active) return 1;
@@ -646,6 +686,8 @@ int hls_fetch_start(int verbose)
     g_prefetch_budget = 0;
     g_prefetch_blocked = 0;
     g_hits = g_misses = g_worst_wait_ms = 0;
+    memset(&g_diag, 0, sizeof g_diag);
+    g_waiting = 0;
     g_worker_port = NULL;
 
     g_reply_port = CreateMsgPort();
@@ -695,9 +737,7 @@ void hls_fetch_stop(void)
     }
 
     /* Freeze the lookahead queue before reclaiming the in-flight request.
-     * hls_fetch_reclaim() normally promotes the next pending slot; doing that
-     * during ESC teardown needlessly starts more HTTPS work and delays the
-     * join. */
+     * No call site may promote another pending slot during the join. */
     g_stopping = 1;
     hls_fetch_cancel();
     mr_http_set_fetch_override(NULL);
