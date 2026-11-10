@@ -302,7 +302,7 @@ void mr_yuv420_dither8_resize(const uint8_t *y_plane, int y_stride,
 }
 
 /* Experimental fused resize/YUV/dither/five-plane output; no chunky frame. */
-void mr_yuv420_fused32(const uint8_t *y_plane, int y_stride,
+void mr_yuv420_fused32_c(const uint8_t *y_plane, int y_stride,
                                      const uint8_t *u_plane, int u_stride,
                                      const uint8_t *v_plane, int v_stride,
                                      int width, int height,
@@ -382,4 +382,41 @@ void mr_yuv420_fused32(const uint8_t *y_plane, int y_stride,
         yerr += yr;
         if (yerr >= dst_h) { yerr -= dst_h; sy++; }
     }
+}
+
+static int fused32_use_asm = 1;
+void mr_yuv_fused32_set_asm(int enabled) { fused32_use_asm = enabled != 0; }
+int mr_yuv_fused32_asm_eligible(int w, int h, int dw, int dh, int pw)
+{
+#if defined(MR_M68K_ASM) && !defined(MR_YUV_NO_ASM)
+    return fused32_use_asm && w > 0 && h > 0 && dw == w && pw == w &&
+           (w & 31) == 0 && dh > 0 && h % dh == 0;
+#else
+    (void)w; (void)h; (void)dw; (void)dh; (void)pw;
+    return 0;
+#endif
+}
+#if defined(MR_M68K_ASM) && !defined(MR_YUV_NO_ASM)
+void mr_yuv420_fused32_m68k(const uint8_t *, int, const uint8_t *, int,
+    const uint8_t *, int, int, int, int, uint8_t *, int, int,
+    const int *, const int *, const int *, const int *, const int *,
+    const uint8_t *, const uint8_t *, const uint8_t *)
+    __asm__("mr_yuv420_fused32_m68k");
+#endif
+void mr_yuv420_fused32(const uint8_t *y, int ys, const uint8_t *u, int us,
+                       const uint8_t *v, int vs, int w, int h,
+                       uint8_t *out, int dw, int dh, int pw, int y_base)
+{
+#if defined(MR_M68K_ASM) && !defined(MR_YUV_NO_ASM)
+    if (y && u && v && out && mr_yuv_fused32_asm_eligible(w, h, dw, dh, pw)) {
+        if (!g_yuv_tables_ready) build_yuv_tables();
+        if (dither_lut_depth != 5) build_dither_lut(5);
+        if (g_q6_depth != 5) build_q6_tables();
+        mr_yuv420_fused32_m68k(y, ys, u, us, v, vs, w, dh, h / dh,
+            out, pw, y_base, g_luma_x298, g_e_x409, g_d_xm100,
+            g_e_xm208, g_d_x516, &lut_r[0][0], &lut_g[0][0], &lut_b[0][0]);
+        return;
+    }
+#endif
+    mr_yuv420_fused32_c(y, ys, u, us, v, vs, w, h, out, dw, dh, pw, y_base);
 }

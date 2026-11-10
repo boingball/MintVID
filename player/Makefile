@@ -741,4 +741,5 @@ mr_planar_modes_check: tests/mr_planar_modes_check.c core/mr_yuv_dither.c core/m
 
 check-planar-modes: mr_planar_modes_check
 	./mr_planar_modes_check
+	python3 tests/check_reporting_cadence.py
 .PHONY: check-planar-modes

@@ -67,6 +67,12 @@ jobs:
         working-directory: player
         run: make check
 
+      - name: Check experimental planar output and reporting cadence
+        working-directory: player
+        run: |
+          make check-planar-modes
+          sh tests/run_planar_modes_m68k.sh
+
       - name: make check-audio (host, MP3/AAC/LATM/AC-3 vs ffmpeg)
         working-directory: player
         run: make check-audio

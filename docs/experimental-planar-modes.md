@@ -16,9 +16,13 @@ Both require Fast RAM and use the native full-screen planar backend.
   H.264's YUV420 is resized, colour-converted, ordered-dithered and packed
   directly into five planes in the decode-ahead queue. RGB codecs use a
   corresponding RGB-to-five-plane path. No full chunky indexed image or
-  separate frame C2P pass is produced. This first implementation is portable
-  C, not an assembly kernel; packing may cost more than an existing tuned
-  C2P path. Colour/dither and nearest-neighbour sampling match ECS32.
+  separate frame C2P pass is produced. For widths divisible by 32 with no
+  horizontal resize or padding, and identity/integer vertical sampling, a
+  table-driven m68k assembly worker converts and transposes 32 pixels at a
+  time. Other sizes use the portable C reference. `--fused32-c` forces that
+  reference for an A/B comparison in the same binary. The startup path is
+  reported as `fused32-asm` or `fused32-c`. Colour/dither and nearest-neighbour
+  sampling match ECS32. The RGB fallback remains portable C.
 
 Fused32 supports AGA and OCS/ECS. OCS/ECS uses the existing low-resolution
 screen fitter (five planes cannot use its four-plane HIRES path). Fused32
@@ -30,9 +34,9 @@ Copper-assisted doubling is not enabled for these experiments.
 Example local-file tests:
 
 ```
-mrplay video.mp4 --aga --ecs32 --riva-c2p --time
-mrplay video.mp4 --aga --ecs32 --shadow --time
-mrplay video.mp4 --aga --fused32 --time
+mrplay video.mp4 --aga --ecs32 --riva-c2p --benchmark
+mrplay video.mp4 --aga --ecs32 --shadow --benchmark
+mrplay video.mp4 --aga --fused32 --benchmark
 ```
 
 Keep scale, video frame policy, audio settings and clip identical. Compare
@@ -41,8 +45,43 @@ copy can be offset by extra Fast-RAM work. Compare Fused32 against ECS32,
 not a higher-colour mode, to separate conversion savings from colour loss.
 Use `--ham6 --shadow` to compare the shadow strategy in HAM6.
 
+## Summary-only benchmarking
+
+Use `--benchmark` instead of `--time` on the real 68060. Startup describes the
+actual screen and conversion path. During normal playback there are no
+periodic statistics, audio-gap, clock/rescue or pipeline trace messages.
+Counters accumulate until EOF/Esc; after the video loop and audio drain, the
+summary prints totals and per-operation timings. A finite clip closes by
+itself. This mode requires video output; it rejects `--no-video`.
+
+Timing collection still has overhead, so compare identical local clips,
+audio settings and frame policy. Output includes conversion-frame counts
+separately from presented frames (queued frames can be dropped), and counts
+rare EOF-drained RGB frames separately. Elapsed playback ends when the main
+video loop exits, excluding audio-tail drain and report output. Decode and
+display operation counts refer to that main loop. Do not add averages with
+different denominators or interpret final `encode=0` as zero YUV conversion.
+
+```
+mrplay Work:youtube-144p.mp4 --aga --ecs32 --riva-c2p --benchmark >NAS0:baseline32.txt
+mrplay Work:youtube-144p.mp4 --aga --ecs32 --shadow --benchmark >NAS0:shadow32.txt
+mrplay Work:youtube-144p.mp4 --aga --fused32 --benchmark >NAS0:fused32-asm.txt
+mrplay Work:youtube-144p.mp4 --aga --fused32-c --benchmark >NAS0:fused32-c.txt
+```
+
+For diagnosing a hang, verbose `--time` remains available. Its report window
+now restarts after output and Flush complete, and its own audio servicing
+cannot emit additional audio-gap messages while the report is being printed.
+
 Validation: `make -C player check-planar-modes` compares fused YUV/RGB output
 against existing resize/dither plus C2P, including odd sizes, padding, up/down
 scaling and output guards. It checks first/unchanged/changed shadow copies
-and five/eight-plane queue transitions. Hardware display and speed still
-need real-Amiga testing.
+and five/eight-plane queue transitions. It also executes the real periodic
+report block with a simulated nine-second report plus one-second Flush to
+check the cadence regression and quiet-mode suppression.
+`sh player/tests/run_planar_modes_m68k.sh` (from the repository root) executes
+28 assembly cases per CPU tier under QEMU, covering all Bayer phases,
+padded source strides, and identity/integer vertical reductions, while also
+checking the C fallback and scanning the new kernel for forbidden 060 forms.
+Hardware display, uninterrupted summary-mode playback and speed still need
+real-Amiga testing.

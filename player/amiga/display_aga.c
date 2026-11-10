@@ -131,6 +131,7 @@
 #include "../core/mr_scale.h"
 #include "../core/mr_c2p.h"
 #include "../core/mr_yuv_planar_queue.h"
+#include "../core/mr_yuv_dither.h"
 #ifdef MR_KALMS_040
 #include "../vendor/kalms-c2p/normal/c2p1x1_8_c5_040.h"
 #include "../vendor/kalms-c2p/bitmap/c2p1x1_8_c5_bm_040.h"
@@ -1230,7 +1231,8 @@ static int aga_supports_yuv_indexed(void *handle, int src_w, int src_h,
         *dst_w = s->pw; *dst_h = s->dh; *vscale = 0;
         if (indexed_depth) *indexed_depth = 5;
         if (ham) *ham = 0;
-        s_diag_c2p = "fused32";
+        s_diag_c2p = mr_yuv_fused32_asm_eligible(src_w, src_h, s->dw, s->dh, s->pw)
+                   ? "fused32-asm" : "fused32-c";
         return 1;
     }
 #if defined(MR_KALMS_040)

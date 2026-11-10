@@ -10,27 +10,40 @@
 #include "../core/mr_yuv_planar_queue.h"
 #include "../core/mr_play_options.h"
 
+static int asm_cases;
 static unsigned seed = 42;
 static unsigned char sample(void) { seed = seed * 1664525u + 1013904223u; return seed >> 24; }
 static void check_shape(int w, int h, int dw, int dh)
 {
     int pw = (dw + 31) & ~31, cw = (w+1)/2, ch = (h+1)/2, p, i;
     size_t ps = (size_t)(pw/8)*dh, n = ps*5;
-    unsigned char *y=malloc(w*h), *u=malloc(cw*ch), *v=malloc(cw*ch);
+    int phase, ys = w + 13, us = cw + 7, vs = cw + 9;
+    unsigned char *y=malloc(ys*h), *u=malloc(us*ch), *v=malloc(vs*ch);
     unsigned char *idx=calloc(pw,dh), *tmp=malloc(dw*dh), *want=calloc(1,n);
     unsigned char *got=malloc(n+16), *rgb=malloc(w*h*3), *scaled=malloc(dw*dh*3), *planes[8];
     assert(y&&u&&v&&idx&&tmp&&want&&got&&rgb&&scaled);
-    for(i=0;i<w*h;i++) y[i]=sample();
-    for(i=0;i<cw*ch;i++) { u[i]=sample(); v[i]=sample(); }
+    for(i=0;i<ys*h;i++) y[i]=sample();
+    for(i=0;i<us*ch;i++) u[i]=sample();
+    for(i=0;i<vs*ch;i++) v[i]=sample();
     for(i=0;i<w*h*3;i++) rgb[i]=sample();
     for(p=0;p<5;p++) planes[p]=want+p*ps;
-    mr_yuv420_dither_indexed_resize(y,w,u,cw,v,cw,w,h,5,tmp,dw,dh,dw,0);
+    for (phase = 0; phase < 4; phase++) {
+    memset(idx,0,pw*dh); memset(want,0,n);
+    mr_yuv420_dither_indexed_resize(y,ys,u,us,v,vs,w,h,5,tmp,dw,dh,dw,phase);
     for(i=0;i<dh;i++) memcpy(idx+i*pw+(pw-dw)/2,tmp+i*dw,dw);
     mr_c2p8(idx,pw,dh,pw,5,planes,pw/8,0,0);
     memset(got,0xa5,n+16);
-    mr_yuv420_fused32(y,w,u,cw,v,cw,w,h,got+8,dw,dh,pw,0);
+    mr_yuv_fused32_set_asm(1);
+    if (mr_yuv_fused32_asm_eligible(w,h,dw,dh,pw)) asm_cases++;
+    mr_yuv420_fused32(y,ys,u,us,v,vs,w,h,got+8,dw,dh,pw,phase);
     assert(!memcmp(want,got+8,n));
     for(i=0;i<8;i++) assert(got[i]==0xa5 && got[n+8+i]==0xa5);
+    mr_yuv_fused32_set_asm(0);
+    memset(got+8,0x5a,n);
+    mr_yuv420_fused32(y,ys,u,us,v,vs,w,h,got+8,dw,dh,pw,phase);
+    assert(!memcmp(want,got+8,n));
+    mr_yuv_fused32_set_asm(1);
+    }
     mr_scale_resize_rgb24(rgb,w,h,w*3,scaled,dw,dh,dw*3);
     mr_dither_rgb_indexed(scaled,dw,dh,dw*3,tmp,dw,0,5);
     memset(idx,0,pw*dh); memset(want,0,n);
@@ -43,7 +56,8 @@ static void check_shape(int w, int h, int dw, int dh)
 int main(void)
 {
     int dims[][4]={{256,144,256,144},{640,360,640,180},{33,17,31,13},
-        {17,11,63,29},{1,1,1,1},{320,180,320,200},{192,108,320,180}};
+        {17,11,63,29},{1,1,1,1},{320,180,320,200},{192,108,320,180},{32,9,32,9},{64,18,64,9},
+        {640,360,640,120},{320,200,320,200},{256,145,256,145}};
     unsigned char src[19],dst[19],shadow[19]; unsigned i;
     for(i=0;i<sizeof dims/sizeof dims[0];i++) check_shape(dims[i][0],dims[i][1],dims[i][2],dims[i][3]);
     memset(src,0,19);memset(dst,0xff,19);memset(shadow,0,19);
@@ -76,6 +90,12 @@ int main(void)
         assert(mr_build_player_arguments(args, sizeof args, &restored, "clip.mp4", NULL, NULL));
         assert(strstr(args, "--fused32"));
     }
-    puts("Planar modes: 7 YUV/RGB resize/padding cases, guards, shadow and queue transitions passed");
+#if defined(MR_M68K_ASM)
+    assert(asm_cases == 28); /* seven eligible shapes, four Bayer phases */
+#else
+    assert(asm_cases == 0);
+#endif
+    printf("Planar modes: %u shapes, four Bayer phases, guards, C/asm A/B, shadow/options/queue; %d assembly cases passed\n",
+           (unsigned)(sizeof dims/sizeof dims[0]), asm_cases);
     return 0;
 }
