@@ -81,7 +81,7 @@ static void hls_fetch_send(const char *, const mr_http_options *, const char *, 
 for name in ['hls_fetch_free_ready', 'hls_fetch_free_slots', 'hls_fetch_pump',
              'hls_fetch_reclaim', 'hls_fetch_take_ready', 'hls_fetch_wait_busy',
              'hls_fetch_send', 'hls_fetch_find_slot', 'hls_fetch_override',
-             'hls_fetch_hint', 'hls_fetch_poll', 'hls_fetch_set_diagnostics',
+             'hls_fetch_hint', 'hls_fetch_poll', 'hls_fetch_ready', 'hls_fetch_set_diagnostics',
              'hls_fetch_get_diagnostics']:
     harness += function(name)
 harness += r'''
@@ -110,6 +110,7 @@ int main(void)
     unsigned char *out; size_t len; hls_fetch_diagnostic diag;
     reset();
     hls_fetch_hint("a", NULL); hls_fetch_hint("b", NULL); hls_fetch_hint("c", NULL);
+    assert(!hls_fetch_ready("a") && !hls_fetch_ready("untracked") && !fake_clock);
     demand("a");
     assert(completions == 1 && !strcmp(completed[0], "a"));
     assert(g_busy && !strcmp(g_req.url, "b")); /* next fetch runs AFTER demand returns */
@@ -129,6 +130,7 @@ int main(void)
     hls_fetch_hint("a", NULL); hls_fetch_hint("b", NULL);
     Delay(1); Delay(1); hls_fetch_poll();
     assert(completions == 1 && g_busy && !strcmp(g_req.url, "b"));
+    assert(hls_fetch_ready("a") && !hls_fetch_ready("b"));
     demand("a"); assert(completions == 1); /* READY hit never waits on b */
     hls_fetch_get_diagnostics(&diag); assert(diag.polls == 1);
     reset();
@@ -152,7 +154,7 @@ int main(void)
     hls_fetch_get_diagnostics(&diag); assert(!diag.waits && !diag.total_wait_ms);
     reset();
     g_stopping = 1; hls_fetch_hint("a", NULL); hls_fetch_poll();
-    assert(!g_busy && sends == 0); /* shutdown never promotes lookahead */
+    assert(!g_busy && sends == 0 && !hls_fetch_ready("a")); /* shutdown never promotes lookahead */
     reset(); g_active = 0;
     puts("HLS scheduling: demand latency, priority, polling, errors, budget, cancellation, quiet timing passed");
     return 0;

@@ -515,10 +515,12 @@ void mr_http_set_service(mr_http_service_fn fn, void *opaque)
  * per-task). */
 static mr_http_fetch_override_fn g_fetch_override;
 static mr_http_prefetch_hint_fn  g_prefetch_hint;
+static mr_http_prefetch_ready_fn g_prefetch_ready;
 
 void mr_http_set_fetch_override(mr_http_fetch_override_fn fn)
 {
     g_fetch_override = fn;
+    if (!fn) g_prefetch_ready = NULL;
 }
 
 int mr_http_fetch_override_active(void)
@@ -535,6 +537,17 @@ void mr_http_prefetch_hint(const char *url, const mr_http_options *options)
 {
     if (g_prefetch_hint) g_prefetch_hint(url, options);
 }
+
+void mr_http_set_prefetch_ready(mr_http_prefetch_ready_fn fn)
+{
+    g_prefetch_ready = fn;
+}
+
+int mr_http_prefetch_ready(const char *url)
+{
+    return g_prefetch_ready ? g_prefetch_ready(url) : 1;
+}
+
 
 static int platform_open(http_source *h)
 {

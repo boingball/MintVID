@@ -1869,6 +1869,7 @@ typedef struct audio_only_snapshot {
     mr_audio_diagnostics audio;
     hls_fetch_diagnostic hls;
     mr_source_timing io;
+    mr_http_timing http;
     unsigned long at_ms;
     const char *tag, *phase;           /* static literals only */
 } audio_only_snapshot;
@@ -1915,6 +1916,7 @@ static void audio_only_report(audio_only_ui *ui, const char *tag)
     audio_diagnostics(ui->audio, &r->audio);
     hls_fetch_get_diagnostics(&r->hls);
     mr_source_timing_get(&r->io);
+    mr_http_timing_get(&r->http);
     ui->last_report_clock = clock();
 }
 
@@ -1945,6 +1947,13 @@ static void audio_only_dump(const audio_only_ui *ui)
                h->busy, h->polls, h->waits, h->current_wait_ms, h->last_wait_ms,
                h->worst_wait_ms, h->total_wait_ms, io->hls_segment_ms,
                io->hls_playlist_ms);
+        printf("audio-net: at=%lu ms fetches=%lu fetch=%lu max=%lu "
+               "connects=%lu dns=%lu tcp=%lu tls=%lu resumed=%lu/%lu "
+               "header=%lu body=%lu ms\n",
+               r->at_ms, r->http.fetches, r->http.fetch_ms,
+               r->http.max_fetch_ms, r->http.connects, r->http.dns_ms,
+               r->http.tcp_ms, r->http.tls_ms, r->http.tls_resumed,
+               r->http.tls_handshakes, r->http.header_ms, r->http.body_ms);
     }
     if (ui->demux_stopped)
         printf("audio-diag: demux status=%ld last-source=%s\n",

@@ -610,6 +610,21 @@ void hls_fetch_poll(void)
     }
 }
 
+/* Main-task, non-blocking probe for opportunistic playlist refreshes. Collect
+ * replies and keep background work moving, but never wait for an in-flight
+ * segment or playlist just because the caller hinted it earlier. */
+static int hls_fetch_ready(const char *url)
+{
+    hls_fetch_slot *s;
+    if (!g_active || g_stopping || !url) return 0;
+    hls_fetch_reclaim();
+    hls_fetch_pump();
+    s = hls_fetch_find_slot(url);
+    if (s && s->state == HLS_SLOT_READY) return 1;
+    return g_have_ready && g_ready_generation == g_generation &&
+           !strcmp(g_ready_url, url);
+}
+
 /* ---- lifecycle (main task) ------------------------------------------------ */
 
 int hls_fetch_active(void)
@@ -726,6 +741,7 @@ int hls_fetch_start(int verbose)
     g_active = 1;
     mr_http_set_fetch_override(hls_fetch_override);
     mr_http_set_prefetch_hint(hls_fetch_hint);
+    mr_http_set_prefetch_ready(hls_fetch_ready);
     return 1;
 }
 
@@ -742,6 +758,7 @@ void hls_fetch_stop(void)
     hls_fetch_cancel();
     mr_http_set_fetch_override(NULL);
     mr_http_set_prefetch_hint(NULL);
+    mr_http_set_prefetch_ready(NULL);
 
     hls_fetch_reclaim();
     if (g_busy) {

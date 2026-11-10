@@ -24,6 +24,7 @@ harness = r'''
 #include "amiga/mr_audio.h"
 #include "amiga/hls_fetch.h"
 #include "core/mr_source.h"
+#include "core/mr_http.h"
 static clock_t fake_clock;
 static unsigned polls, snapshots, flushes, clock_reads, writes;
 static int playing = 1;
@@ -42,6 +43,7 @@ void audio_diagnostics(mr_audio *a, mr_audio_diagnostics *diag)
 { (void)a; memset(diag, 0, sizeof *diag); snapshots++; }
 void hls_fetch_get_diagnostics(hls_fetch_diagnostic *diag) { memset(diag, 0, sizeof *diag); }
 void mr_source_timing_get(mr_source_timing *diag) { memset(diag, 0, sizeof *diag); }
+void mr_http_timing_get(mr_http_timing *diag) { memset(diag, 0, sizeof *diag); }
 ''' + ui + block('static void audio_only_report(') + '\n' + block('static void audio_only_dump(') + '\n' + block('static void audio_only_poll_hls(') + r'''
 int main(void)
 {
@@ -85,10 +87,10 @@ int main(void)
     ui.demux_stopped = 1; ui.demux_status = MR_ERR;
     strcpy(ui.last_source_error, "simulated last source error");
     audio_only_dump(&ui);
-    assert(writes == AUDIO_DIAG_SNAPSHOTS + 2 && flushes == 1);
+    assert(writes == 2 * AUDIO_DIAG_SNAPSHOTS + 2 && flushes == 1);
     assert(ui.snapshot_count == AUDIO_DIAG_SNAPSHOTS); /* slow dump cannot recapture */
     ui.snapshots = NULL; audio_only_dump(&ui);
-    assert(writes == AUDIO_DIAG_SNAPSHOTS + 2 && flushes == 1);
+    assert(writes == 2 * AUDIO_DIAG_SNAPSHOTS + 2 && flushes == 1);
     clock_reads = 0; audio_only_poll_hls(&last_poll); assert(!polls && !clock_reads);
     active = 1; fake_clock = (CLOCKS_PER_SEC + 49UL) / 50UL;
     audio_only_poll_hls(&last_poll); assert(polls == 1);

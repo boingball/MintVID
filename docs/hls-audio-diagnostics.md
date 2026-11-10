@@ -3,7 +3,7 @@
 Local AAC-LC playing smoothly while YouTube Live stutters points toward
 stream delivery, although different AAC rates/channels/bitrates still matter.
 This change keeps the AAC decoder and existing PCM/request buffer sizes as
-previously configured. It fixes two scheduler issues:
+previously configured. It fixes these scheduler issues:
 
 - Audio-only playback now calls `hls_fetch_poll()` about every 20 ms, including
   during pause. Completed compressed downloads are collected and the next
@@ -16,6 +16,13 @@ previously configured. It fixes two scheduler issues:
   then resume prefetch. An unhinted playlist request waits for at most the
   current speculative download before taking priority over queued hints.
   This shared fix also applies to normal video playback.
+- A background live-playlist refresh is consumed only once the worker has a
+  completed reply. Previously, opening a playable segment could immediately
+  block again on an unfinished playlist hint, withholding that segment from
+  the demuxer/decoder. The pending refresh is now deferred to a later open.
+  At the real live edge, the existing serviced fetch/retry still applies, so
+  a dropped hint cannot prevent progress. Synchronous overrides without a
+  readiness probe retain their previous behavior.
 
 Audio output already has its own worker; adding `audio_service()` to the
 network callback would not fix delivery. The core HLS source already refreshes
@@ -75,6 +82,16 @@ return, so an in-progress stall appears first in `wait`/`phase`. Segment-open
 waits are not the background download durations and should not be added to
 worker wait totals. Core live-edge sleep is visible as `phase=live-edge` but
 is not a worker download wait. With no HLS worker, queue/wait fields stay zero.
+Each snapshot also has an `audio-net` line, saved in RAM and printed after
+stop. These are process-wide cumulative HTTP counters (including resolver
+and opening requests): `fetches`, `fetch` and `max` are completed fetch count,
+total duration and longest duration; `connects`, `dns`, `tcp`, `tls`, `header`
+and `body` split the connection/request/body cost in ms. `resumed` is resumed
+TLS handshakes / attempted TLS handshakes. The worker may be partway through
+updating these diagnostic counters; compare changes across several snapshots,
+not a single instantaneous subtraction. They are wall times, including CPU
+contention, and must not be added to the overlapping HLS wait totals.
+
 The demux-stop line prints its status and last source diagnostic, which may
 be stale at ordinary EOF; it does not by itself establish a network error.
 
@@ -92,5 +109,27 @@ segments, byte-budget fallback, stale generations, abort ownership, quiet
 counters and shutdown promotion suppression. It also checks the production
 audio-only polling and RAM recorder against simulated slow output, asserting
 zero diagnostic writes while playing, bounded chronological retention and a
-post-stop dump.
+post-stop dump. `mr_hls_override_check` covers deferred unfinished refreshes,
+consuming ready refreshes and mandatory fetches at the live edge.
 These checks do not measure real 68060 timing or prove live playback quality.
+
+## Clean hardware trace motivating the readiness check
+
+The RAM trace recorded 77 hardware starvations in 243.428 seconds, zero PCM
+FIFO drops and 113.076 seconds of worker waits. Segment-open waits totalled
+81.628 seconds and playlist-fetch waits 31.104 seconds; these overlap worker
+waits. The longest worker wait was 3.922 seconds. Several snapshots have zero
+PCM and zero active requests during demux waits, including a 3.291-second
+in-progress wait at 35 seconds. Reports now arrive about five seconds apart.
+This establishes delivery underruns in that run, but does not identify the
+network/CPU phase responsible for every stall or prove the readiness fix
+eliminates them. The HTTP phase counters are intended to narrow that down.
+
+## Remaining load with video disabled
+
+`--no-video` drops video packets after downloading and demuxing the selected
+rendition. It does not request a separate audio-only YouTube stream. As a
+separate comparison, `--hls-low` asks for the lowest-bandwidth supported HLS
+variant, reducing unwanted video traffic/TLS processing where the server
+provides a cheaper variant. Its audio characteristics may differ. Keep other
+options constant and label that run separately from the same-rendition test.

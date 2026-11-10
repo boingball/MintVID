@@ -116,6 +116,15 @@ typedef void (*mr_http_prefetch_hint_fn)(const char *url,
 void mr_http_set_prefetch_hint(mr_http_prefetch_hint_fn fn);
 void mr_http_prefetch_hint(const char *url, const mr_http_options *options);
 
+/* An async override can expose whether a hinted URL can be consumed without
+ * waiting. The probe never waits or initiates an unhinted fetch; it may
+ * collect replies and advance queued hints. Success/failure replies both
+ * count as ready. Without a probe, synchronous overrides retain
+ * their existing demand-fetch behaviour (ready returns 1). */
+typedef int (*mr_http_prefetch_ready_fn)(const char *url);
+void mr_http_set_prefetch_ready(mr_http_prefetch_ready_fn fn);
+int mr_http_prefetch_ready(const char *url);
+
 /* Download a complete response to a file using the shared redirect, TLS,
  * timeout and chunk decoder. The destination is removed on failure. */
 int mr_http_download_file(const char *url, const char *path, size_t max_size);
