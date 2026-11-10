@@ -787,3 +787,5 @@ was also decoded by the existing conformance suite.
 | `U263`, `u263`, `T263`, `X263` | vendor H.263 / frequently H.263+ | `H.263` | accepted; unsupported annex flags are rejected | registry; `test_h263p.avi`, `test_h263p_umv.avi` cover the H.263+ syntax |
 | `WMV1`, `wmv1` | Windows Media Video 7 | `wmv1` | accepted | `test_wmv1.avi`, `test_wmv1_q20.avi` |
 | `WMV2`, `wmv2` | Windows Media Video 8 | `wmv2` | accepted; IntraX8 ("J-frame") mode rejected | `test_wmv2.avi`, `test_wmv2_q20.avi` |
+
+Experimental AGA/ECS conversion options: [Shadow and Fused32](docs/experimental-planar-modes.md).

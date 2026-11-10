@@ -57,6 +57,8 @@ void display_set_scale(int n)  { g_aga_scale = (n == 2) ? 2 : 1; }
 void display_set_c2p(int on)   { g_aga_c2p = on ? 1 : 0; }
 void display_set_riva_c2p(int on) { g_aga_c2p = on ? 2 : 0; }
 void display_set_kalms_c2p(int on) { g_aga_c2p = on ? 3 : 0; }
+void display_set_shadow(int on) { g_aga_c2p = on ? 5 : 0; if (on) g_force_aga = 1; }
+void display_set_fused32(int on) { g_aga_c2p = on ? 6 : 0; if (on) { g_force_aga = 1; g_aga_window = 0; } }
 void display_set_direct_c2p(int on) { g_aga_c2p = on ? 4 : 0; }
 void display_set_lace(int on)  { g_aga_lace = on ? 1 : 0; }
 void display_set_akiko(int on) { g_aga_akiko = on ? 1 : 0; }

@@ -131,6 +131,7 @@
 #include "../core/mr_scale.h"
 #include "../core/mr_c2p.h"
 #include "../core/mr_yuv_planar_queue.h"
+#include "../core/mr_yuv_dither.h"
 #ifdef MR_KALMS_040
 #include "../vendor/kalms-c2p/normal/c2p1x1_8_c5_040.h"
 #include "../vendor/kalms-c2p/bitmap/c2p1x1_8_c5_bm_040.h"
@@ -158,6 +159,7 @@
 
 #include <stddef.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -251,6 +253,9 @@ typedef struct {
     struct CopList  *ucop_cl;        /* AllocMem'd alongside ucop - same      */
     struct CopIns   *ucop_ci;        /* lifetime, freed together, once, in    */
     int              ucop_ninst;     /* aga_close()/aga_open()'s fail: path.  */
+    uint8_t *fast_planes, *plane_shadow;
+    ULONG fast_bytes;
+    int shadow_valid;
     int             quit;
 } aga_state;
 
@@ -523,7 +528,7 @@ static void *aga_open(int w, int h, const char *title)
     int   akiko = g_aga_akiko && mr_akiko_available();
     int   riva_c2p_mode = (g_aga_c2p == 2) && !akiko;
     int   kalms_c2p_mode = (g_aga_c2p == 3) && !akiko;
-    int   c2p   = (g_aga_c2p == 1) && !akiko;
+    int   c2p   = (g_aga_c2p == 1 || g_aga_c2p == 5 || g_aga_c2p == 6) && !akiko;
     int   dw, dh, depth;
     int   sw, sh, physical_w, physical_h, hires, lace, resize;
     ULONG modeid;
@@ -542,7 +547,9 @@ static void *aga_open(int w, int h, const char *title)
         printf("planar: HAM8 requires AGA; using HAM6\n");
         ham = 6;
     }
-    depth = ham == 6 ? 6 :
+    if (g_aga_c2p == 5 || g_aga_c2p == 6) { akiko = 0; c2p = 1; }
+    if (g_aga_c2p == 6) { ham = ehb = 0; scale = 1; }
+    depth = g_aga_c2p == 6 ? 5 : ham == 6 ? 6 :
             ehb ? 6 :
             g_aga_ecs_fast ? 4 :
             g_aga_ecs32 ? 5 :
@@ -650,7 +657,11 @@ static void *aga_open(int w, int h, const char *title)
                      s->pw = dw; }
     else if (akiko || riva_c2p_mode)
                    { s->pw = (dw + 31) & ~31; s->x0 = ((sw - dw) / 2) & ~31; }
-    else if (c2p)  { s->pw = (dw + 7)  & ~7;  s->x0 = ((sw - dw) / 2) & ~7;  }
+    else if (c2p) {
+        int align = g_aga_c2p >= 5 ? 32 : 8;
+        s->pw = (dw + align - 1) & ~(align - 1);
+        s->x0 = ((sw - s->pw) / 2) & ~7;
+    }
     else           { s->pw = (dw + 15) & ~15; s->x0 = (sw - dw) / 2;         }
     if (kalms_c2p_mode && s->kalms_kind == KALMS_NONE) {
         /* A requested Kalms layout can still fail on an unusual screen
@@ -768,7 +779,8 @@ static void *aga_open(int w, int h, const char *title)
      * hardware-derived half-brite bit) with no hold-and-modify state at all,
      * so it's exactly the same "a byte fully determines its own pixel" case
      * indexed output already was before the HAM extension existed. */
-    s->copper_vdouble = g_aga_copper_vdouble && scale == 2 && !resize &&
+    s->copper_vdouble = g_aga_copper_vdouble && g_aga_c2p < 5 &&
+                        scale == 2 && !resize &&
                         !lace && s->kalms_kind == KALMS_NONE &&
                         (c2p || riva_c2p_mode || akiko) &&
                         (!s->ham || s->ham == 6 ||
@@ -814,6 +826,18 @@ static void *aga_open(int w, int h, const char *title)
         InitRastPort(&s->temprp);
         s->temprp.BitMap = s->tempbm;
     }
+    if (g_aga_c2p == 5 || g_aga_c2p == 6) {
+        s->fast_bytes = (ULONG)(s->pw / 8) * s->dh * s->depth;
+        s->fast_planes = AllocMem(s->fast_bytes, MEMF_FAST | MEMF_CLEAR);
+        if (!s->fast_planes) goto fail;
+        if (g_aga_c2p == 5) {
+            s->plane_shadow = AllocMem(s->fast_bytes, MEMF_FAST | MEMF_CLEAR);
+            if (!s->plane_shadow) goto fail;
+        }
+        printf("planar: %s experimental, %d planes, Fast RAM %lu bytes\n",
+               g_aga_c2p == 5 ? "Shadow" : "Fused32", s->depth,
+               (unsigned long)s->fast_bytes * (g_aga_c2p == 5 ? 2 : 1));
+    }
     s_diag_depth = s->depth; s_diag_ham = s->ham; s_diag_ehb = s->ehb;
     s_diag_scale = s->scale;
     s_diag_resize = s->resize; s_diag_copper = s->copper_vdouble;
@@ -833,6 +857,8 @@ static void *aga_open(int w, int h, const char *title)
 #endif
                 s->use_akiko      ? "akiko" :
                 s->use_riva_c2p   ? "riva"  :
+                g_aga_c2p == 5    ? "shadow" :
+                g_aga_c2p == 6    ? "fused32" :
                 s->use_c2p        ? "c2p"   : "wpa";
     return s;
 
@@ -851,6 +877,8 @@ fail:
                             (size_t)s->ucop_ninst * sizeof(struct CopIns));
     if (s->ucop_cl) FreeMem(s->ucop_cl, sizeof(struct CopList));
     if (s->ucop) FreeMem(s->ucop, sizeof(struct UCopList));
+    if (s->plane_shadow) FreeMem(s->plane_shadow, s->fast_bytes);
+    if (s->fast_planes) FreeMem(s->fast_planes, s->fast_bytes);
     if (s->enc_alloc) free(s->enc_alloc);
     if (s->scaled) free(s->scaled);
     if (s->chunky_alloc) free(s->chunky_alloc);
@@ -867,11 +895,43 @@ fail:
  * copying in already-dithered rows) or, for the common aligned case, the
  * caller's own already-dithered buffer directly - see that function.
  */
+/* One screen bitmap is retained for this backend's lifetime. The shadow
+ * therefore describes that bitmap only, and starts invalid on every open. */
+static void aga_present_fast(aga_state *s, const uint8_t *planes, int first, int rows)
+{
+    struct BitMap *bm = s->scr->RastPort.BitMap;
+    int p, y, bpr = s->pw / 8;
+    size_t plane_size = (size_t)bpr * s->dh;
+    int xbyte = g_aga_c2p == 6 ? (((bm->BytesPerRow * 8 - s->pw) / 2) & ~7) / 8 : s->x0byte;
+    if (s->plane_shadow && !s->shadow_valid) { first = 0; rows = s->dh; }
+    for (p = 0; p < s->depth; p++) for (y = first; y < first + rows; y++) {
+        size_t off = p * plane_size + (size_t)y * bpr;
+        uint8_t *dst = (uint8_t *)bm->Planes[p] + (size_t)(s->y0 + y) * bm->BytesPerRow + xbyte;
+        if (s->plane_shadow)
+            mr_planar_shadow_copy(planes + off, dst, s->plane_shadow + off, bpr, s->shadow_valid);
+        else memcpy(dst, planes + off, bpr);
+    }
+    s->shadow_valid = 1;
+}
+
 static void aga_blit(aga_state *s, const uint8_t *src, int src_stride,
                      int ddy0, int ddh)
 {
     int pw = s->pw, dw = s->dw;
     clock_t a = 0;
+    if (g_aga_c2p == 5 && s->fast_planes) {
+        uint8_t *planes[8];
+        int p;
+        if (g_display_want_time) a = clock();
+        for (p = 0; p < s->depth; p++)
+            planes[p] = s->fast_planes + (size_t)p * (pw / 8) * s->dh;
+        mr_c2p8_riva32(src + (size_t)ddy0 * src_stride, pw, ddh, src_stride,
+                s->depth, planes, pw / 8, 0, ddy0);
+        if (g_display_want_time) { clock_t elapsed = clock() - a; s_frame_enc += elapsed; s_enc += elapsed; a = clock(); }
+        aga_present_fast(s, s->fast_planes, ddy0, ddh);
+        if (g_display_want_time) { s_frame_blit = clock() - a; s_blit += s_frame_blit; }
+        return;
+    }
     if (g_display_want_time) a = clock();
     {
     /* ddy0 always indexes physical screen rows 1:1 (even when
@@ -980,6 +1040,14 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
     int ddy0, ddh;
     if (!s || !s->scr) return;
     s_frame_enc = s_frame_blit = 0;
+    if (g_aga_c2p == 6 && s->fast_planes) {
+        clock_t a = g_display_want_time ? clock() : 0;
+        mr_rgb_fused32(rgb, w, h, stride, s->fast_planes, s->dw, s->dh, s->pw);
+        if (g_display_want_time) { s_frame_enc = clock() - a; s_enc += s_frame_enc; a = clock(); }
+        aga_present_fast(s, s->fast_planes, 0, s->dh);
+        if (g_display_want_time) { s_frame_blit = clock() - a; s_blit += s_frame_blit; }
+        return;
+    }
 
     /* clock() around encode/blit only ever feeds display_aga_timing()/
      * display_aga_frame_timing(), read solely by mrplay.c's --time report -
@@ -1074,6 +1142,7 @@ static void aga_show(void *handle, const unsigned char *rgb, int w, int h,
 static int aga_supports_indexed(void *handle, int *indexed_depth)
 {
     aga_state *s = (aga_state *)handle;
+    if (g_aga_c2p == 6) return 0; /* RGB codecs use the fused RGB path. */
     if (!s || s->ham || s->scale != 1 || s->resize ||
         (s->depth != 4 && s->depth != 5 && s->depth != 8)) return 0;
     if (indexed_depth) *indexed_depth = s->depth;
@@ -1157,6 +1226,15 @@ static int aga_supports_yuv_indexed(void *handle, int src_w, int src_h,
      * assuming the caller never combines them (the original experimental
      * version did not check this). */
     mr_yuv_planar_queue_disable();
+    if (g_aga_c2p == 6 && s->fast_planes && s->depth == 5 &&
+        mr_yuv_planar_queue_configure32(s->dw, s->dh, s->pw)) {
+        *dst_w = s->pw; *dst_h = s->dh; *vscale = 0;
+        if (indexed_depth) *indexed_depth = 5;
+        if (ham) *ham = 0;
+        s_diag_c2p = mr_yuv_fused32_asm_eligible(src_w, src_h, s->dw, s->dh, s->pw)
+                   ? "fused32-asm" : "fused32-fallback";
+        return 1;
+    }
 #if defined(MR_KALMS_040)
     if (g_aga_c2p == 4 && !s->use_akiko && s->scr && !s->ham &&
         s->depth == 8 && s->scale == 1 && !s->resize &&
@@ -1235,7 +1313,7 @@ static void aga_show_indexed(void *handle, const unsigned char *idx, int w,
         int qph = mr_yuv_planar_queue_height();
         int src_bpr, screen_bpr, screen_w, x0, x0byte;
         size_t plane_size;
-        int p;
+        int p, planes = mr_yuv_planar_queue_depth();
         clock_t a = 0;
 
         if (w != qpw || h != qph || idx_stride != qpw || qpw <= 0 ||
@@ -1244,11 +1322,11 @@ static void aga_show_indexed(void *handle, const unsigned char *idx, int w,
             return;
         }
         bm = s->scr->RastPort.BitMap;
-        if (!bm || bm->Depth < 8) {
+        if (!bm || bm->Depth < planes) {
             printf("planar-direct: AGA bitmap no longer has eight planes\n");
             return;
         }
-        for (p = 0; p < 8; p++) {
+        for (p = 0; p < planes; p++) {
             if (!bm->Planes[p]) {
                 printf("planar-direct: AGA plane %d disappeared\n", p);
                 return;
@@ -1273,7 +1351,7 @@ static void aga_show_indexed(void *handle, const unsigned char *idx, int w,
         s_frame_enc = 0;
         s_frame_blit = 0;
         if (g_display_want_time) a = clock();
-        for (p = 0; p < 8; p++) {
+        for (p = 0; p < planes; p++) {
             const uint8_t *sp = idx + (size_t)p * plane_size +
                                 (size_t)dy0 * src_bpr;
             uint8_t *dp = (uint8_t *)bm->Planes[p] +
@@ -1473,6 +1551,8 @@ static void aga_close(void *handle)
     }
 
     /* Keep all frame/blit storage alive until graphics has quiesced above. */
+    if (s->plane_shadow) FreeMem(s->plane_shadow, s->fast_bytes);
+    if (s->fast_planes) FreeMem(s->fast_planes, s->fast_bytes);
     if (s->enc_alloc) free(s->enc_alloc);
     if (s->scaled) free(s->scaled);
     if (s->chunky_alloc) free(s->chunky_alloc);

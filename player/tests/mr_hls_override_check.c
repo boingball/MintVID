@@ -40,6 +40,8 @@ static const char *g_playlist =
 static int  g_calls;
 static int  g_hint_calls;
 static int  g_live;
+static int g_probe_ready = 1;
+static int fake_ready(const char *url) { (void)url; return g_probe_ready; }
 static char g_last_hint_url[256];
 /* A long live window (a DVR-style playlist): g_long_count segments of
  * g_long_target seconds each, segment N's body "N%03d". */
@@ -257,6 +259,54 @@ int main(void)
         if (s) mr_source_close(s);
         g_long_count = 0;
         g_long_grow = 0;
+    }
+    /* An unfinished background refresh must not block access to the segment
+     * just opened. Consume it opportunistically once the probe becomes ready. */
+    {
+        int k;
+        g_long_count = 40; g_long_target = 8; g_long_grow = 4;
+        g_playlist_fetches = g_playlist_hints = 0;
+        g_probe_ready = 0;
+        mr_http_set_prefetch_ready(fake_ready);
+        build_long_playlist();
+        s = mr_hls_source_open_ex("http://test.invalid/playlist.m3u8", &options);
+        for (k = 0; s && k < 3; k++) {
+            char want[8];
+            snprintf(want, sizeof want, "N%03d", 36 + k);
+            if (!mr_source_read_at(s, (size_t)k * 4, buf, 4) ||
+                memcmp(buf, want, 4) || g_playlist_fetches != 1) {
+                printf("FAIL: pending playlist blocked known segment %d\n", k);
+                fails++; break;
+            }
+        }
+        g_probe_ready = 1;
+        if (!s || !mr_source_read_at(s, 12, buf, 4) ||
+            memcmp(buf, "N039", 4) || g_playlist_fetches != 2) {
+            printf("FAIL: ready playlist was not consumed opportunistically\n");
+            fails++;
+        }
+        if (s) mr_source_close(s);
+
+        /* Dropped/unfinished hints cannot prevent a real live-edge fetch. */
+        g_long_count = 40; g_playlist_fetches = g_playlist_hints = 0;
+        g_probe_ready = 0; build_long_playlist();
+        s = mr_hls_source_open_ex("http://test.invalid/playlist.m3u8", &options);
+        for (k = 0; s && k < 5; k++) {
+            char want[8];
+            snprintf(want, sizeof want, "N%03d", 36 + k);
+            if (!mr_source_read_at(s, (size_t)k * 4, buf, 4) ||
+                memcmp(buf, want, 4)) {
+                printf("FAIL: deferred refresh live-edge fallback at segment %d\n", k);
+                fails++; break;
+            }
+        }
+        if (!s || g_playlist_fetches != 2) {
+            printf("FAIL: live edge must fetch despite an unready hint\n");
+            fails++;
+        }
+        if (s) mr_source_close(s);
+        g_long_count = g_long_grow = 0;
+        mr_http_set_prefetch_ready(NULL);
     }
     mr_http_set_fetch_override(NULL);
     mr_http_set_prefetch_hint(NULL);

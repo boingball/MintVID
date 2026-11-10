@@ -529,6 +529,11 @@ static void refresh_live_ahead(hls_source *h, size_t i, size_t lookahead)
     if (!h->live || !h->playlist_url || !mr_http_fetch_override_active())
         return;
     if (h->refresh_hinted == 2) {
+        /* The current segment is playable already. Never hold it hostage to
+         * a speculative playlist fetch queued behind other downloads. Keep
+         * the hint pending and try at the next segment open; reaching the
+         * actual live edge still uses hls_refetch_live()'s serviced wait. */
+        if (!mr_http_prefetch_ready(h->playlist_url)) return;
         size_t before = h->nsegs;
         char *text = fetch_text(h->playlist_url,
                                 h->have_options ? &h->options : NULL);

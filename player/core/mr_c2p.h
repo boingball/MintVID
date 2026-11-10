@@ -27,4 +27,9 @@ void mr_c2p8_riva32(const uint8_t *chunky, int pw, int h, int chunky_stride,
                     int nplanes, uint8_t *const planes[], int bpr,
                     int x0byte, int y0);
 
+/* Copy changed words from Fast RAM, keeping a Fast-RAM shadow. First use
+ * must pass valid=0. Returns bytes written to the destination. */
+unsigned long mr_planar_shadow_copy(const uint8_t *src, uint8_t *dst,
+                                    uint8_t *shadow, unsigned long bytes, int valid);
+
 #endif /* MR_C2P_H */

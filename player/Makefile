@@ -327,7 +327,13 @@ check-amissl-lifecycle:
 # The HLS worker executes inside mrplay's own code segment. A bounded
 # "leak and continue" path lets main() unload that segment beneath the live
 # task and turns a slow stop into an #80000004 illegal-instruction alert.
-check-hls-worker-lifecycle:
+check-hls-fetch-scheduling:
+	python3 tests/check_hls_fetch_scheduling.py
+
+check-audio-only-diagnostics:
+	python3 tests/check_audio_only_diagnostics.py
+
+check-hls-worker-lifecycle: check-hls-fetch-scheduling check-audio-only-diagnostics
 	@! grep -Eq 'HLS_FETCH_STOP_BOUND_MS|hls_fetch_wait_busy_bounded|g_poisoned|hls_fetch_leaked' \
 	    amiga/hls_fetch.c amiga/hls_fetch.h amiga/mrplay.c || { \
 	  echo "ERROR: HLS worker teardown must not retain an abandon path"; exit 1; }
@@ -692,7 +698,10 @@ mr_http_resume_check: tests/mr_http_resume_check.c $(CORE) $(HEADERS) | check-li
 	$(CC) $(CFLAGS) -DMR_HTTP_HAVE_OPENSSL \
 	    -o $@ tests/mr_http_resume_check.c $(CORE) -lm -lssl -lcrypto
 
-check-https: mr_decode_ssl mr_http_resume_check
+check-http-tls-cache:
+	python3 tests/check_http_tls_cache.py
+
+check-https: check-http-tls-cache mr_decode_ssl mr_http_resume_check
 	@test -d tests/assets/ref_mpeg2_ts \
 	    && test -d tests/assets/ref_h264_high \
 	    && test -d tests/assets/ref_mp42 \
@@ -715,7 +724,7 @@ check-m68k:
 clean:
 	rm -f mr_decode mr_decode_ssl mr_http_resume_check mr_audio_check mr_scale_check mr_yuv_check mr_rgb565_check mr_c2p_check mr_ham_check \
 	      mr_ac3_check mr_aac_decim_check mr_mp2_synth_check mr_mp2_idct_check \
-	      mr_dither_check mr_yuv_dither_check mr_yuv_planar_queue_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg2_yuv_check mr_mpeg2_mc_check mr_mpeg2_idct_check mr_mpeg2_bskip_check mr_h264_smoosh_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_ts_video_pes_check mr_mkv_check \
+	      mr_dither_check mr_planar_modes_check mr_yuv_dither_check mr_yuv_planar_queue_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg2_yuv_check mr_mpeg2_mc_check mr_mpeg2_idct_check mr_mpeg2_bskip_check mr_h264_smoosh_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_ts_video_pes_check mr_mkv_check \
 	      mr_mkv_seek_check mr_mov_seek_check
 	rm -f mr_legacy_video_check mr_cinepak_indexed_check mr_msvideo1_indexed_check
 	rm -f mr_rawvideo_check mr_codec_registry_check mr_codec_fallback_check mr_avc_check mr_hwdec_check
@@ -734,3 +743,16 @@ clean:
 	rm -rf $(HOSTOBJ)
 
 .PHONY: all check check-audio check-http check-https check-libavc check-m68k clean
+
+# Experimental direct five-plane conversion and selective Chip-RAM copies.
+mr_planar_modes_check: tests/mr_planar_modes_check.c core/mr_yuv_dither.c core/mr_dither.c core/mr_c2p.c core/mr_scale.c core/mr_yuv_planar_queue.c core/mr_play_options.c core/mr_yuv_dither.h core/mr_dither.h core/mr_c2p.h core/mr_yuv_planar_queue.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_planar_modes_check.c core/mr_yuv_dither.c core/mr_dither.c core/mr_c2p.c core/mr_scale.c core/mr_yuv_planar_queue.c core/mr_play_options.c
+
+check-planar-modes: mr_planar_modes_check
+	./mr_planar_modes_check
+	python3 tests/check_reporting_cadence.py
+.PHONY: check-planar-modes
+
+.PHONY: check-hls-worker-lifecycle check-hls-fetch-scheduling check-audio-only-diagnostics
+
+.PHONY: check-http-tls-cache

@@ -1,5 +1,6 @@
 /* MintVID - RGB24 -> native indexed palette conversion. */
 #include "mr_dither.h"
+#include <string.h>
 
 #if defined(MR_M68K_ASM)
 /* The assembly is LUT-generic: despite its historical rgb8 name, the output
@@ -239,6 +240,27 @@ void mr_dither_rgb_ehb(const uint8_t *rgb, int w, int h, int rgb_stride,
             dr[x] = (d_bright <= d_half)
                         ? (uint8_t)(rq * 8 + gq * 2 + bq)
                         : (uint8_t)(32 + hr * 8 + hg * 2 + hb);
+        }
+    }
+}
+
+void mr_rgb_fused32(const uint8_t *rgb, int w, int h, int stride,
+                     uint8_t *out, int dw, int dh, int pw)
+{
+    size_t plane_size = (size_t)(pw / 8) * dh;
+    int x, y, p, left = (pw - dw) / 2;
+    if (!rgb || !out || w <= 0 || h <= 0 || dw <= 0 || dh <= 0 ||
+        pw < dw || (pw & 31)) return;
+    memset(out, 0, plane_size * 5);
+    for (y = 0; y < dh; y++) {
+        int sy = (int)(((2LL * y + 1) * h) / (2LL * dh));
+        for (x = 0; x < dw; x++) {
+            int sx = (int)(((2LL * x + 1) * w) / (2LL * dw));
+            const uint8_t *c = rgb + (size_t)sy * stride + sx * 3;
+            unsigned idx = mr_dither_rgb_indexed_pixel(c[0], c[1], c[2], x, y, 5);
+            int px = x + left;
+            for (p = 0; p < 5; p++)
+                if (idx & (1u << p)) out[p * plane_size + y * (pw / 8) + px / 8] |= 0x80u >> (px & 7);
         }
     }
 }

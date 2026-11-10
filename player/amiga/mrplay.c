@@ -32,6 +32,7 @@
 #include "../core/mr_muldiv64.h"
 #include "../core/mr_yuv.h"
 #include "../core/mr_yuv_dither.h"
+#include "../core/mr_yuv_planar_queue.h"
 #include "../core/mr_yuv_ham.h"
 #include "../audio/mr_audio_decode.h"
 #include "../iptv/mr_iptv.h"
@@ -670,6 +671,7 @@ typedef struct video_presenter {
     int                 *frames;
     playback_stats      *stats;
     int                  want_time;
+    int                  verbose_time;
     /* Set once from display_supports_indexed() after display_open(). When set,
      * the queue holds pre-dithered one-byte palette indices (queue_copy_indexed)
      * instead of RGB24, and this presenter must blit them with
@@ -746,6 +748,7 @@ static void present_service_frame(video_presenter *vp)
     uint64_t period_us, master_clock_us, now;
     int64_t late_us;
     queued_video *front;
+    uint64_t display_started = 0;
 
     if (!vp || !vp->released || vp->presenting) return;
     if (!*vp->playback_started || *vp->qcount <= 0) return;
@@ -760,7 +763,7 @@ static void present_service_frame(video_presenter *vp)
     if (vp->audio)
         master_clock_us = current_media_clock_us(mc, 1, audio_starved(vp->audio),
                                                  audio_elapsed_us(vp->audio),
-                                                 vp->want_time);
+                                                 vp->verbose_time);
     else {
         mc->source = MCLOCK_MONO;
         master_clock_us = now - *vp->mono_base_us;
@@ -788,6 +791,7 @@ static void present_service_frame(video_presenter *vp)
                                         *vp->qcount, *vp->playback_started);
         h264_pipeline_stage = 4;
     }
+    if (vp->want_time) display_started = monotonic_us();
     if (vp->use_indexed)
         display_show_indexed(vp->disp, front->rgb, front->width, front->height,
                              front->stride, front->dirty_y0, front->dirty_y1);
@@ -814,8 +818,17 @@ static void present_service_frame(video_presenter *vp)
         h264_pipeline_stage = 5;
     }
     /* latency_us only ever feeds the --time report's "latency=" figure. */
-    if (vp->want_time)
-        vp->stats->latency_us += monotonic_us() - front->decoded_at_us;
+    if (vp->want_time) {
+        unsigned long enc_ms = 0, blit_ms = 0;
+        uint64_t finished = monotonic_us();
+        uint64_t elapsed = finished - display_started;
+        vp->stats->display_us += elapsed;
+        if (elapsed > vp->stats->display_max_us)
+            vp->stats->display_max_us = (unsigned long)elapsed;
+        display_aga_frame_timing(&enc_ms, &blit_ms);
+        vp->stats->convert_us += (uint64_t)enc_ms * 1000;
+        vp->stats->latency_us += finished - front->decoded_at_us;
+    }
     vp->stats->presented++;
     if (vp->frames) (*vp->frames)++;
     *vp->qhead = (*vp->qhead + 1) % vp->video_cap;
@@ -1223,7 +1236,11 @@ static int queue_copy_yuv_indexed(queued_video *q, const mr_frame *fr,
         if (!p) return 0;
         q->rgb = p; q->capacity = bytes;
     }
-    if (ham)
+    if (mr_yuv_planar_queue_is_active() && mr_yuv_planar_queue_depth() == 5)
+        mr_yuv420_fused32(fr->data, fr->stride, fr->u_data, fr->u_stride,
+                         fr->v_data, fr->v_stride, fr->width, fr->height,
+                         q->rgb, mr_yuv_planar_queue_visible_width(), dst_h, dst_w, 0);
+    else if (ham)
         /* aga_supports_yuv_indexed() only reports ham for the exact vertical
          * downscale, so vscale is always > 1 here - see core/mr_yuv_ham.h for
          * why the other shapes stay on aga_show()'s three-stage path. */
@@ -1845,11 +1862,119 @@ static int hls_wait_service(void *opaque, unsigned wait_ms)
  * own, so this loop only keeps the FIFO topped up and reads input from a
  * small title-bar window on Workbench (ESC/close, space, cursor keys) and
  * from the controller's signals, exactly as the video window would. */
+/* Bounded diagnostic history, allocated only on request. No formatting,
+ * console or NAS writes are permitted while playback is running. */
+#define AUDIO_DIAG_SNAPSHOTS 128
+typedef struct audio_only_snapshot {
+    mr_audio_diagnostics audio;
+    hls_fetch_diagnostic hls;
+    mr_source_timing io;
+    mr_http_timing http;
+    unsigned long at_ms;
+    const char *tag, *phase;           /* static literals only */
+} audio_only_snapshot;
+
 typedef struct audio_only_ui {
     struct Window *win;
     int opened_intuition;   /* we opened IntuitionBase; close it again */
     char title[64];
+    mr_audio *audio;                  /* cleared before output teardown */
+    int diagnostic;
+    clock_t last_report_clock, diagnostic_started;
+    const char *phase;
+    audio_only_snapshot *snapshots;
+    unsigned first_snapshot, snapshot_count, overwritten_snapshots;
+    int demux_stopped;
+    mr_status demux_status;
+    char last_source_error[192];
 } audio_only_ui;
+
+/* Capture cheaply, including inside serviced network/live-edge waits.
+ * The old live printf/Flush stalled feeding PCM on slow NAS/console output,
+ * contaminating both starvation counters and worker wait measurements. */
+static void audio_only_report(audio_only_ui *ui, const char *tag)
+{
+    audio_only_snapshot *r;
+    unsigned slot;
+    clock_t now;
+    if (!ui->diagnostic || !ui->audio || !ui->snapshots) return;
+    now = clock();
+    if (!tag && (unsigned long)(now - ui->last_report_clock) <
+                    5UL * CLOCKS_PER_SEC) return;
+    if (ui->snapshot_count == AUDIO_DIAG_SNAPSHOTS) {
+        slot = ui->first_snapshot;
+        ui->first_snapshot = (slot + 1) % AUDIO_DIAG_SNAPSHOTS;
+        ui->overwritten_snapshots++;
+    } else {
+        slot = (ui->first_snapshot + ui->snapshot_count++) % AUDIO_DIAG_SNAPSHOTS;
+    }
+    r = &ui->snapshots[slot];
+    r->tag = tag ? tag : "tick";
+    r->phase = ui->phase;
+    r->at_ms = (unsigned long)((now - ui->diagnostic_started) * 1000UL /
+                               CLOCKS_PER_SEC);
+    audio_diagnostics(ui->audio, &r->audio);
+    hls_fetch_get_diagnostics(&r->hls);
+    mr_source_timing_get(&r->io);
+    mr_http_timing_get(&r->http);
+    ui->last_report_clock = clock();
+}
+
+/* Only called after audio_close(): output latency cannot starve playback or
+ * lengthen a measured HLS wait. Keep the previous text fields for comparison. */
+static void audio_only_dump(const audio_only_ui *ui)
+{
+    unsigned i;
+    if (!ui->snapshots) return;
+    printf("audio-diag: RAM capture, %u snapshots, %u older snapshots overwritten\n",
+           ui->snapshot_count, ui->overwritten_snapshots);
+    for (i = 0; i < ui->snapshot_count; i++) {
+        const audio_only_snapshot *r = &ui->snapshots[
+            (ui->first_snapshot + i) % AUDIO_DIAG_SNAPSHOTS];
+        const mr_audio_diagnostics *a = &r->audio;
+        const hls_fetch_diagnostic *h = &r->hls;
+        const mr_source_timing *io = &r->io;
+        printf("audio-diag: %s at=%lu ms phase=%s pcm=%lu fifo=%lu hw=%lu+%lu ms "
+               "starves=%lu drops=%lu active=%u "
+               "hls=%lu/%lu ready=%u pending=%u busy=%d polls=%lu "
+               "waits=%lu wait=%lu last=%lu max=%lu total=%lu "
+               "segment=%lu playlist=%lu ms\n",
+               r->tag, r->at_ms, r->phase,
+               a->total_buffered_ms, a->fifo_buffered_ms,
+               a->hardware_playing_remaining_ms, a->hardware_queued_ms,
+               a->hardware_starvations, a->fifo_dropped_samples,
+               (unsigned)a->active_requests, h->hits, h->misses, h->ready, h->pending,
+               h->busy, h->polls, h->waits, h->current_wait_ms, h->last_wait_ms,
+               h->worst_wait_ms, h->total_wait_ms, io->hls_segment_ms,
+               io->hls_playlist_ms);
+        printf("audio-net: at=%lu ms fetches=%lu fetch=%lu max=%lu "
+               "connects=%lu dns=%lu tcp=%lu tls=%lu resumed=%lu/%lu "
+               "header=%lu body=%lu ms\n",
+               r->at_ms, r->http.fetches, r->http.fetch_ms,
+               r->http.max_fetch_ms, r->http.connects, r->http.dns_ms,
+               r->http.tcp_ms, r->http.tls_ms, r->http.tls_resumed,
+               r->http.tls_handshakes, r->http.header_ms, r->http.body_ms);
+    }
+    if (ui->demux_stopped)
+        printf("audio-diag: demux status=%ld last-source=%s\n",
+               (long)ui->demux_status, ui->last_source_error);
+    Flush(Output());
+}
+
+/* As in the video scheduler, advance compressed lookahead about every 20ms.
+ * Kept outside the blocking-I/O callback: a demand wait owns its reply until
+ * it can consume it. The playback loop calls this during pause as well. */
+static void audio_only_poll_hls(clock_t *last_poll)
+{
+    if (hls_fetch_active()) {
+        clock_t now = clock();
+        if ((unsigned long)(now - *last_poll) >=
+                (CLOCKS_PER_SEC + 49UL) / 50UL) {
+            *last_poll = now;
+            hls_fetch_poll();
+        }
+    }
+}
 
 static void audio_only_ui_open(audio_only_ui *ui)
 {
@@ -1956,6 +2081,7 @@ static int audio_only_io_service(void *opaque)
 {
     int ev;
     if (FindTask(NULL) != g_main_task) return 0;
+    audio_only_report((audio_only_ui *)opaque, NULL);
     ev = audio_only_event((audio_only_ui *)opaque);
     if (ev != MR_EV_NONE &&
         (deferred_player_event == MR_EV_NONE || ev == MR_EV_QUIT))
@@ -1965,12 +2091,18 @@ static int audio_only_io_service(void *opaque)
 
 static int audio_only_hls_wait(void *opaque, unsigned wait_ms)
 {
+    audio_only_ui *ui = (audio_only_ui *)opaque;
+    const char *previous = ui->phase;
     uint64_t begin = monotonic_us();
+    int aborted = 0;
+    ui->phase = "live-edge";
     for (;;) {
-        if (audio_only_io_service(opaque)) return 1;
-        if (monotonic_us() - begin >= (uint64_t)wait_ms * 1000ULL) return 0;
+        if (audio_only_io_service(opaque)) { aborted = 1; break; }
+        if (monotonic_us() - begin >= (uint64_t)wait_ms * 1000ULL) break;
         Delay(1);
     }
+    ui->phase = previous;
+    return aborted;
 }
 
 /* Opens the audio decoder and the output the user picked. AHI gets the
@@ -2004,7 +2136,7 @@ static mr_audio *open_audio_output(const mr_audio_info *ai,
 static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
                            const char *audio_description, int audio_low_rate,
                            int audio_mono, mr_audio_output audio_out,
-                           int loop, int auto_close_eof)
+                           int loop, int auto_close_eof, int audio_diag)
 {
     mr_audio_decoder *adec = NULL;
     mr_audio *audio = NULL;
@@ -2021,6 +2153,7 @@ static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
     int64_t base_pts = -1;
     uint64_t base_elapsed = 0;
     unsigned long shown_secs = (unsigned long)-1;
+    clock_t last_hls_poll = clock();
 
     printf("no-video: opening audio decoder\n");
     Flush(Output());
@@ -2055,6 +2188,22 @@ static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
     audio_set_volume(audio, control_volume);
 
     audio_only_ui_open(&ui);
+    ui.audio = audio;
+    ui.diagnostic = audio_diag;
+    ui.phase = "buffering";
+    ui.first_snapshot = ui.snapshot_count = ui.overwritten_snapshots = 0;
+    ui.demux_stopped = 0;
+    ui.snapshots = audio_diag ? calloc(AUDIO_DIAG_SNAPSHOTS,
+                                      sizeof *ui.snapshots) : NULL;
+    if (audio_diag && !ui.snapshots) {
+        printf("audio-diag: insufficient RAM; recording disabled\n");
+        Flush(Output());
+        ui.diagnostic = 0;
+    }
+    ui.last_report_clock = ui.diagnostic_started = clock();
+    hls_fetch_set_diagnostics(ui.diagnostic);
+    mr_source_timing_reset();
+    mr_source_set_timing_enabled(ui.diagnostic);
     mr_demux_set_service(dx, audio_only_io_service, &ui);
     mr_http_set_service(audio_only_io_service, &ui);
     hls_fetch_set_service(audio_only_io_service, &ui);
@@ -2073,6 +2222,10 @@ static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
     while (!quit) {
         unsigned long buffered = audio_buffered_ms(audio);
         int ev = audio_only_event(&ui);
+        audio_only_poll_hls(&last_hls_poll);
+        ui.phase = paused ? "paused" : eof ? "drain" :
+                   running ? "play" : "buffering";
+        audio_only_report(&ui, NULL);
         if (ev == MR_EV_QUIT) { quit = 1; break; }
         if (ev == MR_EV_PAUSE && running) {
             paused = !paused;
@@ -2105,12 +2258,25 @@ static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
         /* Keep the cushion topped up, never past what the FIFO holds. */
         if (!eof && buffered < AUDIO_CUSHION_TARGET_MS &&
             buffered + AUDIO_FIFO_HEADROOM_MS < audio_capacity_ms(audio)) {
-            mr_status st = mr_demux_next_packet(dx, &pkt);
+            mr_status st;
+            ui.phase = "demux";
+            st = mr_demux_next_packet(dx, &pkt);
             if (deferred_player_event == MR_EV_QUIT) { quit = 1; break; }
-            if (st != MR_OK) eof = 1;
+            if (st != MR_OK) {
+                eof = 1;
+                if (ui.diagnostic) {
+                    audio_only_report(&ui, "demux-stop");
+                    ui.demux_stopped = 1;
+                    ui.demux_status = st;
+                    strncpy(ui.last_source_error, mr_source_last_error(),
+                            sizeof ui.last_source_error - 1);
+                    ui.last_source_error[sizeof ui.last_source_error - 1] = 0;
+                }
+            }
             else if (!pkt.is_video && pkt.len) {
                 if (base_pts < 0 && pkt.has_pts)
                     base_pts = (int64_t)pkt.pts_us;
+                ui.phase = "decode";
                 mr_audio_decoder_feed(adec, pkt.data, pkt.len,
                                       decoded_audio_sink, audio);
             }
@@ -2161,6 +2327,11 @@ static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
             Delay(1);
     }
 
+    audio_only_report(&ui, quit ? "quit" : "ended");
+    ui.diagnostic = 0;
+    ui.audio = NULL;
+    hls_fetch_set_diagnostics(0);
+    mr_source_set_timing_enabled(0);
     audio_set_running(audio, 0);
     if (!quit && !auto_close_eof && ui.win) {
         audio_only_ui_title(&ui, "MintVID - ended (ESC to close)");
@@ -2172,6 +2343,9 @@ static int play_audio_only(mr_demux *dx, const mr_audio_info *ai,
     audio_close(audio);
     mr_audio_decoder_close(adec);
     audio_only_ui_close(&ui);
+    audio_only_dump(&ui);
+    free(ui.snapshots);
+    ui.snapshots = NULL;
     return 0;
 }
 
@@ -2192,7 +2366,7 @@ int main(int argc, char **argv)
     mr_packet pkt;
     long ticks;
     int frames = 0;
-    int want_time = 0, loop = 0, paused = 0, quit = 0, fast_forward = 0;
+    int want_time = 0, benchmark = 0, loop = 0, paused = 0, quit = 0, fast_forward = 0;
     int fullscreen = 0;
     int raw_diag_printed = 0;
     int hls_low = 0;
@@ -2207,7 +2381,7 @@ int main(int argc, char **argv)
      * --time's own per-frame monotonic_us()/clock() overhead. See
      * live_diag_report() and its call sites below, and the g_verbose wiring
      * into core/mr_hls.c's own segment-open prints just below. */
-    int live_diag = 0;
+    int live_diag = 0, audio_diag = 0;
     /* HTTPS version cap: the saved menu preference (amiga/mr_tls_pref.h,
      * TLS 1.2 unless the user picked 1.3), overridable with --tls=. */
     int tls_max = MR_TLS_PREF_HTTP_MAX();
@@ -2268,6 +2442,8 @@ int main(int argc, char **argv)
      * final summary only ever saw whatever the periodic reset last left
      * behind, printing decode=0 ms/display=0 ms when a report just fired. */
     uint64_t total_decode_us = 0, total_display_us = 0;
+    uint64_t benchmark_started_us = 0, benchmark_finished_us = 0;
+    int benchmark_user_stop = 0;
     queued_video vq[VIDEO_QUEUE_CAP];
     int qhead = 0, qcount = 0, input_eof = 0;
     int oom_warned = 0; /* set after first queue_copy OOM is logged */
@@ -2342,7 +2518,7 @@ int main(int argc, char **argv)
                "<file.avi|file.mov|file.ts|file.m2ts|"
                "file.mjpeg|file.m4v> "
                "[--aga] [--aga-window] [--aga-window-half] [--ham] [--ham6] [--ham-dither] [--p96] "
-               "[--2x] [--lace] [--ecs-fast] [--ecs32] [--ehb] [--copper-vdouble] "
+               "[--shadow|--fused32] [--2x] [--lace] [--ecs-fast] [--ecs32] [--ehb] [--copper-vdouble] "
                "[--loop] "
                "[--wpa|--c2p|--riva-c2p|--kalms-c2p|--direct-c2p] "
                "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
@@ -2354,7 +2530,7 @@ int main(int argc, char **argv)
                "[--audio-rate=normal|low] [--no-audio] [--no-video] [--audio-mono] "
                "[--no-videocore] "
                "[--audio-out=paula|ahi] [--ahi-unit=0..3] "
-               "[--time] [--live-diag] [--throughput|--no-throughput] "
+               "[--time|--benchmark] [--live-diag] [--audio-diag] [--throughput|--no-throughput] "
                "[--tls=1.2|1.3]\n");
         return mrplay_exit(5);
     }
@@ -2390,6 +2566,12 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--c2p"))  display_set_c2p(1);
             else if (!strcmp(argv[i], "--riva-c2p")) display_set_riva_c2p(1);
             else if (!strcmp(argv[i], "--kalms-c2p")) display_set_kalms_c2p(1);
+            else if (!strcmp(argv[i], "--shadow")) display_set_shadow(1);
+            else if (!strcmp(argv[i], "--fused32")) display_set_fused32(1);
+            else if (!strcmp(argv[i], "--fused32-c")) {
+                printf("--fused32-c was retired; use --fused32\n");
+                return mrplay_exit(5);
+            }
             else if (!strcmp(argv[i], "--direct-c2p")) display_set_direct_c2p(1);
             else if (!strcmp(argv[i], "--loop")) loop = 1;
             else if (!strcmp(argv[i], "--lace")) display_set_lace(1);
@@ -2399,6 +2581,12 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--cd32")) display_set_akiko(1);
             else if (!strcmp(argv[i], "--copper-vdouble"))
                 display_set_copper_vdouble(1);
+            else if (!strcmp(argv[i], "--benchmark")) {
+                benchmark = 1;
+                want_time = 1;
+                display_set_timing_mode(1);
+                audio_set_timing_mode(1);
+            }
             else if (!strcmp(argv[i], "--time")) {
                 want_time = 1;
                 display_set_timing_mode(1);
@@ -2416,6 +2604,7 @@ int main(int argc, char **argv)
                 net_queue = (int)strtoul(argv[i] + 12, NULL, 10);
             else if (!strcmp(argv[i], "--live-resync")) live_resync = 1;
             else if (!strcmp(argv[i], "--live-diag")) live_diag = 1;
+            else if (!strcmp(argv[i], "--audio-diag")) audio_diag = 1;
             else if (!strncmp(argv[i], "--tls=", 6)) {
                 const char *ver = argv[i] + 6;
                 if (!strcmp(ver, "1.2")) tls_max = MR_HTTP_TLS_12;
@@ -2524,6 +2713,15 @@ int main(int argc, char **argv)
         printf("no media URL or filename supplied\n");
         return mrplay_exit(5);
     }
+    if (audio_diag && !no_video) {
+        printf("--audio-diag requires --no-video\n");
+        return mrplay_exit(10);
+    }
+    if (benchmark) auto_close_eof = 1;
+    if (benchmark && no_video) {
+        printf("--benchmark requires video output (omit --no-video)\n");
+        return mrplay_exit(5);
+    }
     display_set_fullscreen(fullscreen);
     if (!mr_http_options_init(&http_options, user_agent, referer)) {
         printf("invalid HTTP options: %s\n", mr_source_last_error());
@@ -2556,7 +2754,7 @@ int main(int argc, char **argv)
      * hls_fetch_set_service() call further down). */
     mr_http_set_tls_max(tls_max);
     if (mr_source_is_url(media_path)) {
-        hls_fetch_start(want_time);
+        hls_fetch_start(want_time && !benchmark);
         hls_fetch_set_service(service_early_quit_check, NULL);
     }
     if (mr_youtube_is_url(media_path)) {
@@ -2611,12 +2809,12 @@ int main(int argc, char **argv)
          * --live-resync for IPTV by default, but carrying that policy into a
          * VOD turns its clean EOF into a bogus "Reconnecting..." cycle. */
         if (youtube_kind != MR_YOUTUBE_MEDIA_HLS) {
-            if (live_resync && want_time)
+            if (live_resync && want_time && !benchmark)
                 printf("YouTube: finite video; live reconnect disabled\n");
             live_resync = 0;
             auto_close_eof = 1;
         }
-        if (want_time)
+        if (want_time && !benchmark)
             printf("YouTube: source client %s\n",
                    mr_youtube_last_client());
     }
@@ -2660,7 +2858,7 @@ int main(int argc, char **argv)
      * a real-hardware log where "opening segment N" has no matching
      * completion line before the log goes quiet names the exact segment a
      * stall happened on. */
-    mr_hls_set_verbose(want_time || live_diag);
+    mr_hls_set_verbose(!benchmark && (want_time || live_diag));
 
     dx = mr_demux_open_file_ex(media_path,
                                have_http_options ? &http_options : NULL);
@@ -2773,7 +2971,8 @@ int main(int argc, char **argv)
         if (no_audio)
             printf("no-video: ignoring --no-audio (nothing would play)\n");
         rc = play_audio_only(dx, ai, audio_description, audio_low_rate,
-                                 audio_mono, audio_out, loop, auto_close_eof);
+                                 audio_mono, audio_out, loop, auto_close_eof,
+                                 audio_diag);
         mr_demux_close(dx);
         free(buf);
         return mrplay_exit(rc);
@@ -2859,7 +3058,7 @@ int main(int argc, char **argv)
     apply_dv_speed(&dec, dv_speed, want_time);
     apply_mpeg2_speed(&dec, mpeg2_speed, want_time);
 
-    h264_pipeline_diag_enabled = want_time && codec == &mr_codec_h264 &&
+    h264_pipeline_diag_enabled = want_time && !benchmark && codec == &mr_codec_h264 &&
         (uint64_t)vi->width * (uint64_t)vi->height >= 1280ULL * 720ULL;
     h264_pipeline_width = vi->width;
     h264_pipeline_height = vi->height;
@@ -3228,7 +3427,7 @@ int main(int argc, char **argv)
 
     ticks = frame_ticks(vi->rate, vi->scale);
     memset(&trace, 0, sizeof trace);
-    trace.audio = audio; trace.enabled = want_time; trace.live_diag = live_diag;
+    trace.audio = audio; trace.enabled = want_time && !benchmark; trace.live_diag = live_diag && !benchmark;
     trace.phase = "startup"; trace.phase_started_us = monotonic_us();
     display_set_service(disp, audio ? service_audio_for_display : NULL, &trace);
     mr_demux_set_service(dx, service_player_during_io, &trace);
@@ -3427,7 +3626,7 @@ int main(int argc, char **argv)
                 cushion_ms = AUDIO_CUSHION_TARGET_MS;
         }
         int prev_master_source = -1;
-        if (want_time)
+        if (want_time && !benchmark)
             printf("video-queue: cap=%d frames (%s, cushion=%lu ms, "
                    "frame=%lu KB, free=%lu KB)\n",
                    video_cap, network_source ? "network" : "disk", cushion_ms,
@@ -3463,6 +3662,7 @@ int main(int argc, char **argv)
         presenter.frames = &frames;
         presenter.stats = &stats;
         presenter.want_time = want_time;
+        presenter.verbose_time = want_time && !benchmark;
         /* present_service_frame() only needs to know whether front->rgb
          * holds indexed data or RGB24 - front->width/height already carry
          * whichever path's real dimensions (source size for
@@ -3480,6 +3680,10 @@ int main(int argc, char **argv)
      * the body can run; without it the loop would exit here (empty queue, no
      * --loop) before reconnect ever gets a chance. That block owns its own exits
      * (give-up, mismatch, no-progress backstop). */
+    if (benchmark) {
+        benchmark_started_us = monotonic_us();
+        stats.since_us = benchmark_started_us;
+    }
     while (!quit && (!input_eof || qcount || loop ||
                      (network_source && live_resync))) {
         queued_video *front = qcount ? &vq[qhead] : NULL;
@@ -3545,7 +3749,7 @@ int main(int argc, char **argv)
                 mr_decoder_set_output(&dec, (mr_pixfmt)out_fmt,
                                       source_size ? 0 : out_w,
                                       source_size ? 0 : out_h) == MR_OK) {
-                if (want_time)
+                if (want_time && !benchmark)
                     printf("video path: decoder output now %dx%d %s\n",
                            out_w, out_h,
                            out_fmt == MR_PIX_BGRA32 ? "BGRA32" :
@@ -3588,7 +3792,7 @@ int main(int argc, char **argv)
                 if (mrr.episode_us > stats.micro_rescue_max_us)
                     stats.micro_rescue_max_us = (unsigned long)mrr.episode_us;
                 stats.micro_rescue_exit_timeout++;
-                if (want_time)
+                if (want_time && !benchmark)
                     printf("micro-rescue: exiting (timeout), duration=%lu ms\n",
                            (unsigned long)(mrr.episode_us / 1000));
             }
@@ -3710,7 +3914,7 @@ int main(int argc, char **argv)
                  * like clock-trace: still enough samples to see the pattern,
                  * without --time logging adding print overhead on nearly every
                  * iteration of an already CPU-starved playback loop. */
-                if (want_time &&
+                if (want_time && !benchmark &&
                     now - trace.last_rescue_print_us >= CLOCK_TRACE_MIN_INTERVAL_US) {
                     trace.last_rescue_print_us = now;
                     printf("audio-rescue reason=%s urgency=%s packets=%u audio=%u "
@@ -3742,7 +3946,7 @@ int main(int argc, char **argv)
             mono_media_clock_us = now - mono_base_us;
             if (audio) {
                 audio_media_clock_us = current_media_clock_us(
-                    &mc, 1, starved, audio_elapsed_raw_us, want_time);
+                    &mc, 1, starved, audio_elapsed_raw_us, want_time && !benchmark);
                 master_clock_us = audio_media_clock_us;
             } else {
                 audio_media_clock_us = 0;
@@ -3770,7 +3974,7 @@ int main(int argc, char **argv)
             uint64_t cu_start = monotonic_us();
             uint64_t base_pts = 0;
             int have_base = 0;
-            if (want_time)
+            if (want_time && !benchmark)
                 printf("live-resync: %lu ms behind live, catching up\n",
                        (unsigned long)(behind / 1000));
             audio_set_running(audio, 0);
@@ -3973,7 +4177,7 @@ int main(int argc, char **argv)
             mono_media_clock_us = now - mono_base_us;
             if (audio) {
                 audio_media_clock_us = current_media_clock_us(
-                    &mc, 1, starved, audio_elapsed_raw_us, want_time);
+                    &mc, 1, starved, audio_elapsed_raw_us, want_time && !benchmark);
                 master_clock_us = audio_media_clock_us;
             } else {
                 audio_media_clock_us = 0;
@@ -4001,7 +4205,7 @@ int main(int argc, char **argv)
                     ? (uint64_t)(-delta_clocks_us) : (uint64_t)delta_clocks_us;
                 int big_delta = abs_delta_us > period_us;
                 int multi_drop = stats.dropped_in_pass > 1;
-                if (want_time && (source_changed || big_delta || multi_drop) &&
+                if (want_time && !benchmark && (source_changed || big_delta || multi_drop) &&
                     now - trace.last_clock_trace_us >=
                         CLOCK_TRACE_MIN_INTERVAL_US) {
                     trace.last_clock_trace_us = now;
@@ -4130,8 +4334,10 @@ int main(int argc, char **argv)
             stats.presented++; frames++;
             qhead = (qhead + 1) % video_cap; qcount--;
             if (want_time) now = monotonic_us();
-            if (want_time && now - stats.since_us >= STATS_INTERVAL_US) {
+            if (want_time && !benchmark && now - stats.since_us >= STATS_INTERVAL_US) {
+                int trace_was_enabled = trace.enabled;
                 trace_phase(&trace, "scheduler-diagnostics");
+                trace.enabled = 0;
                 if (audio) service_audio_for_display(&trace);
                 report_stats(&stats, audio, dx, &trace, qcount, now);
                 if (audio) service_audio_for_display(&trace);
@@ -4143,6 +4349,10 @@ int main(int argc, char **argv)
                  * destination filesystem's own write-back cache happened to
                  * be holding onto. */
                 Flush(Output());
+                stats.since_us = monotonic_us();
+                trace.last_service_us = stats.since_us;
+                trace.last_audio_gap_print_us = stats.since_us;
+                trace.enabled = trace_was_enabled;
             }
             continue;
         }
@@ -4155,7 +4365,7 @@ int main(int argc, char **argv)
             uint64_t abs_delta_us = delta_clocks_us < 0
                 ? (uint64_t)(-delta_clocks_us) : (uint64_t)delta_clocks_us;
             int big_delta = abs_delta_us > period_us;
-            if (want_time && (source_changed || big_delta) &&
+            if (want_time && !benchmark && (source_changed || big_delta) &&
                 now - trace.last_clock_trace_us >= CLOCK_TRACE_MIN_INTERVAL_US) {
                 trace.last_clock_trace_us = now;
                 printf("clock-trace src=%c->%c starved=%d "
@@ -4237,7 +4447,7 @@ int main(int argc, char **argv)
              * every retry. (This is the AmiSSL "relaunch to resume" limitation.) */
             if (mr_http_tls_disabled()) {
                 display_set_status(disp, "Connection lost - relaunch");
-                if (want_time) printf("live-reconnect: HTTPS disabled, ending\n");
+                if (want_time && !benchmark) printf("live-reconnect: HTTPS disabled, ending\n");
                 live_diag_report(&trace, "stop: reconnect-tls-disabled");
                 if (live_diag) Flush(Output());
                 break;
@@ -4264,7 +4474,7 @@ int main(int argc, char **argv)
             for (tries = 0; tries < LIVE_RECONNECT_TRIES && !quit; tries++) {
                 int d;
                 if (player_event(disp) == MR_EV_QUIT) { quit = 1; break; }
-                if (want_time)
+                if (want_time && !benchmark)
                     printf("live-reconnect: attempt %d/%d\n",
                            tries + 1, LIVE_RECONNECT_TRIES);
                 dx = mr_demux_open_file_ex(media_path,
@@ -4599,7 +4809,7 @@ int main(int argc, char **argv)
                             (int64_t)skip_trigger_exit_us(skip_trigger_us));
                         if (mrr.entered) {
                             stats.micro_rescue_entries++;
-                            if (want_time)
+                            if (want_time && !benchmark)
                                 printf("micro-rescue: entering, late=%ld ms\n",
                                        (long)(pkt_late_us / 1000));
                         } else if (mrr.exited_recovered) {
@@ -4608,7 +4818,7 @@ int main(int argc, char **argv)
                                 stats.micro_rescue_max_us =
                                     (unsigned long)mrr.episode_us;
                             stats.micro_rescue_exit_recovered++;
-                            if (want_time)
+                            if (want_time && !benchmark)
                                 printf("micro-rescue: exiting (recovered), "
                                        "late=%ld ms duration=%lu ms\n",
                                        (long)(pkt_late_us / 1000),
@@ -4686,7 +4896,7 @@ int main(int argc, char **argv)
                              * dominating. Matches micro-rescue's own
                              * entering/exiting print style and --time
                              * gating just above. */
-                            if (want_time)
+                            if (want_time && !benchmark)
                                 printf("h264-dynamic-skip: %s (IVD_SKIP_PB)\n",
                                        mrescue ? "engaging" : "releasing");
                         }
@@ -5134,10 +5344,10 @@ drain_decoded_output:
                         amc = current_media_clock_us(&mc, 1,
                                                      audio_starved(audio),
                                                      audio_elapsed_us(audio),
-                                                     want_time);
+                                                     want_time && !benchmark);
                         mono_base_us = now - amc;
                         display_set_status(disp, NULL);
-                        if (want_time)
+                        if (want_time && !benchmark)
                             printf("startup: first picture pts=%lu ms joins "
                                    "audio at %lu ms\n",
                                    (unsigned long)(vq[qhead].pts_us / 1000),
@@ -5189,7 +5399,7 @@ drain_decoded_output:
                     audio_early_t0_us = media_clock_rescue_estimate(
                         &mc, audio_elapsed_us(audio));
                     audio_set_running(audio, 1);
-                    if (want_time)
+                    if (want_time && !benchmark)
                         printf("startup: audio FIFO full (%lu ms) before the "
                                "first picture; starting audio first\n",
                                audio_buffered_ms(audio));
@@ -5223,6 +5433,8 @@ drain_decoded_output:
     /* `presenter` lived in the scheduler block just closed; the display service
      * hook is still installed and fires during the teardown flush's blits, so
      * drop the now-dangling pointer before any of that can dereference it. */
+    benchmark_finished_us = monotonic_us();
+    benchmark_user_stop = quit;
     trace.presenter = NULL;
     /* The HLS wait and HTTP service hooks hold &trace too; the teardown flush no
      * longer reads the demux, so retire them here before the scheduler locals
@@ -5323,6 +5535,43 @@ drain_decoded_output:
     free(drain_rgb);
     }
     }
+    /* Let any queued audio drain (bounded, so a wedged clock can't loop). */
+    if (audio && !quit) {
+        int guard = 0;
+        while (!audio_starved(audio) && guard++ < 4000) {
+            if (player_event(disp) == MR_EV_QUIT) {
+                quit = 1;
+                break;
+            }
+            audio_service(audio);
+            Delay(1);
+        }
+    }
+    if (audio) audio_set_running(audio, 0);
+
+    if (benchmark) {
+        unsigned long elapsed_ms = (unsigned long)((benchmark_finished_us - benchmark_started_us) / 1000);
+        printf("benchmark: elapsed=%lu ms decoded=%u presented=%u dropped=%u "
+               "drain-frames=%u stopped=%s\n", elapsed_ms, stats.decoded,
+               stats.presented, stats.dropped,
+               frames > (int)stats.presented ? (unsigned)(frames - stats.presented) : 0U,
+               benchmark_user_stop ? "user" : "eof");
+        printf("benchmark totals: video-decode=%lu ms audio-decode=%lu ms "
+               "yuv-indexed=%lu ms/%u frames yuv-rgb=%lu ms/%u frames "
+               "display=%lu ms/%u frames\n",
+               (unsigned long)(stats.video_decode_us / 1000),
+               (unsigned long)(stats.audio_decode_us / 1000),
+               (unsigned long)(stats.yuv_indexed_us / 1000), stats.yuv_indexed_frames,
+               (unsigned long)(stats.yuv_rgb_us / 1000), stats.yuv_rgb_frames,
+               (unsigned long)(stats.display_us / 1000), stats.presented);
+        printf("benchmark per-operation: decode=%lu us conversion=%lu us "
+               "display=%lu us core=%lu us\n",
+               stats.decoded ? (unsigned long)(stats.video_decode_us / stats.decoded) : 0UL,
+               stats.yuv_indexed_frames ? (unsigned long)(stats.yuv_indexed_us / stats.yuv_indexed_frames) :
+               stats.yuv_rgb_frames ? (unsigned long)(stats.yuv_rgb_us / stats.yuv_rgb_frames) : 0UL,
+               stats.presented ? (unsigned long)(stats.display_us / stats.presented) : 0UL,
+               stats.decoded ? (unsigned long)(stats.h264_core_us / stats.decoded) : 0UL);
+    }
     if (want_time && frames > 0) {
         unsigned long enc_ms = 0, blit_ms = 0;
         display_aga_timing(&enc_ms, &blit_ms);
@@ -5338,19 +5587,6 @@ drain_decoded_output:
         if (display_aga_kalms_timing(&blit_ms))
             printf("Kalms conversion: %lu ms\n", blit_ms);
     }
-    /* Let any queued audio drain (bounded, so a wedged clock can't loop). */
-    if (audio && !quit) {
-        int guard = 0;
-        while (!audio_starved(audio) && guard++ < 4000) {
-            if (player_event(disp) == MR_EV_QUIT) {
-                quit = 1;
-                break;
-            }
-            audio_service(audio);
-            Delay(1);
-        }
-    }
-    if (audio) audio_set_running(audio, 0);
 
     if (!quit && !auto_close_eof) {
         printf("played %d frames - press ESC or close the window to exit\n",

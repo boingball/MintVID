@@ -58,6 +58,17 @@ void hls_fetch_cancel(void);
  * call even if the worker was never started; idempotent. */
 void hls_fetch_stop(void);
 
+/* Main-task snapshots only. Quiet timing is independent of verbose output;
+ * waits include cancellation, and cover worker waits rather than decoding. */
+typedef struct hls_fetch_diagnostic {
+    unsigned long polls, waits, hits, misses;
+    unsigned long last_wait_ms, worst_wait_ms, total_wait_ms, current_wait_ms;
+    unsigned ready, pending;
+    int busy;
+} hls_fetch_diagnostic;
+void hls_fetch_set_diagnostics(int enabled);
+void hls_fetch_get_diagnostics(hls_fetch_diagnostic *diag);
+
 /* --time diagnostics: fetch hit/miss counts (a "hit" is a request the
  * worker had already finished or was already fetching for the URL asked
  * for; a "miss" needed a fresh blocking round trip) and the worst observed

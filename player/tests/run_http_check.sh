@@ -202,6 +202,7 @@ fi
 # Consecutive HTTPS fetches must resume the TLS session (a full handshake
 # per HLS segment cost ~4.5 s on a 68060).
 if test "$mode" = https && test -x ./mr_http_resume_check; then
-    ./mr_http_resume_check "$base/media/test_mpeg2.ts"
+    ./mr_http_resume_check "$base/media/test_mpeg2.ts" \
+        "$scheme://localhost:$port/media/test_mpeg2.ts"
 fi
 echo "$mode URL checks passed"

@@ -47,6 +47,8 @@
 
 TOOLCHAIN ?= gcc
 CPU ?= 68030
+.DEFAULT_GOAL := all
+
 SUPPORTED_CPUS := 68030 68040 68060
 ifeq ($(filter $(CPU),$(SUPPORTED_CPUS)),)
 $(error unsupported CPU '$(CPU)' (choose $(SUPPORTED_CPUS)))
@@ -100,7 +102,7 @@ CORE  = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
         core/mr_mpeg2.c $(LIBMPEG2_SRC) \
         core/mr_mpeg4.c core/mr_msmpeg4v2.c core/mr_wmv.c core/mr_wmv2.c core/mr_h263.c core/mr_msvideo1.c core/mr_rle.c \
         core/mr_rawvideo.c core/mr_yuv.c core/mr_yuv_m68k.S core/mr_yuv_dither.c \
-        core/mr_yuv_dither_planar_m68k.S core/mr_yuv_dither_planar_direct_m68k.S \
+        core/mr_yuv_dither_planar_m68k.S core/mr_yuv_dither_planar_direct_m68k.S core/mr_yuv_fused32_m68k.S \
         core/mr_yuv_planar_queue.c core/mr_yuv_ham.c \
         core/mr_dv.c $(LIBDV_SRC)
 LIBDV_ROOT = vendor/libdv
@@ -341,7 +343,34 @@ MINTAMP_CFLAGS := $(CPUFLAGS) -std=gnu89 -O3 -fomit-frame-pointer -noixemul \
                    $(MINTAMP_FLAGS) $(LIBA52_FLAGS)
 MINTAMP_MP3_OBJ := $(patsubst %.c,build/%.o,$(patsubst %.S,build/%.o,$(MINTAMP_MP3)))
 MINTAMP_AAC_OBJ := $(patsubst %.c,build/%.o,$(MINTAMP_AAC))
+# Match MintAMP 2.0's measured per-stage 060 scheduling. Applying this to
+# FFT/PNS/dequant increases register pressure, so keep those on the original
+# helper. AAC060_REG5=0 is an explicit hardware A/B build option.
+AAC060_REG5 ?= 1
+ifeq ($(MINTAMP_CPU),60)
+ifneq ($(filter 1 yes true on,$(AACASM)),)
+ifneq ($(filter 1 yes true on,$(AAC060_REG5)),)
+build/$(MINTAMP_ROOT)/decoders/aac/dct4.o \
+build/$(MINTAMP_ROOT)/decoders/aac/imdct.o \
+build/$(MINTAMP_ROOT)/decoders/aac/tns.o: private AAC_060_STAGE_FLAGS := -DMINTAMP_AAC_060_REG5
+endif
+endif
+endif
+
 LIBA52_OBJ      := $(patsubst %.c,build/%.o,$(LIBA52_SRC))
+
+# Invalidate audio objects on a CPU/flags/submodule change. In particular a
+# submodule header update must not silently reuse the previous AAC/MP3 build.
+.PHONY: force-mintamp-config
+build/.mintamp-config: force-mintamp-config
+	@mkdir -p build
+	@printf '%s\n' '$(MINTAMP_CFLAGS)' 'AAC060_REG5=$(AAC060_REG5)' \
+	    '$(shell git -C $(MINTAMP_ROOT) rev-parse HEAD 2>/dev/null)' > $@.tmp
+	@cmp -s $@.tmp $@ || cp $@.tmp $@
+	@rm -f $@.tmp
+$(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ): build/.mintamp-config Makefile.amiga
+$(MINTAMP_AAC_OBJ): $(MINTAMP_ROOT)/decoders/aac_m68k_aac_optimized.h audio/mr_aac_m68k_config.h
+$(MINTAMP_MP3_OBJ): $(wildcard $(MINTAMP_ROOT)/real/*.h)
 
 # Explicit rule (takes precedence over the %.o: %.c pattern rule below,
 # regardless of pattern specificity) so only fft-ffmpeg.c's build picks up
@@ -355,7 +384,7 @@ build/$(MINTAMP_ROOT)/decoders/wma/fft-ffmpeg.o: \
 
 build/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(MINTAMP_CFLAGS) -c $< -o $@
+	$(CC) $(MINTAMP_CFLAGS) $(AAC_060_STAGE_FLAGS) -c $< -o $@
 
 build/%.o: %.S
 	@mkdir -p $(dir $@)
