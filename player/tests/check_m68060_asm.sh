@@ -210,7 +210,9 @@ AAC_FLAGS="-mcpu=68060 -std=gnu89 -O3 -fomit-frame-pointer -DAMIGA_M68K \
 AAC_OBJS=""
 for f in $(printf '%s\n' "$MINTAMP_ROOT"/decoders/aac/*.c | grep -v -e /sbr); do
     base=$(basename "$f" .c)
-    $M68K_CC $AAC_FLAGS -c -o "$BUILD/aac/$base.o" "$f"
+    aac_stage_flags=""
+    case "$base" in dct4|imdct|tns) aac_stage_flags="-DMINTAMP_AAC_060_REG5";; esac
+    $M68K_CC $AAC_FLAGS $aac_stage_flags -c -o "$BUILD/aac/$base.o" "$f"
     AAC_OBJS="$AAC_OBJS $BUILD/aac/$base.o"
 done
 

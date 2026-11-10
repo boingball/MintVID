@@ -33,16 +33,13 @@ static void check_shape(int w, int h, int dw, int dh)
     for(i=0;i<dh;i++) memcpy(idx+i*pw+(pw-dw)/2,tmp+i*dw,dw);
     mr_c2p8(idx,pw,dh,pw,5,planes,pw/8,0,0);
     memset(got,0xa5,n+16);
-    mr_yuv_fused32_set_asm(1);
     if (mr_yuv_fused32_asm_eligible(w,h,dw,dh,pw)) asm_cases++;
     mr_yuv420_fused32(y,ys,u,us,v,vs,w,h,got+8,dw,dh,pw,phase);
     assert(!memcmp(want,got+8,n));
     for(i=0;i<8;i++) assert(got[i]==0xa5 && got[n+8+i]==0xa5);
-    mr_yuv_fused32_set_asm(0);
     memset(got+8,0x5a,n);
-    mr_yuv420_fused32(y,ys,u,us,v,vs,w,h,got+8,dw,dh,pw,phase);
+    mr_yuv420_fused32_c(y,ys,u,us,v,vs,w,h,got+8,dw,dh,pw,phase);
     assert(!memcmp(want,got+8,n));
-    mr_yuv_fused32_set_asm(1);
     }
     mr_scale_resize_rgb24(rgb,w,h,w*3,scaled,dw,dh,dw*3);
     mr_dither_rgb_indexed(scaled,dw,dh,dw*3,tmp,dw,0,5);

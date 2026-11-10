@@ -83,8 +83,7 @@ void mr_yuv420_dither_indexed_resize(const uint8_t *y_plane, int y_stride,
                                      uint8_t *out, int dst_w, int dst_h,
                                      int out_stride, int y_base);
 
-/* Force the portable reference for hardware A/B tests (--fused32-c). */
-void mr_yuv_fused32_set_asm(int enabled);
+/* Portable reference is retained for regression tests and fallback shapes. */
 int mr_yuv_fused32_asm_eligible(int w, int h, int dw, int dh, int pw);
 void mr_yuv420_fused32_c(const uint8_t *y, int ys, const uint8_t *u, int us,
                          const uint8_t *v, int vs, int w, int h,

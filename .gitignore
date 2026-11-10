@@ -71,3 +71,6 @@ player/tests/assets/hls/
 /tmp_ppm/
 
 player/mr_planar_modes_check
+
+player/build/.mintamp-config
+player/build/.mintamp-config.tmp

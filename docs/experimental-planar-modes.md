@@ -19,9 +19,9 @@ Both require Fast RAM and use the native full-screen planar backend.
   separate frame C2P pass is produced. For widths divisible by 32 with no
   horizontal resize or padding, and identity/integer vertical sampling, a
   table-driven m68k assembly worker converts and transposes 32 pixels at a
-  time. Other sizes use the portable C reference. `--fused32-c` forces that
-  reference for an A/B comparison in the same binary. The startup path is
-  reported as `fused32-asm` or `fused32-c`. Colour/dither and nearest-neighbour
+  time. Other sizes use an internal portable fallback; the selectable C
+  experiment was retired after real-68060 measurements. The startup path is
+  reported as `fused32-asm` or `fused32-fallback`. Colour/dither and nearest-neighbour
   sampling match ECS32. The RGB fallback remains portable C.
 
 Fused32 supports AGA and OCS/ECS. OCS/ECS uses the existing low-resolution
@@ -66,7 +66,6 @@ different denominators or interpret final `encode=0` as zero YUV conversion.
 mrplay Work:youtube-144p.mp4 --aga --ecs32 --riva-c2p --benchmark >NAS0:baseline32.txt
 mrplay Work:youtube-144p.mp4 --aga --ecs32 --shadow --benchmark >NAS0:shadow32.txt
 mrplay Work:youtube-144p.mp4 --aga --fused32 --benchmark >NAS0:fused32-asm.txt
-mrplay Work:youtube-144p.mp4 --aga --fused32-c --benchmark >NAS0:fused32-c.txt
 ```
 
 For diagnosing a hang, verbose `--time` remains available. Its report window
@@ -85,3 +84,22 @@ padded source strides, and identity/integer vertical reductions, while also
 checking the C fallback and scanning the new kernel for forbidden 060 forms.
 Hardware display, uninterrupted summary-mode playback and speed still need
 real-Amiga testing.
+
+## AAC decoder dependency
+
+This branch pins MintAMP 2.0 plus its 68060 AAC scheduling change. It also
+includes MintAMP's MP3 multiply fix from #522. Normal submodule updates use
+that exact tested commit; they do not follow a moving upstream branch.
+The AAC scheduling helper is enabled only for DCT4, IMDCT/windowing and TNS
+on 060 builds. FFT/PNS/dequant retain the existing helper; 030/040 code is
+unchanged. See the pinned MintAMP docs/aac-68060-speed.md for validation and
+limitations. Real-060 speed still needs measuring; the exploratory gain is
+about 3% fewer executed m68k instructions, not a promised playback speedup.
+
+`AAC060_REG5=0` is a build-time reference switch for the per-stage helper.
+The shared unsigned power-of-two TNS simplification remains enabled. An
+updated configuration stamp rebuilds audio objects when the flags or pinned
+MintAMP commit change, avoiding stale decoder objects during A/B builds.
+The normal `--fused32` choice remains assembly-first; the selectable
+`--fused32-c` experiment is retired. Portable reference conversion remains
+internal for tests and unsupported layouts.

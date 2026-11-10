@@ -1232,7 +1232,7 @@ static int aga_supports_yuv_indexed(void *handle, int src_w, int src_h,
         if (indexed_depth) *indexed_depth = 5;
         if (ham) *ham = 0;
         s_diag_c2p = mr_yuv_fused32_asm_eligible(src_w, src_h, s->dw, s->dh, s->pw)
-                   ? "fused32-asm" : "fused32-c";
+                   ? "fused32-asm" : "fused32-fallback";
         return 1;
     }
 #if defined(MR_KALMS_040)

@@ -384,12 +384,10 @@ void mr_yuv420_fused32_c(const uint8_t *y_plane, int y_stride,
     }
 }
 
-static int fused32_use_asm = 1;
-void mr_yuv_fused32_set_asm(int enabled) { fused32_use_asm = enabled != 0; }
 int mr_yuv_fused32_asm_eligible(int w, int h, int dw, int dh, int pw)
 {
 #if defined(MR_M68K_ASM) && !defined(MR_YUV_NO_ASM)
-    return fused32_use_asm && w > 0 && h > 0 && dw == w && pw == w &&
+    return w > 0 && h > 0 && dw == w && pw == w &&
            (w & 31) == 0 && dh > 0 && h % dh == 0;
 #else
     (void)w; (void)h; (void)dw; (void)dh; (void)pw;
