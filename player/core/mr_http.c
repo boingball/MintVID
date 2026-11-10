@@ -184,6 +184,43 @@ void mr_http_timing_get(mr_http_timing *out)
     if (out) *out = g_http_timing;
 }
 
+/* mr_http_conn_trace ring: g_conn_trace_seq counts every record ever made,
+ * and record n lives at (n - 1) % MR_HTTP_CONN_TRACE_MAX. */
+static mr_http_conn_trace g_conn_trace[MR_HTTP_CONN_TRACE_MAX];
+static unsigned long g_conn_trace_seq;
+
+static mr_http_conn_trace *conn_trace_slot(unsigned long seq)
+{
+    if (!seq || g_conn_trace_seq - seq >= MR_HTTP_CONN_TRACE_MAX) return NULL;
+    return &g_conn_trace[(seq - 1) % MR_HTTP_CONN_TRACE_MAX];
+}
+
+unsigned mr_http_conn_trace_get(mr_http_conn_trace *out, unsigned max)
+{
+    unsigned long first, seq;
+    unsigned n = 0;
+    if (!out) return 0;
+    first = g_conn_trace_seq > MR_HTTP_CONN_TRACE_MAX
+          ? g_conn_trace_seq - MR_HTTP_CONN_TRACE_MAX + 1 : 1;
+    if (g_conn_trace_seq - first + 1 > max)
+        first = g_conn_trace_seq - max + 1;
+    for (seq = first; seq && seq <= g_conn_trace_seq && n < max; seq++)
+        out[n++] = *conn_trace_slot(seq);
+    return n;
+}
+
+const char *mr_http_close_name(int close)
+{
+    switch (close) {
+    case MR_HTTP_CLOSE_STORED: return "stored";
+    case MR_HTTP_CLOSE_NOT_RESUMABLE: return "not-resumable";
+    case MR_HTTP_CLOSE_NO_SESSION: return "no-session";
+    case MR_HTTP_CLOSE_ABORTED: return "aborted";
+    case MR_HTTP_CLOSE_FAILED: return "handshake-failed";
+    default: return "open";
+    }
+}
+
 #if MR_HTTP_HAVE_TLS
 static void apply_tls_max(SSL_CTX *ctx)
 {
@@ -246,6 +283,7 @@ typedef struct {
     SSL     *ssl;
     char     tls_host[HTTP_HOST_MAX]; /* host of the live TLS connection      */
     unsigned short tls_port;
+    unsigned long trace_seq;    /* this connection's mr_http_conn_trace    */
 #endif
     size_t total_len;
     size_t body_pos;
@@ -695,17 +733,18 @@ static void close_socket_only(http_source *h)
  * a full ~4.5 s handshake ("tls=45346 ms over 10 (resumed 0)"). A session
  * that is still not resumable (the server sent no ticket) does not replace
  * an older one that is. */
-static void remember_tls_session(http_source *h)
+static int remember_tls_session(http_source *h)
 {
     SSL_SESSION *sess;
     unsigned slot;
-    if (!h->ssl || !h->using_tls || !h->tls_host[0]) return;
+    if (!h->ssl || !h->using_tls || !h->tls_host[0])
+        return MR_HTTP_CLOSE_NO_SESSION;
     sess = SSL_get1_session(h->ssl);
-    if (!sess) return;
+    if (!sess) return MR_HTTP_CLOSE_NO_SESSION;
 #if OPENSSL_VERSION_NUMBER >= 0x10101000L
     if (!SSL_SESSION_is_resumable(sess)) {
         SSL_SESSION_free(sess);
-        return;
+        return MR_HTTP_CLOSE_NOT_RESUMABLE;
     }
 #endif
     for (slot = 0; slot < HTTP_TLS_SESSION_SLOTS; slot++) {
@@ -720,13 +759,30 @@ static void remember_tls_session(http_source *h)
     g_tls_sessions[0].session = sess;
     strcpy(g_tls_sessions[0].host, h->tls_host);
     g_tls_sessions[0].port = h->tls_port;
+    return MR_HTTP_CLOSE_STORED;
+}
+
+static unsigned char cached_tls_sessions(void)
+{
+    unsigned i, n = 0;
+    for (i = 0; i < HTTP_TLS_SESSION_SLOTS; i++)
+        if (g_tls_sessions[i].session) n++;
+    return (unsigned char)n;
 }
 #endif
 
 static void close_connection(http_source *h, int healthy)
 {
 #if MR_HTTP_HAVE_TLS
-    if (h->ssl && healthy) remember_tls_session(h);
+    if (h->ssl) {
+        int close = healthy ? remember_tls_session(h) : MR_HTTP_CLOSE_ABORTED;
+        mr_http_conn_trace *t = conn_trace_slot(h->trace_seq);
+        if (t && t->close == MR_HTTP_CLOSE_OPEN) {
+            t->close = (unsigned char)close;
+            t->cached = cached_tls_sessions();
+        }
+        h->trace_seq = 0;
+    }
     if (h->ssl) {
 #if MR_HTTP_AMIGA
         if (!healthy) {
@@ -964,7 +1020,19 @@ static int connect_socket(http_source *h, const http_url *url)
          * with an abbreviated handshake. */
         {
             SSL_SESSION *session = find_tls_session(url->host, url->port);
+            mr_http_conn_trace *t;
             if (session) SSL_set_session(h->ssl, session);
+            h->trace_seq = ++g_conn_trace_seq;
+            t = conn_trace_slot(h->trace_seq);
+            memset(t, 0, sizeof *t);
+            t->seq = h->trace_seq;
+            {
+                size_t n = strlen(url->host);
+                if (n > sizeof t->host - 1) n = sizeof t->host - 1;
+                memcpy(t->host, url->host, n); /* zeroed above */
+            }
+            t->port = url->port;
+            t->offered = session != NULL;
         }
         /* SSL_connect() has no cancellation hook of its own, unlike
          * gethostbyname() above - deliberately: MintAMP's own hard-won
@@ -981,16 +1049,33 @@ static int connect_socket(http_source *h, const http_url *url)
         g_http_timing.tls_handshakes++;
         if (SSL_set_fd(h->ssl, h->sock) != 1 ||
             SSL_connect(h->ssl) != 1) {
-            g_http_timing.tls_ms += http_ms_since(phase);
+            unsigned long ms = http_ms_since(phase);
+            mr_http_conn_trace *t = conn_trace_slot(h->trace_seq);
+            g_http_timing.tls_ms += ms;
+            if (t) {
+                t->handshake_ms = ms;
+                t->close = MR_HTTP_CLOSE_FAILED;
+            }
             mr_source_set_error("HTTPS TLS handshake failed");
             close_connection(h, 0);
             return 0;
         }
-        g_http_timing.tls_ms += http_ms_since(phase);
-        if (SSL_session_reused(h->ssl)) g_http_timing.tls_resumed++;
+        {
+            unsigned long ms = http_ms_since(phase);
+            mr_http_conn_trace *t = conn_trace_slot(h->trace_seq);
+            g_http_timing.tls_ms += ms;
+            if (SSL_session_reused(h->ssl)) g_http_timing.tls_resumed++;
 #ifdef TLS1_3_VERSION
-        if (SSL_version(h->ssl) == TLS1_3_VERSION) g_http_timing.tls13++;
+            if (SSL_version(h->ssl) == TLS1_3_VERSION) g_http_timing.tls13++;
 #endif
+            if (t) {
+                t->handshake_ms = ms;
+                t->resumed = SSL_session_reused(h->ssl) != 0;
+#ifdef TLS1_3_VERSION
+                t->tls13 = SSL_version(h->ssl) == TLS1_3_VERSION;
+#endif
+            }
+        }
         h->using_tls = 1;
         /* The session is saved for the next connection when this one closes
          * (remember_tls_session()), not here: see the note there. */

@@ -33,6 +33,8 @@ static clock_t test_clock(void) { clock_reads++; return fake_clock; }
 #define clock test_clock
 static int Output(void) { return 1; }
 static void Flush(int output) { (void)output; assert(!playing); flushes++; fake_clock += 10 * CLOCKS_PER_SEC; }
+static int traces;
+static void print_http_conn_trace(void) { assert(!playing); traces++; }
 static int test_printf(const char *format, ...) {
     (void)format; assert(!playing); writes++; fake_clock += 3 * CLOCKS_PER_SEC; return 0;
 }
@@ -87,10 +89,10 @@ int main(void)
     ui.demux_stopped = 1; ui.demux_status = MR_ERR;
     strcpy(ui.last_source_error, "simulated last source error");
     audio_only_dump(&ui);
-    assert(writes == 2 * AUDIO_DIAG_SNAPSHOTS + 2 && flushes == 1);
+    assert(writes == 2 * AUDIO_DIAG_SNAPSHOTS + 2 && flushes == 1 && traces == 1);
     assert(ui.snapshot_count == AUDIO_DIAG_SNAPSHOTS); /* slow dump cannot recapture */
     ui.snapshots = NULL; audio_only_dump(&ui);
-    assert(writes == 2 * AUDIO_DIAG_SNAPSHOTS + 2 && flushes == 1);
+    assert(writes == 2 * AUDIO_DIAG_SNAPSHOTS + 2 && flushes == 1 && traces == 1);
     clock_reads = 0; audio_only_poll_hls(&last_poll); assert(!polls && !clock_reads);
     active = 1; fake_clock = (CLOCKS_PER_SEC + 49UL) / 50UL;
     audio_only_poll_hls(&last_poll); assert(polls == 1);

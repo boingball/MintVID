@@ -1920,6 +1920,23 @@ static void audio_only_report(audio_only_ui *ui, const char *tag)
     ui->last_report_clock = clock();
 }
 
+/* One line per HTTPS connection, oldest first (the last
+ * MR_HTTP_CONN_TRACE_MAX): which origin, whether a cached session was offered
+ * and taken, the handshake time and whether the session was kept at close.
+ * Shows which fetches still pay a full TLS handshake, and why. */
+static void print_http_conn_trace(void)
+{
+    static mr_http_conn_trace t[MR_HTTP_CONN_TRACE_MAX];
+    unsigned i, n = mr_http_conn_trace_get(t, MR_HTTP_CONN_TRACE_MAX);
+    for (i = 0; i < n; i++)
+        printf("tls-trace: #%lu %s:%u offered=%u resumed=%u %s hs=%lu ms "
+               "close=%s cached=%u\n", t[i].seq, t[i].host,
+               (unsigned)t[i].port, (unsigned)t[i].offered,
+               (unsigned)t[i].resumed, t[i].tls13 ? "tls1.3" : "tls1.2",
+               t[i].handshake_ms, mr_http_close_name(t[i].close),
+               (unsigned)t[i].cached);
+}
+
 /* Only called after audio_close(): output latency cannot starve playback or
  * lengthen a measured HLS wait. Keep the previous text fields for comparison. */
 static void audio_only_dump(const audio_only_ui *ui)
@@ -1958,6 +1975,7 @@ static void audio_only_dump(const audio_only_ui *ui)
     if (ui->demux_stopped)
         printf("audio-diag: demux status=%ld last-source=%s\n",
                (long)ui->demux_status, ui->last_source_error);
+    print_http_conn_trace();
     Flush(Output());
 }
 
@@ -5580,6 +5598,7 @@ drain_decoded_output:
                (unsigned long)(total_decode_us  / 1000),
                (unsigned long)(total_display_us / 1000),
                enc_ms, blit_ms);
+        print_http_conn_trace();
         if (smoosh_mode)
             printf("smoosh: %lu P/B access units dropped before decode "
                    "(%lu of them to protect audio)\n",

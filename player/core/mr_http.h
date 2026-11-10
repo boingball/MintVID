@@ -173,6 +173,35 @@ typedef struct mr_http_timing {
 } mr_http_timing;
 void mr_http_timing_get(mr_http_timing *out);
 
+/* One record per HTTPS connection, for finding out which connections pay a
+ * full TLS handshake and why. The last MR_HTTP_CONN_TRACE_MAX are kept.
+ * Written by the task that fetches and read by another one; like
+ * mr_http_timing it is diagnostics only, so a record caught mid-update does
+ * no harm. */
+#define MR_HTTP_CONN_TRACE_MAX 64
+enum {
+    MR_HTTP_CLOSE_OPEN = 0,      /* still open                               */
+    MR_HTTP_CLOSE_STORED,        /* closed cleanly, session kept for reuse   */
+    MR_HTTP_CLOSE_NOT_RESUMABLE, /* closed cleanly, server gave no ticket    */
+    MR_HTTP_CLOSE_NO_SESSION,    /* closed cleanly, no session to keep       */
+    MR_HTTP_CLOSE_ABORTED,       /* closed on an error or cancel: not kept   */
+    MR_HTTP_CLOSE_FAILED         /* the handshake itself failed              */
+};
+typedef struct mr_http_conn_trace {
+    unsigned long seq;           /* 1, 2, 3 ... in connection order          */
+    char host[40];               /* start of the host name                   */
+    unsigned short port;
+    unsigned char offered;       /* a cached session was offered             */
+    unsigned char resumed;       /* the server accepted it                   */
+    unsigned char tls13;
+    unsigned char close;         /* MR_HTTP_CLOSE_*                          */
+    unsigned char cached;        /* sessions in the cache after the close    */
+    unsigned long handshake_ms;
+} mr_http_conn_trace;
+/* Copies up to max records, oldest first; returns how many. */
+unsigned mr_http_conn_trace_get(mr_http_conn_trace *out, unsigned max);
+const char *mr_http_close_name(int close);
+
 /* Highest TLS version HTTPS connections offer. MR_HTTP_TLS_AUTO leaves it to
  * the TLS library (TLS 1.3 where available); MR_HTTP_TLS_12 caps it at 1.2.
  * A TLS 1.2 resumption is a short handshake with no key exchange at all,

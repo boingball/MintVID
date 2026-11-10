@@ -5681,6 +5681,21 @@ the live context (3 resumed, none TLS 1.3), then auto again. YouTube is
 affected the same way: googlevideo and the API hosts accept TLS 1.2. How
 much a TLS 1.2 resumption costs on the 060 is for the next log.
 
+**A four-host session cache did not end the full handshakes on YouTube live
+audio-only.** Two logs from a build with it (89624ab) still showed 4 new
+connections per 15 s cycle (one playlist refresh, three 5 s segments), only
+2 resumed: one ~2 s full handshake on the cycle's on-demand miss, and one
+~7 s one in the background, which also caused that cycle's Paula
+starvation. About 9.4 s of every 15 s went on TLS. The counters cannot say
+which connections miss or why, so `mr_http.c` now keeps a record of the last
+64 HTTPS connections (`mr_http_conn_trace_get()`): host and port, whether a
+cached session was offered and taken, TLS version, handshake time, and how
+it closed (stored, not resumable, no session, aborted, handshake failed).
+mrplay prints them as `tls-trace:` lines at the end of an audio-only
+diagnostic dump and after the `--time` summary. `mr_http_resume_check`
+requires the trace to match the counters in its alternating-hosts runs.
+Not yet read on hardware.
+
 **The AGA dither was the next biggest cost, at ~56 instructions per
 pixel.** With TLS fixed, a BBC One run (Turbo, stereo 12 kHz, All Frames)
 spent per decoded picture ~45 ms in `vdecode`, ~28 ms in `yuv-indexed`
