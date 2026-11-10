@@ -150,7 +150,7 @@ static unsigned audio_out_count;
  * row of its own, only when videocodec.library opens - otherwise there is
  * nothing to switch and the window stays as it was. */
 static Object *g_videocore;
-static mr_c2p_mode c2p_values[5];
+static mr_c2p_mode c2p_values[8];
 static unsigned c2p_count;
 static int add_chooser_node(struct List *list, const char *text);
 
@@ -1617,6 +1617,8 @@ int main(void)
          * exposed here before, silently leaving Copper 2x with no reachable
          * qualifying c2p choice on a non-CD32 machine. */
         !add_c2p_node(&c2p_modes, "Portable", MR_C2P_WPA)
+        || !add_c2p_node(&c2p_modes, "Shadow", MR_C2P_SHADOW)
+        || !add_c2p_node(&c2p_modes, "Fused32", MR_C2P_FUSED32)
 #ifdef MR_KALMS_040
         || !add_c2p_node(&c2p_modes, "Direct", MR_C2P_DIRECT)
 #endif

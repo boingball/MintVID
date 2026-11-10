@@ -1,10 +1,7 @@
-/*
- * MintVID - experimental AGA YUV->planar queue mode.
- *
- * This is deliberately kept behind the alternate Makefile.fused build while
- * the real 68060 decides whether the cache/locality win is worth keeping.
- * The normal player and its public display contract remain unchanged.
- */
+/* MintVID - negotiated plane-major decode-ahead queue.
+ * Direct uses the existing eight-plane assembly kernel; Fused32 uses a
+ * portable five-plane converter. Queue slots reserve padded_width*height
+ * bytes, enough for either layout. */
 #ifndef MR_YUV_PLANAR_QUEUE_H
 #define MR_YUV_PLANAR_QUEUE_H
 
@@ -20,4 +17,6 @@ int mr_yuv_planar_queue_visible_width(void);
 int mr_yuv_planar_queue_height(void);
 int mr_yuv_planar_queue_padded_width(void);
 
+int mr_yuv_planar_queue_configure32(int visible_width, int height, int padded_width);
+int mr_yuv_planar_queue_depth(void);
 #endif /* MR_YUV_PLANAR_QUEUE_H */

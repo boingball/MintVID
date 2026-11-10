@@ -184,6 +184,8 @@ static const char *c2p_name(mr_c2p_mode c2p)
     case MR_C2P_RIVA: return "riva";
     case MR_C2P_WPA: return "wpa";
     case MR_C2P_DIRECT: return "direct";
+    case MR_C2P_SHADOW: return "shadow";
+    case MR_C2P_FUSED32: return "fused32";
     default: return "standard";
     }
 }
@@ -259,6 +261,8 @@ static int append_playback_flags(char *out, size_t cap,
             const char *flag = o->c2p == MR_C2P_AKIKO ? "--cd32" :
                                o->c2p == MR_C2P_KALMS ? "--kalms-c2p" :
                                o->c2p == MR_C2P_RIVA ? "--riva-c2p" :
+                               o->c2p == MR_C2P_SHADOW ? "--shadow" :
+                               o->c2p == MR_C2P_FUSED32 ? "--fused32" :
                                o->c2p == MR_C2P_DIRECT ? "--direct-c2p" :
                                o->c2p == MR_C2P_STANDARD ? "--wpa" : "--c2p";
             if (!append_option(out, cap, flag)) return 0;
@@ -465,6 +469,8 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "riva")) o->c2p = MR_C2P_RIVA;
             else if (!strcmp(value, "wpa")) o->c2p = MR_C2P_WPA;
             else if (!strcmp(value, "direct")) o->c2p = MR_C2P_DIRECT;
+            else if (!strcmp(value, "shadow")) o->c2p = MR_C2P_SHADOW;
+            else if (!strcmp(value, "fused32")) o->c2p = MR_C2P_FUSED32;
             else goto bad;
         } else if (!strcmp(arg, "--laced")) o->laced = 1;
         else if (!strcmp(arg, "--no-laced")) o->laced = 0;

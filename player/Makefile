@@ -715,7 +715,7 @@ check-m68k:
 clean:
 	rm -f mr_decode mr_decode_ssl mr_http_resume_check mr_audio_check mr_scale_check mr_yuv_check mr_rgb565_check mr_c2p_check mr_ham_check \
 	      mr_ac3_check mr_aac_decim_check mr_mp2_synth_check mr_mp2_idct_check \
-	      mr_dither_check mr_yuv_dither_check mr_yuv_planar_queue_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg2_yuv_check mr_mpeg2_mc_check mr_mpeg2_idct_check mr_mpeg2_bskip_check mr_h264_smoosh_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_ts_video_pes_check mr_mkv_check \
+	      mr_dither_check mr_planar_modes_check mr_yuv_dither_check mr_yuv_planar_queue_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg2_yuv_check mr_mpeg2_mc_check mr_mpeg2_idct_check mr_mpeg2_bskip_check mr_h264_smoosh_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_ts_video_pes_check mr_mkv_check \
 	      mr_mkv_seek_check mr_mov_seek_check
 	rm -f mr_legacy_video_check mr_cinepak_indexed_check mr_msvideo1_indexed_check
 	rm -f mr_rawvideo_check mr_codec_registry_check mr_codec_fallback_check mr_avc_check mr_hwdec_check
@@ -734,3 +734,11 @@ clean:
 	rm -rf $(HOSTOBJ)
 
 .PHONY: all check check-audio check-http check-https check-libavc check-m68k clean
+
+# Experimental direct five-plane conversion and selective Chip-RAM copies.
+mr_planar_modes_check: tests/mr_planar_modes_check.c core/mr_yuv_dither.c core/mr_dither.c core/mr_c2p.c core/mr_scale.c core/mr_yuv_planar_queue.c core/mr_play_options.c core/mr_yuv_dither.h core/mr_dither.h core/mr_c2p.h core/mr_yuv_planar_queue.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_planar_modes_check.c core/mr_yuv_dither.c core/mr_dither.c core/mr_c2p.c core/mr_scale.c core/mr_yuv_planar_queue.c core/mr_play_options.c
+
+check-planar-modes: mr_planar_modes_check
+	./mr_planar_modes_check
+.PHONY: check-planar-modes

@@ -96,8 +96,8 @@ typedef struct gt_app {
     mr_display_mode modes[16];
     STRPTR mode_labels[17];
     unsigned mode_count;
-    mr_c2p_mode c2p_modes[5];
-    STRPTR c2p_labels[6];
+    mr_c2p_mode c2p_modes[8];
+    STRPTR c2p_labels[9];
     unsigned c2p_count;
     char path[512];
     struct MsgPort *timer_port;
@@ -1227,6 +1227,8 @@ static int build_window(gt_app *app)
      * entirely). Was never exposed here before, silently leaving Copper 2x
      * with no reachable qualifying c2p choice on a non-CD32 machine. */
     add_c2p_mode(app, (STRPTR)"C2P: Portable", MR_C2P_WPA);
+    add_c2p_mode(app, (STRPTR)"C2P: Shadow", MR_C2P_SHADOW);
+    add_c2p_mode(app, (STRPTR)"C2P: Fused32", MR_C2P_FUSED32);
 #ifdef MR_KALMS_040
     add_c2p_mode(app, (STRPTR)"C2P: Direct", MR_C2P_DIRECT);
 #endif

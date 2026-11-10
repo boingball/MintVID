@@ -61,4 +61,7 @@ void mr_dither_palette_ehb(uint8_t *pal32);
 void mr_dither_rgb_ehb(const uint8_t *rgb, int w, int h, int rgb_stride,
                        uint8_t *out, int out_stride, int y_base);
 
+void mr_rgb_fused32(const uint8_t *rgb, int w, int h, int stride,
+                     uint8_t *out, int dw, int dh, int pw);
+
 #endif /* MR_DITHER_H */

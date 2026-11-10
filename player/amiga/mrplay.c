@@ -32,6 +32,7 @@
 #include "../core/mr_muldiv64.h"
 #include "../core/mr_yuv.h"
 #include "../core/mr_yuv_dither.h"
+#include "../core/mr_yuv_planar_queue.h"
 #include "../core/mr_yuv_ham.h"
 #include "../audio/mr_audio_decode.h"
 #include "../iptv/mr_iptv.h"
@@ -1223,7 +1224,11 @@ static int queue_copy_yuv_indexed(queued_video *q, const mr_frame *fr,
         if (!p) return 0;
         q->rgb = p; q->capacity = bytes;
     }
-    if (ham)
+    if (mr_yuv_planar_queue_is_active() && mr_yuv_planar_queue_depth() == 5)
+        mr_yuv420_fused32(fr->data, fr->stride, fr->u_data, fr->u_stride,
+                         fr->v_data, fr->v_stride, fr->width, fr->height,
+                         q->rgb, mr_yuv_planar_queue_visible_width(), dst_h, dst_w, 0);
+    else if (ham)
         /* aga_supports_yuv_indexed() only reports ham for the exact vertical
          * downscale, so vscale is always > 1 here - see core/mr_yuv_ham.h for
          * why the other shapes stay on aga_show()'s three-stage path. */
@@ -2342,7 +2347,7 @@ int main(int argc, char **argv)
                "<file.avi|file.mov|file.ts|file.m2ts|"
                "file.mjpeg|file.m4v> "
                "[--aga] [--aga-window] [--aga-window-half] [--ham] [--ham6] [--ham-dither] [--p96] "
-               "[--2x] [--lace] [--ecs-fast] [--ecs32] [--ehb] [--copper-vdouble] "
+               "[--shadow|--fused32] [--2x] [--lace] [--ecs-fast] [--ecs32] [--ehb] [--copper-vdouble] "
                "[--loop] "
                "[--wpa|--c2p|--riva-c2p|--kalms-c2p|--direct-c2p] "
                "[--cd32] [--fullscreen] [--hls-low] [--net-queue=N] [--live-resync] "
@@ -2390,6 +2395,8 @@ int main(int argc, char **argv)
             else if (!strcmp(argv[i], "--c2p"))  display_set_c2p(1);
             else if (!strcmp(argv[i], "--riva-c2p")) display_set_riva_c2p(1);
             else if (!strcmp(argv[i], "--kalms-c2p")) display_set_kalms_c2p(1);
+            else if (!strcmp(argv[i], "--shadow")) display_set_shadow(1);
+            else if (!strcmp(argv[i], "--fused32")) display_set_fused32(1);
             else if (!strcmp(argv[i], "--direct-c2p")) display_set_direct_c2p(1);
             else if (!strcmp(argv[i], "--loop")) loop = 1;
             else if (!strcmp(argv[i], "--lace")) display_set_lace(1);

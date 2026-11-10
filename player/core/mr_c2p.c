@@ -2,6 +2,7 @@
  * MintVID - chunky-to-planar via 8x8 bit transpose.
  */
 #include "mr_c2p.h"
+#include <string.h>
 
 #if defined(MR_M68K_ASM)
 /* core/mr_c2p_m68k.S - hand-written m68k version of mr_c2p8_riva32 below,
@@ -109,4 +110,22 @@ void mr_c2p8_riva32(const uint8_t *chunky, int pw, int h, int chunky_stride,
                                  words[plane]);
         }
     }
+}
+
+unsigned long mr_planar_shadow_copy(const uint8_t *src, uint8_t *dst,
+                                    uint8_t *shadow, unsigned long bytes, int valid)
+{
+    unsigned long i = 0, written = 0;
+    for (; i + 4 <= bytes; i += 4) {
+        uint32_t a, b = 0;
+        memcpy(&a, src + i, 4);
+        if (valid) memcpy(&b, shadow + i, 4);
+        if (!valid || a != b) {
+            memcpy(dst + i, &a, 4); memcpy(shadow + i, &a, 4); written += 4;
+        }
+    }
+    for (; i < bytes; i++) if (!valid || src[i] != shadow[i]) {
+        dst[i] = shadow[i] = src[i]; written++;
+    }
+    return written;
 }

@@ -35,6 +35,7 @@ volatile int mr_yuv_planar_queue_active
 volatile int mr_yuv_planar_queue_active = 0;
 #endif
 
+static int g_fused32;
 static int g_visible_width;
 static int g_height;
 static int g_padded_width;
@@ -42,6 +43,7 @@ static int g_padded_width;
 int mr_yuv_planar_queue_configure(int visible_width, int height,
                                   int padded_width)
 {
+    g_fused32 = 0;
     if (visible_width <= 0 || height <= 0 ||
         padded_width < visible_width || padded_width > MR_PLANAR_MAX_WIDTH ||
         (padded_width & 31) != 0) {
@@ -56,15 +58,25 @@ int mr_yuv_planar_queue_configure(int visible_width, int height,
     return 1;
 }
 
+int mr_yuv_planar_queue_configure32(int w, int h, int pw)
+{
+    if (!mr_yuv_planar_queue_configure(w, h, pw)) return 0;
+    mr_yuv_planar_queue_active = 0; /* Never enter the eight-plane asm. */
+    g_fused32 = 1;
+    return 1;
+}
+int mr_yuv_planar_queue_depth(void) { return g_fused32 ? 5 : 8; }
+
 void mr_yuv_planar_queue_disable(void)
 {
     mr_yuv_planar_queue_active = 0;
+    g_fused32 = 0;
     g_visible_width = g_height = g_padded_width = 0;
 }
 
 int mr_yuv_planar_queue_is_active(void)
 {
-    return mr_yuv_planar_queue_active != 0;
+    return mr_yuv_planar_queue_active != 0 || g_fused32;
 }
 
 int mr_yuv_planar_queue_visible_width(void) { return g_visible_width; }

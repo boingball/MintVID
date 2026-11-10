@@ -15,6 +15,7 @@
  * copy of the formulas drifted from the other.
  */
 #include "mr_yuv_dither.h"
+#include <string.h>
 
 #if defined(MR_M68K_ASM)
 /* core/mr_yuv_dither_m68k.S - hand-written m68k version of
@@ -298,4 +299,87 @@ void mr_yuv420_dither8_resize(const uint8_t *y_plane, int y_stride,
     mr_yuv420_dither_indexed_resize(y_plane, y_stride, u_plane, u_stride,
                                     v_plane, v_stride, width, height, 8, out,
                                     dst_w, dst_h, out_stride, y_base);
+}
+
+/* Experimental fused resize/YUV/dither/five-plane output; no chunky frame. */
+void mr_yuv420_fused32(const uint8_t *y_plane, int y_stride,
+                                     const uint8_t *u_plane, int u_stride,
+                                     const uint8_t *v_plane, int v_stride,
+                                     int width, int height,
+                                     uint8_t *out, int dst_w, int dst_h,
+                                     int padded_width, int y_base)
+{
+    int depth = 5;
+    size_t plane_size = (size_t)(padded_width / 8) * dst_h;
+    int left = (padded_width - dst_w) / 2;
+    int xq, xr, sx0, xerr0, yq, yr, sy, yerr, oy;
+    if (!y_plane || !u_plane || !v_plane || !out ||
+        width <= 0 || height <= 0 || dst_w <= 0 || dst_h <= 0)
+        return;
+    if (depth != 4 && depth != 5) depth = 8;
+    if (!g_yuv_tables_ready) build_yuv_tables();
+    if (dither_lut_depth != depth) build_dither_lut(depth);
+
+    if (padded_width < dst_w || (padded_width & 31)) return;
+    memset(out, 0, plane_size * 5);
+    xq = width / dst_w; xr = width % dst_w;
+    sx0 = (width / 2) / dst_w; xerr0 = (width / 2) % dst_w;
+    yq = height / dst_h; yr = height % dst_h;
+    sy = (height / 2) / dst_h; yerr = (height / 2) % dst_h;
+
+    for (oy = 0; oy < dst_h; oy++) {
+        const uint8_t *src_y = y_plane + (size_t)sy * y_stride;
+        const uint8_t *src_u = u_plane + (size_t)(sy >> 1) * u_stride;
+        const uint8_t *src_v = v_plane + (size_t)(sy >> 1) * v_stride;
+        uint8_t *dr = out + (size_t)oy * (padded_width / 8);
+        const uint8_t *threshold = bayer4[(y_base + oy) & 3];
+        uint32_t bits[5] = {0, 0, 0, 0, 0};
+        int ox, sx = sx0, xerr = xerr0, cached_sx = -1;
+        int r = 0, g = 0, b = 0;
+
+        for (ox = 0; ox < dst_w; ox++) {
+            int t = threshold[ox & 3];
+            /* Nearest-neighbour upscales repeat each source pixel. Convert a
+             * repeated pixel only once, but retain the destination-specific
+             * Bayer threshold so output stays bit-exact. The common 256->640
+             * AGA fit therefore performs 256 YUV->RGB conversions per row,
+             * not 640. Row bases are also hoisted out of the pixel loop. */
+            if (sx != cached_sx) {
+                unsigned uu = src_u[sx >> 1], vv = src_v[sx >> 1];
+                int red_add = g_e_x409[vv] + 128;
+                int green_add = g_d_xm100[uu] + g_e_xm208[vv] + 128;
+                int blue_add = g_d_x516[uu] + 128;
+                int luma = (int)src_y[sx] - 16;
+                int scaled_y;
+                if (luma < 0) luma = 0;
+                scaled_y = g_luma_x298[luma];
+                r = clip8((scaled_y + red_add) >> 8);
+                g = clip8((scaled_y + green_add) >> 8);
+                b = clip8((scaled_y + blue_add) >> 8);
+                cached_sx = sx;
+            }
+            {
+                unsigned index = lut_r[t][r] + lut_g[t][g] + lut_b[t][b];
+                int px = ox + left, p;
+                for (p = 0; p < 5; p++) bits[p] = (bits[p] << 1) | ((index >> p) & 1);
+                if ((px & 31) == 31 || ox == dst_w - 1) {
+                    int shift = 31 - (px & 31);
+                    for (p = 0; p < 5; p++) {
+                        uint32_t word = bits[p] << shift;
+                        uint8_t *d = dr + p * plane_size + (px / 32) * 4;
+                        d[0] = word >> 24; d[1] = word >> 16;
+                        d[2] = word >> 8; d[3] = word;
+                        bits[p] = 0;
+                    }
+                }
+            }
+            sx += xq;
+            xerr += xr;
+            if (xerr >= dst_w) { xerr -= dst_w; sx++; }
+        }
+
+        sy += yq;
+        yerr += yr;
+        if (yerr >= dst_h) { yerr -= dst_h; sy++; }
+    }
 }

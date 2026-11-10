@@ -69,3 +69,5 @@ player/tests/assets/ref_*/
 # HLS VOD fixture sliced from test_mpeg2.ts by tests/run_http_check.sh
 player/tests/assets/hls/
 /tmp_ppm/
+
+player/mr_planar_modes_check

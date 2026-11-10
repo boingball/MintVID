@@ -101,6 +101,9 @@ void display_set_kalms_c2p(int on);
  * whenever the geometry doesn't qualify (plain 1:1 8-plane AGA only) -
  * see amiga/display_aga.c's aga_supports_yuv_indexed(). */
 void display_set_direct_c2p(int on);
+/* Experimental Fast-RAM planar presentation and fused 32-colour output. */
+void display_set_shadow(int on);
+void display_set_fused32(int on);
 
 /* Allow interlaced AGA screens (up to ~640x512). The AGA fitter compensates
  * for the doubled vertical resolution, preserving the video's physical aspect
