@@ -5709,6 +5709,24 @@ first if one is outstanding. Pinned in `tests/mr_hls_override_check.c`
 and 2 playlist hints; before the fix it was 2 and 0, with the second
 fetch at the edge).
 
+**Opening a stream now reports progress.** The controller used to show
+"Connecting to stream..." for the whole open, which can take many seconds
+on a 68k. `mr_http_progress()` (core/mr_http.c) keeps the latest line from
+the network code: "Looking up host...", "Connecting to host...", "Secure
+connection to host...", "Waiting for host...", "Downloading from host: N
+KB" (every 32 KB of a complete-body fetch), and from mr_hls "Reading stream
+playlist...", "Reading playlist for the chosen quality...", "Loading video
+segment N...". It is off unless mrplay enables it for a URL, and mrplay
+turns it off once `mr_demux_open_file_ex()` returns, so later segment
+fetches never touch the status. Lines may be posted by the HLS fetch
+worker; the main task reads them (two-slot buffer, sequence number) in
+`service_early_open()`, the early service hook, and publishes them as
+OPENING status at most four times a second. That hook is now also on
+mr_http's own hook during the open, so a main-task HTTP read can be
+stopped with CTRL_C/CTRL_F; the worker's calls to it do nothing.
+`tests/mr_hls_override_check.c` pins the playlist and segment lines and
+the off switch.
+
 **A Turbo, All Frames, stereo run showed the CPU limit, and a TLS cost that
 remained.** The video needed ~80 ms per 40 ms frame (decode ~47,
 `yuv-indexed` ~28, display ~5), so audio starved (61 starvations,

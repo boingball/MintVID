@@ -147,6 +147,19 @@ void mr_http_net_shutdown(void);
  * builds. */
 int mr_http_tls_disabled(void);
 
+/* Progress text for a player that is still opening a stream: what the
+ * network code is doing right now ("Connecting to example.com...", "Reading
+ * playlist...", "Downloading from host: 120 KB"). Off by default; while it is
+ * off mr_http_progress() costs one test. It may be posted from any task (on
+ * Amiga the HLS fetch worker does the fetching), so the reader polls:
+ * mr_http_progress_read() copies the latest line and returns a sequence
+ * number that changes whenever a new line is posted (0 = nothing yet). The
+ * two-slot buffer means a reader never sees a line half-written, short of a
+ * writer posting twice during one copy. */
+void          mr_http_progress_enable(int on);
+void          mr_http_progress(const char *fmt, ...);
+unsigned long mr_http_progress_read(char *out, size_t cap);
+
 /* Cooperative service hook, called between the individual socket reads that make
  * up a body fetch. A single-threaded player installs its audio/video service
  * pump here so it keeps presenting already-decoded frames and feeding audio
