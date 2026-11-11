@@ -2207,8 +2207,7 @@ unchanged in one commit (VPberry left out), then adapted:
   `gpu_mem=256` on a Pi 3A+ PiStorm, where the N80 build from our earlier
   PR played at 64. `mr_berryvp_isp_out` now starts at 0xFFFFFFFF (the
   library's own "no N83" value, BVP_CTRL_ISPOUT); `UPSCALE`/`--upscale`
-  sets 0 again. The library source is unchanged, so CI's build should match
-  v97.1's EXPECTED_SHA256.
+  sets 0 again.
 - `W=C` forces full screen even when `R` reads a window `W:` from the
   `.t`. The window display (`MR_DISPLAY_PISTORM_WINDOW`, `W=50`) hands
   over on **F**: mrberry saves `<film>.t` and ends with status text
@@ -6391,3 +6390,37 @@ m68k instructions per frame (qemu_tbprof, 68060 flags):
 `tests/mr_planar_modes_check.c` gained 178x100 and 360x240 1:1 shapes. A
 wrong chunky margin offset or a wrong C2P row both make it fail. Not yet
 re-benchmarked on hardware.
+
+## berryvp.library: N80 merged into v97.1
+On a PiStorm 600 (Pi 3), v97.1 failed in Paula mode: fullscreen showed a
+few frames and locked the Amiga, and a window played to the end and then
+crashed. v97.1 is Michael's line from N79 onwards and never had our N80
+work (`mintvid-pistorm`, branch `claude/mrberry-controls`, berryvp.library
+3.80), which is what made that machine play without HDMI audio:
+- An OpenStream flag for streams that will get no ConfigAudio. It selects
+  the direct decoder -> renderer graph, paced by the host, instead of the
+  audio-clocked scheduler.
+- A VideoCore reset at CloseStream when a stream failed or did not drain.
+- Ctrl-C breaks the library's bounded wait loops.
+
+The N80 diff (`git diff 7c0c24f 2d3e6d0` there) applied to v97.1's file with
+`patch -F3`. The one rejected hunk was the ID string. Changes for v97.1:
+- The flag is bit 8 (`BVP_OPENF_NO_HDMI_AUDIO = $100`, cap bit `$2000`).
+  v97.1 already uses OpenStream's low byte for the P96 window size
+  (10/25/50/75), and 25 and 75 have bit 0 set. OpenStream keeps only the low
+  byte in `BVP_STREAM_FLAGS`.
+- In the graph router the N80 test comes before N83's ISP upscale. The
+  scheduler-free ISP graph never came up on a 600.
+- CLK81's free clock is still tried first on the scheduler path. N80's
+  "fail instead of waiting forever" check follows it.
+
+mrberry sets `mr_berryvp_no_hdmi_audio` on the same test as its ConfigAudio
+branch (Paula, or no AAC/AC-3/E-AC-3 track). It passes the flag only in
+cinema mode, so window mode keeps v97.1's behaviour. The end-of-stream
+reset applies in both. With the direct graph, `BVP_CTRL_CLOCKSTART` returns
+0, so Paula anchors at the end of the first SendVideo (`--av-offset` tunes
+it).
+
+There is no vasm on the dev host (its site is unreachable), so CI's `build`
+job is the first assemble. Not yet run on hardware. `EXPECTED_SHA256` was
+removed because the build no longer matches the released v97.1 binary.

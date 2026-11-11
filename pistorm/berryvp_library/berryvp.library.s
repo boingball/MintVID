@@ -32,6 +32,10 @@ BVPERR_UNSUPPORTED    equ -3
 BVPERR_BUSY           equ -4
 BVPERR_TIMEOUT        equ -5
 BVPERR_BACKEND        equ -6
+; N80: OpenStream flag. The caller will not call ConfigAudio (no HDMI
+; audio: Paula, --no-audio, or a format the Pi side does not play).
+; Bit 8: the low byte carries the P96 window size (10/25/50/75).
+BVP_OPENF_NO_HDMI_AUDIO equ $100
 BVPERR_CONFIG         equ -7
 BVPERR_TOOLARGE       equ -8
 BVPERR_NOBACKEND      equ -10
@@ -47,7 +51,9 @@ BVP_CAP_H264_HW       equ $00000100
 BVP_CAP_DIRECT_HVS    equ $00000400
 BVP_CAP_FRAME_FLAGS   equ $00000800
 BVP_CAP_INPUT_PTS     equ $00001000
-BVP_CAPS_STAGE3       equ BVP_CAP_API_V1+BVP_CAP_PTS64+BVP_CAP_H264_HW+BVP_CAP_DIRECT_HVS+BVP_CAP_FRAME_FLAGS+BVP_CAP_INPUT_PTS
+; N80: OpenStream honours BVP_OPENF_NO_HDMI_AUDIO (video without HDMI audio).
+BVP_CAP_NO_HDMI_AUDIO equ $00002000
+BVP_CAPS_STAGE3       equ BVP_CAP_API_V1+BVP_CAP_PTS64+BVP_CAP_H264_HW+BVP_CAP_DIRECT_HVS+BVP_CAP_FRAME_FLAGS+BVP_CAP_INPUT_PTS+BVP_CAP_NO_HDMI_AUDIO
 
 BVP_CODEC_NONE        equ 0
 BVP_CODEC_H264        equ 1
@@ -202,7 +208,12 @@ BVP_OpenStream:
         move.l  d0,BVP_LAST_ERROR(a6)
         rts
 BVP_OS_Open:
+        move.l  d0,d1
+        andi.l  #BVP_OPENF_NO_HDMI_AUDIO,d1
+        move.l  d1,n80_no_hdmi_audio
+        andi.l  #$FF,d0                  ; window size only (0 = cinema)
         move.l  d0,BVP_STREAM_FLAGS(a6)
+        clr.l   hdmi_v40o_hvs_saved
         move.l  #BVP_STATE_OPEN,BVP_STATE(a6)
         clr.l   BVP_CONFIG_FLAGS(a6)
         clr.l   BVP_LAST_ERROR(a6)
@@ -246,6 +257,7 @@ BVP_OS_Open:
         clr.l   n81_active_sys
         clr.l   n81_free_mode
         clr.l   n73_clock_armed
+        clr.l   n80_last_defer
         clr.l   n73_first_pcm_published
         clr.l   n73_prime_flushes
         clr.l   n73_clock_arm_attempts
@@ -586,9 +598,25 @@ BVP_CS_ForceCleanup:
         jsr     dma_pre_all
         jsr     v9_cleanup_all
         jsr     hdmi_v40o_close_window
+        ; N80: v9_cleanup_all only tears down after a drained EOS.  If it
+        ; left the MMAL service open, reset the VideoCore side anyway.
+        tst.l   mmal_remote_port
+        beq.s   BVP_CS_Cleaned
+        jsr     n80_failed_reset
+BVP_CS_Cleaned:
         clr.l   bvp_backend_ready
         clr.l   bvp_library_mode
+        bra.s   BVP_CS_Done
 BVP_CS_NoBackend:
+        ; N80: a stream whose setup failed never got bvp_backend_ready, so
+        ; nothing was torn down and the next open failed with -6 until a
+        ; reboot.  Close its MMAL service and give the display back.
+        tst.l   mmal_remote_port
+        beq.s   BVP_CS_Done
+        bsr     bvp_engine_env
+        jsr     n80_failed_reset
+        clr.l   bvp_library_mode
+BVP_CS_Done:
         bsr     bvp_close_dos
         move.l  bvp_libbase_global,a6
         clr.l   BVP_STATE(a6)
@@ -597,6 +625,40 @@ BVP_CS_NoBackend:
         move.l  d7,BVP_LAST_ERROR(a6)
         move.l  d7,d0
         movem.l (sp)+,d2-d7/a0-a5
+        rts
+
+; N80: reset the VideoCore side after a failed or undrained stream.
+; Closing this invocation's MMAL service makes the VideoCore delete every
+; component it owns (the same step a normal cleanup ends with).  Then
+; the Workbench HVS list saved before the renderer took over is put back.
+; Stream DMA memory is deliberately not freed: the VideoCore may still
+; own it.  Entered with shared RAM DMA-owned; leaves it DMA-owned.
+; Needs a5 = DOS base (bvp_engine_env).
+n80_failed_reset:
+        movem.l d0-d7/a0-a4/a6,-(sp)
+        lea     n80_msg_fail_reset,a1
+        jsr     n12_log
+        jsr     dma_post_all
+        jsr     v9_close_service
+        lea     n80_pfx_reset_close,a1
+        jsr     n15_log_hex32
+        jsr     dma_pre_all
+        move.l  a5,a6
+        move.l  #25,d1
+        jsr     Delay(a6)
+        jsr     dma_post_all
+        move.l  hdmi_v40o_hvs_saved,d0
+        beq.s   n80_reset_no_hvs
+        jsr     hdmi_v40o_restore_hvs_ptr
+        lea     n80_pfx_reset_hvs,a1
+        jsr     n15_log_hex32
+n80_reset_no_hvs:
+        clr.l   component_handle
+        clr.l   hdmi_v40o_renderer_handle
+        clr.l   v12a_isp_handle
+        clr.l   mmal_remote_port
+        jsr     dma_pre_all
+        movem.l (sp)+,d0-d7/a0-a4/a6
         rts
 
 BVP_Control:
@@ -1629,7 +1691,7 @@ bvp_prepare_second_stream:
 BVPL_LibName:
         dc.b    "berryvp.library",0
 BVPL_IdString:
-        dc.b    "berryvp.library 3.2 N79 + P96 WINDOW W49 + CLK81 HB CS ISP82 N83 N84 O3 S1 F TAB2 M N88 CM4 N97 A99 (06.11.2026) BerryVP 9.2 H264/HVS",13,10,0
+        dc.b    "berryvp.library 3.2 N79 + P96 WINDOW W49 + CLK81 HB CS ISP82 N83 N84 O3 S1 F TAB2 M N88 CM4 N97 A99 (06.11.2026) + N80 NO-HDMI-AUDIO (MintVID) BerryVP 9.2 H264/HVS",13,10,0
         cnop    0,2
 
         section bss,bss
@@ -7880,6 +7942,12 @@ vpv30_ctx_nonzero:
         or.l    #$30000000,d0
         rts
 
+; N80: same matcher with the 4096-poll cleanup budget.
+vpv30_wait_matching_long:
+        movem.l d1-d7/a0-a1/a3,-(sp)
+        move.l  #V10_CLEANUP_POLL_COUNT,d7
+        bra.s   vpv30_wait_loop
+
 vpv30_wait_matching:
         movem.l d1-d7/a0-a1/a3,-(sp)
         move.l  #POLL_COUNT,d7
@@ -9528,6 +9596,9 @@ port_enable_output_current:
         movem.l d2-d7/a2-a3,-(sp)
 
         move.l  #$1900E002,out_enable_context
+        clr.l   n80_en_why
+        clr.l   out_enable_status
+        clr.l   out_enable_rx_size
 
         ; V12G restart: map absolute TX position through SLAVE_QUEUE.
         tst.l   v12f_local_port
@@ -9689,6 +9760,19 @@ out_enable_clear_loop:
         move.l  d0,VCHIQ_BELL2
 
 out_enable_no_bell:
+        ; N80 direct graph: the renderer is already set up, and the next RX
+        ; record need not be this reply.  Wait for the exact PORT_ACTION +
+        ; context the way v12a_connect_ports does, skipping MMAL events.
+        tst.l   n80_direct_mode
+        beq.s   out_enable_plain_wait
+        move.l  #MMAL_PORT_ACTION,vpv30_expect_type
+        move.l  out_enable_context,vpv30_expect_context
+        jsr     vpv30_wait_matching_long
+        tst.l   d0
+        beq.w   out_enable_reply_mapped
+        move.l  #2,n80_en_why
+        bra.w   out_enable_bad_reply
+out_enable_plain_wait:
         move.l  #POLL_COUNT,d7
 
 out_enable_poll_loop:
@@ -9709,6 +9793,7 @@ out_enable_poll_loop:
 
         ; timeout: regain CPU ownership before returning
         bsr     dma_post_all
+        move.l  #1,n80_en_why
         lea     e_enable_timeout,a1
         move.l  #e_enable_timeout_end-e_enable_timeout,d3
         bsr     print
@@ -9720,6 +9805,7 @@ out_enable_reply_seen:
         jsr     v12a_rx_map_data
         tst.l   d0
         bne.w   out_enable_bad_reply
+out_enable_reply_mapped:
         move.l  a2,a0
         bsr     load_le32
         move.l  d0,out_enable_rx_msgid
@@ -9798,6 +9884,10 @@ out_enable_reply_seen:
         rts
 
 out_enable_bad_reply:
+        tst.l   n80_en_why
+        bne.s   out_enable_why_set
+        move.l  #3,n80_en_why
+out_enable_why_set:
         lea     e_enable_reply,a1
         move.l  #e_enable_reply_end-e_enable_reply,d3
         bsr     print
@@ -50147,6 +50237,7 @@ hdmi_v40o_set_displayregion:
         movem.l d1-d7/a0-a3,-(sp)
         clr.l   hdmi_v40o_param_status
         clr.l   hdmi_v40o_param_rx_size
+        clr.l   n80_dr_word
 
         ; Worker payload is 32-byte prefix before param + 84-byte displayregion
         ; = 116 bytes. With 8-byte VCHIQ header, reserve/alignment stride = 128.
@@ -50155,7 +50246,7 @@ hdmi_v40o_set_displayregion:
         move.l  #128,d0
         jsr     h26a_reserve_tx
         tst.l   d0
-        bne.w   hdmi_v40o_param_fail
+        bne.w   n80_dr1
         bra.s   hdmi_v40o_param_tx_ready
 hdmi_v40o_param_tx_legacy:
         move.l  slot_ptr,a0
@@ -50261,7 +50352,10 @@ v41b_displayregion_alpha_ready:
         moveq   #0,d0
         move.l  d0,VCHIQ_BELL2
 hdmi_v40o_param_wait_setup:
-        move.l  #POLL_COUNT,d7
+        ; N80: the cleanup budget, not 100 polls.  The reply can be slow
+        ; while the VideoCore reconfigures the display; POLLS= in the
+        ; trace says how long it took.
+        move.l  #V10_CLEANUP_POLL_COUNT,d7
 hdmi_v40o_param_wait:
         jsr     short_delay
         jsr     dma_post_all
@@ -50274,39 +50368,46 @@ hdmi_v40o_param_wait:
         subq.l  #1,d7
         bne.s   hdmi_v40o_param_wait
         jsr     dma_post_all
-        bra.w   hdmi_v40o_param_fail
+        bra.w   n80_dr2
 
 hdmi_v40o_param_have:
+        move.l  #V10_CLEANUP_POLL_COUNT,d0
+        sub.l   d7,d0
+        lea     n80_pfx_dr_polls,a1
+        jsr     n15_log_hex32
         jsr     v12a_rx_map_data
         tst.l   d0
-        bne.w   hdmi_v40o_param_fail
+        bne.w   n80_dr3
         lea     4(a2),a0
         jsr     load_le32
         move.l  d0,hdmi_v40o_param_rx_size
         cmp.l   #28,d0
-        bcs.w   hdmi_v40o_param_fail
+        bcs.w   n80_dr4
         lea     8(a2),a0
         jsr     load_le32
+        move.l  d0,n80_dr_word
         cmp.l   #MMAL_MAGIC,d0
-        bne.w   hdmi_v40o_param_fail_consume
+        bne.w   n80_dr5
         lea     12(a2),a0
         jsr     load_le32
+        move.l  d0,n80_dr_word
         cmp.l   #MMAL_PORT_PARAMETER_SET,d0
-        bne.w   hdmi_v40o_param_fail_consume
+        bne.w   n80_dr6
         lea     20(a2),a0
         jsr     load_le32
+        move.l  d0,n80_dr_word
         cmp.l   #$12D30001,d0
-        bne.w   hdmi_v40o_param_fail_consume
+        bne.w   n80_dr7
         lea     32(a2),a0
         jsr     load_le32
         move.l  d0,hdmi_v40o_param_status
         move.l  hdmi_v40o_param_rx_size,d0
         jsr     v12a_rx_consume_payload
         tst.l   d0
-        bne.w   hdmi_v40o_param_fail
+        bne.w   n80_dr8
         move.l  hdmi_v40o_param_status,d0
         tst.l   d0
-        bne.w   hdmi_v40o_param_fail
+        bne.w   n80_dr9
         move.l  #1,hdmi_v40o_displayregion_ok
         lea     msg_hdmi_v40o_displayregion_ok,a1
         move.l  #msg_hdmi_v40o_displayregion_ok_end-msg_hdmi_v40o_displayregion_ok,d3
@@ -50314,6 +50415,40 @@ hdmi_v40o_param_have:
         moveq   #0,d0
         bra.s   hdmi_v40o_param_done
 
+; N80: say why DISPLAYREGION failed (1 tx reserve, 2 no reply, 3 rx map,
+; 4 short reply, 5 bad magic, 6 not PARAMETER_SET reply, 7 wrong context,
+; 8 consume failed, 9 VideoCore status != 0).  WORD = the mismatching
+; reply field for 5..7.
+n80_dr1:
+        moveq   #1,d0
+        bra.s   n80_dr_note
+n80_dr2:
+        moveq   #2,d0
+        bra.s   n80_dr_note
+n80_dr3:
+        moveq   #3,d0
+        bra.s   n80_dr_note
+n80_dr4:
+        moveq   #4,d0
+        bra.s   n80_dr_note
+n80_dr8:
+        moveq   #8,d0
+        bra.s   n80_dr_note
+n80_dr9:
+        moveq   #9,d0
+n80_dr_note:
+        bsr     n80_dr_log
+        bra.s   hdmi_v40o_param_fail
+n80_dr5:
+        moveq   #5,d0
+        bra.s   n80_dr_note_consume
+n80_dr6:
+        moveq   #6,d0
+        bra.s   n80_dr_note_consume
+n80_dr7:
+        moveq   #7,d0
+n80_dr_note_consume:
+        bsr     n80_dr_log
 hdmi_v40o_param_fail_consume:
         move.l  hdmi_v40o_param_rx_size,d0
         jsr     v12a_rx_consume_payload
@@ -50328,6 +50463,22 @@ hdmi_v40o_param_fail:
         moveq   #1,d0
 hdmi_v40o_param_done:
         movem.l (sp)+,d1-d7/a0-a3
+        rts
+
+n80_dr_log:
+        movem.l d0-d1/a0-a1,-(sp)
+        lea     n80_pfx_dr_reason,a1
+        jsr     n15_log_hex32
+        move.l  hdmi_v40o_param_rx_size,d0
+        lea     n80_pfx_dr_size,a1
+        jsr     n15_log_hex32
+        move.l  n80_dr_word,d0
+        lea     n80_pfx_dr_word,a1
+        jsr     n15_log_hex32
+        move.l  hdmi_v40o_param_status,d0
+        lea     n80_pfx_dr_status,a1
+        jsr     n15_log_hex32
+        movem.l (sp)+,d0-d1/a0-a1
         rts
 
 ; Apply buffer requirements to the connected ISP input. This mirrors
@@ -50526,6 +50677,11 @@ n79p_setup_graph_router:
         bne.s   n79p_router_k
         cmpi.l  #3,v41_display_style
         bne.s   n79p_router_k
+        ; N80: without HDMI audio every width takes the direct graph. The
+        ; scheduler-free ISP graph does not come up on a PiStorm 600 (the
+        ; VideoCore stops answering), so N83's ISP upscale is skipped too.
+        tst.l   n80_no_hdmi_audio
+        bne.w   n80_router_direct
         ; N83: films smaller than 1280x720 in either direction: the HVS
         ; would have to upscale by an odd factor and then draws green
         ; 1-pixel grid lines (tested 26./27.10.2026: lines at 1.88-2.4x,
@@ -50581,6 +50737,7 @@ n83_router_size_ok:
         move.l  v6_src_aligned_w,d0
         andi.l  #63,d0
         bne.s   n79p_router_k
+n80_router_direct:
         jsr     n79p_direct_setup_graph
         bra.s   o1_router_after
 n79p_router_k:
@@ -50681,16 +50838,16 @@ n79p_direct_setup_graph:
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd1
         move.l  port_last_handle,d0
         cmp.l   v12a_decoder_output,d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd2
         move.l  port_fmt_type,d0
         cmp.l   #MMAL_ES_VIDEO,d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd3
         move.l  port_fmt_encoding,d0
         cmp.l   #MMAL_ENCODING_I420,d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd4
         ; N16: snapshot firmware decoder OUTPUT requirements before OPQV.
         move.l  port_fmt_encoding,d0
         lea     n15_pfx_out_pre_enc,a1
@@ -50751,7 +50908,7 @@ n79p_direct_setup_graph:
 n79p_d_vpv98_c_before_capture_done:
         jsr     hdmi_v40o_capture_wb_fb
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd5
         cmpi.l  #203,v40j_cli_mode
         bne.s   n79p_d_vpv98_c_capture_ok_done
         lea     msg_vpv98_c_capture_ok,a1
@@ -50786,7 +50943,7 @@ n79p_d_v41l_preopen_style_ready:
 n79p_d_n79p96_open_movie_window:
         jsr     hdmi_v40o_open_window
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd6
         cmpi.l  #203,v40j_cli_mode
         bne.s   n79p_d_vpv98_c_window_ok_done
         lea     msg_vpv98_c_window_ok,a1
@@ -50799,7 +50956,7 @@ n79p_d_vpv98_c_window_ok_done:
         ; safety difference from v25/v30: the graph never changes mid-stream.
         jsr     v32_wait_initial_mode
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd7
         cmpi.l  #203,v40j_cli_mode
         bne.s   n79p_d_vpv98_c_selector_ok_done
         lea     msg_vpv98_c_selector_ok,a1
@@ -50841,10 +50998,10 @@ n79p_d_vpv98_c_selector_ok_done:
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd8
         move.l  port_last_handle,d0
         cmp.l   v12a_decoder_output,d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd9
         move.l  #MMAL_ES_VIDEO,port_fmt_type
         move.l  #MMAL_ENCODING_OPAQUE,port_fmt_encoding
         clr.l   port_fmt_variant
@@ -50861,19 +51018,19 @@ n79p_d_v12b_dec_opaque_first_num_ok:
         jsr     port_info_set_input
         clr.l   v12c_local_set_active
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd10
 
         move.l  #MMAL_PORT_OUTPUT,port_query_type
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd11
         move.l  port_last_handle,d0
         cmp.l   v12a_decoder_output,d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd12
         move.l  port_fmt_encoding,d0
         cmp.l   #MMAL_ENCODING_OPAQUE,d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd13
 
         ; V12D: use the decoder's MINIMUM opaque header count, not the
         ; recommended count.  This firmware reports min=3, recommended=10 at
@@ -50901,16 +51058,16 @@ n79p_d_v12b_dec_size_nonzero:
         jsr     port_info_set_input
         clr.l   v12c_local_set_active
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd14
 
         move.l  #MMAL_PORT_OUTPUT,port_query_type
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd15
         move.l  port_fmt_encoding,d0
         cmp.l   #MMAL_ENCODING_OPAQUE,d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd16
 
         ; N16: exact lazy-allocation contract that is live when first AU arrives.
         move.l  port_fmt_encoding,d0
@@ -50958,7 +51115,7 @@ n79p_d_v12b_dec_size_nonzero:
 
         bsr     v12a_create_isp
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd17
         cmpi.l  #3,v41_display_style
         bne.s   n79p_d_v41b_setup_continue_isp
         lea     msg_vpv98_c_renderer_created,a1
@@ -50966,7 +51123,7 @@ n79p_d_v12b_dec_size_nonzero:
         jsr     vpv21n_trace
         jsr     v41b_setup_renderer_after_create
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd18
         lea     msg_vpv98_c_renderer_ready,a1
         move.l  #msg_vpv98_c_renderer_ready_end-msg_vpv98_c_renderer_ready,d3
         jsr     vpv21n_trace
@@ -50980,7 +51137,7 @@ n79p_d_v41b_setup_continue_isp:
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd19
         move.l  port_last_handle,v12a_isp_input
         move.l  #MMAL_ES_VIDEO,port_fmt_type
         move.l  #MMAL_ENCODING_OPAQUE,port_fmt_encoding
@@ -51010,25 +51167,25 @@ n79p_d_v12a_in_num_ok:
         jsr     port_info_set_input
         clr.l   v12c_local_set_active
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd20
         move.l  #MMAL_PORT_INPUT,port_query_type
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd21
         move.l  port_last_handle,d0
         cmp.l   v12a_isp_input,d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd22
         move.l  port_fmt_encoding,d0
         cmp.l   #MMAL_ENCODING_OPAQUE,d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd23
 
         ; HDMI_v41L: ISP OUTPUT 0 = small aspect-correct BGR24. VideoCore does YUV->RGB.
         move.l  #MMAL_PORT_OUTPUT,port_query_type
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd24
         move.l  port_last_handle,v12a_isp_output
         move.l  #MMAL_ES_VIDEO,port_fmt_type
         move.l  #MMAL_ENCODING_BGR24,port_fmt_encoding
@@ -51061,18 +51218,18 @@ n79p_d_v12a_in_num_ok:
         jsr     port_info_set_input
         clr.l   v12c_local_set_active
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd25
         move.l  #MMAL_PORT_OUTPUT,port_query_type
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd26
         move.l  port_last_handle,d0
         cmp.l   v12a_isp_output,d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd27
         move.l  port_fmt_encoding,d0
         cmp.l   #MMAL_ENCODING_BGR24,d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd28
 
         ; mkvr7 SAFE RESTORE:
         ; Matroska H264 input still uses the hardware-proven VPv102 framing and
@@ -51085,7 +51242,7 @@ n79p_d_v12a_in_num_ok:
         ; and VPv174 nonblocking P96 layer handling).
         bsr     v12a_connect_ports
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd29
 
         ; Apply peer input requirements before enabling connected decoder output.
         move.l  v12a_isp_handle,component_handle
@@ -51093,13 +51250,13 @@ n79p_d_v12a_in_num_ok:
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd30
         move.l  port_last_handle,d0
         cmp.l   v12a_isp_input,d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd31
         bsr     v12a_set_isp_requirements
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd32
 
         ; Enable decoder OUTPUT; connected ISP INPUT comes up through the tunnel.
         move.l  v12a_decoder_handle,component_handle
@@ -51108,7 +51265,7 @@ n79p_d_v12a_in_num_ok:
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd33
         move.l  port_buf_num,d0
         cmpi.l  #2,d0
         bcc.s   n79p_d_vpv176_mkv_dec_out_num_ok
@@ -51117,7 +51274,7 @@ n79p_d_vpv176_mkv_dec_out_num_ok:
         move.l  d0,port_buf_num
         jsr     port_enable_output_current
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd34
 
         ; Verify ISP INPUT was enabled by the direct VideoCore tunnel.
         move.l  v12a_isp_handle,component_handle
@@ -51125,9 +51282,9 @@ n79p_d_vpv176_mkv_dec_out_num_ok:
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd35
         cmpi.l  #1,port_enabled
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd36
 
         ; Enable host-facing ISP output with exactly two small buffers.
         move.l  v12a_isp_output,output_port_handle
@@ -51135,26 +51292,26 @@ n79p_d_vpv176_mkv_dec_out_num_ok:
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd37
         moveq   #2,d0
         move.l  d0,port_buf_num
         move.l  d0,v10j_output_req_count
         jsr     port_enable_output_current
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd38
         move.l  #MMAL_PORT_OUTPUT,port_query_type
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd39
         move.l  port_enabled,d0
         cmpi.l  #1,d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd40
 
         ; ISP is a real component and must be enabled too.
         jsr     component_enable_worker
         tst.l   d0
-        bne.w   n79p_d_v12a_setup_fail
+        bne.w   n80_pd41
 
         ; Save only the SMALL ISP output for existing host/HAM6 code.
         move.l  v12a_isp_handle,output_component_handle
@@ -51174,7 +51331,7 @@ n79p_d_vpv176_mkv_dec_out_num_ok:
         add.l   d1,d0                    ; BGR24: aligned width*height*3
         move.l  d0,output_frame_bytes_expected
         cmp.l   output_buf_size_saved,d0
-        bhi.w   n79p_d_v12a_setup_fail
+        bhi.w   n80_pd42
 
         ; V40: the chosen size is now final for this playback.  Resize the
         ; Intuition window exactly once to surround the fixed ISP crop.
@@ -51207,6 +51364,184 @@ n79p_d_vpv176_mkv_dec_out_num_ok:
         jsr     newline
         moveq   #0,d0
         bra.s   n79p_d_v12a_setup_done
+n80_pd1:
+        move.l  d0,n80_pd_d0
+        move.l  #1,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd2:
+        move.l  d0,n80_pd_d0
+        move.l  #2,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd3:
+        move.l  d0,n80_pd_d0
+        move.l  #3,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd4:
+        move.l  d0,n80_pd_d0
+        move.l  #4,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd5:
+        move.l  d0,n80_pd_d0
+        move.l  #5,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd6:
+        move.l  d0,n80_pd_d0
+        move.l  #6,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd7:
+        move.l  d0,n80_pd_d0
+        move.l  #7,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd8:
+        move.l  d0,n80_pd_d0
+        move.l  #8,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd9:
+        move.l  d0,n80_pd_d0
+        move.l  #9,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd10:
+        move.l  d0,n80_pd_d0
+        move.l  #10,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd11:
+        move.l  d0,n80_pd_d0
+        move.l  #11,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd12:
+        move.l  d0,n80_pd_d0
+        move.l  #12,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd13:
+        move.l  d0,n80_pd_d0
+        move.l  #13,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd14:
+        move.l  d0,n80_pd_d0
+        move.l  #14,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd15:
+        move.l  d0,n80_pd_d0
+        move.l  #15,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd16:
+        move.l  d0,n80_pd_d0
+        move.l  #16,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd17:
+        move.l  d0,n80_pd_d0
+        move.l  #17,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd18:
+        move.l  d0,n80_pd_d0
+        move.l  #18,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd19:
+        move.l  d0,n80_pd_d0
+        move.l  #19,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd20:
+        move.l  d0,n80_pd_d0
+        move.l  #20,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd21:
+        move.l  d0,n80_pd_d0
+        move.l  #21,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd22:
+        move.l  d0,n80_pd_d0
+        move.l  #22,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd23:
+        move.l  d0,n80_pd_d0
+        move.l  #23,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd24:
+        move.l  d0,n80_pd_d0
+        move.l  #24,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd25:
+        move.l  d0,n80_pd_d0
+        move.l  #25,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd26:
+        move.l  d0,n80_pd_d0
+        move.l  #26,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd27:
+        move.l  d0,n80_pd_d0
+        move.l  #27,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd28:
+        move.l  d0,n80_pd_d0
+        move.l  #28,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd29:
+        move.l  d0,n80_pd_d0
+        move.l  #29,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd30:
+        move.l  d0,n80_pd_d0
+        move.l  #30,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd31:
+        move.l  d0,n80_pd_d0
+        move.l  #31,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd32:
+        move.l  d0,n80_pd_d0
+        move.l  #32,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd33:
+        move.l  d0,n80_pd_d0
+        move.l  #33,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd34:
+        move.l  d0,n80_pd_d0
+        move.l  #34,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd35:
+        move.l  d0,n80_pd_d0
+        move.l  #35,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd36:
+        move.l  d0,n80_pd_d0
+        move.l  #36,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd37:
+        move.l  d0,n80_pd_d0
+        move.l  #37,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd38:
+        move.l  d0,n80_pd_d0
+        move.l  #38,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd39:
+        move.l  d0,n80_pd_d0
+        move.l  #39,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd40:
+        move.l  d0,n80_pd_d0
+        move.l  #40,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd41:
+        move.l  d0,n80_pd_d0
+        move.l  #41,n80_pd_step
+        bra.w   n80_pd_fail
+n80_pd42:
+        move.l  d0,n80_pd_d0
+        move.l  #42,n80_pd_step
+        bra.w   n80_pd_fail
+; N80: say which of the direct graph setup's failure exits was taken
+; (numbered in source order) and its D0, as N80 GRAPH FAIL STEP/D0.
+n80_pd_fail:
+        move.l  n80_pd_step,d0
+        lea     n80_pfx_pd_step,a1
+        jsr     n15_log_hex32
+        move.l  n80_pd_d0,d0
+        lea     n80_pfx_pd_d0,a1
+        jsr     n15_log_hex32
+        bra.w   n79p_d_v12a_setup_fail
 n79p_d_v12a_setup_fail:
         move.l  v12a_decoder_handle,component_handle
         move.l  v12a_saved_input_handle,input_port_handle
@@ -53273,12 +53608,26 @@ n79j_setup_sched_isp_renderer:
         move.l  #HDMI_V14_HVS_DLIST_PTR,a0
         jsr     load_le32
         move.l  d0,hdmi_v40o_hvs_saved
+        ; N80: without HDMI audio (no ConfigAudio) the Audio-Master clock
+        ; never runs, and a scheduler in the chain would hold every frame.
+        ; Tunnel decoder -> ISP directly; n66_service_pending_video then
+        ; paces AUs with the host frame grid because the graph is not
+        ; marked scheduler-ready.  The tunnel is built after the
+        ; renderer's DISPLAYREGION: with decoder -> ISP already in place
+        ; the VideoCore never answered that request (PiStorm 600).
+        clr.l   n80_direct_mode
+        tst.l   n80_no_hdmi_audio
+        bne.s   n80_n79j_direct
         ; Proven N79 graph helper: decoder -> scheduler -> ISP.
         jsr     vpv126_setup_scheduler_data_graph
         tst.l   d0
-        bne.w   n79j_fail
+        bne.w   n80_j1
         move.l  #1,n73_scheduler_graph_ready
         move.l  #1,vpv166_c_sched_feedahead
+        bra.s   n80_n79j_graph_ready
+n80_n79j_direct:
+        move.l  #1,n80_direct_mode
+n80_n79j_graph_ready:
         move.l  v12a_isp_handle,n79j_isp_handle
         move.l  v12a_isp_input,n79j_isp_input
         move.l  v12a_isp_output,n79j_isp_output
@@ -53286,14 +53635,14 @@ n79j_setup_sched_isp_renderer:
         move.l  #3,v41_display_style
         bsr     v12a_create_isp
         tst.l   d0
-        bne.w   n79j_fail
+        bne.w   n80_j3
         ; Renderer INPUT 0 = the ISP I420 surface.
         move.l  v12a_isp_handle,component_handle
         move.l  #MMAL_PORT_INPUT,port_query_type
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79j_fail
+        bne.w   n80_j4
         move.l  port_last_handle,v12a_isp_input
         move.l  #MMAL_ES_VIDEO,port_fmt_type
         move.l  #MMAL_ENCODING_I420,port_fmt_encoding
@@ -53323,23 +53672,37 @@ n79j_rin_num_ok:
         jsr     port_info_set_input
         clr.l   v12c_local_set_active
         tst.l   d0
-        bne.w   n79j_fail
+        bne.w   n80_j5
         move.l  #MMAL_PORT_INPUT,port_query_type
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79j_fail
+        bne.w   n80_j6
         move.l  port_last_handle,d0
         cmp.l   v12a_isp_input,d0
-        bne.w   n79j_fail
+        bne.w   n80_j7
         cmpi.l  #MMAL_ENCODING_I420,port_fmt_encoding
-        bne.w   n79j_fail
+        bne.w   n80_j8
         ; Renderer visible, display region as for the direct C path.
         clr.l   v41b_renderer_reveal_pending
         move.l  #1,v41b_renderer_visible
         bsr     hdmi_v40o_set_displayregion
         tst.l   d0
-        bne.w   n79j_fail
+        bne.w   n80_j9
+        ; N80 direct mode: now tunnel decoder -> ISP.  The helper works on
+        ; v12a_isp_*, which hold the renderer here, so swap the ISP in.
+        tst.l   n80_direct_mode
+        beq.s   n80_n79j_after_dr
+        move.l  v12a_isp_handle,n80_rend_handle
+        move.l  v12a_isp_input,n80_rend_input
+        move.l  n79j_isp_handle,v12a_isp_handle
+        move.l  n79j_isp_input,v12a_isp_input
+        jsr     n80_setup_direct_isp_graph
+        move.l  n80_rend_handle,v12a_isp_handle
+        move.l  n80_rend_input,v12a_isp_input
+        tst.l   d0
+        bne.w   n80_j2
+n80_n79j_after_dr:
         ; ISP.output -> renderer.input through the proven connector.
         move.l  v12a_decoder_handle,n79j_save_dec_handle
         move.l  v12a_decoder_output,n79j_save_dec_output
@@ -53349,17 +53712,17 @@ n79j_rin_num_ok:
         move.l  n79j_save_dec_handle,v12a_decoder_handle
         move.l  n79j_save_dec_output,v12a_decoder_output
         tst.l   d0
-        bne.w   n79j_fail
+        bne.w   n80_j10
         ; Renderer peer requirements before ISP output is enabled.
         move.l  v12a_isp_handle,component_handle
         move.l  #MMAL_PORT_INPUT,port_query_type
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79j_fail
+        bne.w   n80_j11
         bsr     v12a_set_isp_requirements
         tst.l   d0
-        bne.w   n79j_fail
+        bne.w   n80_j12
         ; Enable ISP OUTPUT; connected renderer input comes up with it.
         move.l  n79j_isp_handle,component_handle
         move.l  n79j_isp_output,output_port_handle
@@ -53367,7 +53730,7 @@ n79j_rin_num_ok:
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79j_fail
+        bne.w   n80_j13
         move.l  port_buf_num,d0
         cmpi.l  #2,d0
         bcc.s   n79j_iout_num_ok
@@ -53376,23 +53739,23 @@ n79j_iout_num_ok:
         move.l  d0,port_buf_num
         jsr     port_enable_output_current
         tst.l   d0
-        bne.w   n79j_fail
+        bne.w   n80_j14
         move.l  v12a_isp_handle,component_handle
         move.l  #MMAL_PORT_INPUT,port_query_type
         clr.l   port_query_index
         jsr     port_info_get
         tst.l   d0
-        bne.w   n79j_fail
+        bne.w   n80_j15
         cmpi.l  #1,port_enabled
-        bne.w   n79j_fail
+        bne.w   n80_j16
         ; Enable renderer, then the ISP component.
         jsr     component_enable_worker
         tst.l   d0
-        bne.s   n79j_fail
+        bne.s   n80_j17
         move.l  n79j_isp_handle,component_handle
         jsr     component_enable_worker
         tst.l   d0
-        bne.s   n79j_fail
+        bne.s   n80_j18
         ; No host-facing output buffers on this path.
         clr.l   output_component_handle
         clr.l   output_port_handle
@@ -53411,6 +53774,78 @@ n79j_iout_num_ok:
         jsr     n12_log
         moveq   #0,d0
         bra.s   n79j_done
+n80_j1:
+        move.l  d0,n80_n79j_d0
+        move.l  #1,n80_n79j_step
+        bra.w   n79j_fail
+n80_j2:
+        move.l  d0,n80_n79j_d0
+        move.l  #2,n80_n79j_step
+        bra.w   n79j_fail
+n80_j3:
+        move.l  d0,n80_n79j_d0
+        move.l  #3,n80_n79j_step
+        bra.w   n79j_fail
+n80_j4:
+        move.l  d0,n80_n79j_d0
+        move.l  #4,n80_n79j_step
+        bra.w   n79j_fail
+n80_j5:
+        move.l  d0,n80_n79j_d0
+        move.l  #5,n80_n79j_step
+        bra.w   n79j_fail
+n80_j6:
+        move.l  d0,n80_n79j_d0
+        move.l  #6,n80_n79j_step
+        bra.w   n79j_fail
+n80_j7:
+        move.l  d0,n80_n79j_d0
+        move.l  #7,n80_n79j_step
+        bra.w   n79j_fail
+n80_j8:
+        move.l  d0,n80_n79j_d0
+        move.l  #8,n80_n79j_step
+        bra.w   n79j_fail
+n80_j9:
+        move.l  d0,n80_n79j_d0
+        move.l  #9,n80_n79j_step
+        bra.w   n79j_fail
+n80_j10:
+        move.l  d0,n80_n79j_d0
+        move.l  #10,n80_n79j_step
+        bra.w   n79j_fail
+n80_j11:
+        move.l  d0,n80_n79j_d0
+        move.l  #11,n80_n79j_step
+        bra.w   n79j_fail
+n80_j12:
+        move.l  d0,n80_n79j_d0
+        move.l  #12,n80_n79j_step
+        bra.w   n79j_fail
+n80_j13:
+        move.l  d0,n80_n79j_d0
+        move.l  #13,n80_n79j_step
+        bra.w   n79j_fail
+n80_j14:
+        move.l  d0,n80_n79j_d0
+        move.l  #14,n80_n79j_step
+        bra.w   n79j_fail
+n80_j15:
+        move.l  d0,n80_n79j_d0
+        move.l  #15,n80_n79j_step
+        bra.w   n79j_fail
+n80_j16:
+        move.l  d0,n80_n79j_d0
+        move.l  #16,n80_n79j_step
+        bra.w   n79j_fail
+n80_j17:
+        move.l  d0,n80_n79j_d0
+        move.l  #17,n80_n79j_step
+        bra.w   n79j_fail
+n80_j18:
+        move.l  d0,n80_n79j_d0
+        move.l  #18,n80_n79j_step
+        bra.w   n79j_fail
 n79j_fail:
         tst.l   n79j_save_dec_handle
         beq.s   n79j_fail_no_dec
@@ -53421,6 +53856,13 @@ n79j_fail_no_dec:
         move.l  v12a_saved_input_handle,input_port_handle
         lea     n79j_msg_graph_fail,a1
         jsr     n12_log
+        move.l  n80_n79j_step,d0
+        lea     n80_pfx_j_step,a1
+        jsr     n15_log_hex32
+        move.l  n80_n79j_d0,d0
+        lea     n80_pfx_j_d0,a1
+        jsr     n15_log_hex32
+        clr.l   n80_n79j_step
         moveq   #1,d0
 n79j_done:
         movem.l (sp)+,d1-d7/a0-a3
@@ -56433,7 +56875,23 @@ v41b_renderer_visibility_ready:
         ; now; the Audio-Master clock is armed later, only after the first real
         ; PCM block has been published (N79 prime-2 startup).
         tst.l   bvp_library_mode
-        bne.w   n73_library_scheduler_enable
+        beq.s   n80_c_standalone
+        ; N80 (MintVID): the scheduler only shows a frame once the
+        ; Audio-Master clock runs, and only ConfigAudio arms that clock.  A
+        ; stream without HDMI audio (mrberry --no-audio, or --paula where the
+        ; Amiga plays the sound) never calls ConfigAudio, so its first AU was
+        ; deferred forever.  Such streams take the direct decoder -> renderer
+        ; tunnel instead; n66_service_pending_video then paces them with the
+        ; host frame grid (n70_*), as standalone C mode does for MP4 input.
+        ; The caller says so in OpenStream (BVP_OPENF_NO_HDMI_AUDIO): the
+        ; graph is built before ConfigAudio, so n73_clock_armed is always 0
+        ; here and cannot tell the two cases apart.
+        tst.l   n80_no_hdmi_audio
+        beq.w   n73_library_scheduler_enable
+        lea     n80_msg_direct_no_audio,a1
+        jsr     n12_log
+        bra.w   vpv166_c_direct_legacy
+n80_c_standalone:
 
         ; R5: normal C keeps decoder -> scheduler -> renderer.  A successful
         ; compressed IDR seek is already positioned at the target, therefore
@@ -68411,6 +68869,124 @@ vpv18_test_aac_end:
 ; mkvr7 - real VideoCore scheduler data path
 ; decoder OPQV -> scheduler OPQV -> ISP BGRA/P96
 ; ====================================================================
+; N80 - decoder.output -> ISP.input without a video_scheduler, for streams
+; that have no Audio-Master clock (no HDMI audio).  Same steps as
+; vpv126_setup_scheduler_data_graph minus the scheduler: connect, set the
+; ISP input peer requirements, enable decoder OUTPUT (which brings the
+; tunnelled ISP INPUT up), verify.  D0=0 ok, D0=1 failure.
+n80_setup_direct_isp_graph:
+        movem.l d1-d7/a0-a3,-(sp)
+        clr.l   vpv126_data_graph_ok
+        jsr     v12a_connect_ports
+        tst.l   d0
+        bne.w   n80_dg_f1
+        move.l  v12a_isp_handle,component_handle
+        move.l  #MMAL_PORT_INPUT,port_query_type
+        clr.l   port_query_index
+        jsr     port_info_get
+        tst.l   d0
+        bne.w   n80_dg_f2
+        jsr     v12a_set_isp_requirements
+        tst.l   d0
+        bne.w   n80_dg_f3
+        move.l  v12a_decoder_handle,component_handle
+        move.l  v12a_decoder_output,output_port_handle
+        move.l  #MMAL_PORT_OUTPUT,port_query_type
+        clr.l   port_query_index
+        jsr     port_info_get
+        tst.l   d0
+        bne.w   n80_dg_f4
+        move.l  port_buf_num,d0
+        cmpi.l  #2,d0
+        bcc.s   n80_dg_num_ok
+        moveq   #2,d0
+n80_dg_num_ok:
+        move.l  d0,port_buf_num
+        jsr     port_enable_output_current
+        tst.l   d0
+        bne.w   n80_dg_f5
+        move.l  v12a_isp_handle,component_handle
+        move.l  #MMAL_PORT_INPUT,port_query_type
+        clr.l   port_query_index
+        jsr     port_info_get
+        tst.l   d0
+        bne.w   n80_dg_f6
+        cmpi.l  #1,port_enabled
+        bne.w   n80_dg_f7
+        move.l  #1,vpv126_data_graph_ok
+        lea     n80_msg_direct_no_audio,a1
+        jsr     n12_log
+        moveq   #0,d0
+        bra.s   n80_dg_done
+n80_dg_f1:
+        move.l  d0,n80_dg_d0
+        moveq   #1,d0
+        bra.s   n80_dg_fail
+n80_dg_f2:
+        move.l  d0,n80_dg_d0
+        moveq   #2,d0
+        bra.s   n80_dg_fail
+n80_dg_f3:
+        move.l  d0,n80_dg_d0
+        moveq   #3,d0
+        bra.s   n80_dg_fail
+n80_dg_f4:
+        move.l  d0,n80_dg_d0
+        moveq   #4,d0
+        bra.s   n80_dg_fail
+n80_dg_f5:
+        move.l  d0,n80_dg_d0
+        move.l  n80_en_why,d0
+        lea     n80_pfx_en_why,a1
+        jsr     n15_log_hex32
+        move.l  out_enable_rx_size,d0
+        lea     n80_pfx_en_rx,a1
+        jsr     n15_log_hex32
+        move.l  out_enable_status,d0
+        lea     n80_pfx_en_st,a1
+        jsr     n15_log_hex32
+        move.l  vpv30_skipped,d0
+        lea     n80_pfx_skipped,a1
+        jsr     n15_log_hex32
+        move.l  vpv30_async_skipped,d0
+        lea     n80_pfx_async,a1
+        jsr     n15_log_hex32
+        moveq   #5,d0
+        bra.w   n80_dg_fail
+n80_dg_f6:
+        move.l  d0,n80_dg_d0
+        moveq   #6,d0
+        bra.s   n80_dg_fail
+n80_dg_f7:
+        move.l  d0,n80_dg_d0
+        moveq   #7,d0
+        bra.s   n80_dg_fail
+n80_dg_fail:
+        ; N80: which step (1 connect, 2/4/6 port get, 3 ISP requirements,
+        ; 5 decoder output enable, 7 ISP input not enabled), its D0, and
+        ; the CONNECT reply fields.
+        lea     n80_pfx_dg_step,a1
+        jsr     n15_log_hex32
+        move.l  n80_dg_d0,d0
+        lea     n80_pfx_dg_d0,a1
+        jsr     n15_log_hex32
+        move.l  v12a_connect_rx_size,d0
+        lea     n80_pfx_dg_crx,a1
+        jsr     n15_log_hex32
+        move.l  v12a_connect_header_status,d0
+        lea     n80_pfx_dg_chdr,a1
+        jsr     n15_log_hex32
+        move.l  v12a_connect_status,d0
+        lea     n80_pfx_dg_cst,a1
+        jsr     n15_log_hex32
+        lea     n80_msg_direct_fail,a1
+        jsr     n12_log
+        moveq   #1,d0
+n80_dg_done:
+        move.l  v12a_isp_handle,component_handle
+        movem.l (sp)+,d1-d7/a0-a3
+        rts
+
 vpv126_setup_scheduler_data_graph:
         movem.l d1-d7/a0-a3,-(sp)
         clr.l   vpv126_data_graph_ok
@@ -69933,7 +70509,7 @@ n10d_name_12: dc.b "N79_12_VIDEO_RETURN",0
         section bvp_n9_audio_code,code
 
 BVP_GetVersionN9:
-        move.l  #$0003001C,d0
+        move.l  #$00030050,d0           ; N80: 3.80 (P35 reports 3.28)
         rts
 
 ; N16 VIDEO-ONLY CONTROL.  Keep the N13 video backend bit-for-bit in source
@@ -71108,7 +71684,21 @@ n66_vsvc_have:
         bne.s   n81_vsvc_armed
         jsr     n81_try_free_clock        ; CLK81: cinema without audio
         tst.l   n73_clock_armed
-        beq.w   n66_vsvc_defer
+        bne.s   n80_vsvc_clock_ok
+        ; N80: the scheduler graph only plays once ConfigAudio armed the
+        ; Audio-Master clock.  If ConfigAudio was never called (a caller
+        ; that did not pass BVP_OPENF_NO_HDMI_AUDIO but has no HDMI audio)
+        ; or its clock setup failed, no frame would ever be shown: fail the
+        ; stream instead of waiting forever.
+        tst.l   n73_clock_arm_attempts
+        beq.s   n80_vsvc_no_clock
+        tst.l   n73_clock_arm_failures
+        beq.w   n80_defer_clock
+n80_vsvc_no_clock:
+        lea     n80_msg_no_clock,a1
+        jsr     n12_log
+        bra.w   n66_vsvc_fail
+n80_vsvc_clock_ok:
 n81_vsvc_armed:
         cmpi.l  #1,n79_first_video_trace_state
         bne.s   n79_no_v08
@@ -71129,7 +71719,7 @@ n73_vsvc_host_pacer:
         ; decode lead while retaining the same absolute 23.976-fps deadline grid.
         jsr     n70_video_due_with_lead
         tst.l   d0
-        beq.w   n66_vsvc_defer
+        beq.w   n80_defer_pacer
 
         ; Advance the established absolute timeline without waiting away the
         ; deliberate N79 lead. Late arrivals still use the proven pacer path.
@@ -71162,10 +71752,10 @@ p96w8_no_late_wait:
         ; Do not introduce a new wait merely because all four decoder inputs are
         ; currently VideoCore-owned. Defer to a later API service opportunity.
         tst.l   input_bulk_pending
-        bne.w   n66_vsvc_defer
+        bne.w   n80_defer_bulk
         move.l  input_in_use_count,d0
         cmpi.l  #INPUT_POOL_COUNT,d0
-        bcc.w   n66_vsvc_defer
+        bcc.w   n80_defer_pool
 
         lea     n66_video_buffer,a0
         move.l  a0,bvp_pending_ptr
@@ -71207,7 +71797,7 @@ n66_vsvc_submit_max_ok:
         ; block, yield this Video turn once.  N69 immediately calls Audio first
         ; on the next dispatcher pass.  No RX/TX overlap is introduced.
         tst.l   n65_audio_pending
-        bne.w   n66_vsvc_defer
+        bne.w   n80_defer_audio
 
 n66_vsvc_feed_retry:
         cmpi.l  #1,n79_first_video_trace_state
@@ -71276,6 +71866,56 @@ n66_vsvc_bulk_max_ok:
         moveq   #0,d0
         bra.s   n66_vsvc_done
 
+; N80 diagnostics: say WHY the first AU is held back (logged on change).
+n80_defer_clock:
+        moveq   #1,d0
+        bra.s   n80_defer_note
+n80_defer_pacer:
+        moveq   #2,d0
+        bra.s   n80_defer_note
+n80_defer_bulk:
+        moveq   #3,d0
+        bra.s   n80_defer_note
+n80_defer_pool:
+        moveq   #4,d0
+        bra.s   n80_defer_note
+n80_defer_audio:
+        moveq   #5,d0
+n80_defer_note:
+        cmpi.l  #1,n79_first_video_trace_state
+        bne.s   n66_vsvc_defer
+        cmp.l   n80_last_defer,d0
+        beq.s   n66_vsvc_defer
+        move.l  d0,n80_last_defer
+        lea     n80_pfx_reason,a1
+        jsr     n15_log_hex32
+        move.l  n73_scheduler_graph_ready,d0
+        lea     n80_pfx_graph,a1
+        jsr     n15_log_hex32
+        move.l  n73_clock_armed,d0
+        lea     n80_pfx_clock,a1
+        jsr     n15_log_hex32
+        move.l  input_bulk_pending,d0
+        lea     n80_pfx_bulk,a1
+        jsr     n15_log_hex32
+        move.l  input_in_use_count,d0
+        lea     n80_pfx_inuse,a1
+        jsr     n15_log_hex32
+        move.l  v32r_fastforward,d0
+        lea     n80_pfx_ff,a1
+        jsr     n15_log_hex32
+        move.l  v41_display_style,d0
+        lea     n80_pfx_style,a1
+        jsr     n15_log_hex32
+        move.l  v41e_hr_started,d0
+        lea     n80_pfx_hrs,a1
+        jsr     n15_log_hex32
+        move.l  v41e_hr_target,d0
+        lea     n80_pfx_hrt,a1
+        jsr     n15_log_hex32
+        jsr     v41e_hr_clock_poll
+        lea     n80_pfx_hrn,a1
+        jsr     n15_log_hex32
 n66_vsvc_defer:
         addq.l  #1,n66_video_service_defers
         moveq   #0,d0
@@ -71436,6 +72076,8 @@ n66_force_video_loop:
         beq.s   n66_force_video_ok
         jsr     p96w9_idle_poll
         jsr     short_delay
+        bsr     n80_break_pending
+        bne.s   n69_dispatch_fail
         subq.l  #1,d2
         bne.s   n66_force_video_loop
 n66_force_video_fail:
@@ -71460,6 +72102,8 @@ n65_force_loop:
         tst.l   n65_audio_pending
         beq.s   n65_force_ok
         jsr     short_delay
+        bsr     n80_break_pending
+        bne.s   n66_force_video_fail
         subq.l  #1,d2
         bne.s   n65_force_loop
 n65_force_fail:
@@ -71469,6 +72113,25 @@ n65_force_ok:
         moveq   #0,d0
 n65_force_done:
         movem.l (sp)+,d1-d2
+        rts
+
+; N80: Z clear (and D0=1) if the calling task has a pending Ctrl-C.
+; MintVID's Stop button sends Ctrl-C to mrberry. The signal is only read,
+; never cleared, so mrberry still sees it and stops normally once the
+; library call returns. Without this the wait loops above ran their full
+; bounded count with Stop ignored.
+n80_break_pending:
+        movem.l d1/a0-a1/a6,-(sp)
+        move.l  4.w,a6
+        moveq   #0,d0
+        moveq   #0,d1
+        jsr     SetSignal(a6)
+        and.l   #SIGBREAKF_CTRL_C,d0
+        beq.s   n80_break_none
+        moveq   #1,d0
+n80_break_none:
+        movem.l (sp)+,d1/a0-a1/a6
+        tst.l   d0
         rts
 
 ; ---------------------------------------------------------------------------
@@ -72595,6 +73258,41 @@ n73_pfx_pts_unknown: dc.b "N79 VIDEO PTS_UNKNOWN=",0
 n73_msg_sched_graph_ready: dc.b "N79_SCHED_GRAPH_READY",0
 n73_msg_clock_armed: dc.b "N79_AUDIO_MASTER_CLOCK_ARMED",0
 n73_msg_clock_fail: dc.b "N79_AUDIO_MASTER_CLOCK_FAILED",0
+n80_msg_direct_no_audio: dc.b "N80_NO_HDMI_AUDIO_DIRECT_RENDERER",0
+n80_msg_direct_fail: dc.b "N80_DIRECT_ISP_GRAPH_FAILED",0
+n80_msg_fail_reset: dc.b "N80_FAILED_STREAM_VC_RESET",0
+n80_msg_no_clock: dc.b "N80_SCHEDULER_WITHOUT_AUDIO_CLOCK_FAIL",0
+n80_pfx_pd_step: dc.b "N80 GRAPH FAIL STEP=",0
+n80_pfx_pd_d0:   dc.b "N80 GRAPH FAIL D0=",0
+n80_pfx_reset_close: dc.b "N80 RESET SERVICE_CLOSE (0=OK)=",0
+n80_pfx_reset_hvs:   dc.b "N80 RESET HVS_RESTORED=",0
+n80_pfx_dg_step: dc.b "N80 DIRECT FAIL STEP=",0
+n80_pfx_dg_d0:   dc.b "N80 DIRECT FAIL D0=",0
+n80_pfx_dg_crx:  dc.b "N80 DIRECT CONNECT RX_SIZE=",0
+n80_pfx_dg_chdr: dc.b "N80 DIRECT CONNECT HDR_STATUS=",0
+n80_pfx_dg_cst:  dc.b "N80 DIRECT CONNECT STATUS=",0
+n80_pfx_en_why:  dc.b "N80 ENABLE FAIL (1 TIMEOUT 2 NO MATCH 3 BAD REPLY)=",0
+n80_pfx_en_rx:   dc.b "N80 ENABLE RX_SIZE=",0
+n80_pfx_en_st:   dc.b "N80 ENABLE STATUS=",0
+n80_pfx_skipped: dc.b "N80 RX SKIPPED=",0
+n80_pfx_async:   dc.b "N80 RX ASYNC_SKIPPED=",0
+n80_pfx_dr_polls:  dc.b "N80 DISPLAYREGION POLLS=",0
+n80_pfx_j_step: dc.b "N80 N79J FAIL STEP=",0
+n80_pfx_j_d0:   dc.b "N80 N79J FAIL D0=",0
+n80_pfx_dr_reason: dc.b "N80 DISPLAYREGION FAIL REASON=",0
+n80_pfx_dr_size:   dc.b "N80 DISPLAYREGION RX_SIZE=",0
+n80_pfx_dr_word:   dc.b "N80 DISPLAYREGION RX_WORD=",0
+n80_pfx_dr_status: dc.b "N80 DISPLAYREGION STATUS=",0
+n80_pfx_reason: dc.b "N80 DEFER REASON (1=CLOCK 2=PACER 3=BULK 4=POOL 5=AUDIO)=",0
+n80_pfx_graph:  dc.b "N80 STATE SCHED_GRAPH=",0
+n80_pfx_clock:  dc.b "N80 STATE CLOCK_ARMED=",0
+n80_pfx_bulk:   dc.b "N80 STATE INPUT_BULK_PENDING=",0
+n80_pfx_inuse:  dc.b "N80 STATE INPUT_IN_USE=",0
+n80_pfx_ff:     dc.b "N80 STATE FASTFORWARD=",0
+n80_pfx_style:  dc.b "N80 STATE STYLE=",0
+n80_pfx_hrs:    dc.b "N80 STATE HR_STARTED=",0
+n80_pfx_hrt:    dc.b "N80 STATE HR_TARGET=",0
+n80_pfx_hrn:    dc.b "N80 STATE HR_NOW=",0
         even
 
         section bvp_n9_audio_data,data
@@ -72806,6 +73504,18 @@ n70_late_due_count:          ds.l 1
 n70_early_lead_max_us:       ds.l 1
 ; N79 exact VPr8 scheduler startup state (library mode only).
 n73_scheduler_graph_ready:   ds.l 1
+n80_last_defer:              ds.l 1
+n80_n79j_step:               ds.l 1
+n80_n79j_d0:                 ds.l 1
+n80_dr_word:                 ds.l 1
+n80_direct_mode:             ds.l 1
+n80_rend_handle:             ds.l 1
+n80_rend_input:              ds.l 1
+n80_dg_d0:                   ds.l 1
+n80_en_why:                  ds.l 1
+n80_no_hdmi_audio:           ds.l 1
+n80_pd_step:                 ds.l 1
+n80_pd_d0:                   ds.l 1
 n73_clock_armed:             ds.l 1
 n81_tried:                   ds.l 1   ; CLK81 free-clock test
 n81_active:                  ds.l 1

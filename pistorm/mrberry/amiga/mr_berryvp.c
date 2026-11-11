@@ -28,6 +28,8 @@
 #define BVP_CAP_DIRECT_HVS  0x00000400UL
 #define BVP_CAP_FRAME_FLAGS 0x00000800UL
 #define BVP_CAP_INPUT_PTS   0x00001000UL
+#define BVP_CAP_NO_HDMI_AUDIO 0x00002000UL /* MintVID N80 library */
+#define BVP_OPENF_NO_HDMI_AUDIO 0x00000100UL /* low byte = window size */
 #define BVP_REQUIRED_CAPS (BVP_CAP_PTS64 | BVP_CAP_H264_HW | \
                            BVP_CAP_DIRECT_HVS | BVP_CAP_FRAME_FLAGS | \
                            BVP_CAP_INPUT_PTS)
@@ -60,6 +62,8 @@ extern void bvp_exec_closelibrary(struct Library *lib);
  * reproducible MOV/MP4 stall.  No scheduling or packet contents are changed. */
 /* OpenStream flags: 0 = cinema (HVS), 10/25/50/75 = P96 window size. */
 unsigned long mr_berryvp_stream_flags = 0;   /* as declared in mr_berryvp.h */
+/* N80: no ConfigAudio will follow OpenStream (Paula, or no HDMI track). */
+int mr_berryvp_no_hdmi_audio = 0;
 int mr_berryvp_force_isp = 0;   /* ISP82: ISP = cinema via ISP graph (test) */
 /* N84: 0 / 0xFFFFFFFF / (W<<16)|H.  MintVID: 0xFFFFFFFF (no N83 upscale)
  * is the default.  N83 sends every film below 1280x720 through the ISP and
@@ -334,8 +338,22 @@ mr_status mr_berryvp_open(mr_berryvp *b, const mr_video_info *vi)
     (void)bvp_call_control2(b->lib, 9, mr_berryvp_isp_out);
     /* O1: OSD test layer (always set; 0 = none) */
     (void)bvp_call_control2(b->lib, 10, (unsigned long)mr_berryvp_osd_req);
+    if (mr_berryvp_no_hdmi_audio && !mr_berryvp_stream_flags &&
+        !(b->caps & BVP_CAP_NO_HDMI_AUDIO)) {
+        /* MintVID N80: on a PiStorm 600 a library without it hangs a few
+         * frames into a cinema stream the Pi plays no sound for. */
+        printf("Error: video without HDMI audio needs the MintVID build of "
+               "berryvp.library (N80). Update LIBS:berryvp.library.\n");
+        mr_berryvp_close(b);
+        return MR_EUNSUPPORTED;
+    }
     DBG_PRINTF("[B05] before OpenStream\n");
-    r = bvp_call_openstream(b->lib, mr_berryvp_stream_flags);
+    /* N80: the video graph is built before ConfigAudio.  Without HDMI audio
+     * in cinema mode the library must use the direct decoder -> renderer
+     * graph instead of the audio-clocked scheduler. */
+    r = bvp_call_openstream(b->lib, mr_berryvp_stream_flags |
+                            ((mr_berryvp_no_hdmi_audio && !mr_berryvp_stream_flags)
+                             ? BVP_OPENF_NO_HDMI_AUDIO : 0UL));
     DBG_PRINTF("[B06] after OpenStream r=%ld\n", (long)r);
     if (r != BVP_OK) {
         printf("Error: BerryVP OpenStream failed: %ld (%s).\n", (long)r, bvp_error_name(r));

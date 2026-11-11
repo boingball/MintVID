@@ -2793,6 +2793,13 @@ int main(int argc, char **argv)
             fflush(n76_hostlog);
         }
     }
+    /* N80: same test as the ConfigAudio branch below, made before the
+     * video graph is built (ConfigAudio comes after it). */
+    mr_berryvp_no_hdmi_audio =
+        !(!p67_paula && ai && ai->valid &&
+          (ai->format_tag == MR_AUDIO_FORMAT_AAC ||
+           ai->format_tag == MR_AUDIO_FORMAT_AC3 ||
+           ai->format_tag == MR_AUDIO_FORMAT_EAC3));
     DBG_PRINTF("[D05] before mr_berryvp_open\n");
     st = mr_berryvp_open(bvp, vi);
     DBG_PRINTF("[D06] after mr_berryvp_open st=%ld\n", (long)st);

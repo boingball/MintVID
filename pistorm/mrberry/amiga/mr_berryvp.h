@@ -30,6 +30,7 @@ typedef struct {
 } mr_berryvp;
 
 extern unsigned long mr_berryvp_stream_flags;
+extern int mr_berryvp_no_hdmi_audio;   /* N80: no ConfigAudio will follow */
 
 mr_status mr_berryvp_open(mr_berryvp *b, const mr_video_info *vi);
 mr_status mr_berryvp_config_audio(mr_berryvp *b, const mr_audio_info *ai);
