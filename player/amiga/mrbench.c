@@ -39,7 +39,6 @@ static const char mrbench_stack[] __attribute__((used)) = "$STACK:16384";
 #define MAX_FILES         256
 #define PATH_CAP          512
 #define CMD_CAP           1400
-#define LOG_FILE          "T:mrbench.log"
 
 typedef struct bench_mode {
     const char *name;
@@ -153,20 +152,40 @@ static const char *base_name(const char *path)
     return b;
 }
 
-/* Run one mrplay; returns its return code, or -1 if it could not start. */
+/* Where each run's output goes: T: if it can be written, else RAM:. */
+static const char *g_log_file = "T:mrbench.log";
+
+static int pick_log_file(void)
+{
+    static const char *const cands[] = { "T:mrbench.log", "RAM:mrbench.log" };
+    int i;
+    for (i = 0; i < 2; i++) {
+        BPTR fh = Open((STRPTR)cands[i], MODE_NEWFILE);
+        if (fh) { Close(fh); g_log_file = cands[i]; return 1; }
+    }
+    return 0;
+}
+
+#define RUN_NO_LOG   (-2L)   /* could not open the log file */
+#define RUN_NO_START (-1L)   /* SystemTagList could not run the command */
+
+/* Run one mrplay. Returns its return code, or RUN_NO_LOG/RUN_NO_START
+ * with the DOS error in *err. */
 static long run_one(const char *player, const char *file, const char *flags,
-                    int audio, const char *extra)
+                    int audio, const char *extra, long *err, int show_cmd)
 {
     char cmd[CMD_CAP];
     struct TagItem tags[4];
     BPTR out, in;
     long rc;
 
+    *err = 0;
     snprintf(cmd, sizeof(cmd), "\"%s\" \"%s\" %s --benchmark%s%s%s",
              player, file, flags, audio ? "" : " --no-audio",
              extra[0] ? " " : "", extra);
-    out = Open((STRPTR)LOG_FILE, MODE_NEWFILE);
-    if (!out) return -1;
+    if (show_cmd) printf("mrbench: first command: %s\n", cmd);
+    out = Open((STRPTR)g_log_file, MODE_NEWFILE);
+    if (!out) { *err = IoErr(); return RUN_NO_LOG; }
     in = Open((STRPTR)"NIL:", MODE_OLDFILE);
     tags[0].ti_Tag = SYS_Output;   tags[0].ti_Data = (ULONG)out;
     tags[1].ti_Tag = SYS_Input;    tags[1].ti_Data = (ULONG)in;
@@ -175,19 +194,34 @@ static long run_one(const char *player, const char *file, const char *flags,
     rc = SystemTagList((STRPTR)cmd, tags);
     /* SystemTagList closes the handles only when the command started. */
     if (rc == -1) {
+        *err = IoErr();
         Close(out);
         if (in) Close(in);
+        return RUN_NO_START;
     }
     return rc;
 }
 
-static void read_result(mr_bench_result *r)
+/* Parse the log; keep its last non-empty line as the reason for a run
+ * that printed no summary. */
+static void read_result(mr_bench_result *r, char *last, size_t cap)
 {
     char line[512];
-    FILE *f = fopen(LOG_FILE, "r");
+    FILE *f = fopen(g_log_file, "r");
     mr_bench_reset(r);
+    if (cap) last[0] = 0;
     if (!f) return;
-    while (fgets(line, sizeof(line), f)) mr_bench_parse_line(r, line);
+    while (fgets(line, sizeof(line), f)) {
+        size_t n = strlen(line);
+        mr_bench_parse_line(r, line);
+        while (n && (line[n - 1] == '\n' || line[n - 1] == '\r' || line[n - 1] == ' '))
+            line[--n] = 0;
+        if (n && cap) {
+            char *q;
+            snprintf(last, cap, "%s", line);
+            for (q = last; *q; q++) if (*q == '"') *q = '\'';   /* CSV-safe */
+        }
+    }
     fclose(f);
 }
 
@@ -219,7 +253,7 @@ static void print_row(FILE *csv, const char *file, const char *mode,
                r->dropped);
     }
     if (csv)
-        fprintf(csv, "\"%s\",%s,\"%s\",%s,%s,%s,%lu,%lu,%lu,%lu,%lu.%lu,"
+        fprintf(csv, "\"%s\",%s,\"%s\",%s,%s,\"%s\",%lu,%lu,%lu,%lu,%lu.%lu,"
                      "%lu.%lu,%lu,%lu,%lu,%lu\n",
                 base_name(file), mode, r->backend, r->c2p[0] ? r->c2p : "",
                 r->depth, status, r->elapsed_ms, r->decoded, r->presented,
@@ -246,8 +280,10 @@ int main(int argc, char **argv)
     const char *dir = NULL, *modes = "c2p", *player = "PROGDIR:mrplay";
     const char *out_path = "RAM:mrbench.csv", *extra = "";
     char *files[MAX_FILES];
-    int audio = 0, nfiles, i, m, runs = 0, stop = 0;
+    static char player_path[PATH_CAP];
+    int audio = 0, nfiles, i, m, runs = 0, stop = 0, no_start = 0;
     FILE *csv;
+    BPTR plock;
 
     for (i = 1; i < argc; i++) {
         if (!strncmp(argv[i], "--modes=", 8)) modes = argv[i] + 8;
@@ -268,39 +304,70 @@ int main(int argc, char **argv)
         return 5;
     }
 
+    /* Resolve the player here, where PROGDIR: means mrbench's drawer; the
+     * shell SystemTagList starts has a PROGDIR: of its own. */
+    plock = Lock((STRPTR)player, ACCESS_READ);
+    if (!plock) {
+        printf("mrbench: cannot find the player %s (DOS error %ld).\n"
+               "         Put mrbench beside mrplay, or use --player=<path>.\n",
+               player, IoErr());
+        return 10;
+    }
+    if (NameFromLock(plock, (STRPTR)player_path, sizeof(player_path)))
+        player = player_path;
+    UnLock(plock);
+    if (!pick_log_file()) {
+        printf("mrbench: cannot write a log file in T: or RAM: (DOS error %ld)\n",
+               IoErr());
+        return 10;
+    }
+
     nfiles = scan_drawer(dir, files, MAX_FILES);
     if (nfiles < 0) { printf("mrbench: cannot read drawer %s\n", dir); return 10; }
     if (nfiles == 0) { printf("mrbench: no video files in %s\n", dir); return 5; }
 
     csv = fopen(out_path, "w");
     if (!csv) printf("mrbench: cannot write %s, results on screen only\n", out_path);
-    printf("mrbench: %d file(s), audio %s, player %s\n", nfiles,
-           audio ? "on" : "off", player);
+    printf("mrbench: %d file(s), audio %s, player %s, log %s\n", nfiles,
+           audio ? "on" : "off", player, g_log_file);
     print_header(csv);
 
     for (i = 0; i < nfiles && !stop; i++) {
         for (m = 0; m < MODE_COUNT && !stop; m++) {
             mr_bench_result r;
-            long rc;
-            const char *status;
+            long rc, err;
+            char last[128], status[160];
 
             if (!mode_selected(&g_modes[m], modes)) continue;
             if (SetSignal(0, SIGBREAKF_CTRL_C) & SIGBREAKF_CTRL_C) { stop = 1; break; }
-            rc = run_one(player, files[i], g_modes[m].flags, audio, extra);
-            read_result(&r);
-            if (rc == -1) status = "not-started";
-            else if (!r.have_summary) status = "failed";
-            else status = r.stopped[0] ? r.stopped : "eof";
+            rc = run_one(player, files[i], g_modes[m].flags, audio, extra,
+                         &err, runs == 0);
+            read_result(&r, last, sizeof(last));
+            if (rc == RUN_NO_LOG)
+                snprintf(status, sizeof(status), "no-log (DOS error %ld)", err);
+            else if (rc == RUN_NO_START)
+                snprintf(status, sizeof(status), "not-started (DOS error %ld)", err);
+            else if (!r.have_summary)
+                snprintf(status, sizeof(status), "failed rc=%ld: %s", rc,
+                         last[0] ? last : "(no output)");
+            else
+                snprintf(status, sizeof(status), "%s", r.stopped[0] ? r.stopped : "eof");
+            no_start = rc < 0 ? no_start + 1 : 0;
             print_row(csv, files[i], g_modes[m].name, &r, status);
             if (csv) fflush(csv);
             runs++;
+            if (no_start >= 3) {
+                printf("mrbench: mrplay could not be started 3 times in a row, "
+                       "giving up\n");
+                stop = 2;
+            }
         }
     }
-    if (stop) printf("mrbench: stopped (Ctrl-C)\n");
+    if (stop == 1) printf("mrbench: stopped (Ctrl-C)\n");
     printf("mrbench: %d run(s)%s%s\n", runs, csv ? ", CSV in " : "",
            csv ? out_path : "");
     if (csv) fclose(csv);
-    DeleteFile((STRPTR)LOG_FILE);
+    DeleteFile((STRPTR)g_log_file);
     for (i = 0; i < nfiles; i++) free(files[i]);
     return 0;
 }
