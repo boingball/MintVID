@@ -192,14 +192,14 @@ static long run_one(const char *player, const char *file, const char *flags,
     tags[2].ti_Tag = NP_StackSize; tags[2].ti_Data = MRPLAY_STACK_SIZE;
     tags[3].ti_Tag = TAG_DONE;     tags[3].ti_Data = 0;
     rc = SystemTagList((STRPTR)cmd, tags);
-    /* SystemTagList closes the handles only when the command started. */
-    if (rc == -1) {
-        *err = IoErr();
-        Close(out);
-        if (in) Close(in);
-        return RUN_NO_START;
-    }
-    return rc;
+    if (rc == -1) *err = IoErr();
+    /* Synchronous SystemTagList never closes SYS_Input/SYS_Output (only
+     * SYS_Asynch does), so close them here, always. Left open, the log
+     * stays locked: it cannot be read back, and the next run's Open()
+     * fails with ERROR_OBJECT_IN_USE (202). */
+    Close(out);
+    if (in) Close(in);
+    return rc == -1 ? RUN_NO_START : rc;
 }
 
 /* Parse the log; keep its last non-empty line as the reason for a run
