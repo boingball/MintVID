@@ -152,16 +152,23 @@ static const char *base_name(const char *path)
     return b;
 }
 
-/* Where each run's output goes: T: if it can be written, else RAM:. */
-static const char *g_log_file = "T:mrbench.log";
+/* Where each run's output goes. A name left locked (e.g. by an earlier,
+ * crashed run: AmigaOS does not close a dead program's files) fails with
+ * ERROR_OBJECT_IN_USE, so try a few names in T:, then in RAM:. */
+static char g_log_file[32] = "T:mrbench.log";
 
 static int pick_log_file(void)
 {
-    static const char *const cands[] = { "T:mrbench.log", "RAM:mrbench.log" };
-    int i;
-    for (i = 0; i < 2; i++) {
-        BPTR fh = Open((STRPTR)cands[i], MODE_NEWFILE);
-        if (fh) { Close(fh); g_log_file = cands[i]; return 1; }
+    static const char *const dirs[] = { "T:", "RAM:" };
+    int d, n;
+    for (d = 0; d < 2; d++) {
+        for (n = 0; n < 10; n++) {
+            BPTR fh;
+            if (n == 0) snprintf(g_log_file, sizeof(g_log_file), "%smrbench.log", dirs[d]);
+            else snprintf(g_log_file, sizeof(g_log_file), "%smrbench%d.log", dirs[d], n);
+            fh = Open((STRPTR)g_log_file, MODE_NEWFILE);
+            if (fh) { Close(fh); return 1; }
+        }
     }
     return 0;
 }
