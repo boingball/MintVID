@@ -6353,3 +6353,41 @@ floating-point printf is linked (see the -lm crash above).
 exact format strings. The tool itself was only syntax-checked here,
 against stub NDK headers. CI's AmigaOS `build` job is its first real
 compile, and it has not run on hardware yet.
+
+## Fused32 cost, from the first full mrbench run
+A full `mrbench --modes=all` run on a real AGA machine (no RTG or Akiko, so
+cgx/p96/rtg-half/akiko fell back to AGA and duplicate the default rows)
+gave these median conversion+display costs per frame, relative to standard
+(`--wpa`): riva 0.72, ecs32 0.68, kalms 0.97, direct 1.00, shadow 1.21,
+portable 1.28, ham6 1.84, ham8 2.34, ehb 3.50, **fused32 7.52**. Kalms ran
+`wpa` on 12 of 38 files, and direct engaged on only 7 (both need a 1:1
+8-plane shape). The machine could not play these clips in real time, so
+the fps column was not capped by the clip's rate.
+
+Fused32 was slow on two paths:
+- **RGB codecs** (Cinepak, MJPEG, MPEG-4, WMV, MSVideo1, MSRLE...) were
+  ~10x ecs32. `mr_rgb_fused32()` did two `long long` divides per pixel,
+  which are libgcc calls on m68k, then set five plane bits one by one.
+- **YUV codecs** off the hand kernel's shape (width not a multiple of 32,
+  or scaled, the `fused32-fallback` label) were ~2x ecs32.
+  `mr_yuv420_fused32_c()` packs five plane bits per pixel.
+
+Both now live in `core/mr_fused32.c` and build the same bytes from parts
+that are already fast:
+- RGB: the scale's source columns come from a DDA, computed once per
+  call. Each output row is gathered (or used directly when not scaled
+  horizontally), dithered by `mr_dither_rgb_indexed()` (asm on m68k), and
+  converted with `mr_c2p8_riva32()` one row at a time.
+- YUV: the hand kernel when it applies. Otherwise a chunky frame from
+  `mr_yuv420_dither_indexed()` (1:1, the table kernel) or
+  `mr_yuv420_dither_indexed_resize()`, then `mr_c2p8_riva32()`. The old
+  fused C stays as the reference, and as the fallback if the chunky frame
+  cannot be allocated.
+
+m68k instructions per frame (qemu_tbprof, 68060 flags):
+- RGB 320x200: 8.9M -> 2.7M.
+- YUV 360x240 1:1, padded to 384: 13.5M -> 3.2M.
+
+`tests/mr_planar_modes_check.c` gained 178x100 and 360x240 1:1 shapes. A
+wrong chunky margin offset or a wrong C2P row both make it fail. Not yet
+re-benchmarked on hardware.

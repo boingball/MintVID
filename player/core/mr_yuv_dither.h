@@ -88,7 +88,11 @@ int mr_yuv_fused32_asm_eligible(int w, int h, int dw, int dh, int pw);
 void mr_yuv420_fused32_c(const uint8_t *y, int ys, const uint8_t *u, int us,
                          const uint8_t *v, int vs, int w, int h,
                          uint8_t *out, int dw, int dh, int pw, int y_base);
-/* Five-plane, plane-major fused conversion. Output needs
+/* The hand kernel alone; returns 0 when it does not apply. */
+int mr_yuv420_fused32_asm(const uint8_t *y, int ys, const uint8_t *u, int us,
+                          const uint8_t *v, int vs, int w, int h,
+                          uint8_t *out, int dw, int dh, int pw, int y_base);
+/* Five-plane, plane-major fused conversion (core/mr_fused32.c). Output needs
  * (padded_width/8)*dst_h*5 bytes. padded_width is a multiple of 32;
  * visible dst_w pixels are centred in it, with zero padding. */
 void mr_yuv420_fused32(const uint8_t *y_plane, int y_stride,

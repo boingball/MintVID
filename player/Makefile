@@ -760,8 +760,8 @@ clean:
 .PHONY: all check check-audio check-http check-https check-libavc check-m68k clean
 
 # Experimental direct five-plane conversion and selective Chip-RAM copies.
-mr_planar_modes_check: tests/mr_planar_modes_check.c core/mr_yuv_dither.c core/mr_dither.c core/mr_c2p.c core/mr_scale.c core/mr_yuv_planar_queue.c core/mr_play_options.c core/mr_yuv_dither.h core/mr_dither.h core/mr_c2p.h core/mr_yuv_planar_queue.h
-	$(CC) $(CFLAGS) -o $@ tests/mr_planar_modes_check.c core/mr_yuv_dither.c core/mr_dither.c core/mr_c2p.c core/mr_scale.c core/mr_yuv_planar_queue.c core/mr_play_options.c
+mr_planar_modes_check: tests/mr_planar_modes_check.c core/mr_yuv_dither.c core/mr_dither.c core/mr_fused32.c core/mr_c2p.c core/mr_scale.c core/mr_yuv_planar_queue.c core/mr_play_options.c core/mr_yuv_dither.h core/mr_dither.h core/mr_c2p.h core/mr_yuv_planar_queue.h
+	$(CC) $(CFLAGS) -o $@ tests/mr_planar_modes_check.c core/mr_yuv_dither.c core/mr_dither.c core/mr_fused32.c core/mr_c2p.c core/mr_scale.c core/mr_yuv_planar_queue.c core/mr_play_options.c
 
 check-planar-modes: mr_planar_modes_check
 	./mr_planar_modes_check
