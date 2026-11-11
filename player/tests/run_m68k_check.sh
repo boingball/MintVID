@@ -261,6 +261,24 @@ $CC_060 -DMR_AC3_CHECK_NO_DEMUX $MINTAMP_FLAGS -DAMIGA_M68K_WMA_ASM \
     tests/mr_ac3_check.c audio/mr_audio_decode.c audio/mr_pcm.c \
     core/mr_mpeg1.c $MP2_ASM_060_SRC core/mr_latm.c $MINTAMP_SRC -lm
 
+# AAC mono (Helix's AACSetOutputMono()): the mono decode must equal the
+# stereo decode's left channel, bit for bit. Built twice: the plain C path,
+# and the 68060 build's real AAC flags (MintAMP's m68k AAC helpers, forced in
+# by audio/mr_aac_m68k_config.h as Makefile.amiga does, with
+# MINTAMP_AAC_060_REG5), since that is where the skipped transform runs.
+echo "== building mr_aac_mono_check.m68k / _060 =="
+# shellcheck disable=SC2086
+$CC $MINTAMP_FLAGS -o "$BUILD/mr_aac_mono_check.m68k" \
+    tests/mr_aac_mono_check.c audio/mr_audio_decode.c audio/mr_pcm.c \
+    core/mr_mpeg1.c core/mr_mpeg1_idct_m68k.S \
+    core/mr_mpeg1_blockset_m68k.S $MP2_ASM_SRC core/mr_latm.c $MINTAMP_SRC -lm
+# shellcheck disable=SC2086
+$CC_060 $MINTAMP_FLAGS -I$MINTAMP_ROOT/decoders \
+    -include audio/mr_aac_m68k_config.h -DMINTAMP_AAC_060_REG5 \
+    -DAMIGA_M68K_WMA_ASM -o "$BUILD/mr_aac_mono_check_060.m68k" \
+    tests/mr_aac_mono_check.c audio/mr_audio_decode.c audio/mr_pcm.c \
+    core/mr_mpeg1.c $MP2_ASM_060_SRC core/mr_latm.c $MINTAMP_SRC -lm
+
 # MP2 out of a .mpg on a real big-endian target. The MPEG-1 source decodes
 # audio with pl_mpeg's own integer Layer II code and hands it back as
 # explicitly little-endian bytes (mr_mpeg1_audio()), which is precisely the
@@ -572,6 +590,10 @@ run "$BUILD/mr_ac3_check.m68k" tests/assets/test_ac3.ac3 \
 echo "[AC-3 vs ffmpeg, real m68k/big-endian, CPU=68060 AMIGA_M68K_WMA_ASM fix]"
 run "$BUILD/mr_ac3_check_060.m68k" tests/assets/test_ac3.ac3 \
     tests/assets/ref_ac3_mkv.raw 32000 1
+for b in mr_aac_mono_check mr_aac_mono_check_060; do
+    run "$BUILD/$b.m68k" tests/assets/test_aac_pns.aac 44100 \
+        tests/assets/test_aac_decim.aac 48000
+done
 
 echo "[MP2 from an MPEG-1 program stream vs ffmpeg, real m68k/big-endian]"
 run "$BUILD/mr_mp2_check.m68k" tests/assets/test_mpeg1_mp2.mpg \

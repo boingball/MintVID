@@ -5508,6 +5508,29 @@ PNS, dequant and stereo processing still run on the discarded upper band.
 TNS filters across frequency, so skipping them needs care, and it has not
 been done. Real-hardware speed is still unconfirmed.
 
+**Mono now saves work on AAC too.** Before, Helix decoded both channels
+and the adapter dropped the right one, so `--audio-mono` cost the same as
+stereo. `AACSetOutputMono()` (boingball/ESP8266Audio branch
+`claude/aac-mono-skip`, pinned through MintAMP's branch of the same name)
+skips TNS and the IMDCT for every channel but 0. Dequant and stereo
+processing still run on both channels, because the left output needs both
+spectra for mid/side. PNS also still runs on both: Helix's noise generator
+(`pnsLastVal`) is one sequence for all channels, so skipping it on the
+right would change the left channel's noise later on. `aac_apply_decim()`
+sets it from `d->mono`.
+
+Measured with `tools/qemu_tbprof.sh`, 68060 build with the real AAC flags,
+4 s of 44.1 kHz stereo AAC: Normal 79.2M instructions, Mono 54.6M (-31%),
+Low 50.3M, Low+Mono 39.4M (half of Normal). `tests/mr_aac_mono_check.c`
+requires the mono decode to equal the stereo decode's left channel bit for
+bit, at full, 1/2 and 1/4 rate, on a PNS-heavy fixture (`test_aac_pns.aac`)
+and `test_aac_decim.aac`. It runs on host and on 68030 and 68060 builds
+(the latter with `mr_aac_m68k_config.h`, as Makefile.amiga builds it).
+Skipping PNS on the right channel makes it fail with ~96% of samples
+different. Note that the host test binaries do not list the MintAMP
+sources as make dependencies: after editing Helix, delete the binary
+before rebuilding.
+
 ## Turbo+ skipped ~10 s of audio at the first keyframe
 A YouTube 360p log under Turbo+ (keyframes only) showed `fifo-dropped=
 219541` samples: almost exactly 10 s at 22050 Hz, heard as the audio

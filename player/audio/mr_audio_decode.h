@@ -36,11 +36,11 @@ typedef void (*mr_audio_pcm_sink)(void *user, const int16_t *pcm,
  * full and the Paula backend averages them per sample; in mono mode the decoder
  * is asked for one channel instead, which for MP3 (MintAMP's
  * MP3SetOutputMono()/MP3SetMonoMSSideSkip()), MP2 (pl_mpeg's
- * plm_audio_set_mono()) and AC-3 (liba52's A52_MONO downmix) skips roughly half
- * of the per-channel synthesis work. Helix AAC has no such mode, so there mono
- * only saves the decimation copy and the downmix. The audible result is the
- * left channel rather than a centre mix, except where the codec's own mono
- * output is a downmix (AC-3 always, MP3 on mid/side frames). */
+ * plm_audio_set_mono()), AC-3 (liba52's A52_MONO downmix) and AAC (Helix's
+ * AACSetOutputMono(), which skips the right channel's TNS and inverse
+ * transform) skips roughly half of the per-channel synthesis work. The audible
+ * result is the left channel rather than a centre mix, except where the
+ * codec's own mono output is a downmix (AC-3 always, MP3 on mid/side frames). */
 mr_audio_decoder *mr_audio_decoder_open(const mr_audio_info *info,
                                         int low_rate, int mono,
                                         unsigned max_rate);

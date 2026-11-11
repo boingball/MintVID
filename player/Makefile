@@ -248,6 +248,15 @@ mr_aac_decim_check: tests/mr_aac_decim_check.c audio/mr_audio_decode.c \
 	    $(CORE) $(MINTAMP_MP3) $(MINTAMP_AAC) $(LIBA52_SRC) $(WMA_FFT_OBJ) -lm
 mr_aac_decim_check: | check-libavc
 
+# AAC mono (Helix skips the right channel's TNS and IMDCT): the mono decode
+# must equal the left channel of the stereo one, bit for bit.
+mr_aac_mono_check: tests/mr_aac_mono_check.c audio/mr_audio_decode.c \
+                   audio/mr_pcm.c audio/mr_audio_decode.h $(CORE) $(WMA_FFT_OBJ)
+	$(CC) $(CFLAGS) $(MINTAMP_FLAGS) $(LIBA52_FLAGS) -o $@ \
+	    tests/mr_aac_mono_check.c audio/mr_audio_decode.c audio/mr_pcm.c \
+	    $(CORE) $(MINTAMP_MP3) $(MINTAMP_AAC) $(LIBA52_SRC) $(WMA_FFT_OBJ) -lm
+mr_aac_mono_check: | check-libavc
+
 # Exact window-synthesis comparison across every circular-buffer phase.
 mr_mp2_idct_check: tests/mr_mp2_idct_check.c tests/mr_mp2_idct_reference.h core/pl_mpeg.h
 	$(CC) $(CFLAGS) -o $@ tests/mr_mp2_idct_check.c
@@ -645,7 +654,7 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	@echo "[H.263+ unrestricted motion vectors]"
 	./mr_decode tests/assets/test_h263p_umv.avi --check tests/assets/ref_h263p_umv
 
-check-audio: mr_audio_check mr_ac3_check mr_aac_decim_check mr_mp2_check mr_mp2_synth_check mr_mp2_idct_check mr_mpeg1_decim_check mr_mpeg1_decim_synth_check
+check-audio: mr_audio_check mr_ac3_check mr_aac_decim_check mr_aac_mono_check mr_mp2_check mr_mp2_synth_check mr_mp2_idct_check mr_mpeg1_decim_check mr_mpeg1_decim_synth_check
 	@test -f tests/assets/test_mp3.avi -a -f tests/assets/test_aac.mp4 \
 	    -a -f tests/assets/test_mp3_stereo.avi \
 	    -a -f tests/assets/test_mpeg1_mp2.mpg \
@@ -680,6 +689,8 @@ check-audio: mr_audio_check mr_ac3_check mr_aac_decim_check mr_mp2_check mr_mp2_
 	    -a -f tests/assets/ref_aac_decim.raw || sh tests/gen_audio_assets.sh
 	./mr_aac_decim_check tests/assets/test_aac_decim.aac \
 	    tests/assets/ref_aac_decim.raw
+	./mr_aac_mono_check tests/assets/test_aac_pns.aac 44100 \
+	    tests/assets/test_aac_decim.aac 48000
 	./mr_mp2_synth_check
 	./mr_mp2_idct_check
 	./mr_mp2_check tests/assets/test_mpeg1_mp2.mpg \
@@ -723,7 +734,7 @@ check-m68k:
 
 clean:
 	rm -f mr_decode mr_decode_ssl mr_http_resume_check mr_audio_check mr_scale_check mr_yuv_check mr_rgb565_check mr_c2p_check mr_ham_check \
-	      mr_ac3_check mr_aac_decim_check mr_mp2_synth_check mr_mp2_idct_check \
+	      mr_ac3_check mr_aac_decim_check mr_aac_mono_check mr_mp2_synth_check mr_mp2_idct_check \
 	      mr_dither_check mr_planar_modes_check mr_yuv_dither_check mr_yuv_planar_queue_check mr_yuv_ham_check mr_mpeg1_probe_check mr_mpeg1_timing_check mr_mpeg2_yuv_check mr_mpeg2_mc_check mr_mpeg2_idct_check mr_mpeg2_bskip_check mr_h264_smoosh_check mr_ps_check mr_ps_pts_check mr_ts_mp2_check mr_ts_video_pes_check mr_mkv_check \
 	      mr_mkv_seek_check mr_mov_seek_check
 	rm -f mr_legacy_video_check mr_cinepak_indexed_check mr_msvideo1_indexed_check

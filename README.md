@@ -277,7 +277,7 @@ track, subtitles).
 | IPTV directory core | ✅ bounded iptv-org JSON/M3U parsing, joining and local filters |
 | PCM / MP2 / MP3 / AAC-LC / AC-3 audio to Paula or AHI | ✅ host-validated; MP2 covers MPEG-1 and MPEG-2 Layer II (16 kHz upwards) and MP3 all three Layer III versions including MPEG-2.5 (8/11.025/12 kHz); AC-3 uses fixed-point stereo downmix. AC-3 and .mpg MP2 are checked against ffmpeg's own decode (`mr_ac3_check`, `mr_mp2_check`), on the host and on m68k |
 | AHI output (`--audio-out=ahi`, `--ahi-unit=N`) | ✅ any AHI card and unit, at the source's own sample rate; falls back to Paula when the unit cannot be opened |
-| Mono decode (`--audio-mono`) | ✅ decoder-side for MP3/MP2/AC-3, post-decode for AAC; host-validated against the stereo decode |
+| Mono decode (`--audio-mono`) | ✅ decoder-side for MP3/MP2/AC-3/AAC; validated against the stereo decode (AAC bit-exact to its left channel, host and m68k) |
 
 ## Building & testing the portable core (dev host)
 
@@ -586,9 +586,10 @@ again), **No audio** skips the audio decoder and output entirely, and **Mono
 audio** (`--audio-mono`) asks the codec for one channel instead of two. Paula
 plays stereo through a synchronized left/right channel pair; in mono the one decoded
 channel plays on both speakers. MP3, MP2 and AC-3 then skip roughly half of
-their per-channel synthesis. Helix AAC has no mono mode, so an AAC track only
-saves the downmix. Worth a try when a heavy H.264 stream is starving the audio
-FIFO.
+their per-channel synthesis, and AAC skips the right channel's inverse
+transform, about a third of AAC decode. Worth a try when a heavy H.264 stream is
+starving the audio FIFO. Combined with Audio: Low, AAC costs about half of what
+it does at Normal in stereo.
 
 **Fast RAM buffering**
 

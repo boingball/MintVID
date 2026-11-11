@@ -664,9 +664,8 @@ Build with SSL=1 and keep ytgui beside MintVID and mrplay.
   No audio      skip the audio decoder and output entirely
   Mono audio    ask the codec for one channel instead of decoding both
                 - MP3/MP2/AC-3 skip roughly half their per-channel work
-                this way; Helix AAC only saves the downmix, since it has
-                no mono decode mode. The one channel plays on both
-                speakers.
+                this way, and AAC (YouTube, IPTV) about a third. The
+                left channel plays on both speakers.
   Fast buffer   Auto/Off/4/8/16/32/64 MB of Fast RAM read-ahead for
                 local files and direct/progressive HTTP media. Auto
                 picks 16/8/4 MB from the largest available Fast RAM
@@ -875,7 +874,7 @@ ffmpeg and/or real m68k hardware, not a speed guarantee - see
   (MPEG-1/2 Layer II), AAC-LC (ADTS or LATM), and fixed-point AC-3
   stereo downmix - all reach Paula. AC-3 and .mpg MP2 are checked
   sample-by-sample against ffmpeg's own decode. --audio-mono is
-  decoder-side for MP3/MP2/AC-3 and post-decode for AAC.
+  decoder-side for MP3/MP2/AC-3/AAC.
 
 Codec tags (FourCCs) are matched case-insensitively, so a muxer's own
 capitalisation never matters - AVI's fccHandler is the worst offender in

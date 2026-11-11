@@ -89,4 +89,12 @@ if(lt(mod(t+0.047\,0.1)\,0.006)\,0.8*(random(1)-0.5)\,0)':s=48000:d=2" \
 ffmpeg -v error -i test_aac_decim.aac -f s16le -acodec pcm_s16le \
     ref_aac_decim.raw -y
 
+# AAC mono (tests/mr_aac_mono_check.c): 44.1 kHz stereo, a different tone in
+# each channel plus independent noise, with PNS left on so both channels of
+# the pair carry noise-substituted bands. The check compares our own mono and
+# stereo decodes, so PNS's randomness is fine here.
+ffmpeg -v error -f lavfi -i "aevalsrc='0.2*sin(2*PI*440*t)+0.2*(random(0)-0.5)|\
+0.2*sin(2*PI*660*t)+0.3*(random(1)-0.5)':s=44100:d=2" \
+    -c:a aac -b:a 96k -f adts test_aac_pns.aac -y
+
 echo "audio fixtures regenerated in $(pwd)"
