@@ -230,15 +230,16 @@ PiStorm32 lite with a CM4 (Pi 4), both on Emu68 1.0.7. Put `mrberry`
 beside MintVID and `berryvp.library` in `LIBS:`; the Display chooser then
 offers:
 
-- **PiStorm (VideoCore, Pi audio)** / GadTools "PiStorm (HDMI)": full
-  screen on the Pi's HDMI, sound over HDMI (needs Michael's BerryCore
-  Emu68 kernel).
-- **PiStorm (VideoCore, Amiga audio)** / "PiStorm (Paula)": full screen,
-  sound decoded by MintVID and played through Paula; a stock kernel is
-  enough.
+- **PiStorm (VideoCore)** / GadTools "PiStorm": full screen on the Pi's
+  HDMI.
 - **PiStorm (VideoCore, window)** / "PiStorm (Window)": in a window on the
-  Workbench, sound over HDMI. **F** in the window takes the film full
-  screen at the same spot.
+  Workbench. **F** in the window takes the film full screen at the same
+  spot.
+
+In both the sound is decoded by MintVID and played through Paula, so a
+stock Emu68 kernel is enough. Pause stops the film at the spot; Play
+continues from there. Sound over the Pi's HDMI needs Michael's BerryCore
+kernel and is only available from Shell (`mrberry <film> HDMI`).
 
 `config.txt` needs `gpu_mem=64` (the CM4 needs 128). MintVID builds
 `mrberry` with the VideoCore's own upscaling of films below 1280x720 to

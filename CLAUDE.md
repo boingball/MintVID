@@ -6424,3 +6424,44 @@ it).
 There is no vasm on the dev host (its site is unreachable), so CI's `build`
 job is the first assemble. Not yet run on hardware. `EXPECTED_SHA256` was
 removed because the build no longer matches the released v97.1 binary.
+
+## PiStorm sound is always Paula
+On a PiStorm 600 running Emu68 1.1, the N80 build played fullscreen with
+Paula. Window mode always asked for HDMI sound, which failed ("audio setup
+failed"), then crashed on the way out. v97.1's HDMI sound decodes on the
+Pi's second core and needs Michael's BerryCore kernel. That kernel is a
+binary patch of Emu68 1.0.7 only. The user's call: no unsupported kernels,
+and most Amigas drive a monitor with no speakers on its HDMI anyway.
+
+So mrberry now plays through Paula unless told otherwise (`HDMI` or
+`--hdmi-audio` asks for the old path). That applies in the window too, which
+v97.1 refused ("PAULA is cinema only"). In the window, `p96w_hdmi` (set only
+once ConfigAudio succeeds) gates the HDMI-only pieces:
+- the P96W5 prefill and P96W27 audio-first holds;
+- the P96S clock sync. Without HDMI sound the window runs as NOSYNC
+  (`p96s_off`), as STILL does, so the library never waits for a clock
+  answer;
+- the CLOCKSTART query. Paula anchors at the end of the first SendVideo,
+  when the window pacer starts, because the window graph has no free Pi
+  clock.
+
+NOAUDIO is allowed in the window now too.
+
+MintVID side:
+- `mr_build_external_player_arguments()` and the fullscreen handover both
+  pass `--paula` plus the audio-rate/mono options for every PiStorm display.
+- The GUIs list two entries: PiStorm (VideoCore) and its window.
+  `MR_DISPLAY_PISTORM_PAULA` stays in the enum, and `mode_row()` reads a
+  saved value of it as `MR_DISPLAY_PISTORM`.
+
+With Paula, mrberry's Pause stops at the spot, writes `<film>.t` and ends
+with status text "Paused" (Michael's P96W78). The GUIs used to show that as
+"Playback ended". They now remember it (`pistorm_paused`): Play, or Pause
+again, on the same file starts `mr_build_external_resume_arguments()`,
+which is the normal arguments plus `R`. TS files cannot seek, so they start
+again from the beginning.
+
+`tests/mr_iptv_check.c` pins the argument strings. mrberry and the GUIs can
+only be compiled by CI's AmigaOS build. Nothing here has run on hardware.
+The fullscreen "no sound with Paula" report from the same session is still
+open and needs mrberry's `PAULA:` console line.

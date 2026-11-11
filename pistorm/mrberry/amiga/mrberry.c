@@ -835,6 +835,11 @@ static int p63_noaudio;           /* P96W63: NOAUDIO = play without sound */
 /* P96W67: PAULA = sound through the Amiga (Darren Banfi's mrb_paula module),
  * picture on the Pi with its own free-running clock (CLK81), as NOAUDIO. */
 static int p67_paula, p67_low, p67_mono;
+/* MintVID: sound goes through Paula by default, in the window and full
+ * screen alike.  HDMI sound (AAC/AC3/E-AC3 decoded on CPU1) needs the
+ * patched Emu68 1.0.7 BerryCore kernel, so it is opt-in: HDMI or
+ * --hdmi-audio.  p96w_hdmi is set once ConfigAudio has armed it. */
+static int p_hdmi_audio, p96w_hdmi;
 static mrb_paula *p67_pa;
 /* P96W69/W73: Paula base offset.  W69: built-in -500 ms; W73: Michael set
  * -350 ms as the built-in value, and MintVID-pi's menu can change it
@@ -1242,7 +1247,10 @@ static mr_status ac309i_service_mov_video(mr_berryvp *bvp, ac309i_pacer *pace,
         mr_status st;
         uint32_t elapsed;
         p96w_sync_update(pace);
-        if (mr_berryvp_stream_flags && !p96w_drain && n73_vqueued < P96W_HOLD_MAX_Q) {
+        /* P96W5/W27 prefill and audio-first: HDMI sound only.  With Paula
+         * or no sound the host pacer alone gives the time. */
+        if (mr_berryvp_stream_flags && p96w_hdmi && !p96w_drain &&
+            n73_vqueued < P96W_HOLD_MAX_Q) {
             if (!p96w_prefill_done) {
                 if (!(p96w_have_vpts && p96w_have_apts &&
                       p96w_last_apts >= p96w_first_vpts + P96W_PREFILL_US)) break;
@@ -1307,7 +1315,8 @@ static mr_status ac309i_service_mov_video(mr_berryvp *bvp, ac309i_pacer *pace,
             uint32_t t = (uint32_t)ac309i_read_sys_us();
             /* P96W68: the library says when the Pi clock really started
              * (BVP_CTRL_CLOCKSTART); W67 used the end of the first send. */
-            uint32_t cs = g_bvp.lib ? (uint32_t)bvp_call_control(g_bvp.lib, P68_CTRL_CLOCKSTART) : 0;
+            uint32_t cs = (g_bvp.lib && !mr_berryvp_stream_flags) ?
+                (uint32_t)bvp_call_control(g_bvp.lib, P68_CTRL_CLOCKSTART) : 0;
             if (cs && (uint32_t)(t - cs) > 5000000u) cs = 0;   /* old library: error code */
             p67_anchored = 1;
             p78_clock_sys = cs ? cs : t;           /* P96W78: pause spot */
@@ -2366,6 +2375,8 @@ int main(int argc, char **argv)
                     printf("Error: LEAD= must be 100..3000 (milliseconds).\n");
                     return 5;
                 }
+            } else if (!strcmp(a, "HDMI") || !strcmp(a, "hdmi") || !strcmp(a, "Hdmi")) {
+                p_hdmi_audio = 1;                 /* MintVID: Pi HDMI sound (BerryCore) */
             } else if (!strcmp(a, "PAULA") || !strcmp(a, "paula") || !strcmp(a, "Paula")) {
                 p67_paula = 1;                    /* P96W67: sound through Paula */
             } else if (!strcmp(a, "STILL") || !strcmp(a, "still") || !strcmp(a, "Still")) {
@@ -2435,6 +2446,7 @@ int main(int argc, char **argv)
                  * docs/EXTERNAL_PLAYER.md.  Unknown --options are an error
                  * (before W77 they were silently read as AV=0). */
                 if (!strcmp(a, "--paula")) p67_paula = 1;
+                else if (!strcmp(a, "--hdmi-audio")) p_hdmi_audio = 1;
                 else if (!strcmp(a, "--upscale")) mr_berryvp_isp_out = 0;
                 else if (!strcmp(a, "--audio-rate=low")) p67_low = 1;
                 else if (!strncmp(a, "--audio-rate=", 13)) { /* normal: default */ }
@@ -2501,15 +2513,16 @@ int main(int argc, char **argv)
         }
         if (bad) {
             printf("mrberry - H.264 hardware A/V player\n"
-                   "Usage: mrberry <movie.mkv|movie.mp4|movie.ts> [W=10|25|50|75] [T=h:mm] [R] [PAULA [PLOW] [PMONO]] [NOAUDIO] [READ=KB] [AV=ms|NOSYNC]\n"
+                   "Usage: mrberry <movie.mkv|movie.mp4|movie.ts> [W=10|25|50|75] [T=h:mm] [R] [PLOW] [PMONO] [HDMI] [NOAUDIO] [READ=KB] [AV=ms|NOSYNC]\n"
                    "  T=0:01 = start at 1 minute, T=1:30 = 1 h 30 min (T=1:30:15 with seconds)\n"
                    "  R = continue where the film was stopped (<film>.t); W=C = full screen\n"
                    "  UPSCALE = scale films below 1280x720 up to 1920x1080 on the Pi\n"
                    "    (needs more GPU memory than gpu_mem=64)\n"
-                   "  PAULA = sound through the Amiga (PLOW lower rate, PMONO mono)\n"
+                   "  Sound goes through Paula (PLOW lower rate, PMONO mono).\n"
+                   "  HDMI = sound over the Pi's HDMI instead (needs the BerryCore kernel)\n"
                    "  READ=64..1024 = KB per file read (default 64, bigger for network shares)\n"
                    "  AUDIO=n = audio track n (MKV; see INFO for the list)\n"
-                   "  Also understood (MintVID): --paula --audio-rate=low --audio-mono\n"
+                   "  Also understood (MintVID): --hdmi-audio --audio-rate=low --audio-mono\n"
                    "    --no-audio --start=H:MM:SS --read=KB\n"
                    "  mrberry <movie> INFO = show length, video and sound, no playback\n");
             return 5;
@@ -2544,6 +2557,9 @@ int main(int argc, char **argv)
     p62_pos_clear();
     p06_status_write(P06_STATE_OPENING, "H.264 / VideoCore",
                      "Opening PiStorm VideoCore playback...");
+    /* MintVID: Paula unless HDMI sound was asked for. */
+    if (!p_hdmi_audio && !p63_noaudio && !p79_still)
+        p67_paula = 1;
     /* MKA1c: HDMI sound -> only tracks the Pi modules can play */
     if (!p67_paula && !p63_noaudio && !p79_still)
         mr_mkv_audio_usable = mka_usable_hdmi;
@@ -2612,11 +2628,6 @@ int main(int argc, char **argv)
         }
     }
     if (p63_noaudio) {
-        if (mr_berryvp_stream_flags) {
-            printf("Error: NOAUDIO is a cinema test - leave out W=.\n");
-            mr_demux_close(d);
-            return 5;
-        }
         printf("NOAUDIO: playing without sound (clock test CLK81).\n");
         n76_hlog("P63_NOAUDIO");
         ai = NULL;
@@ -2632,11 +2643,9 @@ int main(int argc, char **argv)
     }
     if (p67_paula && !p63_noaudio) {
         char why[80];
-        if (mr_berryvp_stream_flags) {
-            printf("Error: PAULA is cinema only - leave out W=.\n");
-            mr_demux_close(d);
-            return 5;
-        }
+        /* MintVID: Paula in the window too (v97.1 allowed it full screen
+         * only).  The window has no free Pi clock, so Paula anchors at the
+         * end of the first SendVideo, when the window pacer starts. */
         why[0] = 0;
         atexit(p67_cleanup);
         p73_base_load();
@@ -2822,6 +2831,7 @@ int main(int argc, char **argv)
         st = mr_berryvp_config_audio(bvp, ai);
         if (st == MR_OK) {
             audio_enabled = 1;
+            p96w_hdmi = 1;
             n73_prime_ready = 1; /* N75: clock/scheduler already armed in ConfigAudio; no host-side video hold. */
             if (ai->format_tag == MR_AUDIO_FORMAT_AC3)
                 DBG_PRINTF("[AC307A] AC3/berry_ac3.module audio armed; N97QD host + N79Q library path\n");
@@ -2851,6 +2861,12 @@ int main(int argc, char **argv)
             n76_hlog("MKA1B_CINEMA_WITHOUT_HDMI_SOUND_AS_NOAUDIO");
         }
         n73_prime_ready = 1;
+    }
+    /* MintVID: a window without HDMI sound has no audio clock for the
+     * library to hold frames against: draw at once, as NOSYNC/STILL do. */
+    if (mr_berryvp_stream_flags && !p96w_hdmi) {
+        p96s_off = 1;
+        n76_hlog("MINTVID_WINDOW_NO_HDMI_NOSYNC");
     }
 
     /* P96W2: in the P96 window the library shows each frame as soon as it

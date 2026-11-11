@@ -200,6 +200,9 @@ static ULONG c2p_row(mr_c2p_mode value)
 static int mode_row(mr_display_mode value)
 {
     unsigned i;
+    /* The separate Amiga-audio PiStorm entry is gone: every PiStorm
+     * display plays through Paula now. */
+    if (value == MR_DISPLAY_PISTORM_PAULA) value = MR_DISPLAY_PISTORM;
     for (i = 0; i < mode_count; i++)
         if (mode_values[i] == value)
             return (int)i;
@@ -854,6 +857,10 @@ static void status_timer_close(void)
 static char handover_path[512];
 static mr_play_options handover_options;
 static int handover_window;
+/* mrberry plays through Paula, and with Paula a pause stops the player at
+ * the spot (saved in <film>.t, status text "Paused").  Play, or Pause
+ * again, then starts the same film with R to continue from there. */
+static int pistorm_paused;
 
 static void launch_player(const char *program, const char *args, int external,
                           Object *info, struct Window *window);
@@ -915,6 +922,11 @@ static void poll_player_status(Object *info, struct Window *window)
              !strcmp(ps.text, "Fullscreen")) {
         pistorm_fullscreen_handover(info, window);
         return;
+    }
+    else if (ps.state == MR_PLAYER_STATE_ENDED && !live && handover_path[0] &&
+             !strcmp(ps.text, "Paused")) {
+        pistorm_paused = 1;
+        snprintf(line, sizeof(line), "Paused (Play continues)");
     }
     else if (ps.state == MR_PLAYER_STATE_ENDED)
         snprintf(line, sizeof(line), "Playback ended");
@@ -1029,7 +1041,7 @@ static void start_player_path(const char *full_file, Object *mode,
     char args[1600];
     mr_play_options options;
     const char *program;
-    int external;
+    int external, resume;
 
     if (!full_file || !*full_file) {
         set_info(info, window, "Choose a video first.");
@@ -1053,7 +1065,11 @@ static void start_player_path(const char *full_file, Object *mode,
      * Stop and the status line below need no special case. */
     external = mr_display_uses_external_player(options.display);
     program = external ? MR_PISTORM_PLAYER : "mrplay";
-    if (!(external ? mr_build_external_player_arguments(args, sizeof(args),
+    resume = external && pistorm_paused && !strcmp(path, handover_path);
+    pistorm_paused = 0;
+    if (!(resume ? mr_build_external_resume_arguments(args, sizeof(args),
+                                                      &options, path) :
+          external ? mr_build_external_player_arguments(args, sizeof(args),
                                                         &options, path)
                    : mr_build_player_arguments(args, sizeof(args), &options,
                                                path, NULL, NULL))) {
@@ -1646,13 +1662,11 @@ int main(void)
      * WritePixel. */
     if (have_rtg) default_mode = (int)mode_count - 1;
     /* PiStorm VideoCore playback, only when the external player is here.
-     * Never the default. Sound through the Pi's HDMI needs the BerryCore
-     * Emu68 kernel; sound through Paula (MintVID's decoders) does not. */
+     * Never the default. Sound always goes through Paula (MintVID's
+     * decoders), so a stock Emu68 kernel is enough. */
     if (pistorm_player_available() &&
-        (!add_mode_node(&modes, "PiStorm (VideoCore, Pi audio)",
+        (!add_mode_node(&modes, "PiStorm (VideoCore)",
                         MR_DISPLAY_PISTORM) ||
-         !add_mode_node(&modes, "PiStorm (VideoCore, Amiga audio)",
-                        MR_DISPLAY_PISTORM_PAULA) ||
          !add_mode_node(&modes, "PiStorm (VideoCore, window)",
                         MR_DISPLAY_PISTORM_WINDOW)))
         goto cleanup;
@@ -2283,7 +2297,12 @@ int main(void)
                     break;
 
                 case G_PAUSE:
-                    signal_player(SIGBREAKF_CTRL_D);
+                    if (pistorm_paused && !find_player())
+                        start_player(file, mode, c2p, h264, lace, scale,
+                                     audio_rate, fast_buffer, no_audio,
+                                     mono_audio, video_mode, info, window);
+                    else
+                        signal_player(SIGBREAKF_CTRL_D);
                     break;
 
                 case G_STOP:

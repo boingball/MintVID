@@ -9,21 +9,28 @@ builds it. It decodes H.264 on the Raspberry Pi's VideoCore.
 The GUIs list the PiStorm modes only when a file called `mrberry` sits in
 the same drawer as MintVID (`PROGDIR:mrberry`). Without it nothing changes.
 
-There are three PiStorm modes:
+There are two PiStorm modes. Both play the sound through Paula, decoded on
+the 68k by MintVID's own decoders (MintAMP AAC/MP3, MP2, AC-3, PCM), so a
+stock Emu68 kernel is enough:
 
-- **PiStorm (VideoCore, Pi audio)** / GadTools "PiStorm (HDMI)": full
-  screen on the Pi's HDMI, sound decoded on the Pi's second core and played
-  over HDMI. This needs Michael's patched Emu68 kernel (BerryCore).
-- **PiStorm (VideoCore, Amiga audio)** / GadTools "PiStorm (Paula)": full
-  screen, sound decoded on the 68k by MintVID's own decoders (MintAMP
-  AAC/MP3, MP2, AC-3, PCM) and played through Paula. A stock Emu68 kernel
-  is enough.
+- **PiStorm (VideoCore)** / GadTools "PiStorm": full screen on the Pi's
+  HDMI.
 - **PiStorm (VideoCore, window)** / GadTools "PiStorm (Window)": `mrberry
-  W=50`, the picture in berryvp.library's P96 window, sound over HDMI.
+  W=50`, the picture in berryvp.library's P96 window.
   **F** in that window makes `mrberry` save the position in `<film>.t` and
   end with the status text `Fullscreen`; the GUI then starts it again full
-  screen from there (`"<film>" R W=C`). Films it cannot seek in (TS) start
-  again from the beginning.
+  screen from there (`"<film>" --paula ... R W=C`). Films it cannot seek in
+  (TS) start again from the beginning.
+
+With Paula, Pause stops `mrberry` at the spot (saved in `<film>.t`, status
+text `Paused`). The GUI shows "Paused (Play continues)"; Play, or Pause
+again, starts the same film with `R` from there.
+
+v97.1 can also send the sound over the Pi's HDMI, decoded on the Pi's
+second core. That needs Michael's patched Emu68 1.0.7 kernel (BerryCore),
+so the GUIs no longer offer it; from Shell, `mrberry <film> HDMI` (or
+`--hdmi-audio`) still asks for it. The saved display value of the old
+"Amiga audio" entry is read as PiStorm (VideoCore).
 
 The backend supports a PiStorm Classic with a Raspberry Pi 3A+ and a
 PiStorm32 lite with a CM4, both on Emu68 1.0.7. Follow its installation
@@ -61,9 +68,9 @@ from an Amiga Shell in the MintVID drawer:
 
     mrberry "NASDRIVE:MintVID-Codec-TestSuite/mintvid_h264_360p_25fps.mp4" --no-audio
 
-Then try `--paula` instead of `--no-audio` with the controls/Paula build.
-HDMI audio should only be tested with the matching BerryCore kernel and
-audio modules installed. If the direct command also fails, keep its output
+Then leave out `--no-audio`: the sound plays through Paula by default.
+HDMI audio (`HDMI`) should only be tested with the matching BerryCore
+kernel and audio modules installed. If the direct command also fails, keep its output
 and check the backend requirements before changing the display setup.
 
 ## What the GUI does
@@ -72,9 +79,9 @@ The GUI starts the player as a new process:
 
 - task name `MintVID player`, the same as `mrplay`
 - `NP_Cli`, stack `MRPLAY_STACK_SIZE`
-- arguments: `"<file>" [--no-audio]`, or for the Amiga-audio mode
-  `"<file>" --paula [--audio-rate=low] [--audio-mono]` (the same audio
-  options mrplay takes; with No audio ticked it is `--no-audio` instead)
+- arguments: `"<file>" --paula [--audio-rate=low] [--audio-mono] [W=50]`
+  (the same audio options mrplay takes; with No audio ticked it is
+  `--no-audio` instead of the audio options)
 
 The file name is quoted. A `"` inside it is written as `*"`, and a `*` as
 `**`: the usual AmigaDOS rules, so `ReadArgs()` or the C runtime's `argv`

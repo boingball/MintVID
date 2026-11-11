@@ -76,15 +76,15 @@ typedef enum {
      * that still starts mrplay with these options (the IPTV and YouTube
      * browsers) gets P96 instead. Same value as the PiStorm fork's
      * MR_DISPLAY_PISTORM_HARD_FULLSCREEN, so its saved settings carry over.
-     * The sound goes to the Pi's HDMI, which needs the patched BerryCore
-     * Emu68 kernel. */
+     * The sound plays through Paula (MintVID's decoders), so a stock Emu68
+     * kernel is enough. */
     MR_DISPLAY_PISTORM,
-    /* The same, with the sound decoded on the 68k by MintVID's own decoders
-     * and played through Paula (mrberry --paula). Works on a stock Emu68
-     * kernel. */
+    /* Retired: was the Amiga-audio PiStorm entry.  Every PiStorm display
+     * plays through Paula now, so the GUIs read a saved value as
+     * MR_DISPLAY_PISTORM.  Kept so the values after it keep their meaning. */
     MR_DISPLAY_PISTORM_PAULA,
     /* The same decoder showing the picture in a window on the Workbench
-     * (mrberry W=50, berryvp.library's P96 window), sound on the Pi's HDMI.
+     * (mrberry W=50, berryvp.library's P96 window), sound through Paula.
      * F or Fullscreen hands the film to MR_DISPLAY_PISTORM at the same
      * spot: mrberry saves the position and ends with "Fullscreen", and the
      * GUI starts it again with mr_build_external_fullscreen_arguments(). */
@@ -269,9 +269,15 @@ int mr_build_external_stream_arguments(char *output, size_t output_size,
                                        const mr_play_options *options,
                                        const char *url, const char *ua,
                                        const char *referer);
+/* mrberry with Paula sound stops on Pause, saves the spot in <film>.t and
+ * ends with the status text "Paused".  Play then continues from there:
+ * the normal arguments plus R. */
+int mr_build_external_resume_arguments(char *output, size_t output_size,
+                                       const mr_play_options *options,
+                                       const char *path);
 /* After the PiStorm window ended with "Fullscreen": the same film full
- * screen (HDMI sound), from the position mrberry saved in <film>.t:
- *   "<path>" [--no-audio] R W=C */
+ * screen, from the position mrberry saved in <film>.t:
+ *   "<path>" --paula [audio options] | --no-audio, then R W=C */
 int mr_build_external_fullscreen_arguments(char *output, size_t output_size,
                                            const mr_play_options *options,
                                            const char *path);
