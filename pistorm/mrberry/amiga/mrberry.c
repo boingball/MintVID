@@ -7,6 +7,11 @@
 #include "mr_berryvp.h"
 #include "mrb_paula.h"
 #include "mrb_sub.h"
+#include "../core/mr_source.h"
+#include "../core/mr_http.h"
+#include "../core/mr_youtube.h"
+#include "hls_fetch.h"
+#include "mr_tls_pref.h"
 #include <exec/types.h>
 #include <dos/dos.h>
 #include <intuition/intuition.h>
@@ -1778,8 +1783,17 @@ static int s2_t_have;
 static int s2_cli_n = -1;            /* SUB=n (0 = OFF), -1 = not given */
 static const char *s2_used_label;    /* for the .t: NULL = do not write */
 
+/* MintVID: a stream URL has no drawer next to it. Every side file built
+ * from the film's name (<film>.t, <film>.srt) is skipped for one: AmigaDOS
+ * would read "https:" as a volume and put up an insert-volume requester. */
+static int mrb_is_url(const char *film)
+{
+    return mr_source_is_url(film);
+}
+
 static unsigned s2_scan(const char *film)
 {
+    if (mrb_is_url(film)) return 0;
     char dir[512], base[256];
     const char *fp = (const char *)FilePart((CONST_STRPTR)film);
     const char *pp = (const char *)PathPart((CONST_STRPTR)film);
@@ -1884,6 +1898,7 @@ static void p54_name(char *dst, size_t size, const char *film);
  * RESUME). */
 static void s2_read_t(const char *film)
 {
+    if (mrb_is_url(film)) return;
     char name[512], line[96];
     FILE *f;
     p54_name(name, sizeof name, film);
@@ -1928,6 +1943,7 @@ static int s2_choose(const char **why)
 
 static int p54_read(const char *film, uint64_t *t_us, int *have_t, long *window)
 {
+    if (mrb_is_url(film)) return 0;
     char name[512], line[64];
     p55_audio_read[0] = 0;
     p70_t_have_fine = 0;
@@ -1973,6 +1989,7 @@ static int p54_read(const char *film, uint64_t *t_us, int *have_t, long *window)
 static void p54_write(const char *film, uint64_t film_us, const char *audio,
                       uint64_t recap_us)
 {
+    if (mrb_is_url(film)) return;
     char name[512], t[16];
     FILE *f;
     uint64_t at = film_us > recap_us ? film_us - recap_us : 0;
@@ -2195,6 +2212,59 @@ static int p56_info(const char *film)
     return reason ? 5 : 0;
 }
 
+/* MintVID: open an http(s) URL - a file, an HLS playlist or a YouTube
+ * page - the way mrplay does (amiga/mrplay.c). The background fetch
+ * worker is started before any network call, so it is the first task to
+ * open bsdsocket/AmiSSL; it is stopped again before a non-HLS open, so the
+ * one connection this task then makes owns that state alone (see
+ * player/amiga/hls_fetch.c). HTTPS uses the saved TLS preference. */
+static char mrb_user_agent[256];        /* --user-agent= (IPTV channel) */
+static char mrb_referer[512];           /* --referer= */
+
+static void mrb_net_cleanup(void)
+{
+    hls_fetch_stop();
+}
+
+static mr_demux *mrb_open_url(const char *url)
+{
+    static char media[MR_HTTP_URL_MAX];
+    mr_http_options opts;
+    const mr_http_options *use = NULL;
+    mr_youtube_media_kind kind = MR_YOUTUBE_MEDIA_NONE;
+    const char *path = url;
+
+    mr_http_set_tls_max(MR_TLS_PREF_HTTP_MAX());
+    atexit(mrb_net_cleanup);
+    hls_fetch_start(0);
+    if (mr_youtube_is_url(url)) {
+        p06_status_write(P06_STATE_OPENING, "H.264 / VideoCore",
+                         "Resolving YouTube media...");
+        if (!mr_youtube_http_options_init(&opts, NULL) ||
+            !mr_youtube_resolve_media(url, &opts, media, sizeof media, &kind) ||
+            !mr_youtube_media_http_options_init(&opts, &opts)) {
+            hls_fetch_stop();
+            return NULL;
+        }
+        path = media;
+        use = &opts;
+    } else if (mrb_user_agent[0] || mrb_referer[0]) {
+        if (!mr_http_options_init(&opts, mrb_user_agent[0] ? mrb_user_agent : NULL,
+                                  mrb_referer[0] ? mrb_referer : NULL)) {
+            hls_fetch_stop();
+            return NULL;
+        }
+        use = &opts;
+        printf("YouTube: %s\n",
+               kind == MR_YOUTUBE_MEDIA_HLS ? "live HLS" :
+               kind == MR_YOUTUBE_MEDIA_HLS_VOD ? "recorded HLS" : "progressive MP4");
+    }
+    if (!mr_source_is_hls(path))
+        hls_fetch_stop();
+    p06_status_write(P06_STATE_OPENING, "H.264 / VideoCore", "Connecting to stream...");
+    return mr_demux_open_file_ex(path, use);
+}
+
 int main(int argc, char **argv)
 {
     {
@@ -2369,6 +2439,11 @@ int main(int argc, char **argv)
                 else if (!strncmp(a, "--audio-rate=", 13)) { /* normal: default */ }
                 else if (!strcmp(a, "--audio-mono")) p67_mono = 1;
                 else if (!strcmp(a, "--no-audio")) p63_noaudio = 1;
+                else if (!strcmp(a, "--user-agent") && i + 1 < argc) {   /* MintVID streams */
+                    strncpy(mrb_user_agent, argv[++i], sizeof mrb_user_agent - 1);
+                } else if (!strcmp(a, "--referer") && i + 1 < argc) {
+                    strncpy(mrb_referer, argv[++i], sizeof mrb_referer - 1);
+                } else if (!strcmp(a, "--time")) { /* mrplay's log switch: no-op here */ }
                 else if (!strncmp(a, "--audio-track=", 14)) {   /* MKA1 */
                     unsigned long n = strtoul(a + 14, NULL, 10);
                     if (n < 1 || n > 16) {
@@ -2472,6 +2547,15 @@ int main(int argc, char **argv)
     if (!p67_paula && !p63_noaudio && !p79_still)
         mr_mkv_audio_usable = mka_usable_hdmi;
     DBG_PRINTF("[D01] before mr_demux_open_file\n");
+    if (mrb_is_url(argv[1])) {
+        d = mrb_open_url(argv[1]);
+        if (!d) {
+            printf("Error: cannot open stream: %s\n", mr_source_last_error());
+            p06_status_write(P06_STATE_ERROR, "H.264 / VideoCore",
+                             "Could not open the stream");
+            return 10;
+        }
+    } else
     d = mr_demux_open_file(argv[1]);
     DBG_PRINTF("[D02] after mr_demux_open_file ptr=%p\n", (void *)d);
     if (!d) {
@@ -2662,7 +2746,8 @@ int main(int argc, char **argv)
 
     /* S1: <film>.srt next to the film -> subtitles on the OSD layer
      * (cinema only; not with OSDTEST, STILL or NOSUB). */
-    if (!s1_nosub && !mr_berryvp_osd_req && !mr_berryvp_stream_flags && !p79_still) {
+    if (!s1_nosub && !mr_berryvp_osd_req && !mr_berryvp_stream_flags && !p79_still &&
+        !mrb_is_url(argv[1])) {
         static char s1_used[512];
         unsigned n = 0;
         if (s1_name_arg) {

@@ -32,8 +32,15 @@ MintVID's build turns off v97.1's upscaling of films below 1280x720 to
 1920x1080 on the VideoCore (`UPSCALE` turns it back on): it needed
 `gpu_mem=256` on a Pi 3A+.
 
-The IPTV and YouTube browsers still start `mrplay`. If the controller is set
-to PiStorm, they play in a P96 window.
+With a PiStorm display chosen, the IPTV and YouTube browsers start
+`mrberry` too (`amiga/mr_external_pick.h`):
+`"<url>" [audio/window options] [--user-agent "<ua>"] [--referer "<ref>"]`.
+mrberry opens http(s) files, HLS playlists and YouTube pages with
+MintVID's own network code (`core/mr_http.c`, `mr_hls.c`, `mr_youtube.c`,
+and the `amiga/hls_fetch.c` segment prefetcher), started and stopped in the
+same order as in mrplay. It writes no `.t` or subtitle side files for a URL.
+Without `PROGDIR:mrberry` the browsers fall back to `mrplay --p96`. The
+video must still be H.264; YouTube's 360p format and most IPTV channels are.
 
 ## Troubleshooting startup
 

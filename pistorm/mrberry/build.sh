@@ -17,6 +17,8 @@ mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 : "${CC:=m68k-amigaos-gcc}"
 : "${DEBUG_LOGS:=1}"
+# -DHAVE_AMISSL for https (YouTube needs it); Makefile.amiga passes it for SSL=1.
+: "${HTTP_SSL_FLAGS:=}"
 CPU=68040
 
 rm -rf "$OUT/src" "$OUT/obj"
@@ -34,7 +36,11 @@ cp "$PLAYER/amiga/audio.c" "$PLAYER/amiga/audio_backend.h" \
    "$PLAYER/amiga/audio_paula.c" "$PLAYER/amiga/audio_ahi.c" \
    "$PLAYER/amiga/mr_audio.h" "$PLAYER/amiga/mr_audio_rate.h" "$OUT/src/amiga/"
 cp -r "$PLAYER/amiga/include" "$OUT/src/amiga/include"
-cp "$HERE/net_stubs.c" "$OUT/src/"
+# MintVID's network code: HTTP(S), HLS, YouTube and the background
+# segment fetcher, as mrplay links them. net_stubs.c is the old no-network
+# build, kept for reference.
+cp "$PLAYER/amiga/hls_fetch.c" "$PLAYER/amiga/hls_fetch.h" \
+   "$PLAYER/amiga/mr_tls_pref.h" "$OUT/src/amiga/"
 
 AUDIO_VARS=$(make -s -C "$PLAYER" -f Makefile.amiga print-audio-build \
              CPU=$CPU AMIGA_GCC="$CC")
@@ -60,7 +66,7 @@ done
 cd "$OUT/src"
 $CC -O2 -std=c99 -m$CPU -noixemul -fomit-frame-pointer -Wall -Wextra \
   -DAMIGA_M68K -DMR_YUV_NO_ASM -DMR_DEBUG_LOGS=${DEBUG_LOGS} \
-  -DMR_PL_MPEG_SKIP_AUDIO_TIME=1 -Iamiga/include $MINTAMP_FLAGS_ABS \
+  -DMR_PL_MPEG_SKIP_AUDIO_TIME=1 $HTTP_SSL_FLAGS -Iamiga/include $MINTAMP_FLAGS_ABS \
   -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
   -o "$OUT/mrberry" \
   amiga/mrberry.c amiga/mr_berryvp.c amiga/mr_berryvp_stubs.S \
@@ -71,6 +77,7 @@ $CC -O2 -std=c99 -m$CPU -noixemul -fomit-frame-pointer -Wall -Wextra \
   core/mr_demux.c core/mr_mkv.c core/mr_mov.c core/mr_ts.c core/mr_ps.c \
   core/mr_avi.c core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c \
   core/mr_source.c core/mr_latm.c core/mr_mpeg4.c core/mr_rawvideo.c core/mr_yuv.c \
-  net_stubs.c $AUDIO_OBJS \
+  core/mr_http.c core/mr_hls.c core/mr_youtube.c amiga/hls_fetch.c \
+  $AUDIO_OBJS \
   -noixemul
 echo "mrberry: $OUT/mrberry"

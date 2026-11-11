@@ -2149,8 +2149,27 @@ enum, same value as the PiStorm fork's saved setting) only when
 port and status as `mrplay`, is in `docs/EXTERNAL_PLAYER.md`. `mrberry`
 is Michael's (MichiB210) and lives in this repo's `pistorm/` (see "PiStorm
 player in the tree" below), with `berryvp.library`, the CPU1 audio modules
-and the patched Emu68 kernel it needs. Anything that still
-starts `mrplay` with this display (the IPTV/YouTube browsers) gets `--p96`.
+and the patched Emu68 kernel it needs. The IPTV/YouTube browsers start
+`mrberry` for these displays too (`amiga/mr_external_pick.h`), falling back
+to `mrplay --p96` when `PROGDIR:mrberry` is missing.
+
+**mrberry streams.** Its build used to link `pistorm/mrberry/net_stubs.c`
+(every network opener returned "failed"), so it played local files only.
+`build.sh` now links `core/mr_http.c`, `mr_hls.c`, `mr_youtube.c` and
+`amiga/hls_fetch.c` instead, with `HTTP_SSL_FLAGS` from Makefile.amiga (CI
+builds it with `SSL=1 SSLCERTS=1`). Michael's `core/mr_source.c` overlay
+already had the URL branch. `mrb_open_url()` in mrberry.c follows mrplay's
+order: TLS cap from `ENVARC:MintVID.tls`, worker started before any network
+call, YouTube resolved, worker stopped if the result is not HLS, then
+`mr_demux_open_file_ex()` with the YouTube or channel HTTP options
+(`--user-agent`/`--referer`, built by `mr_build_external_stream_arguments()`).
+`.t` resume and subtitle lookups are skipped for URLs (`mrb_is_url()`),
+because AmigaDOS would take `https:` for a volume and ask for it. A host
+probe linking mrberry's overlay core with the real network files opened an
+MP4 and a TS over HTTP and an HLS playlist (36 packets each, as from disk).
+Not yet run on a PiStorm: live-stream timing on the VideoCore path, and
+whether segment fetches stall it, are unknown. mrberry has none of mrplay's
+live-resync or reconnect logic.
 
 A second entry, "PiStorm (VideoCore, Amiga audio)" (`MR_DISPLAY_PISTORM_PAULA`,
 appended after it), starts `mrberry --paula`. The sound is then decoded on the

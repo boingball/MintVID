@@ -1,6 +1,7 @@
 /* MintVID IPTV-GT: OS 3.0 GadTools browser using the shared IPTV core. */
 #include "../core/mr_http.h"
 #include "../core/mr_play_options.h"
+#include "mr_external_pick.h"
 #include "../core/mr_source.h"
 #include "../iptv/mr_iptv.h"
 #include "mr_gui_menu.h"
@@ -342,7 +343,10 @@ static int start_stream(iptvgt *app, const mr_iptv_stream *stream)
     if(app->debug_on){size_t n=strlen(args);if(n&&args[n-1]=='\n')n--;
       if(n+8<sizeof(args))memcpy(args+n," --time\n",9);}
     stop_player(); if(player_running())return 0;
-    seglist=LoadSeg((CONST_STRPTR)"PROGDIR:mrplay");
+    seglist=mr_load_external_player(&options,args,sizeof(args),stream->url,
+                                    stream->user_agent,stream->http_referrer);
+    if(!seglist)
+        seglist=LoadSeg((CONST_STRPTR)"PROGDIR:mrplay");
     if(!seglist)
         seglist=LoadSeg((CONST_STRPTR)"mrplay");
     if(!seglist)

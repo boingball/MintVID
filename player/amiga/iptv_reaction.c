@@ -5,6 +5,7 @@
  */
 #include "../core/mr_http.h"
 #include "../core/mr_play_options.h"
+#include "mr_external_pick.h"
 #include "../core/mr_source.h"
 #include "../iptv/mr_iptv.h"
 #include "mr_player_status.h"
@@ -562,7 +563,11 @@ static int start_stream(const mr_iptv_stream *stream,
   }
   last_stop_wedged = 0;
   clear_player_status_snapshot();
-  seglist = LoadSeg((CONST_STRPTR) "PROGDIR:mrplay");
+  seglist = mr_load_external_player(play_options, args, sizeof(args),
+                                    stream->url, stream->user_agent,
+                                    stream->http_referrer);
+  if (!seglist)
+    seglist = LoadSeg((CONST_STRPTR) "PROGDIR:mrplay");
   if (!seglist)
     seglist = LoadSeg((CONST_STRPTR) "mrplay");
   if (!seglist)

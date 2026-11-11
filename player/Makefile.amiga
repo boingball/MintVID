@@ -580,7 +580,8 @@ mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) $(KALMS_OBJ) $(MP2_AS
 # decoder sources and flags from print-audio-build, so its Paula sound is
 # built exactly as mrplay's. See ../pistorm/README.md.
 mrberry: check-cc check-mintamp
-	CC="$(CC)" DEBUG_LOGS=$(MRBERRY_DEBUG_LOGS) sh ../pistorm/mrberry/build.sh "$(CURDIR)/build/mrberry"
+	CC="$(CC)" HTTP_SSL_FLAGS="$(HTTP_SSL_FLAGS)" DEBUG_LOGS=$(MRBERRY_DEBUG_LOGS) \
+	  sh ../pistorm/mrberry/build.sh "$(CURDIR)/build/mrberry"
 	cp build/mrberry/mrberry $@
 MRBERRY_DEBUG_LOGS ?= 1
 

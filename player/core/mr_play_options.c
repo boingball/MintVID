@@ -416,6 +416,24 @@ int mr_build_external_player_arguments(char *out, size_t cap,
     return append_text(out, cap, "\n");
 }
 
+int mr_build_external_stream_arguments(char *out, size_t cap,
+                                       const mr_play_options *o,
+                                       const char *url, const char *ua,
+                                       const char *referer)
+{
+    size_t n;
+    if (!mr_build_external_player_arguments(out, cap, o, url)) return 0;
+    n = strlen(out);
+    if (n && out[n - 1] == '\n') out[--n] = 0;
+    if (ua && *ua &&
+        (!append_option(out, cap, "--user-agent") ||
+         !append_quoted(out, cap, ua))) return 0;
+    if (referer && *referer &&
+        (!append_option(out, cap, "--referer") ||
+         !append_quoted(out, cap, referer))) return 0;
+    return append_text(out, cap, "\n");
+}
+
 int mr_build_external_fullscreen_arguments(char *out, size_t cap,
                                            const mr_play_options *o,
                                            const char *path)

@@ -261,6 +261,14 @@ int mr_build_iptv_arguments(char *output, size_t output_size,
 int mr_build_external_player_arguments(char *output, size_t output_size,
                                        const mr_play_options *options,
                                        const char *path);
+/* The same for a stream (IPTV/YouTube browsers), plus the channel's
+ * HTTP headers when it has them:
+ *   "<url>" ... [--user-agent "<ua>"] [--referer "<ref>"]
+ * mrberry opens http(s)/HLS/YouTube URLs with MintVID's network code. */
+int mr_build_external_stream_arguments(char *output, size_t output_size,
+                                       const mr_play_options *options,
+                                       const char *url, const char *ua,
+                                       const char *referer);
 /* After the PiStorm window ended with "Fullscreen": the same film full
  * screen (HDMI sound), from the position mrberry saved in <film>.t:
  *   "<path>" [--no-audio] R W=C */

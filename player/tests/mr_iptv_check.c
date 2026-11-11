@@ -945,6 +945,17 @@ int main(void) {
     assert(!strcmp(args, "\"DH0:a.mp4\" --no-audio\n"));
     assert(!mr_build_external_player_arguments(args, sizeof(args), &o, ""));
     assert(!mr_build_external_player_arguments(args, 8, &o, "DH0:a.mp4"));
+    /* Streams for mrberry: the channel's headers follow the external
+     * player's own options, quoted like mrplay's. */
+    assert(mr_build_external_stream_arguments(args, sizeof(args), &o,
+                                              "https://h/x.m3u8", "UA 1", "https://r/"));
+    assert(!strcmp(args, "\"https://h/x.m3u8\" --no-audio --user-agent \"UA 1\""
+                         " --referer \"https://r/\"\n"));
+    assert(mr_build_external_stream_arguments(args, sizeof(args), &o,
+                                              "https://h/x.m3u8", "", NULL));
+    assert(!strcmp(args, "\"https://h/x.m3u8\" --no-audio\n"));
+    assert(!mr_build_external_stream_arguments(args, 24, &o,
+                                               "https://h/x.m3u8", "UA 1", NULL));
 
     /* PiStorm with the sound through Paula: mrberry --paula plus the audio
      * options mrplay takes. No audio still wins. */

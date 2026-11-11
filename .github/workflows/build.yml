@@ -121,7 +121,7 @@ jobs:
               AMIGA_GCC="$(command -v m68k-amigaos-gcc)"
               AMIGA_ROOT="$(dirname "$(dirname "$AMIGA_GCC")")"
               export PATH="$(dirname "$AMIGA_GCC"):$PATH"
-              make -f Makefile.amiga mrberry AMIGA_ROOT="$AMIGA_ROOT"
+              make -f Makefile.amiga mrberry AMIGA_ROOT="$AMIGA_ROOT" SSL=1 SSLCERTS=1
               # berryvp.library: Motorola-syntax 68k assembler for vasm.
               # Without python3 the relocations are left in vasm order,
               # which changes the file layout only, not the program.
