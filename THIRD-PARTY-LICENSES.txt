@@ -13,6 +13,15 @@ Project / complete source tree:
 For the pinned dependency revisions used by MintVID, clone recursively:
   git clone --recurse-submodules https://github.com/boingball/MintVID.git
 
+PiStorm player (mrberry, berryvp.library) - Michael (MichiB210)
+  Licence: MIT, Copyright (c) 2026 Michael (MichiB210)
+  Source:  pistorm/ (pistorm/LICENSE, pistorm/LICENSES.md)
+  The CPU1 audio modules it loads on the Pi carry their own licences:
+  berry_ac3.module (liba52, GPL-2.0-or-later), berry_faad03.module (FAAD2,
+  GPL-2.0-or-later) and berry_eac3.module (FFmpeg, LGPL-2.1-or-later), with
+  their sources in pistorm/modules/. The Emu68 BerryCore kernel patch is
+  MPL-2.0 (Emu68 by Michal Schulz), in pistorm/emu68_berrycore/.
+
 Third-party components used by mrplay
 -------------------------------------
 

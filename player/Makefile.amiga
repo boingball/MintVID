@@ -574,6 +574,20 @@ mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) $(KALMS_OBJ) $(MP2_AS
 	$(CC) $(CFLAGS) -DMR_HAVE_VIDEOCORE $(MINTAMP_FLAGS) $(LIBA52_FLAGS) -o $@ $(PLAY) $(CORE) \
 	    $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) $(KALMS_OBJ) $(MP2_ASM_OBJ) $(LDFLAGS)
 
+# mrberry: the PiStorm player (VideoCore H.264 through berryvp.library), by
+# Michael (MichiB210). Its build script takes MintVID's core and audio from
+# here, puts its own changed demuxer files over them, and reads the audio
+# decoder sources and flags from print-audio-build, so its Paula sound is
+# built exactly as mrplay's. See ../pistorm/README.md.
+mrberry: check-cc check-mintamp
+	CC="$(CC)" DEBUG_LOGS=$(MRBERRY_DEBUG_LOGS) sh ../pistorm/mrberry/build.sh "$(CURDIR)/build/mrberry"
+	cp build/mrberry/mrberry $@
+MRBERRY_DEBUG_LOGS ?= 1
+
+print-audio-build:
+	@echo "MINTAMP_SRC=$(MINTAMP_MP3) $(MINTAMP_AAC) $(LIBA52_SRC)"
+	@echo "MINTAMP_FLAGS=$(MINTAMP_FLAGS) $(LIBA52_FLAGS) $(LIBA52_FFT_CPPFLAGS)"
+
 check-kalms:
 	@test -n "$(KALMS_VASM)" -a -x "$(KALMS_VASM)" || { \
 	  echo "ERROR: vasmm68k_mot is required for the Kalms Motorola-syntax source."; \

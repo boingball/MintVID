@@ -280,7 +280,7 @@ mrb_paula *mrb_paula_open(const mr_audio_info *ai, int low_rate, int mono,
     mrb_paula *p = (mrb_paula *)calloc(1, sizeof *p);
     if (!p) { snprintf(why, why_cap, "out of memory"); return NULL; }
     p->offset_us = offset_us;
-    p->dec = mr_audio_decoder_open(ai, low_rate, mono);
+    p->dec = mr_audio_decoder_open(ai, low_rate, mono, MR_AUDIO_PAULA_RATE_MAX);
     if (!p->dec) {
         snprintf(why, why_cap, "this audio format cannot be decoded");
         free(p);
@@ -294,7 +294,7 @@ mrb_paula *mrb_paula_open(const mr_audio_info *ai, int low_rate, int mono,
         return NULL;
     }
     timer_open();
-    p->out = audio_open(p->rate, (int)p->channels, 16);
+    p->out = audio_open(MR_AUDIO_OUT_PAULA, p->rate, (int)p->channels, 16);
     if (!p->out) {
         snprintf(why, why_cap, "cannot open audio.device");
         mrb_paula_close(p);

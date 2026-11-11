@@ -1,31 +1,36 @@
 # External players
 
 MintVID's GUIs can start a player other than `mrplay` for some display
-modes. Today there is one: **PiStorm (VideoCore)**, played by `mrberry` from
-[MichiB210/MintVID-PiStorm](https://github.com/MichiB210/MintVID-PiStorm).
-It decodes H.264 on the Raspberry Pi's VideoCore and shows it full screen on
-the Pi's HDMI output.
+modes. Today there is one: **PiStorm (VideoCore)**, played by `mrberry`,
+written by Michael (MichiB210). Its source, and `berryvp.library`'s, is in
+`pistorm/` (from MintVID-PiStorm v97.1); `make -f Makefile.amiga mrberry`
+builds it. It decodes H.264 on the Raspberry Pi's VideoCore.
 
-MintVID does not ship `mrberry`. The GUIs list the PiStorm modes only when a
-file called `mrberry` sits in the same drawer as MintVID (`PROGDIR:mrberry`).
-Without it nothing changes.
+The GUIs list the PiStorm modes only when a file called `mrberry` sits in
+the same drawer as MintVID (`PROGDIR:mrberry`). Without it nothing changes.
 
-There are two PiStorm modes. They differ only in where the sound goes:
+There are three PiStorm modes:
 
-- **PiStorm (VideoCore, Pi audio)** / GadTools "PiStorm (HDMI)": the sound
-  is decoded on the Pi's second core and played over HDMI. This needs
-  Michi's patched Emu68 kernel (BerryCore).
-- **PiStorm (VideoCore, Amiga audio)** / GadTools "PiStorm (Paula)": the
-  sound is decoded on the 68k by MintVID's own decoders (MintAMP AAC/MP3,
-  MP2, AC-3, PCM) and played through Paula. A stock Emu68 kernel is enough.
+- **PiStorm (VideoCore, Pi audio)** / GadTools "PiStorm (HDMI)": full
+  screen on the Pi's HDMI, sound decoded on the Pi's second core and played
+  over HDMI. This needs Michael's patched Emu68 kernel (BerryCore).
+- **PiStorm (VideoCore, Amiga audio)** / GadTools "PiStorm (Paula)": full
+  screen, sound decoded on the 68k by MintVID's own decoders (MintAMP
+  AAC/MP3, MP2, AC-3, PCM) and played through Paula. A stock Emu68 kernel
+  is enough.
+- **PiStorm (VideoCore, window)** / GadTools "PiStorm (Window)": `mrberry
+  W=50`, the picture in berryvp.library's P96 window, sound over HDMI.
+  **F** in that window makes `mrberry` save the position in `<film>.t` and
+  end with the status text `Fullscreen`; the GUI then starts it again full
+  screen from there (`"<film>" R W=C`). Films it cannot seek in (TS) start
+  again from the beginning.
 
-The external backend currently documents support for PiStorm Classic with
-a Raspberry Pi 3A+ (BCM2837); its BerryCore kernel patch targets Emu68
-1.0.7 specifically. An entry in MintVID's Display menu only means that
-`mrberry` exists, not that the Pi model, kernel or libraries are compatible.
-Follow the backend's installation instructions, including `gpu_mem=64`.
-P96 Workbench on HDMI is part of that backend's intended use, but does not
-establish compatibility with other Pi models or PiStorm boards.
+The backend supports a PiStorm Classic with a Raspberry Pi 3A+ and a
+PiStorm32 lite with a CM4, both on Emu68 1.0.7. Follow its installation
+instructions (`pistorm/README.md`), including `gpu_mem=64` (CM4: 128).
+MintVID's build turns off v97.1's upscaling of films below 1280x720 to
+1920x1080 on the VideoCore (`UPSCALE` turns it back on): it needed
+`gpu_mem=256` on a Pi 3A+.
 
 The IPTV and YouTube browsers still start `mrplay`. If the controller is set
 to PiStorm, they play in a P96 window.

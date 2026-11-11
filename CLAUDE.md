@@ -2147,8 +2147,9 @@ enum, same value as the PiStorm fork's saved setting) only when
 `mrplay`, as task `MintVID player` with `"<file>" [--no-audio]`
 (`mr_build_external_player_arguments()`). The contract, the same signals,
 port and status as `mrplay`, is in `docs/EXTERNAL_PLAYER.md`. `mrberry`
-itself lives in MichiB210/MintVID-PiStorm, with `berryvp.library`, the CPU1
-audio modules and the patched Emu68 kernel it needs. Anything that still
+is Michael's (MichiB210) and lives in this repo's `pistorm/` (see "PiStorm
+player in the tree" below), with `berryvp.library`, the CPU1 audio modules
+and the patched Emu68 kernel it needs. Anything that still
 starts `mrplay` with this display (the IPTV/YouTube browsers) gets `--p96`.
 
 A second entry, "PiStorm (VideoCore, Amiga audio)" (`MR_DISPLAY_PISTORM_PAULA`,
@@ -2167,6 +2168,35 @@ shows a frame relative to that anchor has not been measured on hardware, so
 MP4 files whose `mp4a` track carries MP3 (object type 0x6B) are reported as
 AAC by `mr_mov.c`, which never reads the esds object type, so they play
 silent in mrplay too. Not fixed yet.
+
+## PiStorm player in the tree (mrberry v97.1)
+`pistorm/` is MintVID-PiStorm v97.1 by Michael (MichiB210), imported
+unchanged in one commit (VPberry left out), then adapted:
+- `mrberry` builds with `make -f Makefile.amiga mrberry`, which runs
+  `pistorm/mrberry/build.sh`. That copies `player/core`, puts
+  `pistorm/mrberry/core` over it (Michael's demuxer changes: MP4 ctts
+  presentation times, MKV tracks/seek/duration, E-AC-3, network reads) and
+  takes the audio decoder list from `print-audio-build`. Folding those
+  files into `player/core` is still to do; until then mrplay and mrberry
+  use different copies of those demuxers.
+- `mrb_paula.c` uses main's audio API (`audio_open(MR_AUDIO_OUT_PAULA,
+  ...)`, `mr_audio_decoder_open(..., MR_AUDIO_PAULA_RATE_MAX)`), and the
+  build compiles `audio.c`, `audio_paula.c`, `audio_ahi.c`.
+- **N83 is off by default.** From v96.83 berryvp.library sends films below
+  1280x720 through the ISP and scales them to 1920x1080 on the VideoCore,
+  to avoid green lines the HVS draws at odd scale factors. That needed
+  `gpu_mem=256` on a Pi 3A+ PiStorm, where the N80 build from our earlier
+  PR played at 64. `mr_berryvp_isp_out` now starts at 0xFFFFFFFF (the
+  library's own "no N83" value, BVP_CTRL_ISPOUT); `UPSCALE`/`--upscale`
+  sets 0 again. The library source is unchanged, so CI's build should match
+  v97.1's EXPECTED_SHA256.
+- `W=C` forces full screen even when `R` reads a window `W:` from the
+  `.t`. The window display (`MR_DISPLAY_PISTORM_WINDOW`, `W=50`) hands
+  over on **F**: mrberry saves `<film>.t` and ends with status text
+  `Fullscreen`, and both GUIs restart it with `"<film>" R W=C`
+  (`mr_build_external_fullscreen_arguments()`).
+- CI's `build` job builds `mrberry` and `berryvp.library` (vasm) and
+  uploads both. None of this has run on hardware yet.
 
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`

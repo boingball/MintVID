@@ -2267,6 +2267,13 @@ int main(int argc, char **argv)
             } else if (!strcmp(a, "R") || !strcmp(a, "r") ||
                        !strcmp(a, "RESUME") || !strcmp(a, "resume") || !strcmp(a, "Resume")) {
                 resume = 1;                       /* P96W54: continue from <film>.t */
+            } else if ((a[0] == 'W' || a[0] == 'w') && (a[1] == ':' || a[1] == '=') &&
+                       (a[2] == 'C' || a[2] == 'c') && !a[3]) {
+                /* MintVID: W=C = full screen (cinema), even with R and a
+                 * W: line in the .t.  The GUI uses "R W=C" to take a film
+                 * from the window to full screen at the same spot. */
+                mr_berryvp_stream_flags = 0;
+                have_window = 1;
             } else if (((a[0] == 'W' || a[0] == 'w') && (a[1] == ':' || a[1] == '=')) ||
                        (!have_window && a[0] >= '0' && a[0] <= '9')) {
                 /* Optional window size: play in a P96 window.  Without it
@@ -2327,6 +2334,8 @@ int main(int argc, char **argv)
                     }
                     mr_berryvp_isp_out = (w << 16) | h;
                 }
+            } else if (!strcmp(a, "UPSCALE") || !strcmp(a, "upscale")) {
+                mr_berryvp_isp_out = 0;          /* MintVID: N83 back on */
             } else if (!strcmp(a, "ISP") || !strcmp(a, "isp")) {
                 mr_berryvp_force_isp = 1;        /* ISP82 test: picture via ISP */
             } else if (!strcmp(a, "PLOW") || !strcmp(a, "plow")) {
@@ -2355,6 +2364,7 @@ int main(int argc, char **argv)
                  * docs/EXTERNAL_PLAYER.md.  Unknown --options are an error
                  * (before W77 they were silently read as AV=0). */
                 if (!strcmp(a, "--paula")) p67_paula = 1;
+                else if (!strcmp(a, "--upscale")) mr_berryvp_isp_out = 0;
                 else if (!strcmp(a, "--audio-rate=low")) p67_low = 1;
                 else if (!strncmp(a, "--audio-rate=", 13)) { /* normal: default */ }
                 else if (!strcmp(a, "--audio-mono")) p67_mono = 1;
@@ -2417,7 +2427,9 @@ int main(int argc, char **argv)
             printf("mrberry - H.264 hardware A/V player\n"
                    "Usage: mrberry <movie.mkv|movie.mp4|movie.ts> [W=10|25|50|75] [T=h:mm] [R] [PAULA [PLOW] [PMONO]] [NOAUDIO] [READ=KB] [AV=ms|NOSYNC]\n"
                    "  T=0:01 = start at 1 minute, T=1:30 = 1 h 30 min (T=1:30:15 with seconds)\n"
-                   "  R = continue where the film was stopped (<film>.t)\n"
+                   "  R = continue where the film was stopped (<film>.t); W=C = full screen\n"
+                   "  UPSCALE = scale films below 1280x720 up to 1920x1080 on the Pi\n"
+                   "    (needs more GPU memory than gpu_mem=64)\n"
                    "  PAULA = sound through the Amiga (PLOW lower rate, PMONO mono)\n"
                    "  READ=64..1024 = KB per file read (default 64, bigger for network shares)\n"
                    "  AUDIO=n = audio track n (MKV; see INFO for the list)\n"

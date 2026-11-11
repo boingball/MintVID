@@ -983,6 +983,48 @@ int main(void) {
                                  sizeof(error)));
     assert(parsed.display == MR_DISPLAY_PISTORM_PAULA);
 
+    /* PiStorm window: mrberry W=50 (sound on the Pi's HDMI, so the Paula
+     * options are not passed), appended after the other PiStorm values so
+     * saved settings keep their meaning. F hands it to full screen with
+     * R W=C, the position mrberry saved in <film>.t. */
+    assert((int)MR_DISPLAY_PISTORM_WINDOW == (int)MR_DISPLAY_PISTORM_PAULA + 1);
+    mr_play_options_default(&o);
+    o.display = MR_DISPLAY_PISTORM_WINDOW;
+    o.mono_audio = 1;
+    assert(mr_display_uses_external_player(o.display));
+    assert(mr_display_is_rtg(o.display));
+    assert(!mr_display_has_screen_options(o.display));
+    assert(mr_build_external_player_arguments(args, sizeof(args), &o,
+                                              "DH0:a.mkv"));
+    assert(!strcmp(args, "\"DH0:a.mkv\" W=50\n"));
+    o.no_audio = 1;
+    assert(mr_build_external_player_arguments(args, sizeof(args), &o,
+                                              "DH0:a.mkv"));
+    assert(!strcmp(args, "\"DH0:a.mkv\" --no-audio W=50\n"));
+    assert(mr_build_external_fullscreen_arguments(args, sizeof(args), &o,
+                                                  "DH0:a.mkv"));
+    assert(!strcmp(args, "\"DH0:a.mkv\" --no-audio R W=C\n"));
+    o.no_audio = 0;
+    assert(mr_build_external_fullscreen_arguments(args, sizeof(args), &o,
+                                                  "DH0:a.mkv"));
+    assert(!strcmp(args, "\"DH0:a.mkv\" R W=C\n"));
+    assert(!mr_build_external_fullscreen_arguments(args, sizeof(args), &o, ""));
+    assert(!mr_build_external_fullscreen_arguments(args, 12, &o, "DH0:a.mkv"));
+    assert(mr_build_player_arguments(args, sizeof(args), &o, url, NULL, NULL));
+    assert(strstr(args, "--p96") && !strstr(args, "pistorm") &&
+           !strstr(args, "W=50"));
+    mr_play_options_summary(&o, summary, sizeof(summary));
+    assert(strstr(summary, "Playback: RTG (PiStorm VideoCore, window) /"));
+    assert(mr_build_iptv_arguments(buf, sizeof(buf), &o));
+    assert(strstr(buf, "--display pistorm-window"));
+    argc_rt = 1;
+    for (p = strtok(buf, " \n"); p && argc_rt < 40; p = strtok(NULL, " \n"))
+      argv_rt[argc_rt++] = p;
+    mr_play_options_default(&parsed);
+    assert(mr_play_options_parse(&parsed, argc_rt, argv_rt, error,
+                                 sizeof(error)));
+    assert(parsed.display == MR_DISPLAY_PISTORM_WINDOW);
+
     /* Range limits: 200..2000 ms accepted, anything else refused. */
     {
       char *lo[] = { "x", "--skip-trigger=200" };

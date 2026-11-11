@@ -30,8 +30,9 @@ cp "$PLAYER/amiga/mr_player_status.h" "$OUT/src/amiga/"
 cp "$PLAYER/iptv/mr_iptv.h" "$OUT/src/iptv/"
 # MintVID's audio: packet decoders and the Paula backend.
 cp "$PLAYER"/audio/* "$OUT/src/audio/"
-cp "$PLAYER/amiga/audio_paula.c" "$PLAYER/amiga/mr_audio.h" \
-   "$PLAYER/amiga/mr_audio_rate.h" "$OUT/src/amiga/"
+cp "$PLAYER/amiga/audio.c" "$PLAYER/amiga/audio_backend.h" \
+   "$PLAYER/amiga/audio_paula.c" "$PLAYER/amiga/audio_ahi.c" \
+   "$PLAYER/amiga/mr_audio.h" "$PLAYER/amiga/mr_audio_rate.h" "$OUT/src/amiga/"
 cp -r "$PLAYER/amiga/include" "$OUT/src/amiga/include"
 cp "$HERE/net_stubs.c" "$OUT/src/"
 
@@ -63,7 +64,8 @@ $CC -O2 -std=c99 -m$CPU -noixemul -fomit-frame-pointer -Wall -Wextra \
   -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function \
   -o "$OUT/mrberry" \
   amiga/mrberry.c amiga/mr_berryvp.c amiga/mr_berryvp_stubs.S \
-  amiga/mrb_paula.c amiga/mrb_pl_mpeg.c amiga/mrb_sub.c amiga/audio_paula.c \
+  amiga/mrb_paula.c amiga/mrb_pl_mpeg.c amiga/mrb_sub.c \
+  amiga/audio.c amiga/audio_paula.c amiga/audio_ahi.c core/mr_play_options.c \
   audio/mr_audio_decode.c audio/mr_pcm.c \
   core/mr_avc_annexb.c \
   core/mr_demux.c core/mr_mkv.c core/mr_mov.c core/mr_ts.c core/mr_ps.c \

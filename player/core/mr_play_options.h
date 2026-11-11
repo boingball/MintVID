@@ -82,7 +82,13 @@ typedef enum {
     /* The same, with the sound decoded on the 68k by MintVID's own decoders
      * and played through Paula (mrberry --paula). Works on a stock Emu68
      * kernel. */
-    MR_DISPLAY_PISTORM_PAULA
+    MR_DISPLAY_PISTORM_PAULA,
+    /* The same decoder showing the picture in a window on the Workbench
+     * (mrberry W=50, berryvp.library's P96 window), sound on the Pi's HDMI.
+     * F or Fullscreen hands the film to MR_DISPLAY_PISTORM at the same
+     * spot: mrberry saves the position and ends with "Fullscreen", and the
+     * GUI starts it again with mr_build_external_fullscreen_arguments(). */
+    MR_DISPLAY_PISTORM_WINDOW
 } mr_display_mode;
 
 typedef enum {
@@ -225,7 +231,7 @@ int mr_display_is_rtg(mr_display_mode display);
 int mr_display_has_screen_options(mr_display_mode display);
 
 /* The display modes played by an external player instead of mrplay
- * (today the two PiStorm modes, played by mrberry). */
+ * (today the three PiStorm modes, played by mrberry). */
 int mr_display_uses_external_player(mr_display_mode display);
 
 /* HAM depth of a display mode: 8 for HAM8/HAM8 (Dither), 6 for HAM6/HAM6
@@ -250,10 +256,17 @@ int mr_build_iptv_arguments(char *output, size_t output_size,
 /* Command line for the external player of a local file:
  *   "<path>" [--no-audio]
  *   "<path>" --paula [--audio-rate=low] [--audio-mono]   (PiStorm, Amiga audio)
+ *   "<path>" W=50 [--no-audio]                           (PiStorm window)
  * Kept this small on purpose: see docs/EXTERNAL_PLAYER.md. */
 int mr_build_external_player_arguments(char *output, size_t output_size,
                                        const mr_play_options *options,
                                        const char *path);
+/* After the PiStorm window ended with "Fullscreen": the same film full
+ * screen (HDMI sound), from the position mrberry saved in <film>.t:
+ *   "<path>" [--no-audio] R W=C */
+int mr_build_external_fullscreen_arguments(char *output, size_t output_size,
+                                           const mr_play_options *options,
+                                           const char *path);
 void mr_play_options_summary(const mr_play_options *options, char *output,
                              size_t output_size);
 int mr_path_is_audio_only(const char *path);

@@ -74,3 +74,8 @@ player/mr_planar_modes_check
 
 player/build/.mintamp-config
 player/build/.mintamp-config.tmp
+player/mrberry
+player/berryvp.library
+player/build/mrberry/
+player/build/berryvp/
+pistorm/out/

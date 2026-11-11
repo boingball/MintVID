@@ -93,8 +93,8 @@ typedef struct gt_app {
     struct FileRequester *requester;
     mr_master_options_port *master;
     mr_gui_menu menu;
-    mr_display_mode modes[16];
-    STRPTR mode_labels[17];
+    mr_display_mode modes[20];
+    STRPTR mode_labels[21];
     unsigned mode_count;
     mr_c2p_mode c2p_modes[8];
     STRPTR c2p_labels[9];
@@ -240,6 +240,42 @@ static void set_info(gt_app *app, const char *text)
  * alone once no player is running, so it keeps showing whatever file/type
  * text set_info() last set from play_file(). */
 static struct Task *find_player(void);
+static int launch(const char *program, const char *task_name,
+                  const char *arguments);
+
+/* PiStorm window -> full screen.  F in mrberry's window saves the spot in
+ * <film>.t and ends the player with the status text "Fullscreen"; the GUI
+ * then starts the same film full screen from there (R W=C).  The path and
+ * options of the last PiStorm launch are kept for that. */
+static char handover_path[512];
+static mr_play_options handover_options;
+static int handover_window;
+
+static void pistorm_fullscreen_handover(gt_app *app)
+{
+    static char args[1600];
+    int guard;
+
+    handover_window = 0;
+    for (guard = 0; guard < 250 && find_player(); guard++)
+        Delay(1);
+    if (find_player()) {
+        set_info(app, "The PiStorm window did not close; full screen cancelled.");
+        return;
+    }
+    mr_player_status_clear_snapshot();
+    app->status_seq = 0;
+    if (!mr_build_external_fullscreen_arguments(args, sizeof(args),
+                                                &handover_options,
+                                                handover_path) ||
+        !launch("mrberry", "MintVID player", args)) {
+        set_info(app, "Could not start mrberry full screen.");
+        return;
+    }
+    app->external_launch_pending = 1;
+    app->external_launch_ticks = 0;
+    set_info(app, "Switching the PiStorm film to full screen...");
+}
 
 static void poll_status(gt_app *app)
 {
@@ -270,6 +306,11 @@ static void poll_status(gt_app *app)
         snprintf(line, sizeof(line), "Not supported: %s", ps.text);
     else if (ps.state == MR_PLAYER_STATE_ERROR)
         snprintf(line, sizeof(line), "Player error: %s", ps.text);
+    else if (ps.state == MR_PLAYER_STATE_ENDED && !live && handover_window &&
+             !strcmp(ps.text, "Fullscreen")) {
+        pistorm_fullscreen_handover(app);
+        return;
+    }
     else if (ps.state == MR_PLAYER_STATE_ENDED)
         snprintf(line, sizeof(line), "Playback ended");
     else if (ps.state == MR_PLAYER_STATE_OPENING)
@@ -678,7 +719,11 @@ static void play_file(gt_app *app)
     /* An external player (PiStorm: mrberry) runs under the same task name
      * as mrplay and answers the same signals and status port, so Pause,
      * Stop and the status line need no special case. */
+    handover_window = options.display == MR_DISPLAY_PISTORM_WINDOW;
     if (mr_display_uses_external_player(options.display)) {
+        strncpy(handover_path, app->path, sizeof(handover_path) - 1);
+        handover_path[sizeof(handover_path) - 1] = 0;
+        handover_options = options;
         if (!mr_build_external_player_arguments(args, sizeof(args), &options,
                                                 app->path) ||
             !launch(MR_PISTORM_PLAYER, "MintVID player", args))
@@ -1209,6 +1254,8 @@ static int build_window(gt_app *app)
         app->modes[app->mode_count++] = MR_DISPLAY_PISTORM;
         app->mode_labels[app->mode_count] = (STRPTR)"Display: PiStorm (Paula)";
         app->modes[app->mode_count++] = MR_DISPLAY_PISTORM_PAULA;
+        app->mode_labels[app->mode_count] = (STRPTR)"Display: PiStorm (Window)";
+        app->modes[app->mode_count++] = MR_DISPLAY_PISTORM_WINDOW;
     }
     /* Audio only, listed last so it never becomes the hardware default.
      * It sits here rather than under Video so it is easy to find; Video,

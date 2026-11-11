@@ -61,7 +61,12 @@ extern void bvp_exec_closelibrary(struct Library *lib);
 /* OpenStream flags: 0 = cinema (HVS), 10/25/50/75 = P96 window size. */
 ULONG mr_berryvp_stream_flags = 0;
 int mr_berryvp_force_isp = 0;   /* ISP82: ISP = cinema via ISP graph (test) */
-unsigned long mr_berryvp_isp_out = 0;  /* N84: 0 / 0xFFFFFFFF / (W<<16)|H (test) */
+/* N84: 0 / 0xFFFFFFFF / (W<<16)|H.  MintVID: 0xFFFFFFFF (no N83 upscale)
+ * is the default.  N83 sends every film below 1280x720 through the ISP and
+ * scales it to 1920x1080 in GPU memory; that needed gpu_mem=256 on a
+ * PiStorm with a Pi 3A+, where 64 had always been enough.  UPSCALE (or
+ * --upscale) turns N83 back on for boards with the memory for it. */
+unsigned long mr_berryvp_isp_out = 0xFFFFFFFFUL;
 void *mr_berryvp_osd_req = 0;           /* O1: OSD test request block or 0 */
 extern LONG bvp_call_control2(struct Library *base, ULONG cmd, ULONG arg);
 

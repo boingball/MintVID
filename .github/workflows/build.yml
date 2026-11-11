@@ -112,10 +112,36 @@ jobs:
                 SSL=1 SSLCERTS=1
             '
 
+      - name: Build the PiStorm player (mrberry) and berryvp.library
+        run: |
+          docker run --rm -v "$PWD":/src -w /src/player \
+            sacredbanana/amiga-compiler:m68k-amigaos \
+            bash -c '
+              set -e
+              AMIGA_GCC="$(command -v m68k-amigaos-gcc)"
+              AMIGA_ROOT="$(dirname "$(dirname "$AMIGA_GCC")")"
+              export PATH="$(dirname "$AMIGA_GCC"):$PATH"
+              make -f Makefile.amiga mrberry AMIGA_ROOT="$AMIGA_ROOT"
+              # berryvp.library: Motorola-syntax 68k assembler for vasm.
+              # Without python3 the relocations are left in vasm order,
+              # which changes the file layout only, not the program.
+              if ! command -v python3 >/dev/null; then
+                mv ../pistorm/berryvp_library/reloc_keep_order.txt \
+                   ../pistorm/berryvp_library/reloc_keep_order.txt.off
+              fi
+              sh ../pistorm/berryvp_library/build.sh "$PWD/build/berryvp"
+              cp build/berryvp/berryvp.library berryvp.library
+              if [ -f ../pistorm/berryvp_library/reloc_keep_order.txt.off ]; then
+                mv ../pistorm/berryvp_library/reloc_keep_order.txt.off \
+                   ../pistorm/berryvp_library/reloc_keep_order.txt
+              fi
+            '
+
       - name: Confirm the programs were produced
         run: |
           ls -la player/mrplay player/MintVID player/iptvgui player/ytgui \
-            player/MintVID-GT player/iptvgui-GT player/ytgui-GT player/mr_decode
+            player/MintVID-GT player/iptvgui-GT player/ytgui-GT player/mr_decode \
+            player/mrberry player/berryvp.library
           file player/mrplay player/MintVID player/iptvgui player/ytgui \
             player/MintVID-GT player/iptvgui-GT player/ytgui-GT player/mr_decode || true
 
@@ -135,6 +161,8 @@ jobs:
             player/iptvgui-GT
             player/ytgui-GT
             player/mr_decode
+            player/mrberry
+            player/berryvp.library
           if-no-files-found: error
           retention-days: 14
 
