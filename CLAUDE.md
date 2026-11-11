@@ -6307,3 +6307,30 @@ change needs a Vampire owner to test it.
 - Known limits: a VPU error in mid-stream stops playback rather than
   switching to software; `--loop` loses the pictures still in flight at the
   end of each pass.
+
+## mrbench: comparing display/C2P modes on the real machine
+`amiga/mrbench.c` (`mrbench <drawer> [--modes=c2p|all|name,...] [--audio]
+[--player=] [--out=] [--extra=]`) runs `mrplay <file> <mode flags>
+--benchmark --no-audio` once per video file in a drawer and per mode, with
+output to `T:mrbench.log`. It parses that log with `amiga/mr_bench_parse.h`
+and prints one row per run, also written as CSV (default
+`RAM:mrbench.csv`). mrplay is unchanged. mrbench waits in
+`SystemTagList()`, so it takes no CPU while a clip plays.
+
+The default `c2p` set is standard, portable, riva, kalms, direct, shadow,
+fused32 and ecs32. ecs32 is there because fused32 is 32 colours. `all`
+adds akiko, HAM8/6, EHB, window, cgx, p96 and rtg-half. Each mode uses the
+flags the GUIs emit.
+
+mrplay plays in real time, so `fps` is capped at the clip's rate. The
+per-frame `dec`/`conv`/`disp` times, and `max` (1e6 / their sum), are what
+tell modes apart. The c2p column is the path that actually ran, taken from
+the `AGA path:` line. This is how a Fused32 run shows `fused32-fallback`
+(the C path: width not a multiple of 32, or resized) instead of
+`fused32-asm`. All arithmetic is integer, with fps kept in tenths, so no
+floating-point printf is linked (see the -lm crash above).
+
+`tests/mr_bench_parse_check.c` (`make check`) feeds the parser mrplay's
+exact format strings. The tool itself was only syntax-checked here,
+against stub NDK headers. CI's AmigaOS `build` job is its first real
+compile, and it has not run on hardware yet.

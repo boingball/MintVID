@@ -141,7 +141,7 @@ jobs:
         run: |
           ls -la player/mrplay player/MintVID player/iptvgui player/ytgui \
             player/MintVID-GT player/iptvgui-GT player/ytgui-GT player/mr_decode \
-            player/mrberry player/berryvp.library
+            player/mrbench player/mrberry player/berryvp.library
           file player/mrplay player/MintVID player/iptvgui player/ytgui \
             player/MintVID-GT player/iptvgui-GT player/ytgui-GT player/mr_decode || true
 
@@ -161,6 +161,7 @@ jobs:
             player/iptvgui-GT
             player/ytgui-GT
             player/mr_decode
+            player/mrbench
             player/mrberry
             player/berryvp.library
           if-no-files-found: error
@@ -222,7 +223,7 @@ jobs:
             test -d "$dir"
             for program in \
               mrplay MintVID iptvgui ytgui \
-              MintVID-GT iptvgui-GT ytgui-GT mr_decode
+              MintVID-GT iptvgui-GT ytgui-GT mr_decode mrbench
             do
               test -f "$dir/$program"
             done
