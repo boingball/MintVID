@@ -10,6 +10,7 @@
 #include "../core/mr_source.h"
 #include "../core/mr_http.h"
 #include "../core/mr_youtube.h"
+#include "../core/mr_hls.h"
 #include "hls_fetch.h"
 #include "mr_tls_pref.h"
 #include <exec/types.h>
