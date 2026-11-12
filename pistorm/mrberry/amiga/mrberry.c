@@ -2423,7 +2423,7 @@ static mr_demux *mrb_open_url(const char *url)
 static mr_demux *mrb_open_url_inner(const char *url)
 {
     static char media[MR_HTTP_URL_MAX];
-    mr_http_options opts;
+    mr_http_options opts, base;
     const mr_http_options *use = NULL;
     mr_youtube_media_kind kind = MR_YOUTUBE_MEDIA_NONE;
     const char *path = url;
@@ -2432,10 +2432,21 @@ static mr_demux *mrb_open_url_inner(const char *url)
     atexit(mrb_net_cleanup);
     hls_fetch_start(0);
     hls_fetch_set_service(mrb_open_service, NULL);
+    /* Live HLS offers up to 1080p60, which the VideoCore graph refused
+     * ("Could not open BerryVP video graph").  Cap the rendition at
+     * 1080p30, as mrplay's HLS options do for slower machines. */
+    if (!mr_http_options_init(&base, mrb_user_agent[0] ? mrb_user_agent : NULL,
+                              mrb_referer[0] ? mrb_referer : NULL)) {
+        hls_fetch_stop();
+        return NULL;
+    }
+    base.hls_max_width = 1920;
+    base.hls_max_height = 1080;
+    base.hls_max_fps = 30;
     if (mr_youtube_is_url(url)) {
         p06_status_write(P06_STATE_OPENING, mrb_codec_label,
                          "Resolving YouTube media...");
-        if (!mr_youtube_http_options_init(&opts, NULL) ||
+        if (!mr_youtube_http_options_init(&opts, &base) ||
             !mr_youtube_resolve_media(url, &opts, media, sizeof media, &kind) ||
             !mr_youtube_media_http_options_init(&opts, &opts)) {
             hls_fetch_stop();
@@ -2443,16 +2454,12 @@ static mr_demux *mrb_open_url_inner(const char *url)
         }
         path = media;
         use = &opts;
-    } else if (mrb_user_agent[0] || mrb_referer[0]) {
-        if (!mr_http_options_init(&opts, mrb_user_agent[0] ? mrb_user_agent : NULL,
-                                  mrb_referer[0] ? mrb_referer : NULL)) {
-            hls_fetch_stop();
-            return NULL;
-        }
-        use = &opts;
         printf("YouTube: %s\n",
                kind == MR_YOUTUBE_MEDIA_HLS ? "live HLS" :
                kind == MR_YOUTUBE_MEDIA_HLS_VOD ? "recorded HLS" : "progressive MP4");
+    } else {
+        opts = base;
+        use = &opts;
     }
     if (!mr_source_is_hls(path))
         hls_fetch_stop();
