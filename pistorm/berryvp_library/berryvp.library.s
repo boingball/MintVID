@@ -10372,6 +10372,24 @@ h31e_clear_input_states:
         move.l  #1,frame_cycle
         move.l  #30,bulk_grace
         clr.l   hdmi_v40o_drain_done
+        ; MintVID: blocks the strict DMA gate kept at the last CloseStream
+        ; (a stopped stream has no EOS) used to be lost here: ~18 MB of Fast
+        ; RAM per video.  Park them; the allocations below reuse them.
+        tst.l   output_alloc
+        beq.s   mvp_po_done
+        tst.l   mvp_out_park
+        bne.s   mvp_po_done
+        move.l  output_alloc,mvp_out_park
+        move.l  output_alloc_size_saved,mvp_out_park_size
+        clr.l   output_alloc
+mvp_po_done:
+        tst.l   bulk_alloc
+        beq.s   mvp_pb_done
+        tst.l   mvp_bulk_park
+        bne.s   mvp_pb_done
+        move.l  bulk_alloc,mvp_bulk_park
+        clr.l   bulk_alloc
+mvp_pb_done:
         clr.l   output_alloc_size_saved
 
         ; HDMI_v41L mode 3 is a pure VideoCore tunnel. No host output pool exists.
@@ -10414,11 +10432,26 @@ v10j_output_size_loop:
         move.l  d0,output_alloc_size_saved
 
         move.l  a4,a6
+        move.l  mvp_out_park,d0            ; MintVID: reuse a parked block
+        beq.s   mvp_out_alloc
+        move.l  mvp_out_park_size,d1
+        cmp.l   output_alloc_size_saved,d1
+        bcs.s   mvp_out_alloc              ; too small: keep it parked
+        move.l  d1,output_alloc_size_saved
+        clr.l   mvp_out_park
+        clr.l   mvp_out_park_size
+        move.l  d0,a0
+        move.l  d1,d0
+        jsr     mvp_clear_block
+        move.l  a0,d0
+        bra.s   mvp_out_have
+mvp_out_alloc:
         move.l  output_alloc_size_saved,d0
         move.l  #MEMF_FASTCLEAR,d1
         jsr     AllocMem(a6)
         tst.l   d0
         beq.w   h19_output_alloc_fail
+mvp_out_have:
         move.l  d0,output_alloc
 
         add.l   #$00000fff,d0
@@ -10546,11 +10579,21 @@ v41b_common_input_pool:
         bsr     print
 
         move.l  a4,a6
+        move.l  mvp_bulk_park,d0           ; MintVID: reuse a parked block
+        beq.s   mvp_bulk_alloc
+        clr.l   mvp_bulk_park
+        move.l  d0,a0
+        move.l  #BULK_ALLOC_SIZE,d0
+        jsr     mvp_clear_block
+        move.l  a0,d0
+        bra.s   mvp_bulk_have
+mvp_bulk_alloc:
         move.l  #BULK_ALLOC_SIZE,d0
         move.l  #MEMF_FASTCLEAR,d1
         jsr     AllocMem(a6)
         tst.l   d0
         beq.w   h19_bulk_alloc_fail
+mvp_bulk_have:
         move.l  d0,bulk_alloc
 
         add.l   #$00000fff,d0
@@ -20324,6 +20367,9 @@ output_frame_bytes_expected: ds.l 1 ; aligned width*height*3/2 actual I420 paylo
 output_width_saved: ds.l 1
 output_height_saved: ds.l 1
 output_alloc: ds.l 1
+mvp_out_park: ds.l 1        ; MintVID: kept output block, reused next stream
+mvp_out_park_size: ds.l 1
+mvp_bulk_park: ds.l 1
 output_alloc_size_saved: ds.l 1
 output_pagelist_offset_saved: ds.l 1
 output_data_ptr: ds.l 1 ; current CPU-owned/receiving slot
@@ -46109,6 +46155,25 @@ v9m_dma_delta_bad:
         move.l  #msg_v9m_dma_delta_warn_end-msg_v9m_dma_delta_warn,d3
         jsr     print
 v9m_dma_delta_done:
+        ; MintVID: this stream closed cleanly, so blocks parked from an
+        ; earlier, stopped stream are certainly idle too.
+        move.l  mvp_out_park,d0
+        beq.s   mvp_fp_out_done
+        move.l  d0,a1
+        move.l  mvp_out_park_size,d0
+        move.l  a4,a6
+        jsr     FreeMem(a6)
+        clr.l   mvp_out_park
+        clr.l   mvp_out_park_size
+mvp_fp_out_done:
+        move.l  mvp_bulk_park,d0
+        beq.s   mvp_fp_bulk_done
+        move.l  d0,a1
+        move.l  #BULK_ALLOC_SIZE,d0
+        move.l  a4,a6
+        jsr     FreeMem(a6)
+        clr.l   mvp_bulk_park
+mvp_fp_bulk_done:
         lea     msg_v9m_dma_free_ok,a1
         move.l  #msg_v9m_dma_free_ok_end-msg_v9m_dma_free_ok,d3
         jsr     print
@@ -46122,6 +46187,20 @@ v9m_dma_gate_refuse:
         moveq   #1,d0
 v9m_dma_free_done:
         movem.l (sp)+,d1-d7/a0-a2/a6
+        rts
+
+; MintVID: A0 = block, D0 = bytes (a multiple of 4).  Clears it, as
+; MEMF_CLEAR did for a fresh block.  Preserves all registers.
+mvp_clear_block:
+        movem.l d0/a0,-(sp)
+        lsr.l   #2,d0
+        beq.s   mvp_cb_done
+mvp_cb_loop:
+        clr.l   (a0)+
+        subq.l  #1,d0
+        bne.s   mvp_cb_loop
+mvp_cb_done:
+        movem.l (sp)+,d0/a0
         rts
 
 v9m_avail_fast:
