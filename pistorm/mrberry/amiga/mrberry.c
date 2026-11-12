@@ -3071,6 +3071,14 @@ int main(int argc, char **argv)
     if (ac309i_pace.enabled && P67_FREE) {
         ac309i_pace.lead_us = p66_lead_ms * 1000UL;   /* P96W66 */
         if (n76_hostlog) { fprintf(n76_hostlog, "P66_LEAD_MS=%lu\n", p66_lead_ms); fflush(n76_hostlog); }
+        /* MintVID: full screen holds each SendVideo too (its dispatch waits
+         * until the frame is due), so a 1 s lead only kept the loop inside
+         * SendVideo ~92% of the time and a stream read 0.5 s ahead at most.
+         * Hand streams over at their time, as in the window. */
+        if (mrb_stream && p67_pa && !mr_berryvp_stream_flags) {
+            ac309i_pace.lead_us = 0;
+            n76_hlog("MINTVID_STREAM_FULLSCREEN_LEAD_0");
+        }
     }
     if (ac309i_pace.enabled && mr_berryvp_stream_flags) {
         ac309i_pace.lead_us = 50000UL;
