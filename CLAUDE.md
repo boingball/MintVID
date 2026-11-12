@@ -2167,8 +2167,12 @@ call, YouTube resolved, worker stopped if the result is not HLS, then
 because AmigaDOS would take `https:` for a volume and ask for it. A host
 probe linking mrberry's overlay core with the real network files opened an
 MP4 and a TS over HTTP and an HLS playlist (36 packets each, as from disk).
-Not yet run on a PiStorm: live-stream timing on the VideoCore path, and
-whether segment fetches stall it, are unknown. mrberry has none of mrplay's
+While a URL opens, mrberry now shows the same network progress lines as
+mrplay (`mrb_open_service()`, on both the mr_http and hls_fetch service
+hooks, published from mrberry's own task only, at most four times a
+second); before, PiStorm only ever showed "Resolving YouTube media..." and
+"Connecting to stream...". Not yet run on a PiStorm: live-stream timing on
+the VideoCore path, and whether segment fetches stall it, are unknown. mrberry has none of mrplay's
 live-resync or reconnect logic.
 
 A second entry, "PiStorm (VideoCore, Amiga audio)" (`MR_DISPLAY_PISTORM_PAULA`,

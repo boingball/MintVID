@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifndef MR_DEBUG_LOGS
 #define MR_DEBUG_LOGS 0
@@ -2249,7 +2250,52 @@ static void mrb_net_cleanup(void)
     hls_fetch_stop();
 }
 
+/* MintVID: while a stream opens, show the controller what the network code
+ * is doing ("Looking up host...", "Secure connection to host...",
+ * "Downloading from host: 96 KB") instead of one fixed line, as mrplay does.
+ * core/mr_http.c collects the lines from whichever task posts them; this
+ * publishes the newest from mrberry's own task only (the HLS fetch worker
+ * reaches the same hook from its task), at most four times a second. */
+static struct Task  *mrb_open_task;
+static unsigned long mrb_open_seq;
+static clock_t       mrb_open_at;
+
+static int mrb_open_service(void *opaque)
+{
+    char text[P06_TEXT_MAX];
+    unsigned long seq;
+    clock_t now;
+    (void)opaque;
+    if (FindTask(NULL) != mrb_open_task) return 0;
+    seq = mr_http_progress_read(text, sizeof text);
+    if (!seq || seq == mrb_open_seq || !text[0]) return 0;
+    now = clock();
+    if (mrb_open_seq && (unsigned long)(now - mrb_open_at) < CLOCKS_PER_SEC / 4)
+        return 0;
+    mrb_open_seq = seq;
+    mrb_open_at = now;
+    p06_status_write(P06_STATE_OPENING, "H.264 / VideoCore", text);
+    return 0;
+}
+
+static mr_demux *mrb_open_url_inner(const char *url);
+
 static mr_demux *mrb_open_url(const char *url)
+{
+    mr_demux *d;
+    mrb_open_task = FindTask(NULL);
+    mrb_open_seq = mr_http_progress_read(NULL, 0);
+    mr_http_set_service(mrb_open_service, NULL);
+    mr_http_progress_enable(1);
+    d = mrb_open_url_inner(url);
+    /* Later segment fetches stay quiet; mrberry's own lines take over. */
+    mr_http_progress_enable(0);
+    mr_http_set_service(NULL, NULL);
+    hls_fetch_set_service(NULL, NULL);
+    return d;
+}
+
+static mr_demux *mrb_open_url_inner(const char *url)
 {
     static char media[MR_HTTP_URL_MAX];
     mr_http_options opts;
@@ -2260,6 +2306,7 @@ static mr_demux *mrb_open_url(const char *url)
     mr_http_set_tls_max(MR_TLS_PREF_HTTP_MAX());
     atexit(mrb_net_cleanup);
     hls_fetch_start(0);
+    hls_fetch_set_service(mrb_open_service, NULL);
     if (mr_youtube_is_url(url)) {
         p06_status_write(P06_STATE_OPENING, "H.264 / VideoCore",
                          "Resolving YouTube media...");
