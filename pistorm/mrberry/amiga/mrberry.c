@@ -2333,7 +2333,13 @@ static char mrb_referer[512];           /* --referer= */
 
 static void mrb_net_cleanup(void)
 {
+    /* Join the fetch worker before this task's bsdsocket/AmiSSL go, as
+     * mrplay_exit() does.  mr_http's own atexit handler is registered on
+     * the first connection, after this one, so it runs first; on its own
+     * it closed the libraries under a worker still fetching a segment
+     * (Stop while an IPTV stream opened: HLS worker Guru 80000004). */
     hls_fetch_stop();
+    mr_http_net_shutdown();
 }
 
 /* MintVID: while a stream opens, show the controller what the network code
@@ -2403,6 +2409,10 @@ static mr_demux *mrb_open_url(const char *url)
     mr_http_set_service(mrb_open_service, NULL);
     mr_http_progress_enable(1);
     d = mrb_open_url_inner(url);
+    /* Register the cleanup again now that mr_http has registered its own:
+     * atexit runs the newest first, so the worker is joined before the
+     * libraries close.  Both steps are safe to repeat. */
+    atexit(mrb_net_cleanup);
     /* Later segment fetches stay quiet; mrberry's own lines take over. */
     mr_http_progress_enable(0);
     mr_http_set_service(NULL, NULL);
@@ -2742,6 +2752,7 @@ int main(int argc, char **argv)
     if (mrb_is_url(argv[1])) {
         mrb_stream = 1;
         d = mrb_open_url(argv[1]);
+        if (!d) mrb_net_cleanup();
         if (!d && p58_stop_sig(SetSignal(0, 0))) {
             SetSignal(0, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F);
             p06_status_write(P06_STATE_ENDED, mrb_codec_label, "Stopped");
