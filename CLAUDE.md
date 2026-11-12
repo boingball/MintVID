@@ -6505,3 +6505,18 @@ audio-first hold now runs whenever Paula plays, in full screen too
 (`p96w_first_vpts` is recorded then as well).
 
 Neither fix has run on hardware yet.
+
+**Confirmed on a PiStorm: both fixes work**, YouTube in the window with
+sound. Two things left from that test, both stream-only:
+- Space (pause) and F ended a stream. A Paula pause and the window's F both
+  end mrberry and restart it at the spot in `<film>.t`, and a URL has no
+  `.t`. For streams (`mrb_stream`) both keys are now ignored.
+- The picture froze for about a second every few seconds, then caught up.
+  The earlier logs show it too (`P65_HB` wall gaps of ~1.8 s every ~6 s).
+  mrberry reads the stream in the task that calls SendVideo, so a network
+  read that waits (the HTTP read-ahead refilling) stopped every frame.
+  `mrb_play_service()` is now on the mr_http and hls_fetch hooks while a
+  stream plays: it sends due frames and feeds Paula while the read waits.
+  It runs on mrberry's task only, is never reentered, and does nothing
+  once the library stream is closed (`g_bvp.lib` NULL). Not yet run on
+  hardware.

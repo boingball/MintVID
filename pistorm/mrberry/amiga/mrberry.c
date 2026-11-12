@@ -304,6 +304,11 @@ static void n76_hlog(const char *s);
 /* P96W38: the library's P96 video window takes the keyboard focus when it
  * opens or is clicked.  The library then reports Esc / 0 / close gadget in
  * its sync block (libbase+120, 'P96S', long 18 = byte offset 72). */
+/* MintVID: playing an http(s)/YouTube stream.  A Paula pause and the
+ * window's F both work by ending mrberry and starting it again at the spot
+ * saved in <film>.t, which a stream has none of, so both ended playback.
+ * For streams they are ignored instead. */
+static int mrb_stream;
 static int v9682_full;                 /* v96.82: F in the video window */
 /* v96.85: Tab / Shift-Tab = next / previous chapter (MKV), without
  * chapters +/- 10 minutes.  mrberry stops with the target spot in the .t
@@ -326,7 +331,7 @@ static int p96w38_window_stop(void)
     if (!v || ((volatile unsigned long *)v)[0] != 0x50393653UL) return 0;   /* 'P96S' */
     /* v96.82: F (long 20, +80) = stop here and let MintVID-pi go on in
      * full screen at this spot (same as its Fullscreen button, Ctrl-F) */
-    if (mr_berryvp_stream_flags && ((volatile unsigned long *)v)[20] != 0) {
+    if (mr_berryvp_stream_flags && !mrb_stream && ((volatile unsigned long *)v)[20] != 0) {
         if (!v9682_full) { v9682_full = 1; p58_switch = 1; n76_hlog("V9682_WINDOW_KEY_F"); }
         return 1;
     }
@@ -928,7 +933,7 @@ static int p45_pause_requested(void)
     if (P67_FREE) {
         /* P96W67: the free Pi clock cannot pause.  P96W78: with Paula the
          * pause key stops at the exact spot (see p78_*). NOAUDIO: ignored. */
-        if (p67_paula && p67_anchored && !p78_pause_stop) {
+        if (p67_paula && p67_anchored && !p78_pause_stop && !mrb_stream) {
             uint32_t now = (uint32_t)ac309i_read_sys_us();
             uint64_t at = (uint64_t)(uint32_t)(now - p78_clock_sys) +
                           (p50_t_set ? p50_base_us : 0);
@@ -2282,6 +2287,30 @@ static int mrb_open_service(void *opaque)
     return 0;
 }
 
+/* MintVID: while a stream plays, mrberry reads it in the same task that
+ * hands frames to the VideoCore.  A network read that waits (the HTTP
+ * read-ahead refilling, a slow server) used to stop every SendVideo until
+ * it returned: the picture froze for about a second, then caught up.
+ * mr_http calls this hook while it waits, so frames already queued keep
+ * going out and Paula keeps being fed.  Main task only, never reentered,
+ * and nothing once the library stream is closed (g_bvp.lib cleared). */
+static mr_berryvp   *mrb_play_bvp;
+static ac309i_pacer *mrb_play_pace;
+static int           mrb_in_play_service;
+
+static int mrb_play_service(void *opaque)
+{
+    unsigned long s = 0, k = 0;
+    (void)opaque;
+    if (FindTask(NULL) != mrb_open_task || mrb_in_play_service) return 0;
+    if (!mrb_play_pace || !mrb_play_pace->enabled || !g_bvp.lib) return 0;
+    mrb_in_play_service = 1;
+    (void)ac309i_service_mov_video(mrb_play_bvp, mrb_play_pace, &s, &k);
+    if (p67_pa) mrb_paula_service(p67_pa);
+    mrb_in_play_service = 0;
+    return 0;
+}
+
 static mr_demux *mrb_open_url_inner(const char *url);
 
 static mr_demux *mrb_open_url(const char *url)
@@ -2629,6 +2658,7 @@ int main(int argc, char **argv)
         mr_mkv_audio_usable = mka_usable_hdmi;
     DBG_PRINTF("[D01] before mr_demux_open_file\n");
     if (mrb_is_url(argv[1])) {
+        mrb_stream = 1;
         d = mrb_open_url(argv[1]);
         if (!d && p58_stop_sig(SetSignal(0, 0))) {
             SetSignal(0, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F);
@@ -2978,6 +3008,13 @@ int main(int argc, char **argv)
     }
 
     n76_hlog("N76_BEFORE_DEMUX_LOOP");
+    if (mrb_stream && n73_prime_ready && ac309i_pace.enabled) {
+        mrb_play_bvp = bvp;
+        mrb_play_pace = &ac309i_pace;
+        mr_http_set_service(mrb_play_service, NULL);
+        hls_fetch_set_service(mrb_play_service, NULL);   /* HLS: main task waits for the worker */
+        n76_hlog("MINTVID_STREAM_READ_SERVICE");
+    }
     for (;;) {
         p65_hb(sent, n73_vqueued);
         if (p67_pa) mrb_paula_service(p67_pa);
