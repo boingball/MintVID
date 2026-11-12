@@ -6599,3 +6599,27 @@ Paula the running hold is now 0.5 s (`P96W_PAULA_RUN_LEAD_US`, sound offset
 frames and read ahead to 160 (`P96W_STREAM_*`), against 60/72 for files, so
 a slow burst has room. Local files keep the 1.5 s prefill. Not yet run on
 hardware.
+
+**That fix was not the cause: YouTube's progressive MP4 is throttled.** The
+next logs (with a per-second `MRB_NET` line: longest loop gap and where,
+longest demux read, network and Paula decode time) showed the freezes in
+the window and full screen alike, every ~9-11 s. Each is one demux read
+waiting 0.83-1.06 s for data, with no reconnect and the read service still
+running (gaps under 120 ms) but nothing left to send. The download only
+kept pace with playback. The ANDROID progressive URL carries an unsolved
+`n=` challenge (the resolver has no JavaScript engine), and googlevideo
+then throttles one long response to about the media's bitrate.
+
+`mr_http_options.range_chunk_bytes` now fetches a seekable file in closed
+ranges (`Range: bytes=a-b`, clamped to the file length once known), each a
+new request that starts at full speed. `http_next_range()` opens the next
+range when one ends, from the read-ahead (blocking and proactive) and from
+`http_read_at()`, where a ranged response that simply ended no longer
+counts as an I/O retry. `mr_youtube_media_http_options_init()` sets 1 MiB
+(about 13 s of 360p) for progressive MP4, so mrplay gets it too. The
+fixture server honours range ends and logs the Range header;
+`run_http_check.sh` decodes an MP4 and a TS with `--range-chunk=` (a new
+mr_decode option) and checks the exact ranges requested. Whether
+googlevideo really serves each new range at full speed is not yet shown on
+hardware: the next `MRB_NET` lines should show `rdmax_ms` near 0 and one
+connection about every 13 s.

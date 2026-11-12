@@ -1599,7 +1599,14 @@ static int begin_response(http_source *h, size_t offset)
             return 0;
         }
         range_header[0] = '\0';
-        if (offset)
+        if (h->options.range_chunk_bytes && !h->streaming &&
+            !h->bounded_fetch) {
+            size_t last = offset + h->options.range_chunk_bytes - 1;
+            if (h->total_len && last >= h->total_len) last = h->total_len - 1;
+            snprintf(range_header, sizeof range_header,
+                     "Range: bytes=%lu-%lu\r\n", (unsigned long)offset,
+                     (unsigned long)last);
+        } else if (offset)
             snprintf(range_header, sizeof range_header,
                      "Range: bytes=%lu-\r\n", (unsigned long)offset);
         n = snprintf(h->request, sizeof h->request,
@@ -2022,6 +2029,17 @@ static void http_cache_trim(http_source *h)
  * socket already has - data the OS received while the player was decoding or
  * pacing - up to the full buffer, without blocking. Reads only forward and
  * stays contiguous with body_pos. */
+/* With range_chunk_bytes, a response ends at its range: start the next one
+ * where it stopped, so the read-ahead keeps going. */
+static int http_next_range(http_source *h)
+{
+    if (!h->options.range_chunk_bytes || h->streaming || h->interrupted ||
+        h->chunked || !h->response_left_known || h->response_left ||
+        !h->total_len || h->body_pos >= h->total_len)
+        return 0;
+    return begin_response(h, h->body_pos);
+}
+
 static void http_readahead(http_source *h, int min_only)
 {
     size_t cache_end, forward;
@@ -2052,16 +2070,27 @@ static void http_readahead(http_source *h, int min_only)
         if (want > 65536) want = 65536;
 
         n = copy_response_bytes(h, h->cache + h->cache_len, want);
-        if (n <= 0) return;
+        if (n <= 0) {
+            if (http_next_range(h)) continue;
+            return;
+        }
         h->cache_len += (size_t)n;
         forward += (size_t)n;
     }
     if (min_only) return;
     /* Proactive: absorb whatever is already waiting on the socket, no block. */
-    while (h->cache_len < h->cache_cap && http_readable(h)) {
-        size_t room = h->cache_cap - h->cache_len;
-        int n = copy_response_bytes(h, h->cache + h->cache_len,
-                                    room < 65536 ? room : 65536);
+    for (;;) {
+        size_t room;
+        int n;
+        if (h->cache_len >= h->cache_cap) break;
+        if (h->options.range_chunk_bytes && h->response_left_known &&
+            !h->response_left) {
+            if (!http_next_range(h)) break;
+        }
+        if (!http_readable(h)) break;
+        room = h->cache_cap - h->cache_len;
+        n = copy_response_bytes(h, h->cache + h->cache_len,
+                                room < 65536 ? room : 65536);
         if (n <= 0) break;
         h->cache_len += (size_t)n;
     }
@@ -2106,6 +2135,8 @@ static int http_read_at(void *opaque, size_t off, void *dst, size_t len)
             continue;
         }
         if (h->interrupted) return 0;
+        /* A ranged response that simply ended is not an error. */
+        if (http_next_range(h)) continue;
         close_connection(h, 0);
         if (done == len) break;
         if (retries++ >= HTTP_IO_RETRIES ||
@@ -2171,6 +2202,7 @@ mr_source *mr_http_source_open_ex(const char *url,
         h->options.hls_max_height = options->hls_max_height;
         h->options.hls_max_fps = options->hls_max_fps;
         h->options.source_buffer_bytes = options->source_buffer_bytes;
+        h->options.range_chunk_bytes = options->range_chunk_bytes;
     }
     if (h->options.source_buffer_bytes) {
         size_t attempt = h->options.source_buffer_bytes;

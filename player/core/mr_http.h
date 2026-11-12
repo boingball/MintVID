@@ -45,6 +45,11 @@ typedef struct mr_http_options {
      * HLS segment lookahead. HLS allocates only the fetched segments, never
      * this full amount up front. Zero keeps the legacy one-segment hint. */
     size_t source_buffer_bytes;
+    /* Fetch a seekable HTTP file in ranged requests of this many bytes
+     * instead of one open-ended response. googlevideo throttles one long
+     * response to about playback speed when the URL's n= challenge is not
+     * solved; every new request starts at full speed. Zero: one response. */
+    size_t range_chunk_bytes;
 } mr_http_options;
 
 int mr_http_options_init(mr_http_options *options, const char *user_agent,
