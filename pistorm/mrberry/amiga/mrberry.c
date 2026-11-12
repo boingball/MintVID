@@ -887,6 +887,35 @@ static void p73_base_load(void)
     v = strtol(text, NULL, 10);
     if (v >= -1000L && v <= 0L) p73_base_ms = v;
 }
+/* MintVID: the sound offset set with +/- is remembered for the next film
+ * in ENVARC:MintVID.avoffset (milliseconds, + = sound later).  AV= and a
+ * film's own .t value still win. */
+#define MRB_AV_FILE "ENVARC:MintVID.avoffset"
+static int mrb_av_load(long *ms)
+{
+    char text[16];
+    BPTR f = Open((CONST_STRPTR)MRB_AV_FILE, MODE_OLDFILE);
+    LONG got;
+    long v;
+    if (!f) return 0;
+    got = Read(f, text, (LONG)sizeof text - 1);
+    Close(f);
+    if (got <= 0) return 0;
+    text[got] = 0;
+    v = strtol(text, NULL, 10);
+    if (v < -3000L || v > 3000L) return 0;
+    *ms = v;
+    return 1;
+}
+static void mrb_av_save(long ms)
+{
+    char text[16];
+    BPTR f = Open((CONST_STRPTR)MRB_AV_FILE, MODE_NEWFILE);
+    if (!f) return;
+    snprintf(text, sizeof text, "%ld\n", ms);
+    Write(f, text, (LONG)strlen(text));
+    Close(f);
+}
 static int p69_av_set;
 static int p70_used;               /* Paula was really playing (for .t) */
 static int p67_anchored;
@@ -1804,6 +1833,7 @@ static void p70_apply_keys(void)
     if (p70_fine_ms > 3000) p70_fine_ms = 3000;
     if (p70_fine_ms < -3000) p70_fine_ms = -3000;
     p70_fine_changed = 1;
+    mrb_av_save(p70_fine_ms);
     mrb_paula_set_offset(p67_pa, (int32_t)(P69_PAULA_DEFAULT_AV_US + p70_fine_ms * 1000L));
     if (n76_hostlog) { fprintf(n76_hostlog, "P70_FINE_MS=%ld\n", p70_fine_ms); fflush(n76_hostlog); }
     p62_pos_write(p54_last_vpts_raw);   /* P96W72: MintVID-pi shows it at once */
@@ -2868,6 +2898,8 @@ int main(int argc, char **argv)
             p70_t_have_fine = 0;
             if (p54_read(argv[1], &rt, &ht, &rw) && p70_t_have_fine)
                 p70_fine_ms = p70_t_fine_ms;
+            else
+                (void)mrb_av_load(&p70_fine_ms);
         }
         if (p70_fine_ms > 3000) p70_fine_ms = 3000;
         if (p70_fine_ms < -3000) p70_fine_ms = -3000;

@@ -408,7 +408,8 @@ For audio output settings (rate, mono, no-audio, Fast RAM buffering) see
                Shift-Tab goes back
   M            mute
   S            next subtitle file; O turns subtitles off and on
-  + / -        move the sound 50 ms later / earlier
+  + / -        move the sound 50 ms later / earlier; the setting is
+               kept for the next video (ENVARC:MintVID.avoffset)
   Esc          stop
 
 The PiStorm displays decode H.264, MPEG-4 Part 2 (DivX/Xvid), H.263 and
