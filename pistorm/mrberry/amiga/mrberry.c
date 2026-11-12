@@ -1474,6 +1474,54 @@ static void p62_pos_write(uint64_t film_us)
         DeleteFile((CONST_STRPTR)P62_POS_TMP);
     }
 }
+/* MintVID: stream stall diagnostics.  mrb_net_tick() is called from the
+ * main loop and from the read service hook; the heartbeat then reports
+ * the longest time neither ran (the loop was blocked somewhere that does
+ * not service), the longest single demux read, and what the network code
+ * did in that second (connections, TLS handshakes, header waits). */
+static ULONG mrb_net_last, mrb_net_maxgap, mrb_net_rdmax;
+static int mrb_net_site, mrb_net_gapfrom, mrb_net_gapto;
+/* site: 1 loop top, 2 read service, 3 read-ahead wait, 4 after a read */
+static void mrb_net_tick(int site)
+{
+    ULONG now, gap;
+    if (!mrb_stream) return;
+    now = ac309i_read_sys_us();
+    gap = mrb_net_last ? now - mrb_net_last : 0;
+    if (gap > mrb_net_maxgap) {
+        mrb_net_maxgap = gap;
+        mrb_net_gapfrom = mrb_net_site;
+        mrb_net_gapto = site;
+    }
+    mrb_net_last = now;
+    mrb_net_site = site;
+}
+static void mrb_net_report(FILE *f)
+{
+    static mr_http_timing prev;
+    static unsigned long prev_dec, prev_pk;
+    unsigned long dec = 0, pk = 0, starv = 0, minbuf = 0;
+    mr_http_timing t;
+    if (!mrb_stream || !f) return;
+    mr_http_timing_get(&t);
+    if (p67_pa) mrb_paula_timing(p67_pa, &dec, &pk, &starv, &minbuf);
+    fprintf(f, "MRB_NET maxgap_ms=%lu (%d->%d) rdmax_ms=%lu conn=+%lu tls=+%lu tls_ms=+%lu"
+               " resumed=+%lu hdr_ms=+%lu body_ms=+%lu fetches=+%lu"
+               " adec_ms=+%lu apk=+%lu\n",
+            (unsigned long)(mrb_net_maxgap / 1000UL),
+            mrb_net_gapfrom, mrb_net_gapto,
+            (unsigned long)(mrb_net_rdmax / 1000UL),
+            t.connects - prev.connects, t.tls_handshakes - prev.tls_handshakes,
+            t.tls_ms - prev.tls_ms, t.tls_resumed - prev.tls_resumed,
+            t.header_ms - prev.header_ms, t.body_ms - prev.body_ms,
+            t.fetches - prev.fetches, dec - prev_dec, pk - prev_pk);
+    prev = t;
+    prev_dec = dec;
+    prev_pk = pk;
+    mrb_net_maxgap = 0;
+    mrb_net_rdmax = 0;
+}
+
 /* P96W65 test: NOAUDIO heartbeat from the main loop (N76_HOST.TXT, 1/s). */
 static void p65_hb(unsigned long sent, unsigned long queued)
 {
@@ -1487,6 +1535,7 @@ static void p65_hb(unsigned long sent, unsigned long queued)
     fprintf(n76_hostlog, "P65_HB wall_ms=%lu sent=%lu read_pts_ms=%lu queued=%lu\n",
             (unsigned long)((now - t0) / 1000UL), sent,
             (unsigned long)(p54_last_vpts_raw / 1000ULL), queued);
+    mrb_net_report(n76_hostlog);
     fflush(n76_hostlog);
 }
 /* S1: film time on screen in ms (0 = not known yet).
@@ -2330,6 +2379,7 @@ static int mrb_play_service(void *opaque)
     unsigned long s = 0, k = 0;
     (void)opaque;
     if (FindTask(NULL) != mrb_open_task || mrb_in_play_service) return 0;
+    mrb_net_tick(2);
     if (!mrb_play_pace || !mrb_play_pace->enabled || !g_bvp.lib) return 0;
     mrb_in_play_service = 1;
     (void)ac309i_service_mov_video(mrb_play_bvp, mrb_play_pace, &s, &k);
@@ -3051,6 +3101,7 @@ int main(int argc, char **argv)
         n76_hlog("MINTVID_STREAM_READ_SERVICE");
     }
     for (;;) {
+        mrb_net_tick(1);
         p65_hb(sent, n73_vqueued);
         if (p67_pa) mrb_paula_service(p67_pa);
         p70_apply_keys();
@@ -3094,6 +3145,7 @@ int main(int argc, char **argv)
                 if (p05_input_poll_stop() ||
                     p58_stop_sig(bvp_exec_setsignal(0, 0))) { stop_now = 1; break; }
                 if (p45_service(bvp, &ac309i_pace, &eac3_first_wall_us, sent, &audio_sent)) { stop_now = 1; break; }
+                mrb_net_tick(3);
                 p65_hb(sent, n73_vqueued);
                 if (p67_pa) mrb_paula_service(p67_pa);
                 p70_apply_keys();
@@ -3110,7 +3162,14 @@ int main(int argc, char **argv)
         }
         if (seen < 3 && audio_seen < 3) n76_hlog("N76_BEFORE_DEMUX_NEXT");
         if (seen < 3) DBG_PRINTF("[D10] before demux_next_packet seen=%lu\n", seen);
-        st = p50_next_packet(d, &pkt);
+        { ULONG rd0 = mrb_stream ? ac309i_read_sys_us() : 0;
+          st = p50_next_packet(d, &pkt);
+          if (mrb_stream) {
+              ULONG rd = ac309i_read_sys_us() - rd0;
+              if (rd > mrb_net_rdmax) mrb_net_rdmax = rd;
+              mrb_net_tick(4);
+          }
+        }
         if (seen < 3 && audio_seen < 3 && n76_hostlog) { fprintf(n76_hostlog, "N76_AFTER_DEMUX_NEXT st=%ld video=%d len=%lu pts=%d\n", (long)st, pkt.is_video, (unsigned long)pkt.len, pkt.has_pts); fflush(n76_hostlog); }
         if (seen < 3) DBG_PRINTF("[D11] after demux_next_packet st=%ld is_video=%d len=%lu\n", (long)st, pkt.is_video, (unsigned long)pkt.len);
         if (st != MR_OK) break;
