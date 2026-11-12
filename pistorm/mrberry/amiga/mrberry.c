@@ -324,6 +324,9 @@ static int m1_muted;
 static unsigned long m1_win;
 static int m1_win_seen;
 static int p58_switch;
+static long p70_key_delta;           /* P96W70: sound offset key presses, ms */
+static int mrb_av_win_seen;
+static unsigned long mrb_av_win_later, mrb_av_win_earlier;
 static int p96w38_window_stop(void)
 {
     unsigned long v;
@@ -346,6 +349,21 @@ static int p96w38_window_stop(void)
             if (!m1_win_seen) { m1_win_seen = 1; m1_win = mm; }
             if (mm != m1_win) { m1_win = mm; m1_key = 1; }
         }
+        /* MintVID: +/2 and -/1 in the video window (library with
+         * BVP_CAP_AV_KEYS; older ones have no longs 24/25). */
+        if (g_bvp.caps & 0x00008000UL) {
+            unsigned long later = ((volatile unsigned long *)v)[24];
+            unsigned long earlier = ((volatile unsigned long *)v)[25];
+            if (!mrb_av_win_seen) {
+                mrb_av_win_seen = 1;
+                mrb_av_win_later = later;
+                mrb_av_win_earlier = earlier;
+            }
+            p70_key_delta += 50L * (long)(later - mrb_av_win_later);
+            p70_key_delta -= 50L * (long)(earlier - mrb_av_win_earlier);
+            mrb_av_win_later = later;
+            mrb_av_win_earlier = earlier;
+        }
     }
     return ((volatile unsigned long *)v)[18] != 0;
 }
@@ -365,7 +383,6 @@ static int p45_key_space;
  * The fine value comes from AV= (Shell), else from the film's .t (P:ms),
  * else 0; '+'/'-' change it by 50 ms while the film plays; it is written
  * to the .t as P:ms. */
-static long p70_key_delta;
 static long p70_fine_ms;
 static int p70_fine_changed;
 static int p05_input_poll_stop(void)
@@ -405,8 +422,8 @@ static int p05_input_poll_stop(void)
             if (code == ' ' && !(qual & IEQUALIFIER_REPEAT))
                 p45_key_space = 1;
             /* P96W70: Paula fine offset, 50 ms per press */
-            if (code == '+') p70_key_delta += 50;
-            if (code == '-') p70_key_delta -= 50;
+            if (code == '+' || code == '2') p70_key_delta += 50;
+            if (code == '-' || code == '1') p70_key_delta -= 50;
             /* O2: O = OSD on/off */
             if ((code == 'o' || code == 'O') && !(qual & IEQUALIFIER_REPEAT))
                 o2_key_osd = 1;
@@ -1834,6 +1851,11 @@ static void p70_apply_keys(void)
     if (p70_fine_ms < -3000) p70_fine_ms = -3000;
     p70_fine_changed = 1;
     mrb_av_save(p70_fine_ms);
+    {   /* MintVID: show the new offset in the controller's status line */
+        char t[48];
+        snprintf(t, sizeof t, "Sound offset %+ld ms", p70_fine_ms);
+        p06_status_write(P06_STATE_PLAYING, mrb_codec_label, t);
+    }
     mrb_paula_set_offset(p67_pa, (int32_t)(P69_PAULA_DEFAULT_AV_US + p70_fine_ms * 1000L));
     if (n76_hostlog) { fprintf(n76_hostlog, "P70_FINE_MS=%ld\n", p70_fine_ms); fflush(n76_hostlog); }
     p62_pos_write(p54_last_vpts_raw);   /* P96W72: MintVID-pi shows it at once */

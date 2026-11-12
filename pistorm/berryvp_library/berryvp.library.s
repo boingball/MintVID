@@ -55,7 +55,8 @@ BVP_CAP_INPUT_PTS     equ $00001000
 BVP_CAP_NO_HDMI_AUDIO equ $00002000
 ; MintVID VC1: ConfigVideo takes the codec ids below as well as H.264.
 BVP_CAP_MULTI_CODEC   equ $00004000
-BVP_CAPS_STAGE3       equ BVP_CAP_API_V1+BVP_CAP_PTS64+BVP_CAP_H264_HW+BVP_CAP_DIRECT_HVS+BVP_CAP_FRAME_FLAGS+BVP_CAP_INPUT_PTS+BVP_CAP_NO_HDMI_AUDIO+BVP_CAP_MULTI_CODEC
+BVP_CAP_AV_KEYS       equ $00008000   ; MintVID: +/- 1/2 counted at p96w_sync+96/+100
+BVP_CAPS_STAGE3       equ BVP_CAP_API_V1+BVP_CAP_PTS64+BVP_CAP_H264_HW+BVP_CAP_DIRECT_HVS+BVP_CAP_FRAME_FLAGS+BVP_CAP_INPUT_PTS+BVP_CAP_NO_HDMI_AUDIO+BVP_CAP_MULTI_CODEC+BVP_CAP_AV_KEYS
 
 BVP_CODEC_NONE        equ 0
 BVP_CODEC_H264        equ 1
@@ -74352,6 +74353,8 @@ p96w_ac_done:
 ;  84 / 88 written by the library: Tab / Shift-Tab presses in the video
 ;     window (v96.85: next / previous chapter, else +/- 10 minutes)
 ;  92 written by the library: M presses in the video window (v96.87 mute)
+;  96 / 100 written by the library: sound later / earlier presses in the
+;     video window (MintVID: + = 2 and - = 1, auto-repeat counts)
 ; ----------------------------------------------------------------------------
 P96W_CLK_CTX         equ $A96C0000
 P96W_CLK_PERIOD_US   equ 200000
@@ -74363,7 +74366,7 @@ P96W_CLK_TIMEOUT_US  equ 1000000
 p96w_clk_open:
         movem.l d0/a0,-(sp)
         lea     p96w_sync,a0
-        moveq   #23,d0
+        moveq   #25,d0
 p96w_co_clr:
         clr.l   (a0)+
         dbra    d0,p96w_co_clr
@@ -74544,6 +74547,14 @@ p96w38_pk_vanilla:
         beq.s   v9687_pk_mute
         cmpi.w  #$0046,d3              ; 'F'
         beq.s   v9682_pk_full
+        cmpi.w  #$002B,d3              ; MintVID: '+' = sound later
+        beq.w   mvav_pk_later
+        cmpi.w  #$0032,d3              ; '2'
+        beq.w   mvav_pk_later
+        cmpi.w  #$002D,d3              ; '-' = sound earlier
+        beq.w   mvav_pk_earlier
+        cmpi.w  #$0031,d3              ; '1'
+        beq.w   mvav_pk_earlier
         cmpi.w  #$0030,d3              ; '0'
         bne.s   p96w38_pk_next
 p96w38_pk_stop:
@@ -74580,6 +74591,12 @@ v9687_pk_mute:
         btst    #25,d3                 ; no key repeat
         bne.w   p96w38_pk_next
         addq.l  #1,p96w_sync+92
+        bra.w   p96w38_pk_next
+mvav_pk_later:
+        addq.l  #1,p96w_sync+96
+        bra.w   p96w38_pk_next
+mvav_pk_earlier:
+        addq.l  #1,p96w_sync+100
         bra.w   p96w38_pk_next
 p96w38_pk_done:
         movem.l (sp)+,d0-d3/a0-a2/a6
@@ -75376,7 +75393,7 @@ p96w_ring_pts_lo:     ds.l 16
 p96w_ring_pts_hi:     ds.l 16
 p96w_ring_len:        ds.l 16
 p96w_spin:            ds.l 1
-p96w_sync:            ds.l 24          ; v96.82: +80 F; v96.85: +84 Tab, +88 Shift-Tab; v96.87: +92 M
+p96w_sync:            ds.l 26          ; v96.82: +80 F; v96.85: +84 Tab, +88 Shift-Tab; v96.87: +92 M; MintVID: +96 sound later, +100 earlier
         cnop    0,4
 p96w_stage:           ds.b VPV48_FAAD_INPUT_SIZE
 
