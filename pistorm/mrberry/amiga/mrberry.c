@@ -2267,6 +2267,10 @@ static int mrb_open_service(void *opaque)
     clock_t now;
     (void)opaque;
     if (FindTask(NULL) != mrb_open_task) return 0;
+    /* Stop (Ctrl-F) or Ctrl-C while opening: give up now instead of after
+     * the network code's own 20 s limits.  Peek only, so main() still sees
+     * the signal and reports Stopped. */
+    if (p58_stop_sig(SetSignal(0, 0))) return 1;
     seq = mr_http_progress_read(text, sizeof text);
     if (!seq || seq == mrb_open_seq || !text[0]) return 0;
     now = clock();
@@ -2626,6 +2630,11 @@ int main(int argc, char **argv)
     DBG_PRINTF("[D01] before mr_demux_open_file\n");
     if (mrb_is_url(argv[1])) {
         d = mrb_open_url(argv[1]);
+        if (!d && p58_stop_sig(SetSignal(0, 0))) {
+            SetSignal(0, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F);
+            p06_status_write(P06_STATE_ENDED, "H.264 / VideoCore", "Stopped");
+            return 0;
+        }
         if (!d) {
             printf("Error: cannot open stream: %s\n", mr_source_last_error());
             p06_status_write(P06_STATE_ERROR, "H.264 / VideoCore",
