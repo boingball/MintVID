@@ -1369,7 +1369,11 @@ static mr_status ac309i_service_mov_video(mr_berryvp *bvp, ac309i_pacer *pace,
             if (cs && (uint32_t)(t - cs) > 5000000u) cs = 0;   /* old library: error code */
             p67_anchored = 1;
             p78_clock_sys = cs ? cs : t;           /* P96W78: pause spot */
-            mrb_paula_anchor(p67_pa, cs ? cs : t, 0);
+            /* MintVID: the media time this frame stands for.  A live TS
+             * stream's timestamps start hours in (IPTV 12136 s, YouTube
+             * live 85419 s); anchoring at 0 left Paula waiting for that
+             * time to come round, so live streams had no sound. */
+            mrb_paula_anchor(p67_pa, cs ? cs : t, p.has_pts ? p.pts_us : 0);
             if (n76_hostlog) { fprintf(n76_hostlog, "P67_ANCHOR sys=%lu clockstart=%lu gap_ms=%ld first_pts_ms=%lu\n",
                                (unsigned long)t, (unsigned long)cs,
                                cs ? (long)((int32_t)(t - cs) / 1000) : 0L,
@@ -2433,15 +2437,16 @@ static mr_demux *mrb_open_url_inner(const char *url)
     hls_fetch_start(0);
     hls_fetch_set_service(mrb_open_service, NULL);
     /* Live HLS offers up to 1080p60, which the VideoCore graph refused
-     * ("Could not open BerryVP video graph").  Cap the rendition at
-     * 1080p30, as mrplay's HLS options do for slower machines. */
+     * ("Could not open BerryVP video graph").  1080p25 and 720p50 opened
+     * but took 6.3 s and ~4.5 s to fetch each 5 s / 3.84 s segment on a
+     * PiStorm, so the picture fell further behind.  Cap at 720p30. */
     if (!mr_http_options_init(&base, mrb_user_agent[0] ? mrb_user_agent : NULL,
                               mrb_referer[0] ? mrb_referer : NULL)) {
         hls_fetch_stop();
         return NULL;
     }
-    base.hls_max_width = 1920;
-    base.hls_max_height = 1080;
+    base.hls_max_width = 1280;
+    base.hls_max_height = 720;
     base.hls_max_fps = 30;
     if (mr_youtube_is_url(url)) {
         p06_status_write(P06_STATE_OPENING, mrb_codec_label,
