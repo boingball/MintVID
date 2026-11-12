@@ -400,6 +400,23 @@ and for complete hardware starting points see
 For audio output settings (rate, mono, no-audio, Fast RAM buffering) see
 @{" Audio " LINK Audio}.
 
+@{b}PiStorm (VideoCore) keys@{ub}
+
+  Space        pause / continue
+  F            window: continue full screen at the same spot
+  Tab          next chapter (without chapters: 10 minutes on);
+               Shift-Tab goes back
+  M            mute
+  S            next subtitle file; O turns subtitles off and on
+  + / -        move the sound 50 ms later / earlier
+  Esc          stop
+
+On a stream (YouTube, IPTV, HTTP) Space pauses in place, but F, Tab and
+Shift-Tab do nothing: those keys restart the film at a saved spot, which
+a stream does not have. Choose the full-screen PiStorm display before
+starting a stream to watch it full screen. A long pause can outlast the
+server's connection or a live stream's window.
+
 @{" Back to Contents " LINK "MAIN"}
 @endnode
 

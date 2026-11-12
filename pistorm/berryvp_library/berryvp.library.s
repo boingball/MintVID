@@ -21890,7 +21890,7 @@ hdmi_v40o_graphics_name:
         dc.b "graphics.library",0
         even
 hdmi_v40o_window_title:
-        dc.b "MintVID-pi  -  Space = Pause   Tab = >>   M = Mute   F = Fullscreen   Esc = Stop",0   ; v96.81: VPr8 keys 1/2/3 are gone
+        dc.b "MintVID",0              ; MintVID: keys are in the guide, not the title
         even
 hdmi_v40o_newwindow:
         dc.w 80,60                       ; LeftEdge, TopEdge

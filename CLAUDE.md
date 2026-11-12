@@ -6510,7 +6510,15 @@ Neither fix has run on hardware yet.
 sound. Two things left from that test, both stream-only:
 - Space (pause) and F ended a stream. A Paula pause and the window's F both
   end mrberry and restart it at the spot in `<film>.t`, and a URL has no
-  `.t`. For streams (`mrb_stream`) both keys are now ignored.
+  `.t`. For streams (`mrb_stream`) F is ignored. Space now pauses a stream
+  in place: `p45_pause_loop()` pauses `mrb_paula` (its clock excludes the
+  pause), moves mrberry's pacer, `p78_clock_sys` and the library's pacer
+  (`BVP_CTRL_TIMESHIFT`) on by the pause. That is only safe without the
+  free Pi clock (CLK81) that made Michael restart instead, and both graphs
+  mrberry opens with Paula have none (N80 direct, P96 window). Frames
+  already sent to the Pi may still show for a moment after Space in full
+  screen. Local files keep the tested restart pause. The window title is now
+  just "MintVID"; the keys are in the guide's Controls node.
 - The picture froze for about a second every few seconds, then caught up.
   The earlier logs show it too (`P65_HB` wall gaps of ~1.8 s every ~6 s).
   mrberry reads the stream in the task that calls SendVideo, so a network

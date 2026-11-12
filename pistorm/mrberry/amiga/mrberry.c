@@ -932,8 +932,14 @@ static int p45_pause_requested(void)
     if (!req) return 0;
     if (P67_FREE) {
         /* P96W67: the free Pi clock cannot pause.  P96W78: with Paula the
-         * pause key stops at the exact spot (see p78_*). NOAUDIO: ignored. */
-        if (p67_paula && p67_anchored && !p78_pause_stop && !mrb_stream) {
+         * pause key stops at the exact spot (see p78_*). NOAUDIO: ignored.
+         * MintVID: a stream has no .t to restart from, so it pauses in
+         * place: Paula's clock stops with the sound, and mrberry's pacer
+         * and the library's window/host pacer move by the pause
+         * (p45_pause_loop).  Neither graph mrberry opens with Paula has a
+         * free Pi clock (N80 direct, or the P96 window). */
+        if (mrb_stream && p67_paula && p67_anchored) goto p45_debounce;
+        if (p67_paula && p67_anchored && !p78_pause_stop) {
             uint32_t now = (uint32_t)ac309i_read_sys_us();
             uint64_t at = (uint64_t)(uint32_t)(now - p78_clock_sys) +
                           (p50_t_set ? p50_base_us : 0);
@@ -950,6 +956,7 @@ static int p45_pause_requested(void)
         }
         return 0;
     }
+p45_debounce:
     /* one key press may arrive as RAWKEY and VANILLAKEY: merge (250 ms) */
     now = (uint32_t)ac309i_read_sys_us();
     if (p45_have_toggle && (uint32_t)(now - p45_last_toggle_us) < 250000u) return 0;
@@ -966,6 +973,7 @@ static int p45_pause_loop(ac309i_pacer *pace, uint32_t *eac3_wall)
     char line[64];
 
     n76_hlog("P45_PAUSE_ON");
+    if (p67_pa) mrb_paula_pause(p67_pa, 1);     /* MintVID: stream pause */
     p06_status_write(P06_STATE_PLAYING, "H.264 / VideoCore", "Paused");
     for (;;) {
         Delay(2);
@@ -976,6 +984,10 @@ static int p45_pause_loop(ac309i_pacer *pace, uint32_t *eac3_wall)
     }
     dt = (uint32_t)ac309i_read_sys_us() - t0;
     pace->base_us += dt;
+    if (p67_pa) {
+        p78_clock_sys += dt;                    /* film time excludes the pause */
+        mrb_paula_pause(p67_pa, 0);
+    }
     /* P96W47: the library's own window pacer must move with ours */
     if (g_bvp.lib) bvp_call_control2(g_bvp.lib, P47_CTRL_TIMESHIFT, dt);
     if (eac3_wall) *eac3_wall += dt;
@@ -1059,7 +1071,7 @@ static int p45_service(mr_berryvp *bvp, ac309i_pacer *pace, uint32_t *eac3_wall,
             p45_sent_mark = sent ? sent - 1 : 0;
             n76_hlog("P46_DRAIN_CANCEL");
             p06_status_write(P06_STATE_PLAYING, "H.264 / VideoCore", p45_status_text);
-        } else if (mr_berryvp_stream_flags && pace->started &&
+        } else if (mr_berryvp_stream_flags && !p67_pa && pace->started &&
                    p96w_have_apts && p96w_have_vpts && !p45_flush_pending) {
             p45_phase = 1;
             p45_hold_audio = 1;
