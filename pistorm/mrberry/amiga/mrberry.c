@@ -309,6 +309,7 @@ static void n76_hlog(const char *s);
  * saved in <film>.t, which a stream has none of, so both ended playback.
  * For streams they are ignored instead. */
 static int mrb_stream;
+static ULONG mrb_net_send_us;   /* MRB_NET: time inside SendVideo */
 static int v9682_full;                 /* v96.82: F in the video window */
 /* v96.85: Tab / Shift-Tab = next / previous chapter (MKV), without
  * chapters +/- 10 minutes.  mrberry stops with the target spot in the .t
@@ -1351,7 +1352,9 @@ static mr_status ac309i_service_mov_video(mr_berryvp *bvp, ac309i_pacer *pace,
          * entering SendVideo.  The first-frame anchor therefore excludes
          * decoder/VCHIQ submission latency, just like v04_pace_new_frame. */
         ac309i_commit_video_deadline(pace, n76_hostlog);
-        st = mr_berryvp_send_packet(bvp, &p);
+        { ULONG s0 = mrb_stream ? ac309i_read_sys_us() : 0;
+          st = mr_berryvp_send_packet(bvp, &p);
+          if (mrb_stream) mrb_net_send_us += ac309i_read_sys_us() - s0; }
         if (st == MR_EAGAIN) { if (skipped) (*skipped)++; }
         else if (st != MR_OK) return st;
         else if (sent) (*sent)++;
@@ -1507,19 +1510,21 @@ static void mrb_net_report(FILE *f)
     if (p67_pa) mrb_paula_timing(p67_pa, &dec, &pk, &starv, &minbuf);
     fprintf(f, "MRB_NET maxgap_ms=%lu (%d->%d) rdmax_ms=%lu conn=+%lu tls=+%lu tls_ms=+%lu"
                " resumed=+%lu hdr_ms=+%lu body_ms=+%lu fetches=+%lu"
-               " adec_ms=+%lu apk=+%lu\n",
+               " adec_ms=+%lu apk=+%lu send_ms=+%lu\n",
             (unsigned long)(mrb_net_maxgap / 1000UL),
             mrb_net_gapfrom, mrb_net_gapto,
             (unsigned long)(mrb_net_rdmax / 1000UL),
             t.connects - prev.connects, t.tls_handshakes - prev.tls_handshakes,
             t.tls_ms - prev.tls_ms, t.tls_resumed - prev.tls_resumed,
             t.header_ms - prev.header_ms, t.body_ms - prev.body_ms,
-            t.fetches - prev.fetches, dec - prev_dec, pk - prev_pk);
+            t.fetches - prev.fetches, dec - prev_dec, pk - prev_pk,
+            (unsigned long)(mrb_net_send_us / 1000UL));
     prev = t;
     prev_dec = dec;
     prev_pk = pk;
     mrb_net_maxgap = 0;
     mrb_net_rdmax = 0;
+    mrb_net_send_us = 0;
 }
 
 /* P96W65 test: NOAUDIO heartbeat from the main loop (N76_HOST.TXT, 1/s). */
@@ -3070,6 +3075,15 @@ int main(int argc, char **argv)
     if (ac309i_pace.enabled && mr_berryvp_stream_flags) {
         ac309i_pace.lead_us = 50000UL;
         n76_hlog("P96W5_WINDOW_QUEUE_NONREF_DROP_AUDIO_FIRST");
+        /* MintVID: the library holds each SendVideo until its own frame
+         * time, about 8 ms after ours.  With a 50 ms lead that wait was
+         * ~25 ms of every 33 ms frame, so a stream was read no further ahead
+         * than the audio-first hold (0.5 s) and every ~1 s network wait
+         * froze the picture.  Hand streams over at their time instead. */
+        if (mrb_stream && p67_pa) {
+            ac309i_pace.lead_us = 0;
+            n76_hlog("MINTVID_STREAM_WINDOW_LEAD_0");
+        }
     }
     if (ac309i_pace.enabled) {
         DBG_PRINTF("[AC309I] VPv149 host-time feed pacer: fps=%lu/%lu step=%lu + %lu/%lu us, lead=%lu us\n",
