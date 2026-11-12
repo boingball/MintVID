@@ -634,6 +634,7 @@ static unsigned long p96w_dropped;
 static int p96w_have_vpts, p96w_have_apts, p96w_prefill_done, p96w_drain;
 static uint64_t p96w_first_vpts, p96w_last_apts;
 static unsigned long p96w_audio_first_holds;
+static mrb_paula *p67_pa;               /* defined with the Paula options below */
 #define P96W_PREFILL_US   800000ULL
 #define P96W_AUDIO_LEAD_US 400000ULL
 /* MintVID: Paula drops decoded sound until it is the sound offset (350 ms)
@@ -700,7 +701,7 @@ static int n73_queue_video(const mr_packet *pkt)
     n->has_pts = pkt->has_pts;
     n->pts_us = pkt->pts_us;
     n->is_annexb = pkt->is_annexb;
-    if (mr_berryvp_stream_flags && !p96w_have_vpts && pkt->has_pts) {
+    if ((mr_berryvp_stream_flags || p67_pa) && !p96w_have_vpts && pkt->has_pts) {
         p96w_first_vpts = pkt->pts_us;
         p96w_have_vpts = 1;
     }
@@ -1254,9 +1255,12 @@ static mr_status ac309i_service_mov_video(mr_berryvp *bvp, ac309i_pacer *pace,
         mr_status st;
         uint32_t elapsed;
         p96w_sync_update(pace);
-        /* P96W5/W27 prefill and audio-first: with HDMI sound or Paula.
+        /* P96W5/W27 prefill and audio-first: in the window with HDMI sound,
+         * and with Paula in the window and full screen alike.  Both hold
+         * SendVideo to real time, so without this hold the file is read at
+         * real time and Paula never gets its sound offset ahead (silence).
          * Without sound the host pacer alone gives the time. */
-        if (mr_berryvp_stream_flags && (p96w_hdmi || p67_pa) && !p96w_drain &&
+        if (((mr_berryvp_stream_flags && p96w_hdmi) || p67_pa) && !p96w_drain &&
             n73_vqueued < P96W_HOLD_MAX_Q) {
             uint64_t lead = p67_pa ? P96W_PAULA_LEAD_US : P96W_AUDIO_LEAD_US;
             uint64_t prefill = p67_pa ? P96W_PAULA_LEAD_US : P96W_PREFILL_US;

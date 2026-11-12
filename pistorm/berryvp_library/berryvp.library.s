@@ -50200,6 +50200,16 @@ hdmi_v40o_wait_vblank_done:
 ; view, so use the same byte-swap helper as the diagnostic read.
 hdmi_v40o_restore_hvs_ptr:
         movem.l d1-d3/a0-a1,-(sp)
+        ; MintVID: only the renderer graphs save the list (fullscreen).  The
+        ; P96 window graph has no renderer, so nothing was saved and writing
+        ; the cleared value put 0 in the HVS list pointer: black screen after
+        ; every window stream, with the Amiga still running.
+        tst.l   hdmi_v40o_hvs_saved
+        bne.s   hdmi_v40o_restore_hvs_have
+        moveq   #0,d0
+        movem.l (sp)+,d1-d3/a0-a1
+        rts
+hdmi_v40o_restore_hvs_have:
         lea     msg_hdmi_v40o_hvs_restore_begin,a1
         move.l  #msg_hdmi_v40o_hvs_restore_begin_end-msg_hdmi_v40o_hvs_restore_begin,d3
         jsr     print

@@ -6481,8 +6481,23 @@ The window's P96W5 prefill and P96W27 audio-first hold now run with Paula
 as well. They hold video until audio is `P96W_PAULA_LEAD_US` (1.5 s) ahead,
 and Paula packets now set `p96w_last_apts`.
 
-Still open: the black screen on leaving the window. It needs
-Ctrl-Amiga-Amiga. Both traces end cleanly (`N79_CLOSE_TAIL`, `N76_END_OK`),
-and no `N80_FAILED_STREAM_VC_RESET` was logged. v97.1's window crashed the
-same way at the end of a film before any of these changes. The user is on
-Emu68 1.1, and v97.1 was tested on 1.0.7.
+**The black screen on leaving the window was berryvp.library writing 0
+into the HVS display-list pointer.** The Amiga kept running (Caps Lock
+worked), full screen exited cleanly, and a local file did the same. Both
+traces end cleanly (`N79_CLOSE_TAIL`, `N76_END_OK`). After a drained
+stream, `v9_cleanup_all` always calls `hdmi_v40o_restore_hvs_ptr`. That
+puts back the HVS list saved before the renderer took the display. Only
+the two renderer graphs save it (full screen). The P96 window graph (ISP
+-> host -> P96 blit) has no renderer, so `hvs_saved` was still the 0 that
+OpenStream clears it to. The restore now does nothing when nothing was
+saved, as N80's reset already did. v97.1's window went black at the end
+of a film for the same reason.
+
+**Full screen with Paula was silent for the same reason the window was.**
+N80's direct graph paces SendVideo to the host frame grid (~39 ms per
+call in the log), so the file is read at real time and the audio never
+got the 350 ms offset ahead (`min_buffered_ms=0`, `starvations=0`). The
+audio-first hold now runs whenever Paula plays, in full screen too
+(`p96w_first_vpts` is recorded then as well).
+
+Neither fix has run on hardware yet.
