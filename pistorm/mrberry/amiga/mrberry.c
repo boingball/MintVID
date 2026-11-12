@@ -711,7 +711,8 @@ static int n73_queue_video(const mr_packet *pkt)
         p96w_first_vpts = pkt->pts_us;
         p96w_have_vpts = 1;
     }
-    n->nonref = mr_berryvp_stream_flags ?
+    /* P96W3 drops only H.264 non-reference pictures (codec 0/1 = H.264). */
+    n->nonref = (mr_berryvp_stream_flags && g_bvp.codec <= 1) ?
         p96w_au_is_nonref(pkt->data, pkt->len, pkt->is_annexb,
                           g_bvp.avc.nal_length_size) : 0;
     if (n73_vtail) n73_vtail->next = n; else n73_vhead = n;
@@ -965,6 +966,9 @@ p45_debounce:
     return 1;
 }
 
+/* MintVID VC1: status-line codec name, set once the video is known. */
+static char mrb_codec_label[32] = "H.264 / VideoCore";
+
 /* Returns 1 when the user stopped the film during the pause. */
 static int p45_pause_loop(ac309i_pacer *pace, uint32_t *eac3_wall)
 {
@@ -974,7 +978,7 @@ static int p45_pause_loop(ac309i_pacer *pace, uint32_t *eac3_wall)
 
     n76_hlog("P45_PAUSE_ON");
     if (p67_pa) mrb_paula_pause(p67_pa, 1);     /* MintVID: stream pause */
-    p06_status_write(P06_STATE_PLAYING, "H.264 / VideoCore", "Paused");
+    p06_status_write(P06_STATE_PLAYING, mrb_codec_label, "Paused");
     for (;;) {
         Delay(2);
         if (g_bvp.lib && !p45_no_idle) bvp_call_control(g_bvp.lib, P45_CTRL_IDLE);
@@ -997,7 +1001,7 @@ static int p45_pause_loop(ac309i_pacer *pace, uint32_t *eac3_wall)
              (unsigned long)(dt / 1000u), stop);
     n76_hlog(line);
     if (!stop)
-        p06_status_write(P06_STATE_PLAYING, "H.264 / VideoCore", p45_status_text);
+        p06_status_write(P06_STATE_PLAYING, mrb_codec_label, p45_status_text);
     s1_after_pause();                 /* S1: old clock samples are stale */
     return stop;
 }
@@ -1020,7 +1024,7 @@ static int p79_shown(void)
 static int p79_still_loop(void)
 {
     int resume = 0;
-    p06_status_write(P06_STATE_PLAYING, "H.264 / VideoCore", "Paused");
+    p06_status_write(P06_STATE_PLAYING, mrb_codec_label, "Paused");
     if (n76_hostlog) {
         fprintf(n76_hostlog, "P79_STILL_HOLD shown=%d\n", p79_shown());
         fflush(n76_hostlog);
@@ -1070,7 +1074,7 @@ static int p45_service(mr_berryvp *bvp, ac309i_pacer *pace, uint32_t *eac3_wall,
             p45_flush_pending = 1;
             p45_sent_mark = sent ? sent - 1 : 0;
             n76_hlog("P46_DRAIN_CANCEL");
-            p06_status_write(P06_STATE_PLAYING, "H.264 / VideoCore", p45_status_text);
+            p06_status_write(P06_STATE_PLAYING, mrb_codec_label, p45_status_text);
         } else if (mr_berryvp_stream_flags && !p67_pa && pace->started &&
                    p96w_have_apts && p96w_have_vpts && !p45_flush_pending) {
             p45_phase = 1;
@@ -1078,7 +1082,7 @@ static int p45_service(mr_berryvp *bvp, ac309i_pacer *pace, uint32_t *eac3_wall,
             p45_audio_end = p96w_last_apts;
             p45_drain_start = now;
             n76_hlog("P46_DRAIN_START");
-            p06_status_write(P06_STATE_PLAYING, "H.264 / VideoCore", "Paused");
+            p06_status_write(P06_STATE_PLAYING, mrb_codec_label, "Paused");
         } else {
             if (p45_pause_loop(pace, eac3_wall)) return 1;
         }
@@ -2179,8 +2183,8 @@ static int p56_info(const char *film)
                    (unsigned long)(milli % 1000U));
         }
     }
-    if (!vi || !vi->valid || vi->fourcc != MR_FOURCC('a','v','c','1'))
-        reason = "H.264/AVC video is required";
+    if (!vi || !vi->valid || !mr_berryvp_codec_for_fourcc(vi->fourcc))
+        reason = "no VideoCore decoder for this video";
     dur = mr_demux_duration_us(d);
     if (dur) {
         char len[16];
@@ -2295,7 +2299,7 @@ static int mrb_open_service(void *opaque)
         return 0;
     mrb_open_seq = seq;
     mrb_open_at = now;
-    p06_status_write(P06_STATE_OPENING, "H.264 / VideoCore", text);
+    p06_status_write(P06_STATE_OPENING, mrb_codec_label, text);
     return 0;
 }
 
@@ -2353,7 +2357,7 @@ static mr_demux *mrb_open_url_inner(const char *url)
     hls_fetch_start(0);
     hls_fetch_set_service(mrb_open_service, NULL);
     if (mr_youtube_is_url(url)) {
-        p06_status_write(P06_STATE_OPENING, "H.264 / VideoCore",
+        p06_status_write(P06_STATE_OPENING, mrb_codec_label,
                          "Resolving YouTube media...");
         if (!mr_youtube_http_options_init(&opts, NULL) ||
             !mr_youtube_resolve_media(url, &opts, media, sizeof media, &kind) ||
@@ -2376,7 +2380,7 @@ static mr_demux *mrb_open_url_inner(const char *url)
     }
     if (!mr_source_is_hls(path))
         hls_fetch_stop();
-    p06_status_write(P06_STATE_OPENING, "H.264 / VideoCore", "Connecting to stream...");
+    p06_status_write(P06_STATE_OPENING, mrb_codec_label, "Connecting to stream...");
     return mr_demux_open_file_ex(path, use);
 }
 
@@ -2660,7 +2664,7 @@ int main(int argc, char **argv)
     }
     p77_port_open();                      /* P96W77: MintVID.player */
     p62_pos_clear();
-    p06_status_write(P06_STATE_OPENING, "H.264 / VideoCore",
+    p06_status_write(P06_STATE_OPENING, mrb_codec_label,
                      "Opening PiStorm VideoCore playback...");
     /* MintVID: Paula unless HDMI sound was asked for. */
     if (!p_hdmi_audio && !p63_noaudio && !p79_still)
@@ -2674,12 +2678,12 @@ int main(int argc, char **argv)
         d = mrb_open_url(argv[1]);
         if (!d && p58_stop_sig(SetSignal(0, 0))) {
             SetSignal(0, SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F);
-            p06_status_write(P06_STATE_ENDED, "H.264 / VideoCore", "Stopped");
+            p06_status_write(P06_STATE_ENDED, mrb_codec_label, "Stopped");
             return 0;
         }
         if (!d) {
             printf("Error: cannot open stream: %s\n", mr_source_last_error());
-            p06_status_write(P06_STATE_ERROR, "H.264 / VideoCore",
+            p06_status_write(P06_STATE_ERROR, mrb_codec_label,
                              "Could not open the stream");
             return 10;
         }
@@ -2696,7 +2700,7 @@ int main(int argc, char **argv)
                 printf("Error: file not found: %s\n", argv[1]);
             }
         }
-        p06_status_write(P06_STATE_ERROR, "H.264 / VideoCore",
+        p06_status_write(P06_STATE_ERROR, mrb_codec_label,
                          "Could not open media file");
         return 10;
     }
@@ -2709,15 +2713,21 @@ int main(int argc, char **argv)
     DBG_PRINTF("[D03] before mr_demux_video\n");
     vi = mr_demux_video(d);
     DBG_PRINTF("[D04] after mr_demux_video ptr=%p\n", (void *)vi);
-    if (!vi || !vi->valid || vi->fourcc != MR_FOURCC('a','v','c','1')) {
+    if (!vi || !vi->valid || !mr_berryvp_codec_for_fourcc(vi->fourcc)) {
         char codec[80];
         mr_demux_describe_video_codec(d, codec, sizeof codec);
-        printf("Error: H.264/AVC video is required (found: %s).\n", codec);
+        printf("Error: the VideoCore has no decoder for this video (found: %s).\n", codec);
         p06_status_write(P06_STATE_UNSUPPORTED, codec,
-                         "H.264/AVC video is required");
+                         "No VideoCore decoder for this video");
         mr_demux_close(d);
         return 10;
     }
+    /* MintVID VC1: name the codec in the status line, and tell the bridge
+     * whether packets are whole pictures (TS/PS payloads are not). */
+    snprintf(mrb_codec_label, sizeof mrb_codec_label, "%s / VideoCore",
+             mr_berryvp_codec_name(vi->fourcc));
+    mr_berryvp_unframed = !strcmp(mr_demux_container_name(d), "MPEG-TS") ||
+                          !strcmp(mr_demux_container_name(d), "MPEG-PS");
     DBG_PRINTF("MintVID demux: %s, H.264 %dx%d, config=%lu bytes\n",
            mr_demux_container_name(d), vi->width, vi->height,
            (unsigned long)vi->config_len);
@@ -2823,7 +2833,7 @@ int main(int argc, char **argv)
         p50_fmt(want, sizeof want, p50_t_us);
         if (!mr_demux_can_seek(d)) {
             printf("Error: T= start time works only with MKV and MP4 files.\n");
-            p06_status_write(P06_STATE_UNSUPPORTED, "H.264 / VideoCore",
+            p06_status_write(P06_STATE_UNSUPPORTED, mrb_codec_label,
                              "T= start time needs an MKV or MP4 file");
             mr_demux_close(d);
             return 10;
@@ -2841,17 +2851,17 @@ int main(int argc, char **argv)
                 p50_fmt(len, sizeof len, dur);
                 printf("Error: T=%s is behind the end of the film (length %s).\n", want, len);
                 snprintf(text, sizeof text, "Start time is behind the end (film length %s)", len);
-                p06_status_write(P06_STATE_ERROR, "H.264 / VideoCore", text);
+                p06_status_write(P06_STATE_ERROR, mrb_codec_label, text);
                 mr_demux_close(d);
                 return 10;
             }
         }
-        p06_status_write(P06_STATE_OPENING, "H.264 / VideoCore",
+        p06_status_write(P06_STATE_OPENING, mrb_codec_label,
                          "Searching start position...");
         st = mr_demux_seek(d, p50_t_us, &p50_seek_us);
         if (st != MR_OK) {
             printf("Error: cannot find a start picture for T=%s.\n", want);
-            p06_status_write(P06_STATE_ERROR, "H.264 / VideoCore",
+            p06_status_write(P06_STATE_ERROR, mrb_codec_label,
                              "Start time not found in the file");
             mr_demux_close(d);
             return 10;
@@ -2925,7 +2935,7 @@ int main(int argc, char **argv)
     st = mr_berryvp_open(bvp, vi);
     DBG_PRINTF("[D06] after mr_berryvp_open st=%ld\n", (long)st);
     if (st != MR_OK) {
-        p06_status_write(P06_STATE_ERROR, "H.264 / VideoCore",
+        p06_status_write(P06_STATE_ERROR, mrb_codec_label,
                          "Could not open BerryVP video graph");
         mr_demux_close(d);
         return 20;
@@ -2953,7 +2963,7 @@ int main(int argc, char **argv)
             n76_hlog("N76_AFTER_CONFIG_AUDIO_OK");
         } else {
             printf("Error: audio setup failed; playback stopped.\n");
-            p06_status_write(P06_STATE_ERROR, "H.264 / VideoCore",
+            p06_status_write(P06_STATE_ERROR, mrb_codec_label,
                              "Audio setup failed");
             mr_berryvp_close(bvp);
             mr_demux_close(d);
@@ -3014,7 +3024,7 @@ int main(int argc, char **argv)
         char p06_text[128];
         snprintf(p06_text, sizeof p06_text, "%dx%d, %s",
                  vi->width, vi->height, mr_demux_container_name(d));
-        p06_status_write(P06_STATE_PLAYING, "H.264 / VideoCore", p06_text);
+        p06_status_write(P06_STATE_PLAYING, mrb_codec_label, p06_text);
         strncpy(p45_status_text, p06_text, sizeof p45_status_text - 1);
         n76_hlog("P06_STATUS_PLAYING");
     }
@@ -3565,7 +3575,7 @@ int main(int argc, char **argv)
     p62_pos_clear();
     if (p63_noaudio && n76_hostlog) { fprintf(n76_hostlog, "P64_END aborted=%d sent=%lu\n", aborted, (unsigned long)sent); fflush(n76_hostlog); }
     if (st != MR_OK) {
-        p06_status_write(P06_STATE_ERROR, "H.264 / VideoCore",
+        p06_status_write(P06_STATE_ERROR, mrb_codec_label,
                          "VideoCore cleanup failed");
         return 20;
     }
@@ -3574,7 +3584,7 @@ int main(int argc, char **argv)
      * P96W79: "Resume" with ENDED = Space in the still: Play again. */
     /* v96.82: "Fullscreen" with ENDED = F in the window: MintVID-pi
      * starts the film in full screen at the spot just saved in the .t */
-    p06_status_write(P06_STATE_ENDED, "H.264 / VideoCore",
+    p06_status_write(P06_STATE_ENDED, mrb_codec_label,
                      p78_pause_stop ? "Paused" : v9682_full ? "Fullscreen" :
                      s4_jump ? "Jump" :
                      (p79_resume ? "Resume" : (aborted ? "Stopped" : "Finished")));

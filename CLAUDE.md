@@ -6528,3 +6528,50 @@ sound. Two things left from that test, both stream-only:
   It runs on mrberry's task only, is never reentered, and does nothing
   once the library stream is closed (`g_bvp.lib` NULL). Not yet run on
   hardware.
+
+## berryvp.library: other VideoCore decoders (VC1)
+The library only ever set up MMAL's H.264 decoder. Its packet path copies
+bytes without parsing them. The H.264 parts were:
+- the stream setup (`bvp_backend_init_from_config`, which parses the SPS
+  for geometry, reference count and VUI frame rate);
+- the input format's encoding constant, set and checked at five places;
+- two extradata copies.
+
+So VC1 adds:
+- **Codec ids** `BVP_CODEC_MPEG4/H263/MJPEG/MPEG1/MPEG2/VC1` (5-10).
+  `bvp_codec_table` maps each id to its MMAL encoding (`MP4V`, `H263`,
+  `MJPG`, `MP1V`, `MP2V`, `WVC1`). ConfigVideo stores the encoding in
+  `bvp_video_encoding`, which replaces the H.264 constant at all five
+  places.
+- **Stream setup for those codecs** (`bvpx_config_other`). The config
+  packet is `'BVPX'` plus at most 128 bytes of extradata: the MP4/MKV VOL
+  for MPEG-4, the sequence header for VC-1, nothing for the others. The
+  SPS facts come from ConfigVideo instead: visible size, coded size rounded
+  to 16, aligned width to 32, no crop, 2 references. ConfigVideo's fourth
+  argument carries the frame rate as `(num<<16)|den`, which goes through
+  `v7_setup_timing` and falls back to 25 fps.
+- **Empty extradata** is now allowed by both copy loops. The second one
+  (v9f) used to fail on it.
+- **A capability bit**, `BVP_CAP_MULTI_CODEC` ($4000).
+
+On the mrberry side:
+- `mr_berryvp_codec_for_fourcc()` maps MintVID's video tags to the codec
+  ids. The two "H.264 required" checks use it.
+- Non-H.264 packets are sent unchanged. They get frame flags, except
+  TS/PS payloads (`mr_berryvp_unframed`).
+- `BVP_PKT_KEY` is set from the I-VOP or I-picture type, and on every
+  MJPEG frame.
+- P96W3's drop of non-reference pictures is H.264-only.
+- The status line names the codec (`mrb_codec_label`).
+
+Not supported: MKV `V_MS/VFW/FOURCC` tracks (DivX in MKV) and MPEG-1 in
+MKV, because mrberry's MKV reader does not map them; and WMV3. Nothing
+here has been assembled or run: there is no vasm here, CI assembles it,
+and only a PiStorm can show whether the firmware decodes each codec.
+
+MPEG-2/VC-1 keys are tied to the Pi's serial number. They still appear
+in the Raspberry Pi codec store (codecs.raspberrypi.com). They go in the
+boot partition's config.txt (`decode_MPG2=0x...`, `decode_WVC1=0x...`),
+which the Pi firmware reads before Emu68 starts. Pi 4 and later have no
+MPEG-2/VC-1 hardware at all.
+

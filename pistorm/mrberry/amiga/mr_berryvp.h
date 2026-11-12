@@ -13,6 +13,7 @@ typedef struct {
     uint32_t config_len;
     int config_sent;
     unsigned long caps;
+    unsigned long codec;        /* MintVID VC1: BVP_CODEC_* in use */
     /* AC309I: optional host-side compressed-video fragment limit.  Zero keeps
      * the normal BerryVP ABI maximum; MOV/MP4 uses the VPv149-proven 128 KiB. */
     uint32_t video_chunk_limit;
@@ -31,6 +32,12 @@ typedef struct {
 
 extern unsigned long mr_berryvp_stream_flags;
 extern int mr_berryvp_no_hdmi_audio;   /* N80: no ConfigAudio will follow */
+extern int mr_berryvp_unframed;        /* VC1: TS/PS packets are not frames */
+
+/* MintVID VC1: the berryvp codec for a video tag (0 = none), and a short
+ * name for messages ("MPEG-4", "MJPEG", ...). */
+unsigned long mr_berryvp_codec_for_fourcc(uint32_t fourcc);
+const char   *mr_berryvp_codec_name(uint32_t fourcc);
 
 mr_status mr_berryvp_open(mr_berryvp *b, const mr_video_info *vi);
 mr_status mr_berryvp_config_audio(mr_berryvp *b, const mr_audio_info *ai);

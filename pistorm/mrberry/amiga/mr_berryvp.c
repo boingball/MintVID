@@ -22,6 +22,14 @@
 #define BVP_CODEC_AAC  2UL
 #define BVP_CODEC_AC3  3UL
 #define BVP_CODEC_EAC3 4UL
+/* MintVID VC1: other VideoCore decoders (berryvp.library with
+ * BVP_CAP_MULTI_CODEC).  MPEG-1/2 and VC-1 need the Pi's licence keys. */
+#define BVP_CODEC_MPEG4 5UL
+#define BVP_CODEC_H263  6UL
+#define BVP_CODEC_MJPEG 7UL
+#define BVP_CODEC_MPEG1 8UL
+#define BVP_CODEC_MPEG2 9UL
+#define BVP_CODEC_VC1   10UL
 #define BVP_OK 0L
 #define BVP_CAP_PTS64       0x00000002UL
 #define BVP_CAP_H264_HW     0x00000100UL
@@ -29,6 +37,7 @@
 #define BVP_CAP_FRAME_FLAGS 0x00000800UL
 #define BVP_CAP_INPUT_PTS   0x00001000UL
 #define BVP_CAP_NO_HDMI_AUDIO 0x00002000UL /* MintVID N80 library */
+#define BVP_CAP_MULTI_CODEC   0x00004000UL /* MintVID VC1 library */
 #define BVP_OPENF_NO_HDMI_AUDIO 0x00000100UL /* low byte = window size */
 #define BVP_REQUIRED_CAPS (BVP_CAP_PTS64 | BVP_CAP_H264_HW | \
                            BVP_CAP_DIRECT_HVS | BVP_CAP_FRAME_FLAGS | \
@@ -64,6 +73,7 @@ extern void bvp_exec_closelibrary(struct Library *lib);
 unsigned long mr_berryvp_stream_flags = 0;   /* as declared in mr_berryvp.h */
 /* N80: no ConfigAudio will follow OpenStream (Paula, or no HDMI track). */
 int mr_berryvp_no_hdmi_audio = 0;
+int mr_berryvp_unframed = 0;    /* VC1: TS/PS - packets are not whole frames */
 int mr_berryvp_force_isp = 0;   /* ISP82: ISP = cinema via ISP graph (test) */
 /* N84: 0 / 0xFFFFFFFF / (W<<16)|H.  MintVID: 0xFFFFFFFF (no N83 upscale)
  * is the default.  N83 sends every film below 1280x720 through the ISP and
@@ -303,15 +313,107 @@ static mr_status make_adts(mr_berryvp *b, const uint8_t *src, uint32_t n,
     return MR_OK;
 }
 
+/* MintVID VC1: video tags (as MintVID's decoders list them) and the
+ * berryvp codec they go to.  Tags are matched case-insensitively. */
+static const struct { uint32_t fourcc; unsigned long codec; const char *name; }
+bvp_video_codecs[] = {
+    { MR_FOURCC('A','V','C','1'), BVP_CODEC_H264,  "H.264" },
+    { MR_FOURCC('F','M','P','4'), BVP_CODEC_MPEG4, "MPEG-4" },
+    { MR_FOURCC('X','V','I','D'), BVP_CODEC_MPEG4, "MPEG-4" },
+    { MR_FOURCC('D','I','V','X'), BVP_CODEC_MPEG4, "MPEG-4" },
+    { MR_FOURCC('D','X','5','0'), BVP_CODEC_MPEG4, "MPEG-4" },
+    { MR_FOURCC('M','P','4','V'), BVP_CODEC_MPEG4, "MPEG-4" },
+    { MR_FOURCC('3','I','V','2'), BVP_CODEC_MPEG4, "MPEG-4" },
+    { MR_FOURCC('3','I','V','X'), BVP_CODEC_MPEG4, "MPEG-4" },
+    { MR_FOURCC('R','M','P','4'), BVP_CODEC_MPEG4, "MPEG-4" },
+    { MR_FOURCC('B','L','Z','0'), BVP_CODEC_MPEG4, "MPEG-4" },
+    { MR_FOURCC('S','E','D','G'), BVP_CODEC_MPEG4, "MPEG-4" },
+    { MR_FOURCC('M','4','S','2'), BVP_CODEC_MPEG4, "MPEG-4" },
+    { MR_FOURCC('M','P','4','S'), BVP_CODEC_MPEG4, "MPEG-4" },
+    { MR_FOURCC('H','2','6','3'), BVP_CODEC_H263,  "H.263" },
+    { MR_FOURCC('S','2','6','3'), BVP_CODEC_H263,  "H.263" },
+    { MR_FOURCC('M','J','P','G'), BVP_CODEC_MJPEG, "MJPEG" },
+    { MR_FOURCC('J','P','E','G'), BVP_CODEC_MJPEG, "MJPEG" },
+    { MR_FOURCC('M','P','G','1'), BVP_CODEC_MPEG1, "MPEG-1" },
+    { MR_FOURCC('M','P','G','2'), BVP_CODEC_MPEG2, "MPEG-2" },
+    { MR_FOURCC('W','V','C','1'), BVP_CODEC_VC1,   "VC-1" },
+};
+
+static uint32_t bvp_fold(uint32_t t)
+{
+    uint32_t r = 0;
+    int i;
+    for (i = 0; i < 32; i += 8) {
+        uint32_t c = (t >> i) & 0xffu;
+        if (c >= 'a' && c <= 'z') c -= 32u;
+        r |= c << i;
+    }
+    return r;
+}
+
+/* 0 when the VideoCore has no decoder for this tag. */
+unsigned long mr_berryvp_codec_for_fourcc(uint32_t fourcc)
+{
+    unsigned i;
+    uint32_t f = bvp_fold(fourcc);
+    for (i = 0; i < sizeof bvp_video_codecs / sizeof bvp_video_codecs[0]; ++i)
+        if (bvp_fold(bvp_video_codecs[i].fourcc) == f)
+            return bvp_video_codecs[i].codec;
+    return 0;
+}
+
+const char *mr_berryvp_codec_name(uint32_t fourcc)
+{
+    unsigned i;
+    uint32_t f = bvp_fold(fourcc);
+    for (i = 0; i < sizeof bvp_video_codecs / sizeof bvp_video_codecs[0]; ++i)
+        if (bvp_fold(bvp_video_codecs[i].fourcc) == f)
+            return bvp_video_codecs[i].name;
+    return "video";
+}
+
+/* ConfigVideo's 4th argument for non-H.264 codecs: (num<<16)|den, num at
+ * most 32767 (the library builds an H.264-style tick from it). */
+static ULONG bvp_rate_arg(const mr_video_info *vi)
+{
+    uint32_t num = vi->rate, den = vi->scale;
+    if (!num || !den) return 0;
+    while (num > 32767u || den > 32767u) { num >>= 1; den >>= 1; }
+    if (!num || !den) return 0;
+    return ((ULONG)num << 16) | (ULONG)den;
+}
+
+/* MintVID VC1: does this non-H.264 packet start a picture the decoder can
+ * start from?  Only used for BVP_PKT_KEY. */
+static int bvp_other_is_key(unsigned long codec, const uint8_t *p, uint32_t n)
+{
+    uint32_t i;
+    if (codec == BVP_CODEC_MJPEG) return 1;
+    for (i = 0; i + 5 < n; ++i) {
+        if (p[i] || p[i+1] || p[i+2] != 1) continue;
+        if (codec == BVP_CODEC_MPEG4 && p[i+3] == 0xB6)
+            return (p[i+4] >> 6) == 0;                  /* I-VOP */
+        if ((codec == BVP_CODEC_MPEG1 || codec == BVP_CODEC_MPEG2) &&
+            p[i+3] == 0x00)
+            return ((p[i+5] >> 3) & 7u) == 1;           /* I picture */
+    }
+    return 0;
+}
+
 mr_status mr_berryvp_open(mr_berryvp *b, const mr_video_info *vi)
 {
     ULONG ver;
     LONG r;
     const uint8_t *cfg;
     uint32_t cfg_len;
-    if (!b || !vi || !vi->valid || vi->fourcc != MR_FOURCC('a','v','c','1'))
+    unsigned long codec;
+    if (!b || !vi || !vi->valid)
+        return MR_EUNSUPPORTED;
+    codec = mr_berryvp_codec_for_fourcc(vi->fourcc);
+    if (!codec)
         return MR_EUNSUPPORTED;
     memset(b, 0, sizeof *b);
+    b->codec = codec;
     mr_avc_annexb_init(&b->avc);
     DBG_PRINTF("[B01] before OldOpenLibrary(-408) berryvp.library\n");
     b->lib = bvp_exec_openlibrary("berryvp.library", BVP_MIN_VERSION);
@@ -329,6 +431,13 @@ mr_status mr_berryvp_open(mr_berryvp *b, const mr_video_info *vi)
            (unsigned long)(ver >> 16), (unsigned long)(ver & 0xffffu), b->caps);
     if ((b->caps & BVP_REQUIRED_CAPS) != BVP_REQUIRED_CAPS) {
         printf("Error: berryvp.library is missing required H.264/HVS/PTS capabilities.\n");
+        mr_berryvp_close(b);
+        return MR_EUNSUPPORTED;
+    }
+    if (codec != BVP_CODEC_H264 && !(b->caps & BVP_CAP_MULTI_CODEC)) {
+        printf("Error: %s on the VideoCore needs the MintVID build of "
+               "berryvp.library (VC1). Update LIBS:berryvp.library.\n",
+               mr_berryvp_codec_name(vi->fourcc));
         mr_berryvp_close(b);
         return MR_EUNSUPPORTED;
     }
@@ -361,8 +470,10 @@ mr_status mr_berryvp_open(mr_berryvp *b, const mr_video_info *vi)
         return MR_ERR;
     }
     DBG_PRINTF("[B07] before ConfigVideo %lux%lu\n", (unsigned long)vi->width, (unsigned long)vi->height);
-    r = bvp_call_configvideo(b->lib, BVP_CODEC_H264,
-                             (ULONG)vi->width, (ULONG)vi->height, 1000000UL);
+    r = bvp_call_configvideo(b->lib, codec,
+                             (ULONG)vi->width, (ULONG)vi->height,
+                             codec == BVP_CODEC_H264 ? 1000000UL
+                                                     : bvp_rate_arg(vi));
     DBG_PRINTF("[B08] after ConfigVideo r=%ld\n", (long)r);
     if (r != BVP_OK) {
         printf("Error: BerryVP ConfigVideo failed: %ld (%s).\n", (long)r, bvp_error_name(r));
@@ -370,6 +481,25 @@ mr_status mr_berryvp_open(mr_berryvp *b, const mr_video_info *vi)
         return MR_ERR;
     }
 
+    if (codec != BVP_CODEC_H264) {
+        /* MintVID VC1: 'BVPX' + the codec's own extradata.  MPEG-4 (the
+         * MP4/MKV VOL) and VC-1 have one; the rest carry their headers in
+         * the stream.  The library takes at most 128 bytes. */
+        uint32_t extra = 0;
+        if ((codec == BVP_CODEC_MPEG4 || codec == BVP_CODEC_VC1) &&
+            vi->config && vi->config_len && vi->config_len <= 128u)
+            extra = vi->config_len;
+        memcpy(b->config_buf, "BVPX", 4);
+        if (extra) memcpy(b->config_buf + 4, vi->config, extra);
+        b->config_len = 4u + extra;
+        if (send_config(b, b->config_buf, b->config_len) != MR_OK) {
+            printf("Error: the VideoCore did not accept %s video.\n",
+                   mr_berryvp_codec_name(vi->fourcc));
+            mr_berryvp_close(b);
+            return MR_ERR;
+        }
+        return MR_OK;
+    }
     /* MOV/MP4 and MKV expose avcC directly. TS normally has no avcC and the
      * bridge extracts SPS/PPS from its first Annex-B video packet instead. */
     if (vi->config && vi->config_len) {
@@ -519,6 +649,14 @@ mr_status mr_berryvp_send_packet(mr_berryvp *b, const mr_packet *pkt)
     int key;
     if (!b || !b->lib || !pkt || !pkt->is_video || !pkt->data || !pkt->len)
         return MR_EFORMAT;
+
+    if (b->codec != BVP_CODEC_H264) {
+        /* MintVID VC1: the packet goes as it is.  AVI/MOV/MKV samples are
+         * whole pictures; TS/PS payloads are not, so no frame flags. */
+        return send_annexb(b, pkt->data, pkt->len, pkt->has_pts, pkt->pts_us,
+                           bvp_other_is_key(b->codec, pkt->data, pkt->len),
+                           !mr_berryvp_unframed);
+    }
 
     if (pkt->is_annexb) {
         out = pkt->data;

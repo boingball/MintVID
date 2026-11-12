@@ -53,11 +53,22 @@ BVP_CAP_FRAME_FLAGS   equ $00000800
 BVP_CAP_INPUT_PTS     equ $00001000
 ; N80: OpenStream honours BVP_OPENF_NO_HDMI_AUDIO (video without HDMI audio).
 BVP_CAP_NO_HDMI_AUDIO equ $00002000
-BVP_CAPS_STAGE3       equ BVP_CAP_API_V1+BVP_CAP_PTS64+BVP_CAP_H264_HW+BVP_CAP_DIRECT_HVS+BVP_CAP_FRAME_FLAGS+BVP_CAP_INPUT_PTS+BVP_CAP_NO_HDMI_AUDIO
+; MintVID VC1: ConfigVideo takes the codec ids below as well as H.264.
+BVP_CAP_MULTI_CODEC   equ $00004000
+BVP_CAPS_STAGE3       equ BVP_CAP_API_V1+BVP_CAP_PTS64+BVP_CAP_H264_HW+BVP_CAP_DIRECT_HVS+BVP_CAP_FRAME_FLAGS+BVP_CAP_INPUT_PTS+BVP_CAP_NO_HDMI_AUDIO+BVP_CAP_MULTI_CODEC
 
 BVP_CODEC_NONE        equ 0
 BVP_CODEC_H264        equ 1
 BVP_CODEC_AAC         equ 2
+; MintVID VC1: other VideoCore decoders.  3/4 are AC-3/E-AC-3 (audio).
+; MPEG-2 and VC-1 decode only with the Pi's licence key in config.txt
+; (decode_MPG2=, decode_WVC1=), and only on a Pi 3 or older.
+BVP_CODEC_MPEG4       equ 5      ; MPEG-4 Part 2 (DivX/Xvid)
+BVP_CODEC_H263        equ 6
+BVP_CODEC_MJPEG       equ 7
+BVP_CODEC_MPEG1       equ 8
+BVP_CODEC_MPEG2       equ 9
+BVP_CODEC_VC1         equ 10     ; WVC1 (VC-1 Advanced)
 BVP_STATE_IDLE        equ 0
 BVP_STATE_OPEN        equ 1
 BVP_STATE_PAUSED      equ 2
@@ -276,14 +287,23 @@ BVP_ConfigVideo:
         moveq   #BVPERR_BADSTATE,d0
         bra.s   BVP_CV_Err
 BVP_CV_StateOK:
-        cmp.l   #BVP_CODEC_H264,d0
-        bne.s   BVP_CV_Unsup
+        ; MintVID VC1: codec id -> MMAL encoding (bvp_codec_table).
+        lea     bvp_codec_table,a0
+BVP_CV_Find:
+        tst.l   (a0)
+        beq.s   BVP_CV_Unsup
+        cmp.l   (a0),d0
+        beq.s   BVP_CV_Found
+        addq.l  #8,a0
+        bra.s   BVP_CV_Find
+BVP_CV_Found:
         tst.l   d1
         beq.s   BVP_CV_Bad
         tst.l   d2
         beq.s   BVP_CV_Bad
         tst.l   d3
         beq.s   BVP_CV_Bad
+        move.l  4(a0),bvp_video_encoding
         move.l  d0,BVP_VIDEO_CODEC(a6)
         move.l  d1,BVP_VIDEO_WIDTH(a6)
         move.l  d2,BVP_VIDEO_HEIGHT(a6)
@@ -300,6 +320,18 @@ BVP_CV_Bad:
 BVP_CV_Err:
         move.l  d0,BVP_LAST_ERROR(a6)
         rts
+
+; MintVID VC1: ConfigVideo codec id, MMAL input encoding.  0 ends the list.
+        cnop    0,4
+bvp_codec_table:
+        dc.l    BVP_CODEC_H264,MMAL_ENCODING_H264
+        dc.l    BVP_CODEC_MPEG4,MMAL_ENCODING_MP4V
+        dc.l    BVP_CODEC_H263,MMAL_ENCODING_H263
+        dc.l    BVP_CODEC_MJPEG,MMAL_ENCODING_MJPEG
+        dc.l    BVP_CODEC_MPEG1,MMAL_ENCODING_MP1V
+        dc.l    BVP_CODEC_MPEG2,MMAL_ENCODING_MP2V
+        dc.l    BVP_CODEC_VC1,MMAL_ENCODING_WVC1
+        dc.l    0,0
 
 ; Stage 3 deliberately keeps AAC outside the public backend until H264 is proven.
 BVP_ConfigAudio:
@@ -928,10 +960,16 @@ bvp_backend_init_from_config:
         rts
 bvp_bi_start:
         move.l  bvp_pending_len,d0
-        cmpi.l  #8,d0
-        bcs.w   bvp_bi_config_fail
         cmpi.l  #4096,d0
         bhi.w   bvp_bi_config_fail
+        ; MintVID VC1: other codecs send 'BVPX' + their extradata (>= 4).
+        cmpi.l  #4,d0
+        bcs.w   bvp_bi_config_fail
+        cmpi.l  #MMAL_ENCODING_H264,bvp_video_encoding
+        bne.s   bvp_bi_len_ok
+        cmpi.l  #8,d0
+        bcs.w   bvp_bi_config_fail
+bvp_bi_len_ok:
         bsr     bvp_open_dos
         tst.l   d0
         bne.w   bvp_bi_backend_fail
@@ -984,6 +1022,15 @@ p96w_mode_done:
         move.l  #1,bvp_library_mode
         clr.l   bvp_n21_feed_retries
 
+        ; MintVID VC1: no SPS for other codecs; geometry and rate come from
+        ; ConfigVideo instead (bvpx_config_other).
+        cmpi.l  #MMAL_ENCODING_H264,bvp_video_encoding
+        beq.s   bvp_bi_h264_config
+        bsr     bvpx_config_other
+        tst.l   d0
+        bne.w   bvp_bi_geom_fail
+        bra.w   bvp_bi_timing_ok
+bvp_bi_h264_config:
         ; Copy caller config into the probe buffer used by BerryVP's proven Annex-B scanner.
         move.l  bvp_pending_ptr,a0
         lea     h264_probe_buf,a1
@@ -1151,6 +1198,124 @@ bvp_bi_config_fail:
 bvp_bi_backend_fail:
         clr.l   bvp_library_mode
         moveq   #BVPERR_BACKEND,d0
+        rts
+
+; --------------------------------------------------------------------
+; MintVID VC1: set up a non-H.264 stream.  The config packet is 'BVPX'
+; followed by up to 128 bytes of codec extradata (MPEG-4 VOL, VC-1
+; sequence header; nothing for MJPEG/H.263/MPEG-1/2, whose headers are
+; in the stream).  The SPS facts the H.264 path parses are set from
+; ConfigVideo's width/height, and its 4th argument carries the frame
+; rate as (num<<16)|den (num <= 32767), 0 = unknown (25 fps).
+; D0 = 0 ok, 1 = bad geometry/extradata.
+; --------------------------------------------------------------------
+bvpx_config_other:
+        movem.l d1-d3/a0-a2,-(sp)
+        move.l  bvp_pending_ptr,a0
+        cmpi.l  #$42565058,(a0)+           ; 'BVPX'
+        bne.w   bvpx_fail
+        move.l  bvp_pending_len,d0
+        subq.l  #4,d0
+        cmpi.l  #128,d0
+        bhi.w   bvpx_fail
+        move.l  d0,h264_codec_config_len
+        clr.l   h264_sps_len
+        clr.l   h264_pps_len
+        lea     h264_file_extradata,a1
+        moveq   #31,d1
+bvpx_extra_clear:
+        clr.l   (a1)+
+        dbra    d1,bvpx_extra_clear
+        lea     h264_file_extradata,a1
+        move.l  h264_codec_config_len,d1
+        beq.s   bvpx_extra_done
+        subq.l  #1,d1
+bvpx_extra_copy:
+        move.b  (a0)+,(a1)+
+        dbra    d1,bvpx_extra_copy
+bvpx_extra_done:
+        move.l  bvp_libbase_global,a2
+        move.l  BVP_VIDEO_WIDTH(a2),d1
+        move.l  BVP_VIDEO_HEIGHT(a2),d2
+        andi.l  #$FFFFFFFE,d1
+        andi.l  #$FFFFFFFE,d2
+        cmpi.l  #16,d1
+        bcs.w   bvpx_fail
+        cmpi.l  #V6_MAX_SRC_W,d1
+        bhi.w   bvpx_fail
+        cmpi.l  #16,d2
+        bcs.w   bvpx_fail
+        cmpi.l  #V6_MAX_SRC_H,d2
+        bhi.w   bvpx_fail
+        move.l  d1,v6_src_visible_w
+        move.l  d2,v6_src_visible_h
+        clr.l   v6_src_crop_x
+        clr.l   v6_src_crop_y
+        clr.l   v6_crop_left
+        clr.l   v6_crop_right
+        clr.l   v6_crop_top
+        clr.l   v6_crop_bottom
+        move.l  d1,d0
+        add.l   #15,d0
+        and.l   #$FFFFFFF0,d0
+        move.l  d0,v6_src_coded_w
+        add.l   #31,d0
+        and.l   #$FFFFFFE0,d0
+        move.l  d0,v6_src_aligned_w
+        move.l  d2,d0
+        add.l   #15,d0
+        and.l   #$FFFFFFF0,d0
+        move.l  d0,v6_src_coded_h
+        move.l  d0,v6_src_aligned_h
+        clr.l   v6_profile_idc
+        clr.l   v10d_high_profile
+        move.l  #1,v10d_chroma_format_idc
+        clr.l   v10d_bit_depth_luma_m8
+        clr.l   v10d_bit_depth_chroma_m8
+        clr.l   v10d_scaling_matrix_present
+        move.l  #1,v6_frame_mbs_only
+        move.l  #2,v10j_max_num_ref_frames
+        ; frame rate: v7_setup_timing reads fps = time_scale / (2 * units)
+        clr.l   v7_timing_present
+        move.l  BVP_VIDEO_TIMESCALE(a2),d0
+        move.l  d0,d1
+        andi.l  #$00007FFF,d1              ; den
+        beq.s   bvpx_default_rate
+        lsr.l   #8,d0
+        lsr.l   #8,d0                      ; num
+        beq.s   bvpx_default_rate
+        cmpi.l  #32767,d0
+        bhi.s   bvpx_default_rate
+        add.l   d0,d0
+        move.l  d0,v7_time_scale
+        move.l  d1,v7_num_units_in_tick
+        move.l  #1,v7_timing_present
+        jsr     v7_setup_timing
+        tst.l   d0
+        beq.s   bvpx_rate_done
+bvpx_default_rate:
+        bsr     bvp_set_default_timing
+bvpx_rate_done:
+        lea     bvpx_msg_other,a1
+        jsr     n12_log
+        move.l  bvp_video_encoding,d0
+        lea     bvpx_pfx_encoding,a1
+        jsr     n15_log_hex32
+        move.l  v6_src_visible_w,d0
+        lea     n15_pfx_vis_w,a1
+        jsr     n15_log_hex32
+        move.l  v6_src_visible_h,d0
+        lea     n15_pfx_vis_h,a1
+        jsr     n15_log_hex32
+        move.l  h264_codec_config_len,d0
+        lea     bvpx_pfx_extra,a1
+        jsr     n15_log_hex32
+        moveq   #0,d0
+        bra.s   bvpx_done
+bvpx_fail:
+        moveq   #1,d0
+bvpx_done:
+        movem.l (sp)+,d1-d3/a0-a2
         rts
 
 ; Stage 3A fallback for streams without usable SPS VUI timing.
@@ -1691,7 +1856,7 @@ bvp_prepare_second_stream:
 BVPL_LibName:
         dc.b    "berryvp.library",0
 BVPL_IdString:
-        dc.b    "berryvp.library 3.2 N79 + P96 WINDOW W49 + CLK81 HB CS ISP82 N83 N84 O3 S1 F TAB2 M N88 CM4 N97 A99 (06.11.2026) + N80 NO-HDMI-AUDIO (MintVID) BerryVP 9.2 H264/HVS",13,10,0
+        dc.b    "berryvp.library 3.2 N79 + P96 WINDOW W49 + CLK81 HB CS ISP82 N83 N84 O3 S1 F TAB2 M N88 CM4 N97 A99 (06.11.2026) + N80 NO-HDMI-AUDIO VC1 MULTI-CODEC (MintVID) BerryVP 9.2 H264/HVS",13,10,0
         cnop    0,2
 
         section bss,bss
@@ -2096,6 +2261,12 @@ MMAL_PORT_CLOCK       equ 4
 MMAL_ES_AUDIO         equ 2
 MMAL_ES_VIDEO         equ 3
 MMAL_ENCODING_H264    equ $34363248
+MMAL_ENCODING_MP4V    equ $5634504D      ; 'MP4V'
+MMAL_ENCODING_H263    equ $33363248      ; 'H263'
+MMAL_ENCODING_MJPEG   equ $47504A4D      ; 'MJPG'
+MMAL_ENCODING_MP1V    equ $5631504D      ; 'MP1V'
+MMAL_ENCODING_MP2V    equ $5632504D      ; 'MP2V'
+MMAL_ENCODING_WVC1    equ $31435657      ; 'WVC1'
 ; VPv01: MMAL_ENCODING_PCM_SIGNED_LE = MMAL_FOURCC('p','c','m','s')
 MMAL_ENCODING_PCM_SIGNED_LE equ $736d6370
 MMAL_PARAMETER_GROUP_AUDIO equ $00030000
@@ -7281,7 +7452,7 @@ comp_response_seen:
         bsr     print
 
         move.l  #MMAL_ES_VIDEO,port_fmt_type
-        move.l  #MMAL_ENCODING_H264,port_fmt_encoding
+        move.l  bvp_video_encoding,port_fmt_encoding   ; MintVID VC1
         clr.l   port_fmt_variant
         clr.l   port_fmt_bitrate
         clr.l   port_fmt_flags
@@ -7321,10 +7492,12 @@ t19c_extra_clear:
         lea     input_extradata,a1
         lea     h264_file_extradata,a0
         move.l  h264_codec_config_len,d7
+        beq.s   t19c_extra_none                    ; MintVID VC1: none
         subq.l  #1,d7
 t19c_extra_copy:
         move.b  (a0)+,(a1)+
         dbra    d7,t19c_extra_copy
+t19c_extra_none:
 
         lea     msg19c_format_values,a1
         move.l  #msg19c_format_values_end-msg19c_format_values,d3
@@ -7358,7 +7531,7 @@ t19c_extra_copy:
         cmp.l   #MMAL_ES_VIDEO,d0
         bne.w   fail_verify_h264
         move.l  port_fmt_encoding,d0
-        cmp.l   #MMAL_ENCODING_H264,d0
+        cmp.l   bvp_video_encoding,d0             ; MintVID VC1
         bne.w   fail_verify_h264
 
         move.l  port_fmt_flags,d0
@@ -7518,7 +7691,7 @@ v10g_first_verify_flags_ok:
         bne.w   fail_enable_verify
 
         move.l  port_fmt_encoding,d0
-        cmp.l   #MMAL_ENCODING_H264,d0
+        cmp.l   bvp_video_encoding,d0             ; MintVID VC1
         bne.w   fail_enable_verify
 
         lea     msg_enable_verify_ok,a1
@@ -44575,7 +44748,7 @@ v9f_second_configure:
         tst.l   d0
         bne.w   v9f_fail_input_set
         move.l  #MMAL_ES_VIDEO,port_fmt_type
-        move.l  #MMAL_ENCODING_H264,port_fmt_encoding
+        move.l  bvp_video_encoding,port_fmt_encoding   ; MintVID VC1
         clr.l   port_fmt_variant
         clr.l   port_fmt_bitrate
         clr.l   port_fmt_flags
@@ -44615,13 +44788,18 @@ v9f_input_extra_clear:
         dbra    d7,v9f_input_extra_clear
         move.l  h264_codec_config_len,d7
         tst.l   d7
-        beq.w   v9f_fail_input_set
+        bne.s   v9f_input_extra_have
+        cmpi.l  #MMAL_ENCODING_H264,bvp_video_encoding   ; MintVID VC1:
+        beq.w   v9f_fail_input_set                      ; only H.264 needs it
+        bra.s   v9f_input_extra_none
+v9f_input_extra_have:
         subq.l  #1,d7
         lea     h264_file_extradata,a0
         lea     input_extradata,a1
 v9f_input_extra_copy:
         move.b  (a0)+,(a1)+
         dbra    d7,v9f_input_extra_copy
+v9f_input_extra_none:
 
         jsr     v9f_port_info_set_input
         tst.l   d0
@@ -44684,7 +44862,8 @@ v41g_input_set_worker_ok:
         bne.w   v9f_fail_input_set
         cmpi.l  #MMAL_ES_VIDEO,port_fmt_type
         bne.w   v9f_fail_input_set
-        cmpi.l  #MMAL_ENCODING_H264,port_fmt_encoding
+        move.l  port_fmt_encoding,d0             ; MintVID VC1
+        cmp.l   bvp_video_encoding,d0
         bne.w   v9f_fail_input_set
         move.l  port_fmt_flags,d0
         and.l   #MMAL_ES_FORMAT_FLAG_FRAMED,d0
@@ -44758,7 +44937,8 @@ v41g_second_verify_flags_ok:
         bne.w   v9f_fail_input_enable
         cmpi.l  #1,port_enabled
         bne.w   v9f_fail_input_enable
-        cmpi.l  #MMAL_ENCODING_H264,port_fmt_encoding
+        move.l  port_fmt_encoding,d0             ; MintVID VC1
+        cmp.l   bvp_video_encoding,d0
         bne.w   v9f_fail_input_enable
         move.l  port_buf_num,d0
         move.l  d0,input_before_buf_num
@@ -70369,6 +70549,8 @@ fast13_h0_trampoline:
         even
 
         section n10d_trace_data,data
+; MintVID VC1: MMAL input encoding chosen by ConfigVideo (H.264 by default).
+bvp_video_encoding: dc.l MMAL_ENCODING_H264
 n12_trace_name: dc.b "N79_TRACE.TXT",0
 n12_trace_lf:   dc.b 10
 n79_v01: dc.b "N79_V01_FIRST_SENDVIDEO_ENTER",0
@@ -70401,6 +70583,9 @@ n15_pfx_sps_profile:      dc.b "N79 SPS PROFILE=",0
 n15_pfx_sps_level:        dc.b "N79 SPS LEVEL=",0
 n15_pfx_sps_refs:         dc.b "N79 SPS MAX_REFS=",0
 n15_pfx_vis_w:            dc.b "N79 SPS VISIBLE_W=",0
+bvpx_msg_other:           dc.b "VC1 non-H.264 stream: geometry from ConfigVideo",0
+bvpx_pfx_encoding:        dc.b "VC1 MMAL ENCODING=",0
+bvpx_pfx_extra:           dc.b "VC1 EXTRADATA BYTES=",0
 n15_pfx_vis_h:            dc.b "N79 SPS VISIBLE_H=",0
 n15_pfx_align_w:          dc.b "N79 SPS ALIGNED_W=",0
 n15_pfx_align_h:          dc.b "N79 SPS ALIGNED_H=",0
