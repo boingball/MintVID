@@ -35,6 +35,24 @@ Voodoo3/Permedia-class boards.
 
 ![MintVID playing an LGR YouTube video on AmigaOS](player/amiga/art/MintVID-YouTube.png)
 
+## What's new in 1.5.0
+
+- **VideoCore decoding on a PiStorm:** with a Raspberry Pi 4 or CM4 and
+  the VideoCore stack (`videocodec.library`), H.264 and MJPEG are decoded
+  and scaled on the Pi; 1080p plays full screen at 30 fps. Anything the
+  VPU cannot take plays in software as before.
+- **The mrberry PiStorm player is included:** its PiStorm (VideoCore)
+  displays play through Paula in the window and full screen, need no
+  patched kernel, and open YouTube, IPTV and HTTP streams.
+- **More P96 screen formats:** P96 (Fullscreen) also opens 16-bit
+  little-endian, 24-bit RGB and 32-bit BGRA screens.
+- **AHI audio output:** pick an AHI unit in the new Audio output list;
+  AHI plays the source's own sample rate.
+- Reconnecting to a live stream no longer reopens the video decoder with
+  the old stream's codec data.
+
+Saved controller settings are reset once by this update.
+
 ## What's new in 1.4.1
 
 - **Titles in other languages read properly:** Amiga fonts are ISO
