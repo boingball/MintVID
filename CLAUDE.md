@@ -6465,3 +6465,24 @@ again from the beginning.
 only be compiled by CI's AmigaOS build. Nothing here has run on hardware.
 The fullscreen "no sound with Paula" report from the same session is still
 open and needs mrberry's `PAULA:` console line.
+
+**The first window test was silent, and the cause was the read-ahead.**
+`N76_HOST.TXT` showed Paula open and 1726 AAC packets decoded, but
+`starvations=0 min_buffered_ms=0`: nothing ever reached Paula's FIFO. In the
+window, berryvp.library holds each SendVideo until the frame is due (its
+pacer took 30 of 40 s), so the file is read in real time (`read_pts_ms` ≈
+`wall_ms`, video queue 0). `mrb_paula`'s sink drops PCM until the decoder is
+the 350 ms sound offset ahead of the clock, which never happened, so Paula
+never started. A host probe of mrberry's overlay demuxer plus the AAC
+decoder on a stereo MP4 gave PCM for every packet in the right layout, so
+decode was not the problem.
+
+The window's P96W5 prefill and P96W27 audio-first hold now run with Paula
+as well. They hold video until audio is `P96W_PAULA_LEAD_US` (1.5 s) ahead,
+and Paula packets now set `p96w_last_apts`.
+
+Still open: the black screen on leaving the window. It needs
+Ctrl-Amiga-Amiga. Both traces end cleanly (`N79_CLOSE_TAIL`, `N76_END_OK`),
+and no `N80_FAILED_STREAM_VC_RESET` was logged. v97.1's window crashed the
+same way at the end of a film before any of these changes. The user is on
+Emu68 1.1, and v97.1 was tested on 1.0.7.

@@ -636,6 +636,13 @@ static uint64_t p96w_first_vpts, p96w_last_apts;
 static unsigned long p96w_audio_first_holds;
 #define P96W_PREFILL_US   800000ULL
 #define P96W_AUDIO_LEAD_US 400000ULL
+/* MintVID: Paula drops decoded sound until it is the sound offset (350 ms)
+ * ahead of the clock, and needs a cushion on top.  In the window the
+ * library holds each SendVideo until the frame is due, so without this
+ * lead the file is read in real time, the sound never gets ahead and Paula
+ * never starts (silent window on a PiStorm 600, decode_ms>0 but nothing
+ * ever buffered). */
+#define P96W_PAULA_LEAD_US 1500000ULL
 #define P96W_HOLD_MAX_Q   60u   /* P96W27: +0.45 s of frames for the AV delay */
 #define P96W_READ_AHEAD_Q 72u   /* P96W27: was 48; stop demux only above this */
 #define P96W_DROP_LATE_US 83000u   /* drop only when ~2 frames late */
@@ -1247,13 +1254,15 @@ static mr_status ac309i_service_mov_video(mr_berryvp *bvp, ac309i_pacer *pace,
         mr_status st;
         uint32_t elapsed;
         p96w_sync_update(pace);
-        /* P96W5/W27 prefill and audio-first: HDMI sound only.  With Paula
-         * or no sound the host pacer alone gives the time. */
-        if (mr_berryvp_stream_flags && p96w_hdmi && !p96w_drain &&
+        /* P96W5/W27 prefill and audio-first: with HDMI sound or Paula.
+         * Without sound the host pacer alone gives the time. */
+        if (mr_berryvp_stream_flags && (p96w_hdmi || p67_pa) && !p96w_drain &&
             n73_vqueued < P96W_HOLD_MAX_Q) {
+            uint64_t lead = p67_pa ? P96W_PAULA_LEAD_US : P96W_AUDIO_LEAD_US;
+            uint64_t prefill = p67_pa ? P96W_PAULA_LEAD_US : P96W_PREFILL_US;
             if (!p96w_prefill_done) {
                 if (!(p96w_have_vpts && p96w_have_apts &&
-                      p96w_last_apts >= p96w_first_vpts + P96W_PREFILL_US)) break;
+                      p96w_last_apts >= p96w_first_vpts + prefill)) break;
                 p96w_prefill_done = 1;
                 if (n76_hostlog) {
                     fprintf(n76_hostlog, "P96W5_PREFILL_DONE queue=%lu\n", n73_vqueued);
@@ -1265,7 +1274,7 @@ static mr_status ac309i_service_mov_video(mr_berryvp *bvp, ac309i_pacer *pace,
                  * delay -> dropouts and silence at W:75). */
                 uint64_t now_media = p96w_first_vpts +
                     (uint64_t)(uint32_t)(ac309i_read_sys_us() - pace->base_us);
-                if (p96w_last_apts < now_media + P96W_AUDIO_LEAD_US) {
+                if (p96w_last_apts < now_media + lead) {
                     p96w_audio_first_holds++;
                     break;
                 }
@@ -2976,6 +2985,8 @@ int main(int argc, char **argv)
         if (!pkt.is_video) {
             audio_seen++;
             if (p67_pa) {                 /* P96W67: sound through Paula */
+                /* MintVID: the window's audio-first hold reads these too. */
+                if (pkt.has_pts) { p96w_last_apts = pkt.pts_us; p96w_have_apts = 1; }
                 if (!mrb_paula_feed(p67_pa, &pkt))
                     n76_hlog("P67_FEED_NOMEM");
                 continue;
