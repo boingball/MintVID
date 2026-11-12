@@ -6575,3 +6575,27 @@ boot partition's config.txt (`decode_MPG2=0x...`, `decode_WVC1=0x...`),
 which the Pi firmware reads before Emu68 starts. Pi 4 and later have no
 MPEG-2/VC-1 hardware at all.
 
+**Refused videos fall back to software on request.** mrberry's refusal now
+reads `No VideoCore decoder for <codec>` (codec from
+`mr_demux_describe_video_codec()`). When the last Play started mrberry and
+the status text has that prefix (`MR_GUI_NO_VIDEOCORE_TEXT`), both GUIs ask
+"Software|Cancel" (`mr_gui_ask_software_decode()` in `mr_gui_menu.c`). On
+Software they wait for mrberry to exit, then start mrplay with the same
+options and path; PiStorm displays build `mrplay --p96`. The flag is
+cleared after the first prompt, because the GUI can read the same refusal
+twice: once from the port and once from the final status file. The
+IPTV/YouTube browsers do not prompt.
+
+## YouTube stalls in the PiStorm window
+A PiStorm log of a YouTube 360p MP4 (window, Paula) froze for 1-2 s every
+7-9 s. The library's own send time was never above 52 ms. The heartbeat
+showed the read position about 1.5 s ahead of playback, falling to 0.5 s
+at each stall. googlevideo sends at about playback speed after its first
+burst, so the read position stays as far ahead as the prefill got it. The
+prefill and the running audio-first hold both used `P96W_PAULA_LEAD_US`
+(1.5 s), so any late burst tripped the hold and stopped the picture. With
+Paula the running hold is now 0.5 s (`P96W_PAULA_RUN_LEAD_US`, sound offset
+350 ms plus a margin). Streams also prefill 3 s, hold below 150 queued
+frames and read ahead to 160 (`P96W_STREAM_*`), against 60/72 for files, so
+a slow burst has room. Local files keep the 1.5 s prefill. Not yet run on
+hardware.

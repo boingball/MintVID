@@ -650,6 +650,16 @@ static mrb_paula *p67_pa;               /* defined with the Paula options below 
  * never starts (silent window on a PiStorm 600, decode_ms>0 but nothing
  * ever buffered). */
 #define P96W_PAULA_LEAD_US 1500000ULL
+/* MintVID: once playing, Paula only needs the sound offset (350 ms) plus a
+ * little in hand.  Holding video for the full 1.5 s froze the picture on
+ * YouTube: googlevideo sends at about playback speed, so the read position
+ * stays as far ahead as the start-up burst got it (1.5 s) and every late
+ * burst tripped the hold for up to a second.  Streams also prefill 3 s and
+ * may queue up to ~5 s of frames, so a slow burst has room to land. */
+#define P96W_PAULA_RUN_LEAD_US  500000ULL
+#define P96W_STREAM_PREFILL_US 3000000ULL
+#define P96W_STREAM_HOLD_MAX_Q  150u
+#define P96W_STREAM_READ_AHEAD_Q 160u
 #define P96W_HOLD_MAX_Q   60u   /* P96W27: +0.45 s of frames for the AV delay */
 #define P96W_READ_AHEAD_Q 72u   /* P96W27: was 48; stop demux only above this */
 #define P96W_DROP_LATE_US 83000u   /* drop only when ~2 frames late */
@@ -1283,9 +1293,10 @@ static mr_status ac309i_service_mov_video(mr_berryvp *bvp, ac309i_pacer *pace,
          * real time and Paula never gets its sound offset ahead (silence).
          * Without sound the host pacer alone gives the time. */
         if (((mr_berryvp_stream_flags && p96w_hdmi) || p67_pa) && !p96w_drain &&
-            n73_vqueued < P96W_HOLD_MAX_Q) {
-            uint64_t lead = p67_pa ? P96W_PAULA_LEAD_US : P96W_AUDIO_LEAD_US;
-            uint64_t prefill = p67_pa ? P96W_PAULA_LEAD_US : P96W_PREFILL_US;
+            n73_vqueued < (mrb_stream ? P96W_STREAM_HOLD_MAX_Q : P96W_HOLD_MAX_Q)) {
+            uint64_t lead = p67_pa ? P96W_PAULA_RUN_LEAD_US : P96W_AUDIO_LEAD_US;
+            uint64_t prefill = !p67_pa ? P96W_PREFILL_US :
+                mrb_stream ? P96W_STREAM_PREFILL_US : P96W_PAULA_LEAD_US;
             if (!p96w_prefill_done) {
                 if (!(p96w_have_vpts && p96w_have_apts &&
                       p96w_last_apts >= p96w_first_vpts + prefill)) break;
@@ -2714,11 +2725,13 @@ int main(int argc, char **argv)
     vi = mr_demux_video(d);
     DBG_PRINTF("[D04] after mr_demux_video ptr=%p\n", (void *)vi);
     if (!vi || !vi->valid || !mr_berryvp_codec_for_fourcc(vi->fourcc)) {
-        char codec[80];
+        char codec[80], why[128];
         mr_demux_describe_video_codec(d, codec, sizeof codec);
         printf("Error: the VideoCore has no decoder for this video (found: %s).\n", codec);
-        p06_status_write(P06_STATE_UNSUPPORTED, codec,
-                         "No VideoCore decoder for this video");
+        /* The GUIs match this prefix and offer software decoding (mrplay). */
+        snprintf(why, sizeof why, "No VideoCore decoder for %s",
+                 codec[0] ? codec : "this video");
+        p06_status_write(P06_STATE_UNSUPPORTED, codec, why);
         mr_demux_close(d);
         return 10;
     }
@@ -3073,10 +3086,11 @@ int main(int argc, char **argv)
          * until there is room again instead of reading the whole file. */
         if ((mr_berryvp_stream_flags || P67_FREE) && ac309i_pace.enabled && n73_prime_ready) {
             int stop_now = 0;
-            while (n73_vqueued >= P96W_READ_AHEAD_Q) {
+            unsigned long ahead_q = mrb_stream ? P96W_STREAM_READ_AHEAD_Q : P96W_READ_AHEAD_Q;
+            while (n73_vqueued >= ahead_q) {
                 st = ac309i_service_mov_video(bvp, &ac309i_pace, &sent, &skipped);
                 if (st != MR_OK) break;
-                if (n73_vqueued < P96W_READ_AHEAD_Q) break;
+                if (n73_vqueued < ahead_q) break;
                 if (p05_input_poll_stop() ||
                     p58_stop_sig(bvp_exec_setsignal(0, 0))) { stop_now = 1; break; }
                 if (p45_service(bvp, &ac309i_pace, &eac3_first_wall_us, sent, &audio_sent)) { stop_now = 1; break; }

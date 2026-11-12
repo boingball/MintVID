@@ -865,6 +865,33 @@ static int pistorm_paused;
 static void launch_player(const char *program, const char *args, int external,
                           Object *info, struct Window *window);
 
+/* The last Play started mrberry (not mrplay): a "No VideoCore decoder"
+ * refusal then offers software decoding once. */
+static int pistorm_last_launch;
+
+static void pistorm_software_fallback(Object *info, struct Window *window,
+                                      const char *codec)
+{
+    static char args[1600];
+    int guard;
+    pistorm_last_launch = 0;
+    if (!mr_gui_ask_software_decode(window, codec)) return;
+    for (guard = 0; guard < 250 && find_player(); guard++)
+        Delay(1);
+    if (find_player()) {
+        set_info(info, window, "The PiStorm player did not close; try Play again.");
+        return;
+    }
+    /* PiStorm options build "mrplay --p96": an RTG window. */
+    if (!mr_build_player_arguments(args, sizeof(args), &handover_options,
+                                   handover_path, NULL, NULL)) {
+        set_info(info, window, "Could not build player arguments.");
+        return;
+    }
+    handover_window = 0;
+    launch_player("mrplay", args, 0, info, window);
+}
+
 static void pistorm_fullscreen_handover(Object *info, struct Window *window)
 {
     static char args[1600];
@@ -914,6 +941,14 @@ static void poll_player_status(Object *info, struct Window *window)
     if (ps.state == MR_PLAYER_STATE_PLAYING)
         snprintf(line, sizeof(line), "Playing%s%s%s%s", ps.codec[0] ? " (" : "",
                  ps.codec, ps.codec[0] ? "): " : "", ps.text);
+    else if (ps.state == MR_PLAYER_STATE_UNSUPPORTED && pistorm_last_launch &&
+             !strncmp(ps.text, MR_GUI_NO_VIDEOCORE_TEXT,
+                      sizeof(MR_GUI_NO_VIDEOCORE_TEXT) - 1)) {
+        snprintf(line, sizeof(line), "Not supported: %s", ps.text);
+        set_info(info, window, line);
+        pistorm_software_fallback(info, window, ps.codec);
+        return;
+    }
     else if (ps.state == MR_PLAYER_STATE_UNSUPPORTED)
         snprintf(line, sizeof(line), "Not supported: %s", ps.text);
     else if (ps.state == MR_PLAYER_STATE_ERROR)
@@ -1084,6 +1119,7 @@ static void start_player_path(const char *full_file, Object *mode,
         handover_options = options;
     }
     handover_window = options.display == MR_DISPLAY_PISTORM_WINDOW;
+    pistorm_last_launch = external;
     launch_player(program, args, external, info, window);
 }
 

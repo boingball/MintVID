@@ -257,6 +257,32 @@ static int handover_window;
  * the spot (saved in <film>.t, status text "Paused").  Play, or Pause
  * again, then starts the same film with R to continue from there. */
 static int pistorm_paused;
+/* The last Play started mrberry (not mrplay): a "No VideoCore decoder"
+ * refusal then offers software decoding once. */
+static int pistorm_last_launch;
+
+static void pistorm_software_fallback(gt_app *app, const char *codec)
+{
+    char args[1600];
+    int guard;
+    pistorm_last_launch = 0;
+    if (!mr_gui_ask_software_decode(app->window, codec)) return;
+    for (guard = 0; guard < 250 && find_player(); guard++)
+        Delay(1);
+    if (find_player()) {
+        set_info(app, "The PiStorm player did not close; try Play again.");
+        return;
+    }
+    mr_player_status_clear_snapshot();
+    app->status_seq = 0;
+    /* PiStorm options build "mrplay --p96": an RTG window. */
+    if (!mr_build_player_arguments(args, sizeof(args), &handover_options,
+                                   handover_path, NULL, NULL) ||
+        !launch("mrplay", "MintVID player", args))
+        set_info(app, "Could not start mrplay (keep it beside MintVID-GT).");
+    else
+        set_info(app, "Starting software playback...");
+}
 
 static void pistorm_fullscreen_handover(gt_app *app)
 {
@@ -309,6 +335,14 @@ static void poll_status(gt_app *app)
     if (ps.state == MR_PLAYER_STATE_PLAYING)
         snprintf(line, sizeof(line), "Playing%s%s%s%s", ps.codec[0] ? " (" : "",
                  ps.codec, ps.codec[0] ? "): " : "", ps.text);
+    else if (ps.state == MR_PLAYER_STATE_UNSUPPORTED && pistorm_last_launch &&
+             !strncmp(ps.text, MR_GUI_NO_VIDEOCORE_TEXT,
+                      sizeof(MR_GUI_NO_VIDEOCORE_TEXT) - 1)) {
+        snprintf(line, sizeof(line), "Not supported: %s", ps.text);
+        set_info(app, line);
+        pistorm_software_fallback(app, ps.codec);
+        return;
+    }
     else if (ps.state == MR_PLAYER_STATE_UNSUPPORTED)
         snprintf(line, sizeof(line), "Not supported: %s", ps.text);
     else if (ps.state == MR_PLAYER_STATE_ERROR)
@@ -738,6 +772,7 @@ static void play_file(gt_app *app)
         strncpy(handover_path, app->path, sizeof(handover_path) - 1);
         handover_path[sizeof(handover_path) - 1] = 0;
         handover_options = options;
+        pistorm_last_launch = 1;
         if (!(resume ? mr_build_external_resume_arguments(args, sizeof(args),
                                                           &options, app->path)
                      : mr_build_external_player_arguments(args, sizeof(args),
@@ -751,6 +786,7 @@ static void play_file(gt_app *app)
         }
         return;
     }
+    pistorm_last_launch = 0;
     if (!mr_build_player_arguments(args, sizeof(args), &options, app->path,
                                    NULL, NULL) ||
         !launch("mrplay", "MintVID player", args))
