@@ -41,7 +41,11 @@ permissions:
 
 jobs:
   conformance:
-    runs-on: ubuntu-latest
+    # ffmpeg is the oracle and also makes the test files, so its version is
+    # pinned through the runner image: ubuntu-latest moved to ffmpeg 8.0.1
+    # (2026-11-13), whose AC-3 fixtures no longer match our decode the way
+    # 6.1.1's did.  Move this on only together with that investigation.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     steps:
