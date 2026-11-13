@@ -1,34 +1,53 @@
 # External players
 
 MintVID's GUIs can start a player other than `mrplay` for some display
-modes. Today there is one: **PiStorm (VideoCore)**, played by `mrberry` from
-[MichiB210/MintVID-PiStorm](https://github.com/MichiB210/MintVID-PiStorm).
-It decodes H.264 on the Raspberry Pi's VideoCore and shows it full screen on
-the Pi's HDMI output.
+modes. Today there is one: **PiStorm (VideoCore)**, played by `mrberry`,
+written by Michael (MichiB210). Its source, and `berryvp.library`'s, is in
+`pistorm/` (from MintVID-PiStorm v97.1); `make -f Makefile.amiga mrberry`
+builds it. It decodes H.264 on the Raspberry Pi's VideoCore.
 
-MintVID does not ship `mrberry`. The GUIs list the PiStorm modes only when a
-file called `mrberry` sits in the same drawer as MintVID (`PROGDIR:mrberry`).
-Without it nothing changes.
+The GUIs list the PiStorm modes only when a file called `mrberry` sits in
+the same drawer as MintVID (`PROGDIR:mrberry`). Without it nothing changes.
 
-There are two PiStorm modes. They differ only in where the sound goes:
+There are two PiStorm modes. Both play the sound through Paula, decoded on
+the 68k by MintVID's own decoders (MintAMP AAC/MP3, MP2, AC-3, PCM), so a
+stock Emu68 kernel is enough:
 
-- **PiStorm (VideoCore, Pi audio)** / GadTools "PiStorm (HDMI)": the sound
-  is decoded on the Pi's second core and played over HDMI. This needs
-  Michi's patched Emu68 kernel (BerryCore).
-- **PiStorm (VideoCore, Amiga audio)** / GadTools "PiStorm (Paula)": the
-  sound is decoded on the 68k by MintVID's own decoders (MintAMP AAC/MP3,
-  MP2, AC-3, PCM) and played through Paula. A stock Emu68 kernel is enough.
+- **PiStorm (VideoCore)** / GadTools "PiStorm": full screen on the Pi's
+  HDMI.
+- **PiStorm (VideoCore, window)** / GadTools "PiStorm (Window)": `mrberry
+  W=50`, the picture in berryvp.library's P96 window.
+  **F** in that window makes `mrberry` save the position in `<film>.t` and
+  end with the status text `Fullscreen`; the GUI then starts it again full
+  screen from there (`"<film>" --paula ... R W=C`). Films it cannot seek in
+  (TS) start again from the beginning.
 
-The external backend currently documents support for PiStorm Classic with
-a Raspberry Pi 3A+ (BCM2837); its BerryCore kernel patch targets Emu68
-1.0.7 specifically. An entry in MintVID's Display menu only means that
-`mrberry` exists, not that the Pi model, kernel or libraries are compatible.
-Follow the backend's installation instructions, including `gpu_mem=64`.
-P96 Workbench on HDMI is part of that backend's intended use, but does not
-establish compatibility with other Pi models or PiStorm boards.
+With Paula, Pause stops `mrberry` at the spot (saved in `<film>.t`, status
+text `Paused`). The GUI shows "Paused (Play continues)"; Play, or Pause
+again, starts the same film with `R` from there.
 
-The IPTV and YouTube browsers still start `mrplay`. If the controller is set
-to PiStorm, they play in a P96 window.
+v97.1 can also send the sound over the Pi's HDMI, decoded on the Pi's
+second core. That needs Michael's patched Emu68 1.0.7 kernel (BerryCore),
+so the GUIs no longer offer it; from Shell, `mrberry <film> HDMI` (or
+`--hdmi-audio`) still asks for it. The saved display value of the old
+"Amiga audio" entry is read as PiStorm (VideoCore).
+
+The backend supports a PiStorm Classic with a Raspberry Pi 3A+ and a
+PiStorm32 lite with a CM4, both on Emu68 1.0.7. Follow its installation
+instructions (`pistorm/README.md`), including `gpu_mem=64` (CM4: 128).
+MintVID's build turns off v97.1's upscaling of films below 1280x720 to
+1920x1080 on the VideoCore (`UPSCALE` turns it back on): it needed
+`gpu_mem=256` on a Pi 3A+.
+
+With a PiStorm display chosen, the IPTV and YouTube browsers start
+`mrberry` too (`amiga/mr_external_pick.h`):
+`"<url>" [audio/window options] [--user-agent "<ua>"] [--referer "<ref>"]`.
+mrberry opens http(s) files, HLS playlists and YouTube pages with
+MintVID's own network code (`core/mr_http.c`, `mr_hls.c`, `mr_youtube.c`,
+and the `amiga/hls_fetch.c` segment prefetcher), started and stopped in the
+same order as in mrplay. It writes no `.t` or subtitle side files for a URL.
+Without `PROGDIR:mrberry` the browsers fall back to `mrplay --p96`. The
+video must still be H.264; YouTube's 360p format and most IPTV channels are.
 
 ## Troubleshooting startup
 
@@ -49,9 +68,9 @@ from an Amiga Shell in the MintVID drawer:
 
     mrberry "NASDRIVE:MintVID-Codec-TestSuite/mintvid_h264_360p_25fps.mp4" --no-audio
 
-Then try `--paula` instead of `--no-audio` with the controls/Paula build.
-HDMI audio should only be tested with the matching BerryCore kernel and
-audio modules installed. If the direct command also fails, keep its output
+Then leave out `--no-audio`: the sound plays through Paula by default.
+HDMI audio (`HDMI`) should only be tested with the matching BerryCore
+kernel and audio modules installed. If the direct command also fails, keep its output
 and check the backend requirements before changing the display setup.
 
 ## What the GUI does
@@ -60,9 +79,9 @@ The GUI starts the player as a new process:
 
 - task name `MintVID player`, the same as `mrplay`
 - `NP_Cli`, stack `MRPLAY_STACK_SIZE`
-- arguments: `"<file>" [--no-audio]`, or for the Amiga-audio mode
-  `"<file>" --paula [--audio-rate=low] [--audio-mono]` (the same audio
-  options mrplay takes; with No audio ticked it is `--no-audio` instead)
+- arguments: `"<file>" --paula [--audio-rate=low] [--audio-mono] [W=50]`
+  (the same audio options mrplay takes; with No audio ticked it is
+  `--no-audio` instead of the audio options)
 
 The file name is quoted. A `"` inside it is written as `*"`, and a `*` as
 `**`: the usual AmigaDOS rules, so `ReadArgs()` or the C runtime's `argv`

@@ -1,5 +1,5 @@
 @database "MintVID.guide"
-@$VER: MintVID.guide 1.4 (8.10.2026)
+@$VER: MintVID.guide 1.5 (12.11.2026)
 @author "Darren \"boingball\" Banfi"
 @(c) "2026 Darren Banfi"
 @width 74
@@ -8,7 +8,7 @@
                               MintVID Guide
                               -------------
 
-@{b}MintVID 1.4.1@{ub} - a codec-agnostic video player for accelerated 68k
+@{b}MintVID 1.5.0@{ub} - a codec-agnostic video player for accelerated 68k
 AmigaOS hardware, from 68030-class ECS/AGA systems up to PiStorm/RTG
 machines.
 
@@ -16,7 +16,7 @@ This is the on-Amiga companion to the plain-text MintVID.readme. Pick a
 topic below (click, or press Return on a highlighted link):
 
   @{" Overview "            LINK Overview}
-  @{" What's new in 1.4.1 " LINK WhatsNew}
+  @{" What's new in 1.5.0 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" Video frame policy "   LINK FramePolicy}
@@ -47,7 +47,7 @@ page below also links back here.
 Topics:
 
   @{" Overview "            LINK Overview}
-  @{" What's new in 1.4.1 " LINK WhatsNew}
+  @{" What's new in 1.5.0 " LINK WhatsNew}
   @{" Installation "        LINK Installation}
   @{" Controls "            LINK Controls}
   @{" Video frame policy "   LINK FramePolicy}
@@ -67,10 +67,29 @@ Topics:
 @endnode
 
 
-@node WhatsNew "What's new in 1.4.1"
+@node WhatsNew "What's new in 1.5.0"
 @toc MAIN
-                           What's new in 1.4.1
+                           What's new in 1.5.0
                            -------------------
+
+@{b}MintVID 1.5.0@{ub}
+
+  - @{b}VideoCore decoding on a PiStorm.@{ub} With a Raspberry Pi 4 or
+    CM4 and the VideoCore stack (videocodec.library), H.264 and MJPEG
+    are decoded and scaled on the Pi; 1080p plays full screen at 30 fps.
+    Anything the VPU cannot take plays in software as before.
+  - @{b}The mrberry PiStorm player is included.@{ub} Its PiStorm
+    (VideoCore) displays play through Paula in the window and full
+    screen, need no patched kernel, and open YouTube, IPTV and HTTP
+    streams.
+  - P96 (Fullscreen) also opens 16-bit little-endian, 24-bit RGB and
+    32-bit BGRA screens.
+  - @{b}AHI audio output.@{ub} Pick an AHI unit in the new Audio output
+    list; AHI plays the source's own sample rate.
+  - Reconnecting to a live stream no longer reopens the video decoder
+    with the old stream's codec data.
+
+  Saved controller settings are reset once by this update.
 
 @{b}MintVID 1.4.1@{ub}
 
@@ -381,6 +400,32 @@ and for complete hardware starting points see
 For audio output settings (rate, mono, no-audio, Fast RAM buffering) see
 @{" Audio " LINK Audio}.
 
+@{b}PiStorm (VideoCore) keys@{ub}
+
+  Space        pause / continue
+  F            window: continue full screen at the same spot
+  Tab          next chapter (without chapters: 10 minutes on);
+               Shift-Tab goes back
+  M            mute
+  S            next subtitle file; O turns subtitles off and on
+  + / -        move the sound 50 ms later / earlier (2 / 1 do the
+               same); the setting is kept for the next video
+               (ENVARC:MintVID.avoffset) and shown in the status line;
+               without a saved value it starts at +600 ms
+  Esc          stop
+
+The PiStorm displays decode H.264, MPEG-4 Part 2 (DivX/Xvid), H.263 and
+MJPEG on the Raspberry Pi; on a Pi 3 or older also MPEG-1/2 and VC-1, if
+the Pi's licence keys are in its config.txt (decode_MPG2=, decode_WVC1=).
+For any other video, MintVID names the codec and offers to play the file
+with software decoding instead, in an RTG window decoded by the Amiga CPU.
+
+On a stream (YouTube, IPTV, HTTP) Space pauses in place, but F, Tab and
+Shift-Tab do nothing: those keys restart the film at a saved spot, which
+a stream does not have. Choose the full-screen PiStorm display before
+starting a stream to watch it full screen. A long pause can outlast the
+server's connection or a live stream's window.
+
 @{" Back to Contents " LINK "MAIN"}
 @endnode
 
@@ -664,9 +709,8 @@ Build with SSL=1 and keep ytgui beside MintVID and mrplay.
   No audio      skip the audio decoder and output entirely
   Mono audio    ask the codec for one channel instead of decoding both
                 - MP3/MP2/AC-3 skip roughly half their per-channel work
-                this way; Helix AAC only saves the downmix, since it has
-                no mono decode mode. The one channel plays on both
-                speakers.
+                this way, and AAC (YouTube, IPTV) about a third. The
+                left channel plays on both speakers.
   Fast buffer   Auto/Off/4/8/16/32/64 MB of Fast RAM read-ahead for
                 local files and direct/progressive HTTP media. Auto
                 picks 16/8/4 MB from the largest available Fast RAM
@@ -875,7 +919,7 @@ ffmpeg and/or real m68k hardware, not a speed guarantee - see
   (MPEG-1/2 Layer II), AAC-LC (ADTS or LATM), and fixed-point AC-3
   stereo downmix - all reach Paula. AC-3 and .mpg MP2 are checked
   sample-by-sample against ffmpeg's own decode. --audio-mono is
-  decoder-side for MP3/MP2/AC-3 and post-decode for AAC.
+  decoder-side for MP3/MP2/AC-3/AAC.
 
 Codec tags (FourCCs) are matched case-insensitively, so a muxer's own
 capitalisation never matters - AVI's fccHandler is the worst offender in

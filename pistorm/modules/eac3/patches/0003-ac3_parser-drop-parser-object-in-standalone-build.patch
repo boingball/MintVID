@@ -1,0 +1,18 @@
+--- a/libavcodec/ac3_parser.c
++++ b/libavcodec/ac3_parser.c
+@@ -441,6 +441,7 @@
+     return 0;
+ }
+ 
++#if !defined(BERRY_EAC3_STANDALONE)
+ static int ac3_sync(uint64_t state, int *need_next_header, int *new_frame_start)
+ {
+     int err;
+@@ -485,6 +486,7 @@
+     .parse          = ff_aac_ac3_parse,
+     .close          = ff_parse_close,
+ };
++#endif /* !BERRY_EAC3_STANDALONE */
+ 
+ #else
+ 

@@ -96,7 +96,7 @@ CORE  = core/mr_codec.c core/mr_source.c core/mr_http.c core/mr_hls.c \
         core/mr_demux.c core/mr_latm.c core/mr_mkv.c core/mr_avi.c core/mr_mov.c \
         core/mr_ts.c core/mr_ps.c \
         core/mr_raw_mjpeg.c core/mr_raw_mpeg4.c \
-        core/mr_cinepak.c core/mr_dither.c core/mr_dither_m68k.S core/mr_ham.c core/mr_ham_m68k.S core/mr_scale.c \
+        core/mr_cinepak.c core/mr_dither.c core/mr_fused32.c core/mr_dither_m68k.S core/mr_ham.c core/mr_ham_m68k.S core/mr_scale.c \
         core/mr_c2p.c core/mr_c2p_m68k.S core/mr_mjpeg.c core/picojpeg.c core/mr_mpeg1.c \
         core/mr_mpeg1_blockset_m68k.S core/mr_mpeg1_idct_m68k.S \
         core/mr_mpeg2.c $(LIBMPEG2_SRC) \
@@ -551,7 +551,7 @@ GUI_CFLAGS = -O2 -std=c99 $(CPUFLAGS) -noixemul -fno-common -fomit-frame-pointer
 # anywhere in this Makefile any more.
 LDFLAGS = -noixemul -lgcc $(LIBAVC_M68K_LDFLAGS)
 
-all: mrplay MintVID iptvgui ytgui MintVID-GT iptvgui-GT ytgui-GT mr_decode
+all: mrplay MintVID iptvgui ytgui MintVID-GT iptvgui-GT ytgui-GT mr_decode mrbench
 
 AUDIO_STRESS = tests/amiga_audio_task_stress.c amiga/audio.c amiga/audio_paula.c \
                amiga/audio_ahi.c core/mr_play_options.c
@@ -573,6 +573,21 @@ mrplay: check-cc check-mintamp check-kalms $(PLAY) $(CORE) $(KALMS_OBJ) $(MP2_AS
         $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) $(VERSION_HEADER) | check-libavc
 	$(CC) $(CFLAGS) -DMR_HAVE_VIDEOCORE $(MINTAMP_FLAGS) $(LIBA52_FLAGS) -o $@ $(PLAY) $(CORE) \
 	    $(MINTAMP_MP3_OBJ) $(MINTAMP_AAC_OBJ) $(LIBA52_OBJ) $(KALMS_OBJ) $(MP2_ASM_OBJ) $(LDFLAGS)
+
+# mrberry: the PiStorm player (VideoCore H.264 through berryvp.library), by
+# Michael (MichiB210). Its build script takes MintVID's core and audio from
+# here, puts its own changed demuxer files over them, and reads the audio
+# decoder sources and flags from print-audio-build, so its Paula sound is
+# built exactly as mrplay's. See ../pistorm/README.md.
+mrberry: check-cc check-mintamp
+	CC="$(CC)" HTTP_SSL_FLAGS="$(HTTP_SSL_FLAGS)" DEBUG_LOGS=$(MRBERRY_DEBUG_LOGS) \
+	  sh ../pistorm/mrberry/build.sh "$(CURDIR)/build/mrberry"
+	cp build/mrberry/mrberry $@
+MRBERRY_DEBUG_LOGS ?= 1
+
+print-audio-build:
+	@echo "MINTAMP_SRC=$(MINTAMP_MP3) $(MINTAMP_AAC) $(LIBA52_SRC)"
+	@echo "MINTAMP_FLAGS=$(MINTAMP_FLAGS) $(LIBA52_FLAGS) $(LIBA52_FFT_CPPFLAGS)"
 
 check-kalms:
 	@test -n "$(KALMS_VASM)" -a -x "$(KALMS_VASM)" || { \
@@ -608,6 +623,12 @@ endif
 # Aminet release; iptvgui/ytgui/the GadTools -GT set/mrplay/mr_decode are
 # support binaries it launches on demand and stay hidden in the release
 # tree (see the `release` target below).
+# mrbench: runs `mrplay --benchmark` over a drawer of clips, once per
+# display/C2P mode, and collects the results (amiga/mrbench.c). A separate
+# program, so mrplay itself is unchanged.
+mrbench: check-cc amiga/mrbench.c amiga/mr_bench_parse.h $(VERSION_HEADER)
+	$(CC) $(GUI_CFLAGS) -o $@ amiga/mrbench.c $(LDFLAGS)
+
 MintVID: check-cc $(GUI) amiga/mr_master_options.h amiga/mr_player_status.h $(VERSION_HEADER)
 	$(CC) $(GUI_CFLAGS) -o $@ $(GUI) $(LDFLAGS)
 
@@ -660,7 +681,7 @@ endif
 
 clean:
 	rm -f mrplay MintVID iptvgui ytgui MintVID-GT iptvgui-GT ytgui-GT \
-	      mr_decode kalms_c2p_check build/c2p1x1_8_c5_030.o \
+	      mr_decode mrbench kalms_c2p_check build/c2p1x1_8_c5_030.o \
 	      build/c2p1x1_8_c5_040.o build/c2p2x2_8_c5_bm.o \
 	      build/c2p1x1_6_c5_bm_040.o $(MP2_ASM_OBJ)
 	rm -f audio_task_stress
@@ -677,7 +698,7 @@ clean:
 # from PROGDIR:/beside themselves.
 RELEASE_DIR ?= release
 RELEASE_LICENSE_DIR := $(RELEASE_DIR)/LICENSES
-RELEASE_PROGRAMS := MintVID mrplay iptvgui ytgui MintVID-GT iptvgui-GT ytgui-GT mr_decode
+RELEASE_PROGRAMS := MintVID mrplay iptvgui ytgui MintVID-GT iptvgui-GT ytgui-GT mr_decode mrbench
 
 define build_release_cpu
 	$(MAKE) -f Makefile.amiga clean

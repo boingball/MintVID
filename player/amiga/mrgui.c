@@ -200,6 +200,9 @@ static ULONG c2p_row(mr_c2p_mode value)
 static int mode_row(mr_display_mode value)
 {
     unsigned i;
+    /* The separate Amiga-audio PiStorm entry is gone: every PiStorm
+     * display plays through Paula now. */
+    if (value == MR_DISPLAY_PISTORM_PAULA) value = MR_DISPLAY_PISTORM;
     for (i = 0; i < mode_count; i++)
         if (mode_values[i] == value)
             return (int)i;
@@ -847,6 +850,69 @@ static void status_timer_close(void)
     }
 }
 
+/* PiStorm window -> full screen.  F in mrberry's window saves the spot in
+ * <film>.t and ends the player with the status text "Fullscreen"; the GUI
+ * then starts the same film full screen from there (R W=C).  The path and
+ * options of the last PiStorm launch are kept for that. */
+static char handover_path[512];
+static mr_play_options handover_options;
+static int handover_window;
+/* mrberry plays through Paula, and with Paula a pause stops the player at
+ * the spot (saved in <film>.t, status text "Paused").  Play, or Pause
+ * again, then starts the same film with R to continue from there. */
+static int pistorm_paused;
+
+static void launch_player(const char *program, const char *args, int external,
+                          Object *info, struct Window *window);
+
+/* The last Play started mrberry (not mrplay): a "No VideoCore decoder"
+ * refusal then offers software decoding once. */
+static int pistorm_last_launch;
+
+static void pistorm_software_fallback(Object *info, struct Window *window,
+                                      const char *codec)
+{
+    static char args[1600];
+    int guard;
+    pistorm_last_launch = 0;
+    if (!mr_gui_ask_software_decode(window, codec)) return;
+    for (guard = 0; guard < 250 && find_player(); guard++)
+        Delay(1);
+    if (find_player()) {
+        set_info(info, window, "The PiStorm player did not close; try Play again.");
+        return;
+    }
+    /* PiStorm options build "mrplay --p96": an RTG window. */
+    if (!mr_build_player_arguments(args, sizeof(args), &handover_options,
+                                   handover_path, NULL, NULL)) {
+        set_info(info, window, "Could not build player arguments.");
+        return;
+    }
+    handover_window = 0;
+    launch_player("mrplay", args, 0, info, window);
+}
+
+static void pistorm_fullscreen_handover(Object *info, struct Window *window)
+{
+    static char args[1600];
+    int guard;
+
+    handover_window = 0;
+    for (guard = 0; guard < 250 && find_player(); guard++)
+        Delay(1);
+    if (find_player()) {
+        set_info(info, window, "The PiStorm window did not close; full screen cancelled.");
+        return;
+    }
+    if (!mr_build_external_fullscreen_arguments(args, sizeof(args),
+                                                &handover_options,
+                                                handover_path)) {
+        set_info(info, window, "Could not build player arguments.");
+        return;
+    }
+    launch_player(MR_PISTORM_PLAYER, args, 1, info, window);
+}
+
 static void poll_player_status(Object *info, struct Window *window)
 {
     mr_player_status ps;
@@ -875,10 +941,28 @@ static void poll_player_status(Object *info, struct Window *window)
     if (ps.state == MR_PLAYER_STATE_PLAYING)
         snprintf(line, sizeof(line), "Playing%s%s%s%s", ps.codec[0] ? " (" : "",
                  ps.codec, ps.codec[0] ? "): " : "", ps.text);
+    else if (ps.state == MR_PLAYER_STATE_UNSUPPORTED && pistorm_last_launch &&
+             !strncmp(ps.text, MR_GUI_NO_VIDEOCORE_TEXT,
+                      sizeof(MR_GUI_NO_VIDEOCORE_TEXT) - 1)) {
+        snprintf(line, sizeof(line), "Not supported: %s", ps.text);
+        set_info(info, window, line);
+        pistorm_software_fallback(info, window, ps.codec);
+        return;
+    }
     else if (ps.state == MR_PLAYER_STATE_UNSUPPORTED)
         snprintf(line, sizeof(line), "Not supported: %s", ps.text);
     else if (ps.state == MR_PLAYER_STATE_ERROR)
         snprintf(line, sizeof(line), "Player error: %s", ps.text);
+    else if (ps.state == MR_PLAYER_STATE_ENDED && !live && handover_window &&
+             !strcmp(ps.text, "Fullscreen")) {
+        pistorm_fullscreen_handover(info, window);
+        return;
+    }
+    else if (ps.state == MR_PLAYER_STATE_ENDED && !live && handover_path[0] &&
+             !strcmp(ps.text, "Paused")) {
+        pistorm_paused = 1;
+        snprintf(line, sizeof(line), "Paused (Play continues)");
+    }
     else if (ps.state == MR_PLAYER_STATE_ENDED)
         snprintf(line, sizeof(line), "Playback ended");
     else if (ps.state == MR_PLAYER_STATE_OPENING)
@@ -928,54 +1012,16 @@ static void start_iptv_launch(Object *info, struct Window *window,
     iptv_launch_ticks = 0;
 }
 
-static void start_player_path(const char *full_file, Object *mode,
-                              Object *c2p, Object *h264,
-                              Object *lace, Object *scale,
-                              Object *audio_rate, Object *fast_buffer,
-                              Object *no_audio,
-                              Object *mono_audio, Object *video_mode,
-                              Object *info,
-                              struct Window *window)
+/* Load and start the player (mrplay, or mrberry for the PiStorm modes)
+ * under the task name the controls signal. */
+static void launch_player(const char *program, const char *args, int external,
+                          Object *info, struct Window *window)
 {
-    char path[512];
-    char args[1600];
     char seg_path[64];
-    mr_play_options options;
     BPTR seglist;
     BPTR log = 0;
     struct Process *process;
-    const char *program;
-    int external;
 
-    if (!full_file || !*full_file) {
-        set_info(info, window, "Choose a video first.");
-        return;
-    }
-    if (mr_path_is_audio_only(full_file)) {
-        set_info(info, window, "Audio-only file: use MintAMP instead.");
-        return;
-    }
-    if (find_player()) {
-        set_info(info, window,
-                 "A MintVID player is already running; stop it first.");
-        return;
-    }
-    strncpy(path, full_file, sizeof(path) - 1);
-    path[sizeof(path) - 1] = 0;
-    read_play_options(mode, c2p, h264, lace, scale, audio_rate, fast_buffer,
-                      no_audio, mono_audio, video_mode, &options);
-    /* An external player (PiStorm: mrberry) runs under the same task name
-     * as mrplay and answers the same signals and status port, so Pause,
-     * Stop and the status line below need no special case. */
-    external = mr_display_uses_external_player(options.display);
-    program = external ? MR_PISTORM_PLAYER : "mrplay";
-    if (!(external ? mr_build_external_player_arguments(args, sizeof(args),
-                                                        &options, path)
-                   : mr_build_player_arguments(args, sizeof(args), &options,
-                                               path, NULL, NULL))) {
-        set_info(info, window, "Could not build player arguments.");
-        return;
-    }
     snprintf(seg_path, sizeof(seg_path), "PROGDIR:%s", program);
     seglist = LoadSeg((CONST_STRPTR)seg_path);
     if (!seglist)
@@ -1015,6 +1061,66 @@ static void start_player_path(const char *full_file, Object *mode,
         external_launch_ticks = 0;
         set_info(info, window, "Starting PiStorm playback...");
     }
+}
+
+static void start_player_path(const char *full_file, Object *mode,
+                              Object *c2p, Object *h264,
+                              Object *lace, Object *scale,
+                              Object *audio_rate, Object *fast_buffer,
+                              Object *no_audio,
+                              Object *mono_audio, Object *video_mode,
+                              Object *info,
+                              struct Window *window)
+{
+    char path[512];
+    char args[1600];
+    mr_play_options options;
+    const char *program;
+    int external, resume;
+
+    if (!full_file || !*full_file) {
+        set_info(info, window, "Choose a video first.");
+        return;
+    }
+    if (mr_path_is_audio_only(full_file)) {
+        set_info(info, window, "Audio-only file: use MintAMP instead.");
+        return;
+    }
+    if (find_player()) {
+        set_info(info, window,
+                 "A MintVID player is already running; stop it first.");
+        return;
+    }
+    strncpy(path, full_file, sizeof(path) - 1);
+    path[sizeof(path) - 1] = 0;
+    read_play_options(mode, c2p, h264, lace, scale, audio_rate, fast_buffer,
+                      no_audio, mono_audio, video_mode, &options);
+    /* An external player (PiStorm: mrberry) runs under the same task name
+     * as mrplay and answers the same signals and status port, so Pause,
+     * Stop and the status line below need no special case. */
+    external = mr_display_uses_external_player(options.display);
+    program = external ? MR_PISTORM_PLAYER : "mrplay";
+    resume = external && pistorm_paused && !strcmp(path, handover_path);
+    pistorm_paused = 0;
+    if (!(resume ? mr_build_external_resume_arguments(args, sizeof(args),
+                                                      &options, path) :
+          external ? mr_build_external_player_arguments(args, sizeof(args),
+                                                        &options, path)
+                   : mr_build_player_arguments(args, sizeof(args), &options,
+                                               path, NULL, NULL))) {
+        set_info(info, window, "Could not build player arguments.");
+        return;
+    }
+    if (external) {
+        /* Remembered for the PiStorm window -> full screen handover in
+         * poll_player_status(). */
+        strncpy(handover_path, path, sizeof(handover_path) - 1);
+        handover_path[sizeof(handover_path) - 1] = 0;
+        handover_options = options;
+    }
+    handover_window = options.display == MR_DISPLAY_PISTORM_WINDOW;
+    pistorm_last_launch = external;
+    launch_player(program, args, external, info, window);
 }
 
 static void start_player(Object *file, Object *mode, Object *c2p,
@@ -1592,13 +1698,13 @@ int main(void)
      * WritePixel. */
     if (have_rtg) default_mode = (int)mode_count - 1;
     /* PiStorm VideoCore playback, only when the external player is here.
-     * Never the default. Sound through the Pi's HDMI needs the BerryCore
-     * Emu68 kernel; sound through Paula (MintVID's decoders) does not. */
+     * Never the default. Sound always goes through Paula (MintVID's
+     * decoders), so a stock Emu68 kernel is enough. */
     if (pistorm_player_available() &&
-        (!add_mode_node(&modes, "PiStorm (VideoCore, Pi audio)",
+        (!add_mode_node(&modes, "PiStorm (VideoCore)",
                         MR_DISPLAY_PISTORM) ||
-         !add_mode_node(&modes, "PiStorm (VideoCore, Amiga audio)",
-                        MR_DISPLAY_PISTORM_PAULA)))
+         !add_mode_node(&modes, "PiStorm (VideoCore, window)",
+                        MR_DISPLAY_PISTORM_WINDOW)))
         goto cleanup;
     /* Audio only, listed last so it never becomes the hardware default.
      * It sits here rather than under Video so it is easy to find; Video,
@@ -2227,7 +2333,12 @@ int main(void)
                     break;
 
                 case G_PAUSE:
-                    signal_player(SIGBREAKF_CTRL_D);
+                    if (pistorm_paused && !find_player())
+                        start_player(file, mode, c2p, h264, lace, scale,
+                                     audio_rate, fast_buffer, no_audio,
+                                     mono_audio, video_mode, info, window);
+                    else
+                        signal_player(SIGBREAKF_CTRL_D);
                     break;
 
                 case G_STOP:

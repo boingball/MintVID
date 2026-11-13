@@ -1,0 +1,117 @@
+--- a/libavcodec/ac3dec.c
++++ b/libavcodec/ac3dec.c
+@@ -95,7 +95,7 @@
+ /**
+  * AVCodec initialization
+  */
+-static av_cold int ac3_decode_init(AVCodecContext *avctx)
++av_cold int berry_ff_ac3_decode_init(AVCodecContext *avctx)
+ {
+     AC3DecodeContext *s = avctx->priv_data;
+     const float scale = 1.0f;
+@@ -109,7 +109,7 @@
+     if ((ret = av_tx_init(&s->tx_256, &s->tx_fn_256, IMDCT_TYPE, 1, 256, &scale, 0)))
+         return ret;
+ 
+-    AC3_RENAME(ff_kbd_window_init)(s->window, 5.0, 256);
++    memcpy(s->window, berry_kbd_window_256, sizeof(berry_kbd_window_256));
+     ff_bswapdsp_init(&s->bdsp);
+ 
+ #if (USE_FIXED)
+@@ -147,13 +147,76 @@
+     return 0;
+ }
+ 
+-static av_cold void ac3_decode_flush(AVCodecContext *avctx)
++
++/* BerryEAC302B: the normal FFmpeg decoder init is intentionally exposed as
++ * small persistent stages.  BerryCore CALL_MODULE can then execute each
++ * potentially expensive/faulting setup step separately, while preserving the
++ * exact same AC3DecodeContext that berry_ff_ac3_decode_frame() consumes. */
++av_cold int berry_ff_ac3_decode_init_stage(AVCodecContext *avctx, int stage)
++{
++    AC3DecodeContext *s = avctx->priv_data;
++    const float scale = 1.0f;
++    int i, ret;
++
++    switch (stage) {
++    case 0:
++        s->avctx = avctx;
++        return 0;
++    case 1:
++        ret = av_tx_init(&s->tx_128, &s->tx_fn_128, IMDCT_TYPE,
++                         1, 128, &scale, 0);
++        return ret;
++    case 2:
++        ret = av_tx_init(&s->tx_256, &s->tx_fn_256, IMDCT_TYPE,
++                         1, 256, &scale, 0);
++        return ret;
++    case 3:
++        memcpy(s->window, berry_kbd_window_256, sizeof(berry_kbd_window_256));
++        ff_bswapdsp_init(&s->bdsp);
++        return 0;
++    case 4:
++#if USE_FIXED
++        s->fdsp = avpriv_alloc_fixed_dsp(avctx->flags & AV_CODEC_FLAG_BITEXACT);
++#else
++        ff_fmt_convert_init(&s->fmt_conv);
++        s->fdsp = avpriv_float_dsp_alloc(avctx->flags & AV_CODEC_FLAG_BITEXACT);
++#endif
++        return s->fdsp ? 0 : AVERROR(ENOMEM);
++    case 5:
++        ff_ac3dsp_init(&s->ac3dsp);
++        av_lfg_init(&s->dith_state, 0);
++#if USE_FIXED
++        avctx->sample_fmt = AV_SAMPLE_FMT_S16P;
++#else
++        avctx->sample_fmt = AV_SAMPLE_FMT_FLTP;
++#endif
++        ac3_downmix(avctx);
++        s->downmixed = 1;
++        return 0;
++    case 6:
++        for (i = 0; i < AC3_MAX_CHANNELS; i++) {
++            s->xcfptr[i] = s->transform_coeffs[i];
++            s->dlyptr[i] = s->delay[i];
++        }
++#if USE_FIXED
++        ff_ac3_init_static();
++#else
++        /* EAC302B is built from ac3dec_fixed.c (USE_FIXED=1). */
++        return AVERROR(EINVAL);
++#endif
++        return 0;
++    default:
++        return AVERROR(EINVAL);
++    }
++}
++
++av_cold void berry_ff_ac3_decode_flush(AVCodecContext *avctx)
+ {
+     AC3DecodeContext *s = avctx->priv_data;
+ 
+     memset(&s->frame_type, 0, sizeof(*s) - offsetof(AC3DecodeContext, frame_type));
+ 
+-    AC3_RENAME(ff_kbd_window_init)(s->window, 5.0, 256);
++    memcpy(s->window, berry_kbd_window_256, sizeof(berry_kbd_window_256));
+     av_lfg_init(&s->dith_state, 0);
+ }
+ 
+@@ -1348,7 +1411,7 @@
+ /**
+  * Decode a single AC-3 frame.
+  */
+-static int ac3_decode_frame(AVCodecContext *avctx, AVFrame *frame,
++int berry_ff_ac3_decode_frame(AVCodecContext *avctx, AVFrame *frame,
+                             int *got_frame_ptr, AVPacket *avpkt)
+ {
+     const uint8_t *buf = avpkt->data;
+@@ -1735,7 +1798,7 @@
+ /**
+  * Uninitialize the AC-3 decoder.
+  */
+-static av_cold int ac3_decode_end(AVCodecContext *avctx)
++av_cold int berry_ff_ac3_decode_end(AVCodecContext *avctx)
+ {
+     AC3DecodeContext *s = avctx->priv_data;
+     av_tx_uninit(&s->tx_256);

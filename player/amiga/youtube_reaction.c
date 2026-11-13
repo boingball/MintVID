@@ -6,6 +6,7 @@
 #include "../core/mr_http.h"
 #include "../core/mr_alloc.h"
 #include "../core/mr_play_options.h"
+#include "mr_external_pick.h"
 #include "../core/mr_source.h"
 #include "../iptv/mr_iptv.h"
 #include "mr_player_status.h"
@@ -359,7 +360,10 @@ static int start_video(const mr_youtube_search_result *video,
     stop_player();
     if (player_is_running())
         return 0;
-    seglist = LoadSeg((CONST_STRPTR)"PROGDIR:mrplay");
+    seglist = mr_load_external_player(options, arguments, sizeof(arguments),
+                                      watch_url, NULL, NULL);
+    if (!seglist)
+        seglist = LoadSeg((CONST_STRPTR)"PROGDIR:mrplay");
     if (!seglist)
         seglist = LoadSeg((CONST_STRPTR)"mrplay");
     if (!seglist)

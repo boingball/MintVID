@@ -1,0 +1,4 @@
+# Label ranges whose relocations keep vasm's operand order (START END, END '-' = end of hunk).
+# Everything else is written in address order, as in the historical P32 build.
+ac307_prepare_ac3 fast13_h0_trampoline
+ac307_ConfigAudio -

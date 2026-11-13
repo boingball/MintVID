@@ -1,0 +1,61 @@
+--- a/libavutil/tx_template.c
++++ b/libavutil/tx_template.c
+@@ -29,6 +29,17 @@
+ #define TABLE_DEF(name, size) \
+     DECLARE_ALIGNED(32, TXSample, TX_TAB(ff_tx_tab_ ##name))[size]
+ 
++#if defined(BERRY_EAC3_STANDALONE)
++/* BerryCore E-AC3: the decoder only needs 128- and 256-point MDCTs. */
++#define SR_POW2_TABLES \
++    SR_TABLE(8)        \
++    SR_TABLE(16)       \
++    SR_TABLE(32)       \
++    SR_TABLE(64)       \
++    SR_TABLE(128)      \
++    SR_TABLE(256)      \
++
++#else
+ #define SR_POW2_TABLES \
+     SR_TABLE(8)        \
+     SR_TABLE(16)       \
+@@ -46,6 +57,8 @@
+     SR_TABLE(65536)    \
+     SR_TABLE(131072)   \
+ 
++#endif
++
+ #define SR_TABLE(len) \
+     TABLE_DEF(len, len/4 + 1);
+ /* Power of two tables */
+@@ -711,6 +724,7 @@
+ DECL_SR_CODELET(64,32,16)
+ DECL_SR_CODELET(128,64,32)
+ DECL_SR_CODELET(256,128,64)
++#if !defined(BERRY_EAC3_STANDALONE)
+ DECL_SR_CODELET(512,256,128)
+ DECL_SR_CODELET(1024,512,256)
+ DECL_SR_CODELET(2048,1024,512)
+@@ -720,6 +734,7 @@
+ DECL_SR_CODELET(32768,16384,8192)
+ DECL_SR_CODELET(65536,32768,16384)
+ DECL_SR_CODELET(131072,65536,32768)
++#endif
+ 
+ static av_cold int TX_NAME(ff_tx_fft_init)(AVTXContext *s,
+                                            const FFTXCodelet *cd,
+@@ -2143,6 +2158,7 @@
+     &TX_NAME(ff_tx_fft64_ns_def),
+     &TX_NAME(ff_tx_fft128_ns_def),
+     &TX_NAME(ff_tx_fft256_ns_def),
++#if !defined(BERRY_EAC3_STANDALONE)
+     &TX_NAME(ff_tx_fft512_ns_def),
+     &TX_NAME(ff_tx_fft1024_ns_def),
+     &TX_NAME(ff_tx_fft2048_ns_def),
+@@ -2152,6 +2168,7 @@
+     &TX_NAME(ff_tx_fft32768_ns_def),
+     &TX_NAME(ff_tx_fft65536_ns_def),
+     &TX_NAME(ff_tx_fft131072_ns_def),
++#endif
+ 
+     /* Prime factor codelets */
+     &TX_NAME(ff_tx_fft3_ns_def),

@@ -2147,9 +2147,33 @@ enum, same value as the PiStorm fork's saved setting) only when
 `mrplay`, as task `MintVID player` with `"<file>" [--no-audio]`
 (`mr_build_external_player_arguments()`). The contract, the same signals,
 port and status as `mrplay`, is in `docs/EXTERNAL_PLAYER.md`. `mrberry`
-itself lives in MichiB210/MintVID-PiStorm, with `berryvp.library`, the CPU1
-audio modules and the patched Emu68 kernel it needs. Anything that still
-starts `mrplay` with this display (the IPTV/YouTube browsers) gets `--p96`.
+is Michael's (MichiB210) and lives in this repo's `pistorm/` (see "PiStorm
+player in the tree" below), with `berryvp.library`, the CPU1 audio modules
+and the patched Emu68 kernel it needs. The IPTV/YouTube browsers start
+`mrberry` for these displays too (`amiga/mr_external_pick.h`), falling back
+to `mrplay --p96` when `PROGDIR:mrberry` is missing.
+
+**mrberry streams.** Its build used to link `pistorm/mrberry/net_stubs.c`
+(every network opener returned "failed"), so it played local files only.
+`build.sh` now links `core/mr_http.c`, `mr_hls.c`, `mr_youtube.c` and
+`amiga/hls_fetch.c` instead, with `HTTP_SSL_FLAGS` from Makefile.amiga (CI
+builds it with `SSL=1 SSLCERTS=1`). Michael's `core/mr_source.c` overlay
+already had the URL branch. `mrb_open_url()` in mrberry.c follows mrplay's
+order: TLS cap from `ENVARC:MintVID.tls`, worker started before any network
+call, YouTube resolved, worker stopped if the result is not HLS, then
+`mr_demux_open_file_ex()` with the YouTube or channel HTTP options
+(`--user-agent`/`--referer`, built by `mr_build_external_stream_arguments()`).
+`.t` resume and subtitle lookups are skipped for URLs (`mrb_is_url()`),
+because AmigaDOS would take `https:` for a volume and ask for it. A host
+probe linking mrberry's overlay core with the real network files opened an
+MP4 and a TS over HTTP and an HLS playlist (36 packets each, as from disk).
+While a URL opens, mrberry now shows the same network progress lines as
+mrplay (`mrb_open_service()`, on both the mr_http and hls_fetch service
+hooks, published from mrberry's own task only, at most four times a
+second); before, PiStorm only ever showed "Resolving YouTube media..." and
+"Connecting to stream...". Not yet run on a PiStorm: live-stream timing on
+the VideoCore path, and whether segment fetches stall it, are unknown. mrberry has none of mrplay's
+live-resync or reconnect logic.
 
 A second entry, "PiStorm (VideoCore, Amiga audio)" (`MR_DISPLAY_PISTORM_PAULA`,
 appended after it), starts `mrberry --paula`. The sound is then decoded on the
@@ -2167,6 +2191,34 @@ shows a frame relative to that anchor has not been measured on hardware, so
 MP4 files whose `mp4a` track carries MP3 (object type 0x6B) are reported as
 AAC by `mr_mov.c`, which never reads the esds object type, so they play
 silent in mrplay too. Not fixed yet.
+
+## PiStorm player in the tree (mrberry v97.1)
+`pistorm/` is MintVID-PiStorm v97.1 by Michael (MichiB210), imported
+unchanged in one commit (VPberry left out), then adapted:
+- `mrberry` builds with `make -f Makefile.amiga mrberry`, which runs
+  `pistorm/mrberry/build.sh`. That copies `player/core`, puts
+  `pistorm/mrberry/core` over it (Michael's demuxer changes: MP4 ctts
+  presentation times, MKV tracks/seek/duration, E-AC-3, network reads) and
+  takes the audio decoder list from `print-audio-build`. Folding those
+  files into `player/core` is still to do; until then mrplay and mrberry
+  use different copies of those demuxers.
+- `mrb_paula.c` uses main's audio API (`audio_open(MR_AUDIO_OUT_PAULA,
+  ...)`, `mr_audio_decoder_open(..., MR_AUDIO_PAULA_RATE_MAX)`), and the
+  build compiles `audio.c`, `audio_paula.c`, `audio_ahi.c`.
+- **N83 is off by default.** From v96.83 berryvp.library sends films below
+  1280x720 through the ISP and scales them to 1920x1080 on the VideoCore,
+  to avoid green lines the HVS draws at odd scale factors. That needed
+  `gpu_mem=256` on a Pi 3A+ PiStorm, where the N80 build from our earlier
+  PR played at 64. `mr_berryvp_isp_out` now starts at 0xFFFFFFFF (the
+  library's own "no N83" value, BVP_CTRL_ISPOUT); `UPSCALE`/`--upscale`
+  sets 0 again.
+- `W=C` forces full screen even when `R` reads a window `W:` from the
+  `.t`. The window display (`MR_DISPLAY_PISTORM_WINDOW`, `W=50`) hands
+  over on **F**: mrberry saves `<film>.t` and ends with status text
+  `Fullscreen`, and both GUIs restart it with `"<film>" R W=C`
+  (`mr_build_external_fullscreen_arguments()`).
+- CI's `build` job builds `mrberry` and `berryvp.library` (vasm) and
+  uploads both. None of this has run on hardware yet.
 
 ## Build / test commands
 - `cd player && make` — build host harness `mr_decode`
@@ -5478,6 +5530,29 @@ PNS, dequant and stereo processing still run on the discarded upper band.
 TNS filters across frequency, so skipping them needs care, and it has not
 been done. Real-hardware speed is still unconfirmed.
 
+**Mono now saves work on AAC too.** Before, Helix decoded both channels
+and the adapter dropped the right one, so `--audio-mono` cost the same as
+stereo. `AACSetOutputMono()` (boingball/ESP8266Audio branch
+`claude/aac-mono-skip`, pinned through MintAMP's branch of the same name)
+skips TNS and the IMDCT for every channel but 0. Dequant and stereo
+processing still run on both channels, because the left output needs both
+spectra for mid/side. PNS also still runs on both: Helix's noise generator
+(`pnsLastVal`) is one sequence for all channels, so skipping it on the
+right would change the left channel's noise later on. `aac_apply_decim()`
+sets it from `d->mono`.
+
+Measured with `tools/qemu_tbprof.sh`, 68060 build with the real AAC flags,
+4 s of 44.1 kHz stereo AAC: Normal 79.2M instructions, Mono 54.6M (-31%),
+Low 50.3M, Low+Mono 39.4M (half of Normal). `tests/mr_aac_mono_check.c`
+requires the mono decode to equal the stereo decode's left channel bit for
+bit, at full, 1/2 and 1/4 rate, on a PNS-heavy fixture (`test_aac_pns.aac`)
+and `test_aac_decim.aac`. It runs on host and on 68030 and 68060 builds
+(the latter with `mr_aac_m68k_config.h`, as Makefile.amiga builds it).
+Skipping PNS on the right channel makes it fail with ~96% of samples
+different. Note that the host test binaries do not list the MintAMP
+sources as make dependencies: after editing Helix, delete the binary
+before rebuilding.
+
 ## Turbo+ skipped ~10 s of audio at the first keyframe
 A YouTube 360p log under Turbo+ (keyframes only) showed `fifo-dropped=
 219541` samples: almost exactly 10 s at 22050 Hz, heard as the audio
@@ -5655,6 +5730,24 @@ first if one is outstanding. Pinned in `tests/mr_hls_override_check.c`
 (reading 8 segments of a growing live playlist costs 3 playlist fetches
 and 2 playlist hints; before the fix it was 2 and 0, with the second
 fetch at the edge).
+
+**Opening a stream now reports progress.** The controller used to show
+"Connecting to stream..." for the whole open, which can take many seconds
+on a 68k. `mr_http_progress()` (core/mr_http.c) keeps the latest line from
+the network code: "Looking up host...", "Connecting to host...", "Secure
+connection to host...", "Waiting for host...", "Downloading from host: N
+KB" (every 32 KB of a complete-body fetch), and from mr_hls "Reading stream
+playlist...", "Reading playlist for the chosen quality...", "Loading video
+segment N...". It is off unless mrplay enables it for a URL, and mrplay
+turns it off once `mr_demux_open_file_ex()` returns, so later segment
+fetches never touch the status. Lines may be posted by the HLS fetch
+worker; the main task reads them (two-slot buffer, sequence number) in
+`service_early_open()`, the early service hook, and publishes them as
+OPENING status at most four times a second. That hook is now also on
+mr_http's own hook during the open, so a main-task HTTP read can be
+stopped with CTRL_C/CTRL_F; the worker's calls to it do nothing.
+`tests/mr_hls_override_check.c` pins the playlist and segment lines and
+the off switch.
 
 **A Turbo, All Frames, stereo run showed the CPU limit, and a TLS cost that
 remained.** The video needed ~80 ms per 40 ms frame (decode ~47,
@@ -6236,3 +6329,297 @@ change needs a Vampire owner to test it.
 - Known limits: a VPU error in mid-stream stops playback rather than
   switching to software; `--loop` loses the pictures still in flight at the
   end of each pass.
+
+## mrbench: comparing display/C2P modes on the real machine
+`amiga/mrbench.c` (`mrbench <drawer> [--modes=c2p|all|name,...] [--audio]
+[--player=] [--out=] [--extra=]`) runs `mrplay <file> <mode flags>
+--benchmark --no-audio` once per video file in a drawer and per mode, with
+output to `T:mrbench.log`. It parses that log with `amiga/mr_bench_parse.h`
+and prints one row per run, also written as CSV (default
+`RAM:mrbench.csv`). mrplay is unchanged. mrbench waits in
+`SystemTagList()`, so it takes no CPU while a clip plays.
+
+The default `c2p` set is standard, portable, riva, kalms, direct, shadow,
+fused32 and ecs32. ecs32 is there because fused32 is 32 colours. `all`
+adds akiko, HAM8/6, EHB, window, cgx, p96 and rtg-half. Each mode uses the
+flags the GUIs emit.
+
+mrplay plays in real time, so `fps` is capped at the clip's rate. The
+per-frame `dec`/`conv`/`disp` times, and `max` (1e6 / their sum), are what
+tell modes apart. The c2p column is the path that actually ran, taken from
+the `AGA path:` line. This is how a Fused32 run shows `fused32-fallback`
+(the C path: width not a multiple of 32, or resized) instead of
+`fused32-asm`. All arithmetic is integer, with fps kept in tenths, so no
+floating-point printf is linked (see the -lm crash above).
+
+`tests/mr_bench_parse_check.c` (`make check`) feeds the parser mrplay's
+exact format strings. The tool itself was only syntax-checked here,
+against stub NDK headers. CI's AmigaOS `build` job is its first real
+compile, and it has not run on hardware yet.
+
+## Fused32 cost, from the first full mrbench run
+A full `mrbench --modes=all` run on a real AGA machine (no RTG or Akiko, so
+cgx/p96/rtg-half/akiko fell back to AGA and duplicate the default rows)
+gave these median conversion+display costs per frame, relative to standard
+(`--wpa`): riva 0.72, ecs32 0.68, kalms 0.97, direct 1.00, shadow 1.21,
+portable 1.28, ham6 1.84, ham8 2.34, ehb 3.50, **fused32 7.52**. Kalms ran
+`wpa` on 12 of 38 files, and direct engaged on only 7 (both need a 1:1
+8-plane shape). The machine could not play these clips in real time, so
+the fps column was not capped by the clip's rate.
+
+Fused32 was slow on two paths:
+- **RGB codecs** (Cinepak, MJPEG, MPEG-4, WMV, MSVideo1, MSRLE...) were
+  ~10x ecs32. `mr_rgb_fused32()` did two `long long` divides per pixel,
+  which are libgcc calls on m68k, then set five plane bits one by one.
+- **YUV codecs** off the hand kernel's shape (width not a multiple of 32,
+  or scaled, the `fused32-fallback` label) were ~2x ecs32.
+  `mr_yuv420_fused32_c()` packs five plane bits per pixel.
+
+Both now live in `core/mr_fused32.c` and build the same bytes from parts
+that are already fast:
+- RGB: the scale's source columns come from a DDA, computed once per
+  call. Each output row is gathered (or used directly when not scaled
+  horizontally), dithered by `mr_dither_rgb_indexed()` (asm on m68k), and
+  converted with `mr_c2p8_riva32()` one row at a time.
+- YUV: the hand kernel when it applies. Otherwise a chunky frame from
+  `mr_yuv420_dither_indexed()` (1:1, the table kernel) or
+  `mr_yuv420_dither_indexed_resize()`, then `mr_c2p8_riva32()`. The old
+  fused C stays as the reference, and as the fallback if the chunky frame
+  cannot be allocated.
+
+m68k instructions per frame (qemu_tbprof, 68060 flags):
+- RGB 320x200: 8.9M -> 2.7M.
+- YUV 360x240 1:1, padded to 384: 13.5M -> 3.2M.
+
+`tests/mr_planar_modes_check.c` gained 178x100 and 360x240 1:1 shapes. A
+wrong chunky margin offset or a wrong C2P row both make it fail. Not yet
+re-benchmarked on hardware.
+
+## berryvp.library: N80 merged into v97.1
+On a PiStorm 600 (Pi 3), v97.1 failed in Paula mode: fullscreen showed a
+few frames and locked the Amiga, and a window played to the end and then
+crashed. v97.1 is Michael's line from N79 onwards and never had our N80
+work (`mintvid-pistorm`, branch `claude/mrberry-controls`, berryvp.library
+3.80), which is what made that machine play without HDMI audio:
+- An OpenStream flag for streams that will get no ConfigAudio. It selects
+  the direct decoder -> renderer graph, paced by the host, instead of the
+  audio-clocked scheduler.
+- A VideoCore reset at CloseStream when a stream failed or did not drain.
+- Ctrl-C breaks the library's bounded wait loops.
+
+The N80 diff (`git diff 7c0c24f 2d3e6d0` there) applied to v97.1's file with
+`patch -F3`. The one rejected hunk was the ID string. Changes for v97.1:
+- The flag is bit 8 (`BVP_OPENF_NO_HDMI_AUDIO = $100`, cap bit `$2000`).
+  v97.1 already uses OpenStream's low byte for the P96 window size
+  (10/25/50/75), and 25 and 75 have bit 0 set. OpenStream keeps only the low
+  byte in `BVP_STREAM_FLAGS`.
+- In the graph router the N80 test comes before N83's ISP upscale. The
+  scheduler-free ISP graph never came up on a 600.
+- CLK81's free clock is still tried first on the scheduler path. N80's
+  "fail instead of waiting forever" check follows it.
+
+mrberry sets `mr_berryvp_no_hdmi_audio` on the same test as its ConfigAudio
+branch (Paula, or no AAC/AC-3/E-AC-3 track). It passes the flag only in
+cinema mode, so window mode keeps v97.1's behaviour. The end-of-stream
+reset applies in both. With the direct graph, `BVP_CTRL_CLOCKSTART` returns
+0, so Paula anchors at the end of the first SendVideo (`--av-offset` tunes
+it).
+
+There is no vasm on the dev host (its site is unreachable), so CI's `build`
+job is the first assemble. Not yet run on hardware. `EXPECTED_SHA256` was
+removed because the build no longer matches the released v97.1 binary.
+
+## PiStorm sound is always Paula
+On a PiStorm 600 running Emu68 1.1, the N80 build played fullscreen with
+Paula. Window mode always asked for HDMI sound, which failed ("audio setup
+failed"), then crashed on the way out. v97.1's HDMI sound decodes on the
+Pi's second core and needs Michael's BerryCore kernel. That kernel is a
+binary patch of Emu68 1.0.7 only. The user's call: no unsupported kernels,
+and most Amigas drive a monitor with no speakers on its HDMI anyway.
+
+So mrberry now plays through Paula unless told otherwise (`HDMI` or
+`--hdmi-audio` asks for the old path). That applies in the window too, which
+v97.1 refused ("PAULA is cinema only"). In the window, `p96w_hdmi` (set only
+once ConfigAudio succeeds) gates the HDMI-only pieces:
+- the P96W5 prefill and P96W27 audio-first holds;
+- the P96S clock sync. Without HDMI sound the window runs as NOSYNC
+  (`p96s_off`), as STILL does, so the library never waits for a clock
+  answer;
+- the CLOCKSTART query. Paula anchors at the end of the first SendVideo,
+  when the window pacer starts, because the window graph has no free Pi
+  clock.
+
+NOAUDIO is allowed in the window now too.
+
+MintVID side:
+- `mr_build_external_player_arguments()` and the fullscreen handover both
+  pass `--paula` plus the audio-rate/mono options for every PiStorm display.
+- The GUIs list two entries: PiStorm (VideoCore) and its window.
+  `MR_DISPLAY_PISTORM_PAULA` stays in the enum, and `mode_row()` reads a
+  saved value of it as `MR_DISPLAY_PISTORM`.
+
+With Paula, mrberry's Pause stops at the spot, writes `<film>.t` and ends
+with status text "Paused" (Michael's P96W78). The GUIs used to show that as
+"Playback ended". They now remember it (`pistorm_paused`): Play, or Pause
+again, on the same file starts `mr_build_external_resume_arguments()`,
+which is the normal arguments plus `R`. TS files cannot seek, so they start
+again from the beginning.
+
+`tests/mr_iptv_check.c` pins the argument strings. mrberry and the GUIs can
+only be compiled by CI's AmigaOS build. Nothing here has run on hardware.
+The fullscreen "no sound with Paula" report from the same session is still
+open and needs mrberry's `PAULA:` console line.
+
+**The first window test was silent, and the cause was the read-ahead.**
+`N76_HOST.TXT` showed Paula open and 1726 AAC packets decoded, but
+`starvations=0 min_buffered_ms=0`: nothing ever reached Paula's FIFO. In the
+window, berryvp.library holds each SendVideo until the frame is due (its
+pacer took 30 of 40 s), so the file is read in real time (`read_pts_ms` ≈
+`wall_ms`, video queue 0). `mrb_paula`'s sink drops PCM until the decoder is
+the 350 ms sound offset ahead of the clock, which never happened, so Paula
+never started. A host probe of mrberry's overlay demuxer plus the AAC
+decoder on a stereo MP4 gave PCM for every packet in the right layout, so
+decode was not the problem.
+
+The window's P96W5 prefill and P96W27 audio-first hold now run with Paula
+as well. They hold video until audio is `P96W_PAULA_LEAD_US` (1.5 s) ahead,
+and Paula packets now set `p96w_last_apts`.
+
+**The black screen on leaving the window was berryvp.library writing 0
+into the HVS display-list pointer.** The Amiga kept running (Caps Lock
+worked), full screen exited cleanly, and a local file did the same. Both
+traces end cleanly (`N79_CLOSE_TAIL`, `N76_END_OK`). After a drained
+stream, `v9_cleanup_all` always calls `hdmi_v40o_restore_hvs_ptr`. That
+puts back the HVS list saved before the renderer took the display. Only
+the two renderer graphs save it (full screen). The P96 window graph (ISP
+-> host -> P96 blit) has no renderer, so `hvs_saved` was still the 0 that
+OpenStream clears it to. The restore now does nothing when nothing was
+saved, as N80's reset already did. v97.1's window went black at the end
+of a film for the same reason.
+
+**Full screen with Paula was silent for the same reason the window was.**
+N80's direct graph paces SendVideo to the host frame grid (~39 ms per
+call in the log), so the file is read at real time and the audio never
+got the 350 ms offset ahead (`min_buffered_ms=0`, `starvations=0`). The
+audio-first hold now runs whenever Paula plays, in full screen too
+(`p96w_first_vpts` is recorded then as well).
+
+Neither fix has run on hardware yet.
+
+**Confirmed on a PiStorm: both fixes work**, YouTube in the window with
+sound. Two things left from that test, both stream-only:
+- Space (pause) and F ended a stream. A Paula pause and the window's F both
+  end mrberry and restart it at the spot in `<film>.t`, and a URL has no
+  `.t`. For streams (`mrb_stream`) F is ignored. Space now pauses a stream
+  in place: `p45_pause_loop()` pauses `mrb_paula` (its clock excludes the
+  pause), moves mrberry's pacer, `p78_clock_sys` and the library's pacer
+  (`BVP_CTRL_TIMESHIFT`) on by the pause. That is only safe without the
+  free Pi clock (CLK81) that made Michael restart instead, and both graphs
+  mrberry opens with Paula have none (N80 direct, P96 window). Frames
+  already sent to the Pi may still show for a moment after Space in full
+  screen. Local files keep the tested restart pause. The window title is now
+  just "MintVID"; the keys are in the guide's Controls node.
+- The picture froze for about a second every few seconds, then caught up.
+  The earlier logs show it too (`P65_HB` wall gaps of ~1.8 s every ~6 s).
+  mrberry reads the stream in the task that calls SendVideo, so a network
+  read that waits (the HTTP read-ahead refilling) stopped every frame.
+  `mrb_play_service()` is now on the mr_http and hls_fetch hooks while a
+  stream plays: it sends due frames and feeds Paula while the read waits.
+  It runs on mrberry's task only, is never reentered, and does nothing
+  once the library stream is closed (`g_bvp.lib` NULL). Not yet run on
+  hardware.
+
+## berryvp.library: other VideoCore decoders (VC1)
+The library only ever set up MMAL's H.264 decoder. Its packet path copies
+bytes without parsing them. The H.264 parts were:
+- the stream setup (`bvp_backend_init_from_config`, which parses the SPS
+  for geometry, reference count and VUI frame rate);
+- the input format's encoding constant, set and checked at five places;
+- two extradata copies.
+
+So VC1 adds:
+- **Codec ids** `BVP_CODEC_MPEG4/H263/MJPEG/MPEG1/MPEG2/VC1` (5-10).
+  `bvp_codec_table` maps each id to its MMAL encoding (`MP4V`, `H263`,
+  `MJPG`, `MP1V`, `MP2V`, `WVC1`). ConfigVideo stores the encoding in
+  `bvp_video_encoding`, which replaces the H.264 constant at all five
+  places.
+- **Stream setup for those codecs** (`bvpx_config_other`). The config
+  packet is `'BVPX'` plus at most 128 bytes of extradata: the MP4/MKV VOL
+  for MPEG-4, the sequence header for VC-1, nothing for the others. The
+  SPS facts come from ConfigVideo instead: visible size, coded size rounded
+  to 16, aligned width to 32, no crop, 2 references. ConfigVideo's fourth
+  argument carries the frame rate as `(num<<16)|den`, which goes through
+  `v7_setup_timing` and falls back to 25 fps.
+- **Empty extradata** is now allowed by both copy loops. The second one
+  (v9f) used to fail on it.
+- **A capability bit**, `BVP_CAP_MULTI_CODEC` ($4000).
+
+On the mrberry side:
+- `mr_berryvp_codec_for_fourcc()` maps MintVID's video tags to the codec
+  ids. The two "H.264 required" checks use it.
+- Non-H.264 packets are sent unchanged. They get frame flags, except
+  TS/PS payloads (`mr_berryvp_unframed`).
+- `BVP_PKT_KEY` is set from the I-VOP or I-picture type, and on every
+  MJPEG frame.
+- P96W3's drop of non-reference pictures is H.264-only.
+- The status line names the codec (`mrb_codec_label`).
+
+Not supported: MKV `V_MS/VFW/FOURCC` tracks (DivX in MKV) and MPEG-1 in
+MKV, because mrberry's MKV reader does not map them; and WMV3. Nothing
+here has been assembled or run: there is no vasm here, CI assembles it,
+and only a PiStorm can show whether the firmware decodes each codec.
+
+MPEG-2/VC-1 keys are tied to the Pi's serial number. They still appear
+in the Raspberry Pi codec store (codecs.raspberrypi.com). They go in the
+boot partition's config.txt (`decode_MPG2=0x...`, `decode_WVC1=0x...`),
+which the Pi firmware reads before Emu68 starts. Pi 4 and later have no
+MPEG-2/VC-1 hardware at all.
+
+**Refused videos fall back to software on request.** mrberry's refusal now
+reads `No VideoCore decoder for <codec>` (codec from
+`mr_demux_describe_video_codec()`). When the last Play started mrberry and
+the status text has that prefix (`MR_GUI_NO_VIDEOCORE_TEXT`), both GUIs ask
+"Software|Cancel" (`mr_gui_ask_software_decode()` in `mr_gui_menu.c`). On
+Software they wait for mrberry to exit, then start mrplay with the same
+options and path; PiStorm displays build `mrplay --p96`. The flag is
+cleared after the first prompt, because the GUI can read the same refusal
+twice: once from the port and once from the final status file. The
+IPTV/YouTube browsers do not prompt.
+
+## YouTube stalls in the PiStorm window
+A PiStorm log of a YouTube 360p MP4 (window, Paula) froze for 1-2 s every
+7-9 s. The library's own send time was never above 52 ms. The heartbeat
+showed the read position about 1.5 s ahead of playback, falling to 0.5 s
+at each stall. googlevideo sends at about playback speed after its first
+burst, so the read position stays as far ahead as the prefill got it. The
+prefill and the running audio-first hold both used `P96W_PAULA_LEAD_US`
+(1.5 s), so any late burst tripped the hold and stopped the picture. With
+Paula the running hold is now 0.5 s (`P96W_PAULA_RUN_LEAD_US`, sound offset
+350 ms plus a margin). Streams also prefill 3 s, hold below 150 queued
+frames and read ahead to 160 (`P96W_STREAM_*`), against 60/72 for files, so
+a slow burst has room. Local files keep the 1.5 s prefill. Not yet run on
+hardware.
+
+**That fix was not the cause: YouTube's progressive MP4 is throttled.** The
+next logs (with a per-second `MRB_NET` line: longest loop gap and where,
+longest demux read, network and Paula decode time) showed the freezes in
+the window and full screen alike, every ~9-11 s. Each is one demux read
+waiting 0.83-1.06 s for data, with no reconnect and the read service still
+running (gaps under 120 ms) but nothing left to send. The download only
+kept pace with playback. The ANDROID progressive URL carries an unsolved
+`n=` challenge (the resolver has no JavaScript engine), and googlevideo
+then throttles one long response to about the media's bitrate.
+
+`mr_http_options.range_chunk_bytes` now fetches a seekable file in closed
+ranges (`Range: bytes=a-b`, clamped to the file length once known), each a
+new request that starts at full speed. `http_next_range()` opens the next
+range when one ends, from the read-ahead (blocking and proactive) and from
+`http_read_at()`, where a ranged response that simply ended no longer
+counts as an I/O retry. `mr_youtube_media_http_options_init()` sets 1 MiB
+(about 13 s of 360p) for progressive MP4, so mrplay gets it too. The
+fixture server honours range ends and logs the Range header;
+`run_http_check.sh` decodes an MP4 and a TS with `--range-chunk=` (a new
+mr_decode option) and checks the exact ranges requested. Whether
+googlevideo really serves each new range at full speed is not yet shown on
+hardware: the next `MRB_NET` lines should show `rdmax_ms` near 0 and one
+connection about every 13 s.
