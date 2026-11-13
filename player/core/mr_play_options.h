@@ -70,7 +70,8 @@ typedef enum {
     MR_DISPLAY_HAM8_DITHER,
     /* PiStorm/Emu68: H.264 decoded by the Raspberry Pi's VideoCore and shown
      * full screen on the Pi's HDMI output. Played by the optional external
-     * player mrberry (MichiB210/MintVID-PiStorm), not by mrplay; the GUIs
+     * player mrberry (MichiB210's MintVID-PiStorm, now kept at
+     * boingball/MintVID-PiStorm), not by mrplay; the GUIs
      * list it only when mrberry is beside MintVID. See
      * docs/EXTERNAL_PLAYER.md for the contract mrberry follows. Anything
      * that still starts mrplay with these options (the IPTV and YouTube

@@ -239,7 +239,8 @@ frame spent on decoding.
 ### PiStorm VideoCore player (mrberry), by Michael (MichiB210)
 
 `mrberry` and `berryvp.library` are Michael's (MichiB210) work, from
-MintVID-PiStorm v97.1, and their source is in `pistorm/` (MIT; the
+MintVID-PiStorm v97.1 (Michael's own repository is gone; a copy is kept
+at https://github.com/boingball/MintVID-PiStorm), and their source is in `pistorm/` (MIT; the
 Pi-side audio modules and the Emu68 patch keep their own licences, see
 `pistorm/LICENSES.md`). `mrberry` sends H.264 to the Raspberry Pi's
 VideoCore through berryvp.library and the Pi shows it, so the 68k only

@@ -908,6 +908,9 @@ static void p73_base_load(void)
  * in ENVARC:MintVID.avoffset (milliseconds, + = sound later).  AV= and a
  * film's own .t value still win. */
 #define MRB_AV_FILE "ENVARC:MintVID.avoffset"
+/* Measured on a PiStorm 600 (YouTube in the window): the sound needed
+ * +600 ms to match the picture. */
+#define MRB_AV_DEFAULT_MS 600L
 static int mrb_av_load(long *ms)
 {
     char text[16];
@@ -2920,8 +2923,8 @@ int main(int argc, char **argv)
             p70_t_have_fine = 0;
             if (p54_read(argv[1], &rt, &ht, &rw) && p70_t_have_fine)
                 p70_fine_ms = p70_t_fine_ms;
-            else
-                (void)mrb_av_load(&p70_fine_ms);
+            else if (!mrb_av_load(&p70_fine_ms))
+                p70_fine_ms = MRB_AV_DEFAULT_MS;
         }
         if (p70_fine_ms > 3000) p70_fine_ms = 3000;
         if (p70_fine_ms < -3000) p70_fine_ms = -3000;
