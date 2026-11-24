@@ -6636,10 +6636,14 @@ decoded from ffmpeg 6's encode. gen_assets.sh now writes them right after the
 fixtures, and the job runs on ubuntu-latest again. With ffmpeg 8,
 `make check-audio` passes.
 
-Unpinning exposed one more version difference, in `mr_avc_check`'s comparison
-with `h264_mp4toannexb` (NAL 0 differs on `test_h264_high.mp4`). ffmpeg 6.1
-emits SEI, SPS, PPS, IDR for the first access unit. `mr_avc_check` now prints
-both NALs when they differ.
+Unpinning exposed the same bug once more, in `mr_avc_check`'s comparison
+with `h264_mp4toannexb` (NAL 0 differs on `test_h264_high.mp4`). A change in
+ffmpeg's bitstream filter was suspected, but `mr_avc_check` (which now prints both NALs when they
+differ) showed the same SEI from two x264 builds: the fixture from core 165,
+the reference from core 164. `tests/assets/ref_annexb/*.h264` was written only
+when missing, before gen_assets.sh re-encoded the fixture. `make check` and
+`run_m68k_check.sh` now rewrite it whenever it is not newer than its fixture.
+Any reference derived from a regenerated fixture needs that rule.
 
 ## 68060 speedups: MPEG-1/2 B pictures, weighted prediction, padding
 **MPEG-1 on a 68060 was choppy because VQ Turbo, the default, skipped every B
