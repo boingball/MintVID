@@ -376,18 +376,18 @@ int main(void) {
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
     assert(!strcmp(args, "--fast-buffer=auto --h264-speed=turbo "
-                         "--dv-speed=fast --mpeg2-speed=fast --throughput "
+                         "--dv-speed=fast --mpeg2-speed=auto --throughput "
                          "--skip-trigger=700 "
                          "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     options.h264_performance = MR_H264_PERF_AUTO;
     assert(mr_build_player_arguments(args, sizeof(args), &options, launch.url,
                                      NULL, NULL));
-    /* Auto still maps to VQ "fast" for the generic --dv-speed=/--mpeg2-speed=
-     * levers - see mr_video_quality_prefers_fast()'s own header
-     * (core/mr_play_options.c): only Quality picks a codec's own quality
-     * mode. */
+    /* Auto still maps to VQ "fast" for --dv-speed= - see
+     * mr_video_quality_prefers_fast()'s own header (core/mr_play_options.c):
+     * only Quality picks a codec's own quality mode. MPEG-1/2 gets Auto (B
+     * pictures skipped only while behind). */
     assert(!strcmp(args, "--fast-buffer=auto --dv-speed=fast "
-                         "--mpeg2-speed=fast --throughput "
+                         "--mpeg2-speed=auto --throughput "
                          "--skip-trigger=700 "
                          "\"https://example.test/live.m3u8?a=1&b=2\"\n"));
     mr_play_options_default(&options);
@@ -438,7 +438,7 @@ int main(void) {
        * levers too - see mr_video_quality_prefers_fast()'s own header
        * (core/mr_play_options.c). */
       assert(strstr(first, "--dv-speed=fast"));
-      assert(strstr(first, "--mpeg2-speed=fast"));
+      assert(strstr(first, "--mpeg2-speed=auto"));
       assert(strstr(first, "--fast-buffer=16"));
       mr_play_options_summary(&parsed, summary, sizeof(summary));
       assert(strstr(summary, "Native planar / kalms / Lace on / 2x on"));
@@ -470,6 +470,7 @@ int main(void) {
       assert(mr_build_player_arguments(first, sizeof(first), &parsed,
                                        launch.url, NULL, NULL));
       assert(strstr(first, "--h264-speed=turbo"));
+      assert(strstr(first, "--mpeg2-speed=auto"));
       mr_play_options_summary(&parsed, summary, sizeof(summary));
       assert(strstr(summary, "H264 Turbo"));
 
@@ -559,8 +560,12 @@ int main(void) {
          * iptvgui/ytgui launch failure a second time for a second flag. */
         char *mpeg2_fast_args[] = {"iptvgui", "--mpeg2-speed=fast"};
         char *mpeg2_quality_args[] = {"iptvgui", "--mpeg2-speed=quality"};
+        char *mpeg2_auto_args[] = {"iptvgui", "--mpeg2-speed=auto"};
         char *mpeg2_bad_args[] = {"iptvgui", "--mpeg2-speed=bogus"};
         mr_play_options mpeg2_parsed;
+        mr_play_options_default(&mpeg2_parsed);
+        assert(mr_play_options_parse(&mpeg2_parsed, 2, mpeg2_auto_args, error,
+                                     sizeof(error)));
         mr_play_options_default(&mpeg2_parsed);
         assert(mr_play_options_parse(&mpeg2_parsed, 2, mpeg2_fast_args, error,
                                      sizeof(error)));
@@ -832,7 +837,7 @@ int main(void) {
                                      NULL, NULL));
     assert(strstr(args, "--rtg-half"));
     assert(strstr(args, "--h264-speed=smoosh"));
-    assert(strstr(args, "--dv-speed=fast") && strstr(args, "--mpeg2-speed=fast"));
+    assert(strstr(args, "--dv-speed=fast") && strstr(args, "--mpeg2-speed=auto"));
     assert(strstr(args, "--no-throughput --skip-trigger=1500"));
     /* RTG has no C2P/lace/2x controls. */
     assert(!strstr(args, "--aga") && !strstr(args, "--c2p") &&

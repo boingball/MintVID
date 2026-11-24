@@ -6623,3 +6623,63 @@ mr_decode option) and checks the exact ranges requested. Whether
 googlevideo really serves each new range at full speed is not yet shown on
 hardware: the next `MRB_NET` lines should show `rdmax_ms` near 0 and one
 connection about every 13 s.
+
+## ffmpeg 8: references must come from the same ffmpeg as their fixtures
+CI's conformance job was pinned to ubuntu-24.04 (ffmpeg 6.1.1) because
+`mr_ac3_check` failed against ffmpeg 8.0.1. The decoder was not the cause.
+`tests/gen_assets.sh` re-encodes `test_h264_ac3.mkv`/`.ts` with whatever
+ffmpeg is installed: the `ref_*` frame directories are not committed, so a
+fresh checkout regenerates everything. The PCM references
+(`ref_ac3_mkv.raw`, `ref_ac3_ts.raw`, `test_ac3.ac3`) were committed and
+never rewritten, so under ffmpeg 8 a new AC-3 encode was compared against PCM
+decoded from ffmpeg 6's encode. gen_assets.sh now writes them right after the
+fixtures, and the job runs on ubuntu-latest again. With ffmpeg 8,
+`make check-audio` passes.
+
+Unpinning exposed the same bug once more, in `mr_avc_check`'s comparison
+with `h264_mp4toannexb` (NAL 0 differs on `test_h264_high.mp4`). A change in
+ffmpeg's bitstream filter was suspected, but `mr_avc_check` (which now prints both NALs when they
+differ) showed the same SEI from two x264 builds: the fixture from core 165,
+the reference from core 164. `tests/assets/ref_annexb/*.h264` was written only
+when missing, before gen_assets.sh re-encoded the fixture. `make check` and
+`run_m68k_check.sh` now rewrite it whenever it is not newer than its fixture.
+Any reference derived from a regenerated fixture needs that rule.
+
+## 68060 speedups: MPEG-1/2 B pictures, weighted prediction, padding
+**MPEG-1 on a 68060 was choppy because VQ Turbo, the default, skipped every B
+picture.** Turbo mapped to `--mpeg2-speed=fast`, so an IBBP VCD stream showed
+only its I and P pictures, a third of its frame rate, whatever the CPU could
+do. `--mpeg2-speed=auto` (mrplay value 2) is now emitted for every VQ except
+Quality (`quality`) and Turbo+ (`fast`). It decodes everything and calls
+`mr_mpeg2_set_speed_mode(FAST)` for one packet only when that packet is more
+than a frame period late (same rebased-pts test as H.264's `pts_late`), its
+output would be skipped anyway, or audio is in rescue or below
+`AUDIO_RESCUE_ENTRY_MS`. That also stops late B pictures being decoded in
+full and then dropped. The mode is read per picture, so switching per packet
+is safe (see the B-frame skip section). `mr_play_options_parse()` accepts
+`auto`, as the IPTV/YouTube browsers re-parse the controller's flags. Not yet
+run on hardware.
+
+**H.264 weighted prediction with default weights is now skipped**
+(`vendor/libavc_port/ih264_pad_wpred_port.c`, installed last in
+`ih264d_init_function_ptr()` so it wraps the m68k kernels). The slice-level
+`u1_wts_ofst_trivial` check only fires when every reference is default.
+Implicit bi-prediction (`weighted_bipred_idc == 2`, x264's B default) gives
+w0 = w1 = 32 for a picture midway between its references. Substituting into
+libavc's formulas, the default single-list case is the identity
+(src == dst there) and the bi case is the plain rounded average. So the
+wrapper returns, or calls `pf_default_weighted_pred_*`. The same file
+replaces `ih264_pad_left/right_*`, which called memset once per row, with
+longword fills (chroma replicates the UV pair in memory order). Byte-identical
+`--ppm` output on every H.264 fixture and two 640x360 clips, Quality and
+Turbo. On a High-profile IPTV-like clip (weighted P, implicit B) it cuts m68k
+instructions by 10.3% (587.9M -> 527.6M). On YouTube Baseline it saves only
+0.4%, since that has no weighted prediction.
+
+YouTube Baseline Turbo profile after this: `luma_bilinear` 20%, chroma MC
+16% (SWAR already; `chroma_dispatch` is its inlined copy and general cases),
+CAVLC residual ~14%, MV bookkeeping (`form_mb_part_info_bp`,
+`mv_pred_ref_tfr_nby2_pmb`, `rep_mv_colz`) ~12%, the 420SP->420P split 4%.
+None of those has a cheap exact win left. The MPEG-2/MPEG-1 profile is half
+IDCT, then VLC; GCC's IDCT code is reasonable and an asm rewrite was not
+judged worth it without a hardware measurement.

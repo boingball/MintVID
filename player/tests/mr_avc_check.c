@@ -309,6 +309,16 @@ static uint8_t *load(const char *path, long *n)
     return data;
 }
 
+/* Show a differing NAL so a CI log says what changed. */
+static void dump_nal(const char *who, const uint8_t *p, uint32_t len)
+{
+    uint32_t j;
+    fprintf(stderr, "  %-6s len %lu:", who, (unsigned long)len);
+    for (j = 0; j < len && j < 48; j++)
+        fprintf(stderr, " %02x", p[j]);
+    fprintf(stderr, "%s\n", len > 48 ? " ..." : "");
+}
+
 static int fixture(const char *path, const char *ref_path)
 {
     const char *ext = strrchr(path, '.');
@@ -390,6 +400,8 @@ static int fixture(const char *path, const char *ref_path)
                 memcmp(ours.data + ours.nals[i].off,
                        ref.data + ref.nals[i].off, ours.nals[i].len)) {
                 fprintf(stderr, "%s: NAL %u differs from ffmpeg's\n", path, i);
+                dump_nal("ours", ours.data + ours.nals[i].off, ours.nals[i].len);
+                dump_nal("ffmpeg", ref.data + ref.nals[i].off, ref.nals[i].len);
                 fail = 1;
                 break;
             }

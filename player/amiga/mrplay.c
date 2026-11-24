@@ -1665,14 +1665,18 @@ static void apply_dv_speed(mr_decoder *dec, int fast, int verbose)
  * any other codec: called once at decoder open and again after every
  * mr_decoder_reset(), since mpeg2_open_decoder() always starts a fresh
  * mpeg2_state at MR_MPEG2_SPEED_QUALITY (skip_b=0, zeroed by calloc). */
-static void apply_mpeg2_speed(mr_decoder *dec, int fast, int verbose)
+/* mode: 0 = Quality, 1 = Fast (every B skipped), 2 = Auto. Auto starts like
+ * Quality; the main loop then skips B pictures only while playback is behind
+ * or audio is short (see mpeg2_auto_late). */
+static void apply_mpeg2_speed(mr_decoder *dec, int mode, int verbose)
 {
     if (!dec || dec->codec != &mr_codec_mpeg2) return;
-    mr_mpeg2_set_speed_mode(dec, fast ? MR_MPEG2_SPEED_FAST
-                                      : MR_MPEG2_SPEED_QUALITY);
+    mr_mpeg2_set_speed_mode(dec, mode == 1 ? MR_MPEG2_SPEED_FAST
+                                           : MR_MPEG2_SPEED_QUALITY);
     if (verbose)
         printf("MPEG-1/2 performance: %s\n",
-              fast ? "Fast (B-frame skip)" : "Quality");
+              mode == 1 ? "Fast (B-frame skip)" :
+              mode == 2 ? "Auto (B-frame skip when behind)" : "Quality");
 }
 
 /* Shared by the on-screen Vol -/+ controller commands and the display
@@ -2462,7 +2466,12 @@ int main(int argc, char **argv)
      * that size - a quarter of the conversion and blit work. */
     int rtg_half = 0;
     int dv_speed = 0;    /* 0 = Quality (default, unchanged), 1 = Fast   */
-    int mpeg2_speed = 0; /* 0 = Quality (default, unchanged), 1 = Fast   */
+    int mpeg2_speed = 0; /* 0 = Quality (default), 1 = Fast, 2 = Auto     */
+    /* --mpeg2-speed=auto: B pictures are skipped only while the last
+     * timestamped video packet was more than a frame late, or audio is short.
+     * Sticky between timestamps, since MPEG-PS stamps only the packet a
+     * picture starts in. */
+    int mpeg2_auto_late = 0;
     int audio_low_rate = 0; /* --audio-rate=low: halve the output rate again */
     int no_audio = 0;       /* --no-audio: skip the decoder/Paula entirely   */
     int no_video = 0;       /* --no-video: audio only, no decoder/display    */
@@ -2580,7 +2589,7 @@ int main(int argc, char **argv)
                "[--h264-speed=auto|quality|balanced|fast|turbo|turbo+|smoosh] "
                "[--skip-trigger=200..2000] [--rtg-half] "
                "[--dv-speed=quality|fast] "
-               "[--mpeg2-speed=quality|fast] "
+               "[--mpeg2-speed=quality|fast|auto] "
                "[--audio-rate=normal|low] [--no-audio] [--no-video] [--audio-mono] "
                "[--no-videocore] "
                "[--audio-out=paula|ahi] [--ahi-unit=0..3] "
@@ -2717,6 +2726,7 @@ int main(int argc, char **argv)
                 const char *mode = argv[i] + 14;
                 if (!strcmp(mode, "quality")) mpeg2_speed = 0;
                 else if (!strcmp(mode, "fast")) mpeg2_speed = 1;
+                else if (!strcmp(mode, "auto")) mpeg2_speed = 2;
                 else {
                     printf("invalid MPEG-1/2 speed mode: %s\n", mode);
                     return mrplay_exit(5);
@@ -4996,6 +5006,29 @@ int main(int argc, char **argv)
                         now - smoosh_last_decode_us > SMOOSH_MAX_DROP_RUN_US)
                         smoosh_drop_req = smoosh_audio_drop = 0;
                     mr_h264_set_drop_nonsync(&dec, smoosh_drop_req);
+                    /* MPEG-1/2 Auto: a B picture is never a reference, so
+                     * skipping one costs nothing but that frame. Skip them
+                     * while behind - the ones decoded late were dropped
+                     * after a full decode anyway, or (All Frames) shown late
+                     * while the audio starved - and decode them whenever
+                     * playback keeps up. Fixed Fast mode skipped every B,
+                     * which on an IBBP VCD shows a third of the frames even
+                     * on a CPU that could manage more. */
+                    if (mpeg2_speed == 2 && codec == &mr_codec_mpeg2) {
+                        int skip_b;
+                        if (!playback_started)
+                            mpeg2_auto_late = 0;
+                        else if (pkt.has_pts)
+                            mpeg2_auto_late = (int64_t)mono_media_clock_us -
+                                ((int64_t)pkt.pts_us + container_pts_adjust_us) >
+                                (int64_t)period_us;
+                        skip_b = mpeg2_auto_late || skip_stale_output ||
+                            (playback_started &&
+                             (rescue_active ||
+                              (audio && audio_ms < AUDIO_RESCUE_ENTRY_MS)));
+                        mr_mpeg2_set_speed_mode(&dec, skip_b
+                            ? MR_MPEG2_SPEED_FAST : MR_MPEG2_SPEED_QUALITY);
+                    }
                     mr_h264_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
                     mr_mpeg2_set_input_pts(&dec, pkt.has_pts, pkt.pts_us);
                     mr_h264_set_input_annexb(&dec, pkt.is_annexb);

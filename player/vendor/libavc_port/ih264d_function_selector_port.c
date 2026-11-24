@@ -12,6 +12,7 @@
 #include "ih264_m68k_bs.h"
 #include "ih264_mc_degrade.h"
 #include "ih264d_stage_profile.h"
+#include "ih264_pad_wpred_port.h"
 
 void ih264d_init_function_ptr(dec_struct_t *codec)
 {
@@ -114,6 +115,10 @@ void ih264d_init_function_ptr(dec_struct_t *codec)
     codec->pf_fill_bs1[1][1] =
         mr_ih264d_fill_bs1_non16x16mb_bslice_m68k;
 #endif
+    /* After the m68k selection above, so the weighted-prediction wrappers
+     * capture the asm kernels; before stage profiling, so its timers wrap
+     * the wrappers. */
+    mr_h264_port_install_pad_wpred(codec);
 #if defined(MR_H264_STAGE_PROFILE)
     /* Diagnostic-only, opt-in: wraps whatever is now sitting in the
      * MC/deblock/recon/intra function-pointer slots above (m68k asm or

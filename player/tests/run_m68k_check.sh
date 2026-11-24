@@ -135,6 +135,7 @@ LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
     $(printf '%s\n' vendor/libavc/decoder/*.c) \
     vendor/libavc_port/ih264d_function_selector_port.c \
     vendor/libavc_port/ih264_mc_degrade.c \
+    vendor/libavc_port/ih264_pad_wpred_port.c \
     vendor/libavc_port/ih264d_stage_profile.c \
     vendor/libavc_port/ih264d_cabac_profile.c \
     vendor/libavc_port/ih264d_update_qp_wrap.c \
@@ -573,7 +574,9 @@ run "$BUILD/mr_avc_check.m68k"
 run "$BUILD/mr_hwdec_check.m68k"
 mkdir -p tests/assets/ref_annexb
 for f in test_h264_high.mp4 test_h264_gop.mp4 test_h264_aac.mkv; do
-    test -f "tests/assets/ref_annexb/$f.h264" ||
+    # Rewrite the reference whenever gen_assets.sh has re-encoded the fixture
+    # (a different x264 writes a different SEI and slices).
+    test "tests/assets/ref_annexb/$f.h264" -nt "tests/assets/$f" ||
         ffmpeg -v error -i "tests/assets/$f" -c:v copy -bsf:v h264_mp4toannexb \
             -f h264 -y "tests/assets/ref_annexb/$f.h264"
     run "$BUILD/mr_avc_check.m68k" "tests/assets/$f" \
