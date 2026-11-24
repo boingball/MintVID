@@ -1857,7 +1857,7 @@ bvp_prepare_second_stream:
 BVPL_LibName:
         dc.b    "berryvp.library",0
 BVPL_IdString:
-        dc.b    "berryvp.library 3.2 N79 + P96 WINDOW W49 + CLK81 HB CS ISP82 N83 N84 O3 S1 F TAB2 M N88 CM4 N97 A99 (06.11.2026) + N80 NO-HDMI-AUDIO VC1 MULTI-CODEC (MintVID) BerryVP 9.2 H264/HVS",13,10,0
+        dc.b    "berryvp.library 3.2 N79 + P96 WINDOW W49 + CLK81 HB CS ISP82 N83 N84 O3 S1 F TAB2 M N88 CM4 N97 A99 (06.11.2026) + N80 NO-HDMI-AUDIO VC1 MULTI-CODEC + EMU68-1.1 CACHE FIX (MintVID) BerryVP 9.2 H264/HVS",13,10,0
         cnop    0,2
 
         section bss,bss
@@ -19067,9 +19067,40 @@ bswap32:
         rts
 
 ; A0=destination, D0=host value
+; FIX (Emu68 1.1 fullscreen hang, MichiB210 20.11.2026): VCHIQ slot zero
+; shares 64-byte cache lines between fields the Pi writes (master tx_pos,
+; trigger.armed, recycle.armed ...) and fields the Amiga writes (trigger.fired,
+; recycle.fired, slot_queue_recycle ...).  A cached store wrote the whole line
+; back later with OLD copies of the Pi's fields -> the Pi's last message
+; (e.g. BULK_TX_DONE) vanished, both sides waited (Pi "silent").
+; Now: stores into slot zero flush the line, store, flush the line at once.
 store_le32:
         bsr     bswap32
+        cmpa.l  slot_ptr,a0
+        bcs.s   store_le32_plain          ; below slot zero
+        move.l  slot_ptr,-(sp)
+        add.l   #SLOTZERO_SIZE,(sp)
+        cmpa.l  (sp)+,a0
+        bcc.s   store_le32_plain          ; after slot zero
+        bsr     store_le32_flush          ; line out of the cache
+        move.l  d0,(a0)                   ; fetched fresh from RAM
+        bsr     store_le32_flush          ; straight back to RAM
+        tst.l   d0
+        rts
+store_le32_plain:
         move.l  d0,(a0)
+        rts
+
+; clean+invalidate the cache line(s) holding the long at A0. All regs kept.
+store_le32_flush:
+        movem.l d0-d1/a0-a1/a6,-(sp)
+        move.l  #4,-(sp)
+        move.l  sp,a1
+        moveq   #0,d0
+        move.l  4.w,a6
+        jsr     CachePreDMA(a6)
+        addq.l  #4,sp
+        movem.l (sp)+,d0-d1/a0-a1/a6
         rts
 
 ; A0=source, returns D0 host value
@@ -19086,8 +19117,18 @@ load_le16:
         rts
 
 ; End current shared-memory DMA phase so CPU sees VideoCore writes.
+; FIX (Emu68 1.1, MichiB210 20.11.2026): Emu68 1.1 has its own 68040.library
+; whose CachePostDMA really DISCARDS the cache lines (dc ivac).  dma_post_all
+; is also used as a plain poll while the CPU owns the shared block, so CPU
+; writes since the last dma_pre_all were thrown away.  Push them first.
 dma_post_all:
         movem.l d0-d1/a0-a1/a6,-(sp)
+        move.l  #DMA_MEM_SIZE,dma_len
+        move.l  slot_ptr,a0
+        lea     dma_len,a1
+        moveq   #0,d0
+        move.l  a4,a6
+        jsr     CachePreDMA(a6)
         move.l  #DMA_MEM_SIZE,dma_len
         move.l  slot_ptr,a0
         lea     dma_len,a1
