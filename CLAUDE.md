@@ -59,6 +59,16 @@ alignment) cannot catch an endianness bug in a demuxer or an alignment bug in
 passing on the host is not proof those are safe on the actual target. See
 `player/tests/run_m68k_check.sh`.
 
+**The user's own WSL machine has the Amiga tools.** Sessions there (working
+directory `~/Amiga-Programs/MintVID`) have bebbo's `m68k-amigaos-gcc` 13.2.0
+and `vasmm68k_mot` in `/opt/amiga/bin`, and a WinUAE harness in
+`~/Amiga-Programs/uae-harness` (read its `HANDOVER.md`: `drive.py` boots
+WinUAE and runs commands on the Amiga through an agent, and `UHD0:` is
+`~/Amiga-Programs`). There, `player/amiga/`, mrberry and berryvp.library can
+be built, and run in UAE. Where this file says something can only be
+reviewed on the dev host, that means the cloud host. PiStorm/VideoCore
+playback and real chipset timing still need the real machines.
+
 **qemu-m68k proves correctness, not speed — and it scores cache work
 backwards.** qemu-user models instruction execution, not the 68060's caches, so
 it is a fair proxy only for changes that alter *how much work* is done. Any
@@ -6683,3 +6693,89 @@ CAVLC residual ~14%, MV bookkeeping (`form_mb_part_info_bp`,
 None of those has a cheap exact win left. The MPEG-2/MPEG-1 profile is half
 IDCT, then VLC; GCC's IDCT code is reasonable and an asm rewrite was not
 judged worth it without a hardware measurement.
+
+## Hunk linker: PC-relative branches into another section
+MintAMP found a toolchain bug in November 2026. With `-ffunction-sections`,
+GCC turns a tail call to a static function into a `bra.l` whose relocation
+names the target's *section*. The Amiga hunk linker resolves that short of
+the target. MintAMP's `FlacClose` landed 6 bytes early, freed nothing, and
+every FLAC play leaked 139,816 bytes. Relocations against global symbols,
+and absolute ones (`jsr`), link correctly. MintAMP's fix (commit 8b45511)
+adds `-fno-optimize-sibling-calls`, which makes those tail calls `jsr`s.
+
+A minimal repro with this machine's toolchain (13.2.0, `-O2
+-ffunction-sections`, static `noinline` callees) landed three such branches
+6 and 14 bytes short.
+
+MintVID is not affected:
+- Neither `Makefile.amiga` nor `pistorm/mrberry/build.sh` uses
+  `-ffunction-sections`. Without it every function of an object goes into one
+  `.text` section, so no branch within an object crosses sections. The
+  mrplay map has no `.text.*` contributions at all.
+- `vendor/MintAMP/decoders/Makefile` does use it, but MintVID never builds
+  it: `Makefile.amiga` compiles the MintAMP sources it needs itself.
+- A 68060 mrplay, relinked from objects with `-Wl,-Map`, has 130 PC-relative
+  relocations. All name global symbols and all land exactly on them.
+- In WinUAE, 22 plays of 11 conformance clips (every codec and container)
+  between `Avail FLUSH` runs lost no memory. One 10,032-byte system
+  allocation comes and goes.
+
+`player/tools/check_pcrel_relocs.py <exe> <map>` repeats the check. It
+finds all three bad branches in the repro, and none once that is built with
+`-fno-optimize-sibling-calls`. Makefile.amiga compiles mrplay's sources on
+its link line, so their objects are deleted. To get a map, compile each to
+an object and relink with `-Wl,-Map`. Run the tool where the link ran.
+
+## mrberry: Michael's Emu68 1.1 cache fix and USB reader (v100.18)
+Michael (MichiB210) sent two fixes from his v100.18, MIT like the rest of
+`pistorm/`.
+
+**berryvp.library: Emu68 1.1 hang.** VCHIQ slot zero is in cached Fast RAM,
+and fields the Pi writes share 64-byte cache lines with fields the Amiga
+writes. A cached Amiga store later wrote the whole line back, with stale
+copies of the Pi's fields. The Pi's `tx_pos` then went backwards in RAM, its
+last message vanished, and both sides waited. Emu68 1.1's 68040.library
+2.0, whose CachePostDMA really discards, made it much more likely. The fix
+changes two routines:
+- `store_le32` flushes the line before and after a store into slot zero.
+- `dma_post_all` runs CachePreDMA (clean and invalidate) before
+  CachePostDMA, so nothing the CPU wrote is discarded.
+
+His diff against v97.1 applied unchanged. Assembling v97.1 plus the diff
+gives his binary, apart from two fill bytes. The ID string says
+`EMU68-1.1 CACHE FIX`. He tested the change in v100.18: 19 and 22 minute
+1080p MKVs from USB with Paula, no hang. Before, it hung after 36 s to
+16 min. The window may have hung the same way; that is untested.
+
+**mrberry: background reader for local files.** A USB stick's filesystem
+handler costs CPU on every `Read()`. 64 KB reads cost it 35-45 of 60 ticks,
+256 KB reads about 2. His `core/mr_source.c` (a superset of ours, ported
+whole) starts a process, "MintVID-pi reader", that reads the file ahead into
+an 8 MB ring in whole, aligned 256 KB chunks:
+- Each chunk goes through a bounce buffer with guard zones, and gets a
+  checksum. The checksum is checked when the player takes the data and
+  again before the slot is reused.
+- New mrberry options: `RAB=MB` (ring, 0-64, 0 = the old path), `RAK=KB`
+  (chunk, 4-256, rounded up to a power of two) and `BNC=0|1` (bounce
+  buffer).
+- `N68B_IO.TXT` gains `V1003`/`V1012`/`V1013` lines.
+- It is on by default for every local file, `INFO` runs included.
+
+**It had a hang, now fixed here.** The reader only reads at `win_end`, into
+free ring space, and the player frees space only behind requests inside the
+window. A request starting past `win_end` but within half a ring of it is
+not a reset. With the ring full, the reader then never reached it, and the
+player's `Wait()` (data signal only, so Ctrl-C cannot break it) never
+returned. A `T=`/resume seek 7.5-11.5 MB past the last read (about 6-9 s
+of 1080p) can hit it, and so can a badly interleaved file. `bg_read_piece()`
+now frees the space behind such a request too: `win_start =
+min(off - BG_KEEPBACK, win_end)`. `pistorm/mrberry/tests/bg_reader_check.c`
+(build line in its header) reads at 0 and 1 MB, waits 3 s, then reads at
+10 MB. In WinUAE it hung before the fix and passes after, with the same
+bytes as `fread()`. Michael should get this fix.
+
+Checked in WinUAE with `mrberry <file> INFO`, which opens a file without a
+Pi. On a 24 MB MKV, the 8 MB ring filled in 32 reads of 256 KB, the longest
+20 ms, with no failures, guard hits or checksum errors, and no memory lost.
+Not yet played on a PiStorm. Not ported: his heartbeat (`mrb_v976.c`) and
+his FFmpeg-linked test binary.

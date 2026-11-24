@@ -24,8 +24,14 @@
 
 #if defined(AMIGA_M68K) || defined(__amigaos__) || defined(__AMIGA__)
 #include <exec/types.h>
+#include <exec/memory.h>
+#include <exec/semaphores.h>
 #include <dos/dos.h>
+#include <dos/dosextens.h>
+#include <dos/dostags.h>
+#include <proto/exec.h>
 #include <proto/dos.h>
+#define MR_HAVE_BG_READER 1
 #endif
 
 #define MR_SOURCE_NAME_MAX 1024
@@ -53,6 +59,461 @@ void mrb_source_set_read_kb(unsigned kb)
     g_read_chunk = (size_t)kb * 1024u;
     g_readahead = 2u * g_read_chunk;
 }
+
+#ifdef MR_HAVE_BG_READER
+/* ---------------------------------------------------------------------
+ * MintVID-pi v100.3: background reader.
+ *
+ * A separate process reads the local file sequentially, in <=64-KiB
+ * AmigaDOS Read() calls, into a big ring buffer (default 8 MiB, option
+ * RAB=MB, 0 = off). The player only copies out of that ring, so a slow
+ * USB/NTFS access (100-250 ms seen under Emu68 1.1) no longer blocks the
+ * player directly. A request outside the held window (seek) restarts the
+ * reader at the new offset. The ring is 4-KiB aligned and only this
+ * process ever touches the file handle.
+ * ------------------------------------------------------------------- */
+#define BG_CHUNK     (g_bg_chunk)
+#define BG_KEEPBACK  (512u * 1024u)
+#define BG_SLOW_LOG  48
+
+static unsigned long g_bg_bytes = 8ul * 1024ul * 1024ul;
+static unsigned g_bg_chunk = 256u * 1024u;   /* v100.4: RAK=KB; v100.14: default 256 KB (handler cost is per call) */
+/* v100.8: live reader numbers for the heartbeat (bytes since start of
+ * this film, file offset of the last read, its time, slowest in the
+ * current second). */
+volatile unsigned long mrb_bg_live_bytes, mrb_bg_live_off, mrb_bg_live_ms, mrb_bg_live_max_ms, mrb_bg_live_reads;
+void mrb_source_set_bg_chunk_kb(unsigned kb)
+{
+    unsigned c = 4u;
+    while (c < kb && c < 256u) c <<= 1;      /* power of two, 4..256 KB */
+    g_bg_chunk = c * 1024u;
+}
+/* v100.12: bounce buffer + guard zones + per-chunk checksums.
+ * The reader no longer lets Read() write straight into the ring. It reads
+ * into its own 4-KiB-aligned buffer that has a 4-KiB guard pattern before
+ * and after it, checks the guards (a hit = someone else's DMA or cache
+ * invalidate wrote into memory next to a USB target), then copies the
+ * data with the CPU into the ring. Each ring chunk gets a checksum; the
+ * player checks it again when it takes the data, and the reader checks
+ * it before it overwrites the chunk. A mismatch = ring data changed while
+ * it waited there. BNC=0 switches the bounce copy off (checksums stay). */
+static int g_bg_bounce = 1;
+#define V1012_GUARD   4096u
+#define V1012_PAT     0xA55AC33Cul
+#define V1012_BADLOG  8
+volatile unsigned long mrb_v1012_guard_hits, mrb_v1012_bad, mrb_v1012_checked;
+void mrb_source_set_bg_bounce(int on) { g_bg_bounce = on ? 1 : 0; }
+static unsigned long v1012_sum(const unsigned char *p, size_t n)
+{
+    const unsigned long *l = (const unsigned long *)p;
+    unsigned long a = 0x12345678ul, x = 0;
+    size_t i, nl = n / 4u;
+    for (i = 0; i < nl; i++) { a += l[i]; x ^= (a << 3) | (a >> 29); }
+    for (i = nl * 4u; i < n; i++) a += p[i];
+    return a ^ x ^ (unsigned long)n;
+}
+
+void mrb_source_set_bg_mb(unsigned mb)
+{
+    if (mb > 64u) mb = 64u;
+    g_bg_bytes = (unsigned long)mb * 1024ul * 1024ul;
+}
+
+typedef struct bg_reader {
+    struct SignalSemaphore lock;
+    unsigned char *raw;
+    unsigned long  raw_size;
+    unsigned char *buf;
+    size_t   size;
+    size_t   win_start, win_end;
+    size_t   file_len;
+    char     path[MR_SOURCE_NAME_MAX];
+    struct Task *worker, *consumer;
+    BYTE     wake_sig, data_sig, done_sig;
+    volatile int quit, started_ok, failed;
+    unsigned long gen;
+    size_t   reset_off;
+    int      reset_pending;
+    unsigned long reads, bytes, max_ms, gt20, gt50, gt100;
+    unsigned long resets, seeks, waits, wait_max_ms, wait_total_ms;
+    unsigned long slow_n, slow_off[BG_SLOW_LOG], slow_ms[BG_SLOW_LOG];
+    /* v100.12 */
+    unsigned char *bounce_raw, *bounce;  /* guard | chunk | guard */
+    unsigned long bounce_raw_size;
+    size_t   nslots;
+    unsigned long *slot_off, *slot_len, *slot_sum; /* slot_len 0 = empty */
+    unsigned long guard_hits, guard_before, guard_after;
+    unsigned long checked, bad, reuse_checked, reuse_bad, unaligned;
+    unsigned long bad_n, bad_off[V1012_BADLOG], bad_where[V1012_BADLOG];
+    unsigned long small_reads;           /* v100.13 */
+} bg_reader;
+
+static unsigned long v1012_check_guards(bg_reader *b)
+{
+    unsigned long *g1 = (unsigned long *)(b->bounce - V1012_GUARD);
+    unsigned long *g2 = (unsigned long *)(b->bounce + BG_CHUNK);
+    unsigned long i, hit = 0, n = V1012_GUARD / 4u;
+    for (i = 0; i < n; i++) {
+        if (g1[i] != V1012_PAT) { hit++; b->guard_before++; g1[i] = V1012_PAT; }
+        if (g2[i] != V1012_PAT) { hit++; b->guard_after++;  g2[i] = V1012_PAT; }
+    }
+    return hit;
+}
+
+static void v1012_note_bad(bg_reader *b, unsigned long off, unsigned long where)
+{
+    b->bad++;
+    mrb_v1012_bad++;
+    if (b->bad_n < V1012_BADLOG) {
+        b->bad_off[b->bad_n] = off;
+        b->bad_where[b->bad_n] = where;
+        b->bad_n++;
+    }
+}
+
+/* check one slot if it still holds file offset 'off' (lock held) */
+static void v1012_verify_slot(bg_reader *b, size_t slot, unsigned long off, unsigned long where)
+{
+    unsigned long len = b->slot_len[slot];
+    if (!len || b->slot_off[slot] != off) return;
+    if (where == 1) { b->checked++; mrb_v1012_checked++; }
+    else b->reuse_checked++;
+    if (v1012_sum(b->buf + slot * BG_CHUNK, len) != b->slot_sum[slot]) {
+        v1012_note_bad(b, off, where);
+        if (where == 2) b->reuse_bad++;
+        b->slot_sum[slot] = v1012_sum(b->buf + slot * BG_CHUNK, len); /* count once */
+    }
+}
+
+static unsigned long bg_ms(clock_t start)
+{
+    unsigned long now = (unsigned long)clock();
+    unsigned long elapsed = now - (unsigned long)start;
+    return (elapsed * 1000UL) / (unsigned long)CLOCKS_PER_SEC;
+}
+
+/* Worker-side time in ms from DateStamp (20-ms ticks): safe in a process
+ * that has no libnix C-runtime of its own. */
+static unsigned long bg_now_ms(void)
+{
+    struct DateStamp ds;
+    DateStamp(&ds);
+    return (unsigned long)ds.ds_Minute * 60000UL + (unsigned long)ds.ds_Tick * 20UL;
+}
+
+/* Reopen + positive-only Seek steps, like N96Q, so >2 GiB works too. */
+static BPTR bg_open_at(const char *path, BPTR fh, size_t off)
+{
+    if (fh) Close(fh);
+    fh = Open((CONST_STRPTR)path, MODE_OLDFILE);
+    if (!fh) return 0;
+    if (off == 0) return fh;
+    if (off <= 0x7fffffffUL) {
+        if (Seek(fh, (LONG)off, OFFSET_BEGINNING) == -1) { Close(fh); return 0; }
+    } else {
+        if (Seek(fh, (LONG)(off - 0x7fffffffUL), OFFSET_BEGINNING) == -1 ||
+            Seek(fh, (LONG)0x7fffffffL, OFFSET_CURRENT) == -1) { Close(fh); return 0; }
+    }
+    return fh;
+}
+
+static void bg_worker_entry(void)
+{
+    struct Task *self = FindTask(NULL);
+    bg_reader *b;
+    BPTR fh = 0;
+    size_t pos = 0;
+    int need_seek = 1;
+    Wait(SIGBREAKF_CTRL_F);
+    b = (bg_reader *)self->tc_UserData;
+    if (!b) return;
+    b->wake_sig = AllocSignal(-1);
+    if (b->wake_sig < 0) {
+        Forbid();
+        b->started_ok = 0;
+        Signal(b->consumer, 1UL << b->done_sig);
+        return;
+    }
+    b->started_ok = 1;
+    Signal(b->consumer, 1UL << b->done_sig);
+    for (;;) {
+        size_t off, space, chunk, ring_left;
+        unsigned long gen;
+        LONG got;
+        unsigned long t0, ms;
+        ObtainSemaphore(&b->lock);
+        if (b->quit) { ReleaseSemaphore(&b->lock); break; }
+        if (b->reset_pending) {
+            b->win_start = b->win_end = b->reset_off;
+            b->reset_pending = 0;
+            b->failed = 0;
+            need_seek = 1;
+            if (b->slot_len) memset(b->slot_len, 0, b->nslots * sizeof(unsigned long)); /* v100.12 */
+        }
+        gen = b->gen;
+        off = b->win_end;
+        space = b->size - (b->win_end - b->win_start);
+        /* v100.13: only whole, chunk-aligned reads. Before, a full ring
+         * made the reader fetch every few KB the player freed, at odd
+         * offsets (~60 small Read()s per second). Small unaligned reads
+         * are very expensive for the stick's filesystem handler (UMSD
+         * burned all CPU). Now it waits until a whole chunk is free. */
+        chunk = BG_CHUNK - (off % BG_CHUNK);
+        if (off >= b->file_len) chunk = 0;
+        else {
+            if (chunk > b->file_len - off) chunk = b->file_len - off;
+            if (chunk > space) chunk = 0;     /* wait for a whole chunk */
+        }
+        ring_left = b->size - (off % b->size);
+        if (chunk > ring_left) chunk = ring_left;
+        if (b->failed) chunk = 0;
+        ReleaseSemaphore(&b->lock);
+
+        if (chunk == 0) {
+            Wait((1UL << b->wake_sig) | SIGBREAKF_CTRL_C);
+            continue;
+        }
+        if (need_seek || pos != off) {
+            fh = bg_open_at(b->path, fh, off);
+            b->seeks++;
+            if (!fh) {
+                ObtainSemaphore(&b->lock);
+                b->failed = 1;
+                ReleaseSemaphore(&b->lock);
+                Signal(b->consumer, 1UL << b->data_sig);
+                continue;
+            }
+            pos = off;
+            need_seek = 0;
+        }
+        /* v100.12: before the chunk slot is overwritten, check that what
+         * the player took from it was still intact (reuse check). */
+        if (b->slot_off) {
+            size_t r0 = off % b->size, s0 = r0 / BG_CHUNK, s1 = (r0 + chunk - 1u) / BG_CHUNK, sl;
+            ObtainSemaphore(&b->lock);
+            for (sl = s0; sl <= s1 && sl < b->nslots; sl++) {
+                if ((off % BG_CHUNK) == 0 && sl == s0 && b->slot_len[sl] &&
+                    b->slot_off[sl] + b->size == (unsigned long)off)
+                    v1012_verify_slot(b, sl, b->slot_off[sl], 2);
+                b->slot_len[sl] = 0;
+            }
+            ReleaseSemaphore(&b->lock);
+        }
+        t0 = bg_now_ms();
+        if (b->bounce) {
+            got = Read(fh, b->bounce, (LONG)chunk);
+            {
+                unsigned long h = v1012_check_guards(b);
+                if (h) { b->guard_hits += h; mrb_v1012_guard_hits += h; }
+            }
+            if (got > 0) CopyMem(b->bounce, b->buf + (off % b->size), (ULONG)got);
+        } else
+            got = Read(fh, b->buf + (off % b->size), (LONG)chunk);
+        ms = bg_now_ms() - t0;
+        b->reads++;
+        if (chunk < BG_CHUNK) b->small_reads++;   /* v100.13 */
+        mrb_bg_live_reads++;
+        mrb_bg_live_off = (unsigned long)off;
+        mrb_bg_live_ms = ms;
+        if (ms > mrb_bg_live_max_ms) mrb_bg_live_max_ms = ms;
+        if (got > 0) mrb_bg_live_bytes += (unsigned long)got;
+        if (ms > b->max_ms) b->max_ms = ms;
+        if (ms > 20) b->gt20++;
+        if (ms > 50) b->gt50++;
+        if (ms > 100) b->gt100++;
+        if (ms > 50 && b->slow_n < BG_SLOW_LOG) {
+            b->slow_off[b->slow_n] = (unsigned long)off;
+            b->slow_ms[b->slow_n] = ms;
+            b->slow_n++;
+        }
+        ObtainSemaphore(&b->lock);
+        if (got > 0) pos += (size_t)got;
+        if (gen == b->gen && !b->reset_pending) {
+            if (got > 0) { b->win_end += (size_t)got; b->bytes += (unsigned long)got; }
+            else b->failed = 1;
+            if (got > 0 && b->slot_off) {
+                if ((off % BG_CHUNK) == 0) {
+                    size_t slot = (off % b->size) / BG_CHUNK;
+                    b->slot_off[slot] = (unsigned long)off;
+                    b->slot_len[slot] = (unsigned long)got;
+                    b->slot_sum[slot] = v1012_sum(b->buf + slot * BG_CHUNK, (size_t)got);
+                } else
+                    b->unaligned++;
+            }
+        }
+        ReleaseSemaphore(&b->lock);
+        Signal(b->consumer, 1UL << b->data_sig);
+    }
+    if (fh) Close(fh);
+    FreeSignal(b->wake_sig);
+    b->wake_sig = -1;
+    Forbid();
+    b->worker = NULL;
+    Signal(b->consumer, 1UL << b->done_sig);
+}
+
+static void bg_stop(bg_reader *b)
+{
+    if (!b) return;
+    if (b->worker) {
+        ObtainSemaphore(&b->lock);
+        b->quit = 1;
+        ReleaseSemaphore(&b->lock);
+        Signal(b->worker, SIGBREAKF_CTRL_C);
+        while (b->worker) Wait(1UL << b->done_sig);
+    }
+    if (b->data_sig >= 0) FreeSignal(b->data_sig);
+    if (b->done_sig >= 0) FreeSignal(b->done_sig);
+    if (b->raw) FreeMem(b->raw, b->raw_size);
+    if (b->bounce_raw) FreeMem(b->bounce_raw, b->bounce_raw_size);
+    if (b->slot_off) free(b->slot_off);
+    if (b->slot_len) free(b->slot_len);
+    if (b->slot_sum) free(b->slot_sum);
+    free(b);
+}
+
+static bg_reader *bg_start(const char *path, size_t file_len)
+{
+    bg_reader *b;
+    struct Process *proc;
+    size_t n, size;
+    if (!g_bg_bytes) return NULL;
+    size = (size_t)g_bg_bytes;
+    if (size < 4u * BG_CHUNK) size = 4u * BG_CHUNK;
+    size -= size % BG_CHUNK;
+    b = (bg_reader *)calloc(1, sizeof *b);
+    if (!b) return NULL;
+    b->data_sig = b->done_sig = b->wake_sig = -1;
+    InitSemaphore(&b->lock);
+    b->raw_size = (unsigned long)size + 4096ul;
+    b->raw = (unsigned char *)AllocMem(b->raw_size, MEMF_PUBLIC);
+    if (!b->raw) { free(b); return NULL; }
+    b->buf = (unsigned char *)(((unsigned long)b->raw + 4095ul) & ~4095ul);
+    b->size = size;
+    b->file_len = file_len;
+    /* v100.12: checksum table, one entry per chunk slot */
+    b->nslots = size / BG_CHUNK;
+    b->slot_off = (unsigned long *)calloc(b->nslots, sizeof(unsigned long));
+    b->slot_len = (unsigned long *)calloc(b->nslots, sizeof(unsigned long));
+    b->slot_sum = (unsigned long *)calloc(b->nslots, sizeof(unsigned long));
+    if (!b->slot_off || !b->slot_len || !b->slot_sum) {
+        if (b->slot_off) free(b->slot_off);
+        if (b->slot_len) free(b->slot_len);
+        if (b->slot_sum) free(b->slot_sum);
+        b->slot_off = b->slot_len = b->slot_sum = NULL;
+    }
+    if (g_bg_bounce) {
+        unsigned long i, *g;
+        b->bounce_raw_size = (unsigned long)BG_CHUNK + 4ul * V1012_GUARD;
+        b->bounce_raw = (unsigned char *)AllocMem(b->bounce_raw_size, MEMF_PUBLIC);
+        if (b->bounce_raw) {
+            b->bounce = (unsigned char *)((((unsigned long)b->bounce_raw + 4095ul) & ~4095ul) + V1012_GUARD);
+            g = (unsigned long *)(b->bounce - V1012_GUARD);
+            for (i = 0; i < V1012_GUARD / 4u; i++) g[i] = V1012_PAT;
+            g = (unsigned long *)(b->bounce + BG_CHUNK);
+            for (i = 0; i < V1012_GUARD / 4u; i++) g[i] = V1012_PAT;
+        }
+    }
+    n = strlen(path);
+    if (n >= sizeof b->path) n = sizeof b->path - 1;
+    memcpy(b->path, path, n);
+    b->path[n] = '\0';
+    b->consumer = FindTask(NULL);
+    b->data_sig = AllocSignal(-1);
+    b->done_sig = AllocSignal(-1);
+    if (b->data_sig < 0 || b->done_sig < 0) { bg_stop(b); return NULL; }
+    b->reset_off = 0;
+    b->reset_pending = 1;
+    b->gen = 1;
+    proc = CreateNewProcTags(NP_Entry, (ULONG)bg_worker_entry,
+                             NP_Name, (ULONG)"MintVID-pi reader",
+                             NP_Priority, 1,
+                             NP_StackSize, 16384UL,
+                             TAG_END);
+    if (!proc) { bg_stop(b); return NULL; }
+    Forbid();
+    b->worker = &proc->pr_Task;
+    proc->pr_Task.tc_UserData = b;
+    Signal(b->worker, SIGBREAKF_CTRL_F);
+    Permit();
+    Wait(1UL << b->done_sig);
+    if (!b->started_ok) {
+        while (b->worker) Wait(1UL << b->done_sig);
+        bg_stop(b);
+        return NULL;
+    }
+    return b;
+}
+
+static void bg_copy_out(bg_reader *b, size_t off, unsigned char *dst, size_t len)
+{
+    size_t at = off % b->size;
+    size_t first = b->size - at;
+    if (first > len) first = len;
+    memcpy(dst, b->buf + at, first);
+    if (len > first) memcpy(dst + first, b->buf, len - first);
+}
+
+static int bg_read_piece(bg_reader *b, size_t off, unsigned char *dst, size_t len)
+{
+    for (;;) {
+        clock_t t0;
+        unsigned long ms;
+        ObtainSemaphore(&b->lock);
+        if (!b->reset_pending && off >= b->win_start && off + len <= b->win_end) {
+            bg_copy_out(b, off, dst, len);
+            /* v100.12: verify every chunk that starts inside this piece */
+            if (b->slot_off) {
+                unsigned long c = ((unsigned long)off + BG_CHUNK - 1u) / BG_CHUNK * BG_CHUNK;
+                for (; c < (unsigned long)(off + len); c += BG_CHUNK)
+                    v1012_verify_slot(b, (c % b->size) / BG_CHUNK, c, 1);
+            }
+            if (off > b->win_start + BG_KEEPBACK) b->win_start = off - BG_KEEPBACK;
+            ReleaseSemaphore(&b->lock);
+            Signal(b->worker, 1UL << b->wake_sig);
+            return 1;
+        }
+        if (b->failed && !b->reset_pending) {
+            ReleaseSemaphore(&b->lock);
+            return 0;
+        }
+        /* free ring space behind the player before waiting. MintVID: also
+         * when the request starts past the window. The reader only reads
+         * at win_end, so with the ring full it could not reach a request
+         * up to half a ring ahead, and both waited forever. Behind such a
+         * request everything up to win_end is free. */
+        if (!b->reset_pending && off > b->win_start + BG_KEEPBACK)
+            b->win_start = off - BG_KEEPBACK < b->win_end ?
+                           off - BG_KEEPBACK : b->win_end;
+        if (!b->reset_pending &&
+            (off < b->win_start || off > b->win_end + b->size / 2)) {
+            b->reset_off = off & ~(size_t)4095u;
+            b->reset_pending = 1;
+            b->gen++;
+            b->resets++;
+        }
+        ReleaseSemaphore(&b->lock);
+        Signal(b->worker, 1UL << b->wake_sig);
+        t0 = clock();
+        Wait(1UL << b->data_sig);
+        ms = bg_ms(t0);
+        b->waits++;
+        b->wait_total_ms += ms;
+        if (ms > b->wait_max_ms) b->wait_max_ms = ms;
+    }
+}
+
+static int bg_read_at(bg_reader *b, size_t off, unsigned char *dst, size_t len)
+{
+    size_t piece_max = b->size / 2;
+    while (len) {
+        size_t piece = len > piece_max ? piece_max : len;
+        if (!bg_read_piece(b, off, dst, piece)) return 0;
+        off += piece; dst += piece; len -= piece;
+    }
+    return 1;
+}
+#endif /* MR_HAVE_BG_READER */
 
 struct mr_source {
     void   *ctx;
@@ -94,6 +555,9 @@ typedef struct {
     unsigned long ra_chunk_gt10ms, ra_chunk_gt20ms, ra_chunk_gt50ms;
     clock_t diag_started;
     int diag_snapshot_written;
+#ifdef MR_HAVE_BG_READER
+    bg_reader *bg;           /* v100.3: background reader, NULL = old path */
+#endif
 } file_source;
 
 static char g_source_error[MR_SOURCE_ERROR_MAX];
@@ -393,6 +857,9 @@ static int file_read_at(void *opaque, size_t off, void *dst, size_t len)
         return 1;
     }
     if (!len) return 1;
+#ifdef MR_HAVE_BG_READER
+    if (f->bg) return bg_read_at(f->bg, off, out, len);
+#endif
 #if defined(AMIGA_M68K) || defined(__amigaos__) || defined(__AMIGA__)
     if (f->large_file_mode) {
         if (!f->dos_fh) return 0;
@@ -477,6 +944,33 @@ static void file_write_io_log(file_source *f, int snapshot)
     fprintf(log, "N68B CHUNK_GT10MS=%lu\n", f->ra_chunk_gt10ms);
     fprintf(log, "N68B CHUNK_GT20MS=%lu\n", f->ra_chunk_gt20ms);
     fprintf(log, "N68B CHUNK_GT50MS=%lu\n", f->ra_chunk_gt50ms);
+#ifdef MR_HAVE_BG_READER
+    if (f->bg) {
+        bg_reader *b = f->bg;
+        unsigned long i;
+        fprintf(log, "V1003 BG_READER=1 RING_BYTES=%lu RING_ADDR=0x%08lx CHUNK=%u\n",
+                (unsigned long)b->size, (unsigned long)b->buf, g_bg_chunk);
+        fprintf(log, "V1003 READS=%lu BYTES=%lu SEEKS=%lu RESETS=%lu\n",
+                b->reads, b->bytes, b->seeks, b->resets);
+        fprintf(log, "V1003 READ_MAX_MS=%lu GT20=%lu GT50=%lu GT100=%lu\n",
+                b->max_ms, b->gt20, b->gt50, b->gt100);
+        fprintf(log, "V1003 PLAYER_WAITS=%lu WAIT_TOTAL_MS=%lu WAIT_MAX_MS=%lu\n",
+                b->waits, b->wait_total_ms, b->wait_max_ms);
+        fprintf(log, "V1003 WINDOW start=%lu end=%lu failed=%d\n",
+                (unsigned long)b->win_start, (unsigned long)b->win_end, b->failed);
+        for (i = 0; i < b->slow_n; i++)
+            fprintf(log, "V1003 SLOW off=%lu ms=%lu\n", b->slow_off[i], b->slow_ms[i]);
+        fprintf(log, "V1013 WHOLE_CHUNK_READS=1 SMALL_READS=%lu\n", b->small_reads);
+        fprintf(log, "V1012 BOUNCE=%d BOUNCE_ADDR=0x%08lx GUARD_HITS=%lu BEFORE=%lu AFTER=%lu\n",
+                b->bounce ? 1 : 0, (unsigned long)b->bounce, b->guard_hits, b->guard_before, b->guard_after);
+        fprintf(log, "V1012 CHECKED=%lu BAD=%lu REUSE_CHECKED=%lu REUSE_BAD=%lu UNALIGNED=%lu TABLE=%d\n",
+                b->checked, b->bad, b->reuse_checked, b->reuse_bad, b->unaligned, b->slot_off ? 1 : 0);
+        for (i = 0; i < b->bad_n; i++)
+            fprintf(log, "V1012 BAD off=%lu at=%s\n", b->bad_off[i],
+                    b->bad_where[i] == 1 ? "player" : "reuse");
+    } else
+        fprintf(log, "V1003 BG_READER=0\n");
+#endif
     fclose(log);
 #else
     (void)f; (void)snapshot;
@@ -495,7 +989,19 @@ static void file_close(void *opaque)
 {
     file_source *f = (file_source *)opaque;
     if (!f) return;
+#ifdef MR_HAVE_BG_READER
+    if (f->bg) {
+        bg_reader *b = f->bg;
+        /* stop the reader first so the log shows its final numbers */
+        ObtainSemaphore(&b->lock); b->quit = 1; ReleaseSemaphore(&b->lock);
+        Signal(b->worker, SIGBREAKF_CTRL_C);
+        while (b->worker) Wait(1UL << b->done_sig);
+    }
+#endif
     file_write_io_log(f, 0);
+#ifdef MR_HAVE_BG_READER
+    if (f->bg) { bg_stop(f->bg); f->bg = NULL; }
+#endif
     if (f->file) fclose(f->file);
 #if defined(AMIGA_M68K) || defined(__amigaos__) || defined(__AMIGA__)
     if (f->dos_fh) Close(f->dos_fh);
@@ -670,6 +1176,19 @@ static mr_source *open_local_file(const char *path, size_t requested_buffer)
         /* Not enough contiguous Fast RAM for even the exact file size -
          * fall through to the windowed stdio buffer below. */
     }
+
+#ifdef MR_HAVE_BG_READER
+    /* v100.3: background reader replaces stdio/readahead for local files. */
+    ctx->bg = bg_start(path, file_len);
+    if (ctx->bg) {
+        if (file) { fclose(file); file = NULL; }
+        if (dos_fh) { Close(dos_fh); dos_fh = 0; ctx->dos_fh = 0; }
+        ctx->file = NULL;
+        source = mr_source_create(ctx, file_len, file_read_at, file_close, path);
+        mr_source_set_buffer_capacity(source, ctx->bg->size);
+        return source;
+    }
+#endif
 
     /* setvbuf() must run before the first operation on the stream; `file`
      * is freshly opened and untouched at this point in every remaining

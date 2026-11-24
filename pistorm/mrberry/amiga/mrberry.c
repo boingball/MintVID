@@ -36,6 +36,9 @@
 
 extern ULONG bvp_exec_setsignal(ULONG newSignals, ULONG signalSet);
 extern void mrb_source_set_read_kb(unsigned kb);   /* core/mr_source.c, W77 */
+extern void mrb_source_set_bg_mb(unsigned mb);     /* core/mr_source.c, v100.3 */
+extern void mrb_source_set_bg_chunk_kb(unsigned kb); /* core/mr_source.c, v100.4 */
+extern void mrb_source_set_bg_bounce(int on);       /* core/mr_source.c, v100.12 */
 extern int mr_berryvp_force_isp;                    /* mr_berryvp.c, ISP82 */
 extern unsigned long mr_berryvp_isp_out;            /* mr_berryvp.c, N84 */
 extern void *mr_berryvp_osd_req;                    /* mr_berryvp.c, O1 */
@@ -2683,6 +2686,28 @@ int main(int argc, char **argv)
                 p96s_off = 1;                     /* NOSYNC: no clock, draw at once */
             } else if ((a[0] == 'P' || a[0] == 'p') && (a[1] == 'I' || a[1] == 'i')) {
                 p45_no_idle = 1;                  /* P96W46 test: PIDLE0 */
+            } else if ((a[0] == 'R' || a[0] == 'r') && (a[1] == 'A' || a[1] == 'a') &&
+                       (a[2] == 'K' || a[2] == 'k') && (a[3] == '=' || a[3] == ':')) {
+                /* v100.4: RAK=KB size of one background read (4..256) */
+                unsigned long kb = strtoul(a + 4, NULL, 10);
+                if (kb < 4 || kb > 256) {
+                    printf("Error: RAK= must be 4..256 (KB).\n");
+                    return 5;
+                }
+                mrb_source_set_bg_chunk_kb((unsigned)kb);
+            } else if ((a[0] == 'B' || a[0] == 'b') && (a[1] == 'N' || a[1] == 'n') &&
+                       (a[2] == 'C' || a[2] == 'c') && (a[3] == '=' || a[3] == ':')) {
+                /* v100.12: BNC=0 reads straight into the ring again */
+                mrb_source_set_bg_bounce(a[4] != '0');
+            } else if ((a[0] == 'R' || a[0] == 'r') && (a[1] == 'A' || a[1] == 'a') &&
+                       (a[2] == 'B' || a[2] == 'b') && (a[3] == '=' || a[3] == ':')) {
+                /* v100.3: RAB=MB background reader ring (0 = off, old path) */
+                unsigned long mb = strtoul(a + 4, NULL, 10);
+                if (mb > 64) {
+                    printf("Error: RAB= must be 0..64 (MB).\n");
+                    return 5;
+                }
+                mrb_source_set_bg_mb((unsigned)mb);
             } else if ((a[0] == 'R' || a[0] == 'r') && (a[1] == 'E' || a[1] == 'e') &&
                        (a[2] == 'A' || a[2] == 'a') && (a[3] == 'D' || a[3] == 'd') &&
                        (a[4] == '=' || a[4] == ':')) {
@@ -2765,7 +2790,7 @@ int main(int argc, char **argv)
         }
         if (bad) {
             printf("mrberry - H.264 hardware A/V player\n"
-                   "Usage: mrberry <movie.mkv|movie.mp4|movie.ts> [W=10|25|50|75] [T=h:mm] [R] [PLOW] [PMONO] [HDMI] [NOAUDIO] [READ=KB] [AV=ms|NOSYNC]\n"
+                   "Usage: mrberry <movie.mkv|movie.mp4|movie.ts> [W=10|25|50|75] [T=h:mm] [R] [PLOW] [PMONO] [HDMI] [NOAUDIO] [READ=KB] [RAB=MB] [RAK=KB] [AV=ms|NOSYNC]\n"
                    "  T=0:01 = start at 1 minute, T=1:30 = 1 h 30 min (T=1:30:15 with seconds)\n"
                    "  R = continue where the film was stopped (<film>.t); W=C = full screen\n"
                    "  UPSCALE = scale films below 1280x720 up to 1920x1080 on the Pi\n"
@@ -2773,6 +2798,9 @@ int main(int argc, char **argv)
                    "  Sound goes through Paula (PLOW lower rate, PMONO mono).\n"
                    "  HDMI = sound over the Pi's HDMI instead (needs the BerryCore kernel)\n"
                    "  READ=64..1024 = KB per file read (default 64, bigger for network shares)\n"
+                   "  RAB=0..64 = MB background reader for local files (default 8, 0 = old way)\n"
+                   "  RAK=4..256 = KB per background read (default 256)\n"
+                   "  BNC=0|1 = read via guarded bounce buffer (default 1)\n"
                    "  AUDIO=n = audio track n (MKV; see INFO for the list)\n"
                    "  Also understood (MintVID): --hdmi-audio --audio-rate=low --audio-mono\n"
                    "    --no-audio --start=H:MM:SS --read=KB\n"
