@@ -477,10 +477,14 @@ static int bg_read_piece(bg_reader *b, size_t off, unsigned char *dst, size_t le
             ReleaseSemaphore(&b->lock);
             return 0;
         }
-        /* free ring space behind the player before waiting */
-        if (!b->reset_pending && off <= b->win_end &&
-            off > b->win_start + BG_KEEPBACK)
-            b->win_start = off - BG_KEEPBACK;
+        /* free ring space behind the player before waiting. MintVID: also
+         * when the request starts past the window. The reader only reads
+         * at win_end, so with the ring full it could not reach a request
+         * up to half a ring ahead, and both waited forever. Behind such a
+         * request everything up to win_end is free. */
+        if (!b->reset_pending && off > b->win_start + BG_KEEPBACK)
+            b->win_start = off - BG_KEEPBACK < b->win_end ?
+                           off - BG_KEEPBACK : b->win_end;
         if (!b->reset_pending &&
             (off < b->win_start || off > b->win_end + b->size / 2)) {
             b->reset_off = off & ~(size_t)4095u;
