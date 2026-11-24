@@ -135,6 +135,7 @@ LIBAVC_SRC="$(printf '%s\n' vendor/libavc/common/*.c \
     $(printf '%s\n' vendor/libavc/decoder/*.c) \
     vendor/libavc_port/ih264d_function_selector_port.c \
     vendor/libavc_port/ih264_mc_degrade.c \
+    vendor/libavc_port/ih264_pad_wpred_port.c \
     vendor/libavc_port/ih264d_stage_profile.c \
     vendor/libavc_port/ih264d_cabac_profile.c \
     vendor/libavc_port/ih264d_update_qp_wrap.c \
