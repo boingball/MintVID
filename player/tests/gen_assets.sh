@@ -83,6 +83,18 @@ ffmpeg -v error -i test_h264_high.mp4 -c:v copy -c:a ac3 -b:a 96k \
     test_h264_ac3.mkv -y
 ffmpeg -v error -i test_h264_high.mp4 -c:v copy -c:a ac3 -b:a 96k \
     -f mpegts test_h264_ac3.ts -y
+# mr_ac3_check's references must come from the same ffmpeg that just encoded
+# these two files. They are committed (gen_audio_assets.sh writes them too),
+# but `make check` reruns this script on every fresh checkout, since the
+# ref_* frame directories are not committed. With only the fixtures rewritten,
+# a newer ffmpeg (8.0.1 encodes different audio here) left the check comparing
+# our decode of the new file against ffmpeg 6.1.1's decode of the old one. test_ac3.ac3 is the same track for the
+# m68k run, checked against ref_ac3_mkv.raw.
+ffmpeg -v error -i test_h264_ac3.mkv -vn -f s16le -acodec pcm_s16le \
+    ref_ac3_mkv.raw -y
+ffmpeg -v error -i test_h264_ac3.ts -vn -f s16le -acodec pcm_s16le \
+    ref_ac3_ts.raw -y
+ffmpeg -v error -i test_h264_ac3.mkv -c:a copy -f ac3 test_ac3.ac3 -y
 ffmpeg -v error -i test_h264_high.mp4 -c copy test_h264_aac.mkv -y
 # H.264 Baseline (no B-frames, every P a reference - YouTube itag 18's
 # shape) with a keyframe every 12 of 36 frames, in MP4 (AVCC) and TS
