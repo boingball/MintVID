@@ -84,7 +84,8 @@ int mr_display_is_rtg(mr_display_mode display)
 
 int mr_display_uses_external_player(mr_display_mode display)
 {
-    return display == MR_DISPLAY_PISTORM || display == MR_DISPLAY_PISTORM_PAULA;
+    return display == MR_DISPLAY_PISTORM || display == MR_DISPLAY_PISTORM_PAULA ||
+           display == MR_DISPLAY_PISTORM_WINDOW;
 }
 
 int mr_display_has_screen_options(mr_display_mode display)
@@ -172,6 +173,7 @@ static const char *display_name(mr_display_mode display)
     case MR_DISPLAY_NONE: return "none";
     case MR_DISPLAY_PISTORM: return "pistorm";
     case MR_DISPLAY_PISTORM_PAULA: return "pistorm-paula";
+    case MR_DISPLAY_PISTORM_WINDOW: return "pistorm-window";
     default: return "aga";
     }
 }
@@ -391,6 +393,20 @@ int mr_build_player_arguments(char *out, size_t cap,
     return 1;
 }
 
+/* mrberry plays sound through Paula with MintVID's decoders, in the window
+ * and full screen alike, and takes the same audio options as mrplay.  HDMI
+ * sound (BerryCore kernel) is a Shell-only option there. */
+static int append_pistorm_audio(char *out, size_t cap, const mr_play_options *o)
+{
+    if (!o) return 1;
+    if (o->no_audio) return append_option(out, cap, "--no-audio");
+    if (!append_option(out, cap, "--paula")) return 0;
+    if (o->audio_rate == MR_AUDIO_RATE_LOW &&
+        !append_option(out, cap, "--audio-rate=low")) return 0;
+    if (o->mono_audio && !append_option(out, cap, "--audio-mono")) return 0;
+    return 1;
+}
+
 int mr_build_external_player_arguments(char *out, size_t cap,
                                        const mr_play_options *o,
                                        const char *path)
@@ -398,17 +414,54 @@ int mr_build_external_player_arguments(char *out, size_t cap,
     if (!out || !cap || !path || !*path) return 0;
     out[0] = 0;
     if (!append_quoted(out, cap, path)) return 0;
-    if (o && o->no_audio) {
-        if (!append_option(out, cap, "--no-audio")) return 0;
-    } else if (o && o->display == MR_DISPLAY_PISTORM_PAULA) {
-        /* Sound through Paula with MintVID's decoders: mrberry takes the
-         * same audio options as mrplay. */
-        if (!append_option(out, cap, "--paula")) return 0;
-        if (o->audio_rate == MR_AUDIO_RATE_LOW &&
-            !append_option(out, cap, "--audio-rate=low")) return 0;
-        if (o->mono_audio && !append_option(out, cap, "--audio-mono")) return 0;
-    }
+    if (!append_pistorm_audio(out, cap, o)) return 0;
+    /* berryvp.library's P96 window at half the screen size. */
+    if (o && o->display == MR_DISPLAY_PISTORM_WINDOW &&
+        !append_option(out, cap, "W=50")) return 0;
     return append_text(out, cap, "\n");
+}
+
+int mr_build_external_stream_arguments(char *out, size_t cap,
+                                       const mr_play_options *o,
+                                       const char *url, const char *ua,
+                                       const char *referer)
+{
+    size_t n;
+    if (!mr_build_external_player_arguments(out, cap, o, url)) return 0;
+    n = strlen(out);
+    if (n && out[n - 1] == '\n') out[--n] = 0;
+    if (ua && *ua &&
+        (!append_option(out, cap, "--user-agent") ||
+         !append_quoted(out, cap, ua))) return 0;
+    if (referer && *referer &&
+        (!append_option(out, cap, "--referer") ||
+         !append_quoted(out, cap, referer))) return 0;
+    return append_text(out, cap, "\n");
+}
+
+int mr_build_external_fullscreen_arguments(char *out, size_t cap,
+                                           const mr_play_options *o,
+                                           const char *path)
+{
+    if (!out || !cap || !path || !*path) return 0;
+    out[0] = 0;
+    if (!append_quoted(out, cap, path)) return 0;
+    if (!append_pistorm_audio(out, cap, o)) return 0;
+    /* R: continue from <film>.t; W=C: full screen even though the .t says
+     * the film was last seen in the window. */
+    return append_option(out, cap, "R") && append_option(out, cap, "W=C") &&
+           append_text(out, cap, "\n");
+}
+
+int mr_build_external_resume_arguments(char *out, size_t cap,
+                                       const mr_play_options *o,
+                                       const char *path)
+{
+    size_t n;
+    if (!mr_build_external_player_arguments(out, cap, o, path)) return 0;
+    n = strlen(out);
+    if (n && out[n - 1] == '\n') out[--n] = 0;
+    return append_option(out, cap, "R") && append_text(out, cap, "\n");
 }
 
 int mr_build_iptv_arguments(char *out, size_t cap, const mr_play_options *o)
@@ -459,6 +512,7 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
             else if (!strcmp(value, "none")) { o->display = MR_DISPLAY_NONE; o->no_video = 1; }
             else if (!strcmp(value, "pistorm")) o->display = MR_DISPLAY_PISTORM;
             else if (!strcmp(value, "pistorm-paula")) o->display = MR_DISPLAY_PISTORM_PAULA;
+            else if (!strcmp(value, "pistorm-window")) o->display = MR_DISPLAY_PISTORM_WINDOW;
             else goto bad;
         } else if (!strcmp(arg, "--c2p")) {
             if (i + 1 >= argc) goto bad;
@@ -678,9 +732,10 @@ void mr_play_options_summary(const mr_play_options *o, char *out, size_t cap)
                  o->display == MR_DISPLAY_P96 ? "P96" :
                  o->display == MR_DISPLAY_P96_FULLSCREEN ? "P96 Fullscreen" :
                  o->display == MR_DISPLAY_RTG_HALF ? "Half" :
-                 o->display == MR_DISPLAY_PISTORM ? "PiStorm VideoCore" :
-                 o->display == MR_DISPLAY_PISTORM_PAULA ?
-                     "PiStorm VideoCore, Amiga audio" :
+                 o->display == MR_DISPLAY_PISTORM ||
+                 o->display == MR_DISPLAY_PISTORM_PAULA ? "PiStorm VideoCore" :
+                 o->display == MR_DISPLAY_PISTORM_WINDOW ?
+                     "PiStorm VideoCore, window" :
                  "WritePixel",
                  hls, h264, audio, fast_buffer_text(o),
                  o->live_resync ? " / Live-resync" : "", video);

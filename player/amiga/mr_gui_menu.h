@@ -36,5 +36,11 @@ void mr_gui_show_about(struct Window *window, const char *edition);
  * see mr_gui_menu.c for why. `menu` is unused but kept so the call site
  * mirrors mr_gui_show_about()'s signature shape. */
 void mr_gui_open_guide(mr_gui_menu *menu, struct Window *window);
+/* The PiStorm player turned a file down because the VideoCore has no
+ * decoder for its video.  Asks whether to play it with MintVID's own
+ * software decoders (mrplay) instead; 1 = yes. */
+int mr_gui_ask_software_decode(struct Window *window, const char *codec);
+/* mrberry's status text for that case starts with this. */
+#define MR_GUI_NO_VIDEOCORE_TEXT "No VideoCore decoder"
 
 #endif

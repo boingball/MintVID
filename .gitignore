@@ -5,6 +5,7 @@ player/mr_http_resume_check
 player/mr_audio_check
 player/mr_ac3_check
 player/mr_aac_decim_check
+player/mr_aac_mono_check
 player/mr_mp2_check
 player/.hostobj/
 player/mr_codec_registry_check
@@ -44,6 +45,7 @@ player/mr_iptv_check
 player/mr_youtube_check
 player/mr_youtube_search_check
 player/mr_hls_override_check
+player/mr_bench_parse_check
 player/mr_media_clock_check
 player/mr_mov_seek_check
 player/mr_mp2_idct_check
@@ -74,3 +76,8 @@ player/mr_planar_modes_check
 
 player/build/.mintamp-config
 player/build/.mintamp-config.tmp
+player/mrberry
+player/berryvp.library
+player/build/mrberry/
+player/build/berryvp/
+pistorm/out/

@@ -22,7 +22,8 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
             return
         line = (f"{self.command} {self.path}|"
                 f"{self.headers.get('User-Agent', '')}|"
-                f"{self.headers.get('Referer', '')}\n")
+                f"{self.headers.get('Referer', '')}|"
+                f"{self.headers.get('Range', '')}\n")
         with self.server.header_lock:
             with self.server.header_log.open("a", encoding="utf-8") as log:
                 log.write(line)
@@ -171,9 +172,10 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
             if not range_header.startswith("bytes=") or "," in range_header:
                 self.send_error(416)
                 return
-            value = range_header[6:].split("-", 1)[0]
+            value, _, last_text = range_header[6:].partition("-")
             try:
                 start = int(value)
+                last = int(last_text) if last_text else None
             except ValueError:
                 self.send_error(416)
                 return
@@ -187,7 +189,10 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
             if start > 0 and self.server.range_marker:
                 self.server.range_marker.touch()
 
-        length = size - start
+        end = size - 1
+        if status == 206 and last is not None and last < end:
+            end = last
+        length = end - start + 1
         self.send_response(status)
         self.send_header("Content-Type", "application/octet-stream")
         if not streaming:
@@ -198,7 +203,7 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(length))
         if status == 206:
             self.send_header("Content-Range",
-                             f"bytes {start}-{size - 1}/{size}")
+                             f"bytes {start}-{end}/{size}")
         self.send_header("Connection", "close")
         self.end_headers()
 

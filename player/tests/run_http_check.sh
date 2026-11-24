@@ -155,6 +155,20 @@ fi
 
 test -f "$tmpdir/range-used"
 
+# Ranged fetching (YouTube progressive MP4): the file comes in closed ranges
+# of the chunk size, one request each, starting at 0, and decodes the same.
+: >"$tmpdir/headers"
+"$decoder" "$base/media/test_h264_high.mp4" --range-chunk=4096 \
+    --check tests/assets/ref_h264_high
+grep -F '|bytes=0-4095' "$tmpdir/headers" >/dev/null
+grep -F '|bytes=4096-8191' "$tmpdir/headers" >/dev/null
+test "$(grep -c '|bytes=[0-9]*-[0-9]' "$tmpdir/headers")" -ge 3
+! grep -F '|bytes=0-' "$tmpdir/headers" | grep -v -F '|bytes=0-4095' >/dev/null
+: >"$tmpdir/headers"
+"$decoder" "$base/media/test_mpeg2.ts" --range-chunk=65536 \
+    --check tests/assets/ref_mpeg2_ts
+grep -F "|bytes=65536-125395" "$tmpdir/headers" >/dev/null
+
 # Typed IPTV headers must survive redirects, range reconnects, HLS master and
 # child playlists, and every HLS segment. The first request also proves the
 # default UA and absence of an implicit Referer.

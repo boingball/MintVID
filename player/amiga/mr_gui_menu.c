@@ -159,6 +159,23 @@ int mr_gui_menu_action(mr_gui_menu *menu, UWORD code)
     return MR_GUI_MENU_NONE;
 }
 
+int mr_gui_ask_software_decode(struct Window *window, const char *codec)
+{
+    struct EasyStruct request;
+    ULONG args[1];
+    args[0] = (ULONG)(codec && codec[0] ? codec : "this video");
+    request.es_StructSize = sizeof(request);
+    request.es_Flags = 0;
+    request.es_Title = (UBYTE *)"MintVID";
+    request.es_TextFormat = (UBYTE *)
+        "The PiStorm VideoCore has no decoder for\n"
+        "%s.\n\n"
+        "Play it with software decoding instead?\n"
+        "(This uses the Amiga CPU and an RTG window.)";
+    request.es_GadgetFormat = (UBYTE *)"Software|Cancel";
+    return EasyRequestArgs(window, &request, NULL, (APTR)args) == 1;
+}
+
 static void guide_error(struct Window *window, const char *text)
 {
     struct EasyStruct request;

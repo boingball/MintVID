@@ -200,6 +200,10 @@ static void aac_apply_decim(mr_audio_decoder *d)
     if ((d->stride == 2 || d->stride == 4) &&
         AACSetOutputDecimation(d->aac, (int)d->stride) == ERR_AAC_NONE)
         d->aac_decim = d->stride;
+    /* Mono keeps only channel 0 (emit_pcm_stride()), so Helix need not run
+     * TNS or the inverse transform for the other channel: about a third less
+     * AAC work for a stereo stream, and channel 0 is bit-identical. */
+    AACSetOutputMono(d->aac, d->mono);
 }
 
 /* One decoded AAC frame, whichever container it came from. fi.sampRateOut

@@ -1757,6 +1757,42 @@ static int service_early_quit_check(void *opaque)
             (SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_F)) != 0;
 }
 
+/* While a stream opens, show the controller what the network code is doing
+ * ("Connecting to host...", "Loading video segment 1...", "Downloading from
+ * host: 96 KB") instead of a single "Connecting to stream..." that can sit
+ * there for many seconds. core/mr_http.c collects the lines from whichever
+ * task posts them (the HLS fetch worker does most of the fetching); this
+ * publishes the newest one from the main task only, since player_status()
+ * also writes the T: snapshot. At most four times a second. */
+static unsigned long g_open_progress_seq;
+static clock_t       g_open_progress_at;
+static void publish_open_progress(void)
+{
+    char text[MR_PLAYER_STATUS_TEXT_MAX];
+    unsigned long seq;
+    clock_t now;
+    if (FindTask(NULL) != g_main_task) return;
+    seq = mr_http_progress_read(text, sizeof text);
+    if (!seq || seq == g_open_progress_seq || !text[0]) return;
+    now = clock();
+    if (g_open_progress_seq &&
+        (unsigned long)(now - g_open_progress_at) < CLOCKS_PER_SEC / 4)
+        return;
+    g_open_progress_seq = seq;
+    g_open_progress_at = now;
+    player_status(MR_PLAYER_STATE_OPENING, "", text);
+}
+
+/* The service hook while a stream opens: publish progress, honour a quit.
+ * Also installed on core/mr_http.c's own hook, which the HLS worker reaches
+ * from its own task: there it does nothing, as before. */
+static int service_early_open(void *opaque)
+{
+    if (FindTask(NULL) != g_main_task) return 0;
+    publish_open_progress();
+    return service_early_quit_check(opaque);
+}
+
 /* HTTP's synchronous reader runs on the player task.  Pump fresh Intuition
  * input while it waits, but leave pause/seek/quit queued for the scheduler to
  * perform at its normal safe point.  Fullscreen is handled immediately by the
@@ -2773,7 +2809,9 @@ int main(int argc, char **argv)
     mr_http_set_tls_max(tls_max);
     if (mr_source_is_url(media_path)) {
         hls_fetch_start(want_time && !benchmark);
-        hls_fetch_set_service(service_early_quit_check, NULL);
+        hls_fetch_set_service(service_early_open, NULL);
+        mr_http_set_service(service_early_open, NULL);
+        mr_http_progress_enable(1);
     }
     if (mr_youtube_is_url(media_path)) {
         mr_http_options youtube_options;
@@ -2900,6 +2938,10 @@ int main(int argc, char **argv)
             dx = mr_demux_open_file_ex(media_path, &http_options);
         }
     }
+    /* From here on the player's own status lines take over (see
+     * publish_open_progress()); later segment fetches stay quiet. */
+    mr_http_progress_enable(0);
+    g_open_progress_seq = mr_http_progress_read(NULL, 0); /* drop any unshown */
     if (dx) {
         size_t actual_buffer = mr_demux_source_buffer_capacity(dx);
         printf("streaming %s from %s\n", mr_demux_container_name(dx),

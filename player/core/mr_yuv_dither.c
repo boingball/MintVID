@@ -401,9 +401,12 @@ void mr_yuv420_fused32_m68k(const uint8_t *, int, const uint8_t *, int,
     const uint8_t *, const uint8_t *, const uint8_t *)
     __asm__("mr_yuv420_fused32_m68k");
 #endif
-void mr_yuv420_fused32(const uint8_t *y, int ys, const uint8_t *u, int us,
-                       const uint8_t *v, int vs, int w, int h,
-                       uint8_t *out, int dw, int dh, int pw, int y_base)
+/* The hand kernel for the one shape it covers (see eligible above).
+ * Returns 0, doing nothing, when it does not apply; mr_yuv420_fused32()
+ * (mr_fused32.c) then takes another path. */
+int mr_yuv420_fused32_asm(const uint8_t *y, int ys, const uint8_t *u, int us,
+                          const uint8_t *v, int vs, int w, int h,
+                          uint8_t *out, int dw, int dh, int pw, int y_base)
 {
 #if defined(MR_M68K_ASM) && !defined(MR_YUV_NO_ASM)
     if (y && u && v && out && mr_yuv_fused32_asm_eligible(w, h, dw, dh, pw)) {
@@ -413,8 +416,11 @@ void mr_yuv420_fused32(const uint8_t *y, int ys, const uint8_t *u, int us,
         mr_yuv420_fused32_m68k(y, ys, u, us, v, vs, w, dh, h / dh,
             out, pw, y_base, g_luma_x298, g_e_x409, g_d_xm100,
             g_e_xm208, g_d_x516, &lut_r[0][0], &lut_g[0][0], &lut_b[0][0]);
-        return;
+        return 1;
     }
+#else
+    (void)y; (void)ys; (void)u; (void)us; (void)v; (void)vs; (void)w; (void)h;
+    (void)out; (void)dw; (void)dh; (void)pw; (void)y_base;
 #endif
-    mr_yuv420_fused32_c(y, ys, u, us, v, vs, w, h, out, dw, dh, pw, y_base);
+    return 0;
 }

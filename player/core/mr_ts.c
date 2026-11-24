@@ -14,6 +14,10 @@
 #define TS_PROBE_LIMIT      (8UL * 1024 * 1024)
 #define TS_PROBE_VIDEO_MAX  (1024UL * 1024)
 #define TS_PROBE_AUDIO_MAX  (64UL * 1024)
+/* Once the video is understood, read at most this much more waiting for the
+ * audio header.  An audio track the probe cannot parse otherwise made it read
+ * the whole TS_PROBE_LIMIT: several HLS segments before a stream started. */
+#define TS_PROBE_AUDIO_WAIT (1024UL * 1024)
 /* How many PTS to sample before deriving the frame period, and the sample
  * ceiling. One delta is not enough: with B-frames the decode-order timestamps
  * are reordered, so the period only emerges from the minimum gap across a run
@@ -603,6 +607,7 @@ static mr_status probe_stream(mr_ts *t)
     uint32_t pts_step = 0;
     uint64_t pts_samples[TS_PTS_SAMPLE_MAX];
     int nsamp = 0, i, j;
+    size_t video_ready_at = (size_t)-1;
 
     for (pos = 0; pos + (size_t)t->packet_size <= limit;
          pos += (size_t)t->packet_size) {
@@ -681,6 +686,10 @@ static mr_status probe_stream(mr_ts *t)
                 t->audio_pid == TS_PID_NONE || t->audio.valid;
             if (video_ready && audio_ready && nsamp >= TS_PTS_STEP_SAMPLES)
                 break;
+            if (video_ready && nsamp >= TS_PTS_STEP_SAMPLES) {
+                if (video_ready_at == (size_t)-1) video_ready_at = pos;
+                else if (pos - video_ready_at >= TS_PROBE_AUDIO_WAIT) break;
+            }
         }
     }
     if (t->video_type == 0x1b && !t->config && video_len)

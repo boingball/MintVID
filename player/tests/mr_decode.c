@@ -105,6 +105,7 @@ int main(int argc, char **argv)
     int h264_speed = -1, h264_yuv = 0, do_time = 0, dv_speed = -1;
     int mpeg2_speed = -1;
     const char *user_agent = NULL, *referer = NULL;
+    size_t range_chunk = 0;
     mr_http_options http_options;
     const char *mode;
     const char *dir;
@@ -119,6 +120,9 @@ int main(int argc, char **argv)
             argi++;
         } else if (!strcmp(argv[argi], "--hls-buffer-segments")) {
             hls_buffer_segments = 1;
+            argi++;
+        } else if (!strncmp(argv[argi], "--range-chunk=", 14)) {
+            range_chunk = (size_t)strtoul(argv[argi] + 14, NULL, 10);
             argi++;
         } else if (!strcmp(argv[argi], "--user-agent") && argc > argi + 1) {
             user_agent = argv[argi + 1];
@@ -182,9 +186,10 @@ int main(int argc, char **argv)
         return 2;
     }
     http_options.hls_buffer_segments = hls_buffer_segments;
+    http_options.range_chunk_bytes = range_chunk;
     mr_demux *dx = force_memory ? NULL :
         mr_demux_open_file_ex(argv[1], (user_agent || referer ||
-                                        hls_buffer_segments)
+                                        hls_buffer_segments || range_chunk)
                                       ? &http_options : NULL);
 
     if (!dx) {

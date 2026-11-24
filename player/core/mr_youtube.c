@@ -25,6 +25,8 @@
  * lookahead, which a single stalled fetch on an A1200 (one took 28 s) used
  * up. Five segments back leaves four to prefetch. */
 #define YOUTUBE_LIVE_START_SEGMENTS 5
+/* Size of each ranged request for progressive MP4 (about 13 s of 360p). */
+#define YOUTUBE_RANGE_CHUNK_BYTES (1024UL * 1024UL)
 #define YOUTUBE_ANDROID_VERSION "21.08.266"
 #define YOUTUBE_ANDROID_UA \
     "com.google.android.youtube/21.08.266 (Linux; U; Android 11) gzip"
@@ -241,6 +243,12 @@ int mr_youtube_media_http_options_init(mr_http_options *out,
         out->hls_live_start_segments = resolved.hls_live_start_segments;
         out->hls_buffer_segments = resolved.hls_buffer_segments;
         out->source_buffer_bytes = resolved.source_buffer_bytes;
+        /* The progressive URL's n= challenge is not solved here, so one
+         * long response is throttled to about playback speed and every
+         * late burst freezes the picture. Fresh ranged requests start at
+         * full speed. */
+        if (g_last_kind != MR_YOUTUBE_MEDIA_HLS_VOD)
+            out->range_chunk_bytes = YOUTUBE_RANGE_CHUNK_BYTES;
         return 1;
     }
     *out = resolved;

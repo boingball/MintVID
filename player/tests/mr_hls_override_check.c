@@ -131,9 +131,50 @@ int main(void)
         fails++;
     }
 
+    /* Progress text for the player's status line: off by default, posted
+     * while enabled, and readable with a changing sequence number. */
+    {
+        char line[96];
+        mr_http_progress("must not appear");
+        if (mr_http_progress_read(line, sizeof line) != 0) {
+            printf("FAIL: progress posted while disabled\n");
+            fails++;
+        }
+        mr_http_progress_enable(1);
+    }
+
     mr_http_options_init(&options, NULL, NULL);
     options.source_buffer_bytes = 64u * 1024u * 1024u;
     s = mr_hls_source_open_ex("http://test.invalid/playlist.m3u8", &options);
+    {
+        char line[96], small[8];
+        unsigned long seq = mr_http_progress_read(line, sizeof line);
+        if (!seq || strcmp(line, "Reading stream playlist...") != 0) {
+            printf("FAIL: progress after playlist open is '%s' (seq %lu)\n",
+                   line, seq);
+            fails++;
+        }
+        if (s && mr_source_read_at(s, 0, buf, 1)) {
+            unsigned long seq2 = mr_http_progress_read(line, sizeof line);
+            if (seq2 == seq || strcmp(line, "Loading video segment 1...")) {
+                printf("FAIL: progress after first read is '%s'\n", line);
+                fails++;
+            }
+        }
+        /* a short buffer gets a terminated prefix */
+        mr_http_progress_read(small, sizeof small);
+        if (strcmp(small, "Loading")) {
+            printf("FAIL: truncated progress is '%s'\n", small);
+            fails++;
+        }
+        mr_http_progress_enable(0);
+        seq = mr_http_progress_read(NULL, 0);
+        mr_http_progress("ignored");
+        if (mr_http_progress_read(NULL, 0) != seq) {
+            printf("FAIL: progress posted after disabling\n");
+            fails++;
+        }
+    }
     if (!s) {
         printf("FAIL: mr_hls_source_open_ex returned NULL: %s\n",
                mr_source_last_error());

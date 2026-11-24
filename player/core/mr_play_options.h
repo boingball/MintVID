@@ -70,19 +70,26 @@ typedef enum {
     MR_DISPLAY_HAM8_DITHER,
     /* PiStorm/Emu68: H.264 decoded by the Raspberry Pi's VideoCore and shown
      * full screen on the Pi's HDMI output. Played by the optional external
-     * player mrberry (MichiB210/MintVID-PiStorm), not by mrplay; the GUIs
+     * player mrberry (MichiB210's MintVID-PiStorm, now kept at
+     * boingball/MintVID-PiStorm), not by mrplay; the GUIs
      * list it only when mrberry is beside MintVID. See
      * docs/EXTERNAL_PLAYER.md for the contract mrberry follows. Anything
      * that still starts mrplay with these options (the IPTV and YouTube
      * browsers) gets P96 instead. Same value as the PiStorm fork's
      * MR_DISPLAY_PISTORM_HARD_FULLSCREEN, so its saved settings carry over.
-     * The sound goes to the Pi's HDMI, which needs the patched BerryCore
-     * Emu68 kernel. */
+     * The sound plays through Paula (MintVID's decoders), so a stock Emu68
+     * kernel is enough. */
     MR_DISPLAY_PISTORM,
-    /* The same, with the sound decoded on the 68k by MintVID's own decoders
-     * and played through Paula (mrberry --paula). Works on a stock Emu68
-     * kernel. */
-    MR_DISPLAY_PISTORM_PAULA
+    /* Retired: was the Amiga-audio PiStorm entry.  Every PiStorm display
+     * plays through Paula now, so the GUIs read a saved value as
+     * MR_DISPLAY_PISTORM.  Kept so the values after it keep their meaning. */
+    MR_DISPLAY_PISTORM_PAULA,
+    /* The same decoder showing the picture in a window on the Workbench
+     * (mrberry W=50, berryvp.library's P96 window), sound through Paula.
+     * F or Fullscreen hands the film to MR_DISPLAY_PISTORM at the same
+     * spot: mrberry saves the position and ends with "Fullscreen", and the
+     * GUI starts it again with mr_build_external_fullscreen_arguments(). */
+    MR_DISPLAY_PISTORM_WINDOW
 } mr_display_mode;
 
 typedef enum {
@@ -225,7 +232,7 @@ int mr_display_is_rtg(mr_display_mode display);
 int mr_display_has_screen_options(mr_display_mode display);
 
 /* The display modes played by an external player instead of mrplay
- * (today the two PiStorm modes, played by mrberry). */
+ * (today the three PiStorm modes, played by mrberry). */
 int mr_display_uses_external_player(mr_display_mode display);
 
 /* HAM depth of a display mode: 8 for HAM8/HAM8 (Dither), 6 for HAM6/HAM6
@@ -250,10 +257,31 @@ int mr_build_iptv_arguments(char *output, size_t output_size,
 /* Command line for the external player of a local file:
  *   "<path>" [--no-audio]
  *   "<path>" --paula [--audio-rate=low] [--audio-mono]   (PiStorm, Amiga audio)
+ *   "<path>" W=50 [--no-audio]                           (PiStorm window)
  * Kept this small on purpose: see docs/EXTERNAL_PLAYER.md. */
 int mr_build_external_player_arguments(char *output, size_t output_size,
                                        const mr_play_options *options,
                                        const char *path);
+/* The same for a stream (IPTV/YouTube browsers), plus the channel's
+ * HTTP headers when it has them:
+ *   "<url>" ... [--user-agent "<ua>"] [--referer "<ref>"]
+ * mrberry opens http(s)/HLS/YouTube URLs with MintVID's network code. */
+int mr_build_external_stream_arguments(char *output, size_t output_size,
+                                       const mr_play_options *options,
+                                       const char *url, const char *ua,
+                                       const char *referer);
+/* mrberry with Paula sound stops on Pause, saves the spot in <film>.t and
+ * ends with the status text "Paused".  Play then continues from there:
+ * the normal arguments plus R. */
+int mr_build_external_resume_arguments(char *output, size_t output_size,
+                                       const mr_play_options *options,
+                                       const char *path);
+/* After the PiStorm window ended with "Fullscreen": the same film full
+ * screen, from the position mrberry saved in <film>.t:
+ *   "<path>" --paula [audio options] | --no-audio, then R W=C */
+int mr_build_external_fullscreen_arguments(char *output, size_t output_size,
+                                           const mr_play_options *options,
+                                           const char *path);
 void mr_play_options_summary(const mr_play_options *options, char *output,
                              size_t output_size);
 int mr_path_is_audio_only(const char *path);

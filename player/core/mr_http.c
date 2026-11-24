@@ -9,6 +9,7 @@
 #include "mr_alloc.h"
 
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -562,6 +563,46 @@ int mr_http_tls_disabled(void)
 
 /* Cooperative service hook (see mr_http.h). Called between socket reads during a
  * body fetch so a single-threaded caller keeps presenting/servicing. */
+#define HTTP_PROGRESS_MAX 96
+static volatile int           g_progress_on;
+static volatile unsigned long g_progress_seq;
+static char g_progress_text[2][HTTP_PROGRESS_MAX];
+
+void mr_http_progress_enable(int on)
+{
+    g_progress_on = on != 0;
+}
+
+void mr_http_progress(const char *fmt, ...)
+{
+    va_list ap;
+    unsigned long next;
+    if (!g_progress_on || !fmt) return;
+    /* write the slot the reader is not looking at, then publish it */
+    next = g_progress_seq + 1;
+    va_start(ap, fmt);
+    vsnprintf(g_progress_text[next & 1], HTTP_PROGRESS_MAX, fmt, ap);
+    va_end(ap);
+    g_progress_seq = next;
+}
+
+unsigned long mr_http_progress_read(char *out, size_t cap)
+{
+    unsigned long seq = g_progress_seq;
+    if (out && cap) {
+        size_t n = 0;
+        if (seq) {
+            const char *src = g_progress_text[seq & 1];
+            while (n + 1 < cap && n < HTTP_PROGRESS_MAX && src[n]) {
+                out[n] = src[n];
+                n++;
+            }
+        }
+        out[n] = 0;
+    }
+    return seq;
+}
+
 static mr_http_service_fn g_http_service;
 static void              *g_http_service_opaque;
 
@@ -955,6 +996,7 @@ static int connect_tcp(http_source *h, const struct sockaddr_in *sa)
         if (r < 0) return 0;
         spent += limit;
         attempt++;
+        mr_http_progress("No answer yet, trying again (%u)...", attempt);
     }
     g_http_timing.tcp_retries += attempt ? attempt - 1 : 0;
     return 0;
@@ -999,6 +1041,7 @@ static int connect_socket(http_source *h, const http_url *url)
         from_cache = 1;
         g_http_timing.dns_cached++;
     } else {
+        mr_http_progress("Looking up %s...", url->host);
 #if MR_HTTP_AMIGA
         SetSignal(0, SIGBREAKF_CTRL_C);
         SocketBaseTags(SBTM_SETVAL(SBTC_BREAKMASK), (ULONG)SIGBREAKF_CTRL_C,
@@ -1027,6 +1070,7 @@ static int connect_socket(http_source *h, const http_url *url)
     sa.sin_port = htons(url->port);
     memcpy(&sa.sin_addr, addr, sizeof addr);
     phase = clock();
+    mr_http_progress("Connecting to %s...", url->host);
     if (!connect_tcp(h, &sa)) {
         g_http_timing.tcp_ms += http_ms_since(phase);
         if (from_cache) {
@@ -1090,6 +1134,7 @@ static int connect_socket(http_source *h, const http_url *url)
          * increments, not an unbounded wait. */
         phase = clock();
         g_http_timing.tls_handshakes++;
+        mr_http_progress("Secure connection to %s...", url->host);
         if (SSL_set_fd(h->ssl, h->sock) != 1 ||
             SSL_connect(h->ssl) != 1) {
             unsigned long ms = http_ms_since(phase);
@@ -1396,6 +1441,7 @@ static int read_headers(http_source *h, size_t *header_len)
 {
     size_t used = 0;
     int end = -1;
+    mr_http_progress("Waiting for %s...", h->parsed_url.host);
     while (used < sizeof h->header) {
         int n = net_read_some(h, h->header + used, sizeof h->header - used);
         if (n <= 0) {
@@ -1553,7 +1599,14 @@ static int begin_response(http_source *h, size_t offset)
             return 0;
         }
         range_header[0] = '\0';
-        if (offset)
+        if (h->options.range_chunk_bytes && !h->streaming &&
+            !h->bounded_fetch) {
+            size_t last = offset + h->options.range_chunk_bytes - 1;
+            if (h->total_len && last >= h->total_len) last = h->total_len - 1;
+            snprintf(range_header, sizeof range_header,
+                     "Range: bytes=%lu-%lu\r\n", (unsigned long)offset,
+                     (unsigned long)last);
+        } else if (offset)
             snprintf(range_header, sizeof range_header,
                      "Range: bytes=%lu-\r\n", (unsigned long)offset);
         n = snprintf(h->request, sizeof h->request,
@@ -1976,6 +2029,17 @@ static void http_cache_trim(http_source *h)
  * socket already has - data the OS received while the player was decoding or
  * pacing - up to the full buffer, without blocking. Reads only forward and
  * stays contiguous with body_pos. */
+/* With range_chunk_bytes, a response ends at its range: start the next one
+ * where it stopped, so the read-ahead keeps going. */
+static int http_next_range(http_source *h)
+{
+    if (!h->options.range_chunk_bytes || h->streaming || h->interrupted ||
+        h->chunked || !h->response_left_known || h->response_left ||
+        !h->total_len || h->body_pos >= h->total_len)
+        return 0;
+    return begin_response(h, h->body_pos);
+}
+
 static void http_readahead(http_source *h, int min_only)
 {
     size_t cache_end, forward;
@@ -2006,16 +2070,27 @@ static void http_readahead(http_source *h, int min_only)
         if (want > 65536) want = 65536;
 
         n = copy_response_bytes(h, h->cache + h->cache_len, want);
-        if (n <= 0) return;
+        if (n <= 0) {
+            if (http_next_range(h)) continue;
+            return;
+        }
         h->cache_len += (size_t)n;
         forward += (size_t)n;
     }
     if (min_only) return;
     /* Proactive: absorb whatever is already waiting on the socket, no block. */
-    while (h->cache_len < h->cache_cap && http_readable(h)) {
-        size_t room = h->cache_cap - h->cache_len;
-        int n = copy_response_bytes(h, h->cache + h->cache_len,
-                                    room < 65536 ? room : 65536);
+    for (;;) {
+        size_t room;
+        int n;
+        if (h->cache_len >= h->cache_cap) break;
+        if (h->options.range_chunk_bytes && h->response_left_known &&
+            !h->response_left) {
+            if (!http_next_range(h)) break;
+        }
+        if (!http_readable(h)) break;
+        room = h->cache_cap - h->cache_len;
+        n = copy_response_bytes(h, h->cache + h->cache_len,
+                                room < 65536 ? room : 65536);
         if (n <= 0) break;
         h->cache_len += (size_t)n;
     }
@@ -2060,6 +2135,8 @@ static int http_read_at(void *opaque, size_t off, void *dst, size_t len)
             continue;
         }
         if (h->interrupted) return 0;
+        /* A ranged response that simply ended is not an error. */
+        if (http_next_range(h)) continue;
         close_connection(h, 0);
         if (done == len) break;
         if (retries++ >= HTTP_IO_RETRIES ||
@@ -2125,6 +2202,7 @@ mr_source *mr_http_source_open_ex(const char *url,
         h->options.hls_max_height = options->hls_max_height;
         h->options.hls_max_fps = options->hls_max_fps;
         h->options.source_buffer_bytes = options->source_buffer_bytes;
+        h->options.range_chunk_bytes = options->range_chunk_bytes;
     }
     if (h->options.source_buffer_bytes) {
         size_t attempt = h->options.source_buffer_bytes;
@@ -2262,6 +2340,11 @@ int mr_http_fetch_text_direct(const char *url, const mr_http_options *options,
         if (want > 16384) want = 16384;
         n = copy_response_bytes(h, buf + total, want);
         if (n <= 0) break;
+        /* one line per 32 KB is plenty for a status bar */
+        if ((total + (size_t)n) / 32768u != total / 32768u)
+            mr_http_progress("Downloading from %s: %lu KB",
+                             h->parsed_url.host,
+                             (unsigned long)((total + (size_t)n) / 1024u));
         total += (size_t)n;
     }
     if (!total || (h->response_left_known && h->response_left) ||
@@ -2378,6 +2461,11 @@ int mr_http_post_json_direct(const char *url, const mr_http_options *options,
         if (want > 16384) want = 16384;
         n = copy_response_bytes(h, buf + total, want);
         if (n <= 0) break;
+        /* one line per 32 KB is plenty for a status bar */
+        if ((total + (size_t)n) / 32768u != total / 32768u)
+            mr_http_progress("Downloading from %s: %lu KB",
+                             h->parsed_url.host,
+                             (unsigned long)((total + (size_t)n) / 1024u));
         total += (size_t)n;
     }
     if (!total || (h->response_left_known && h->response_left) ||

@@ -1,6 +1,6 @@
 # MintVID changelog
 
-## Unreleased
+## 1.5.0 - 2026-11-12
 
 ### Added
 
@@ -28,8 +28,16 @@
   The list only appears when ahi.device is installed, Paula stays the
   default, and mrplay plays through Paula when the chosen unit cannot
   be opened. Saved controller settings are reset once by this update.
+- **The mrberry PiStorm player is included** (by Michael, MichiB210),
+  with berryvp.library. The PiStorm (VideoCore) displays play through
+  Paula in the window and full screen and need no patched Emu68 kernel;
+  HDMI sound is opt-in (`HDMI`). mrberry opens YouTube, IPTV and HTTP
+  streams and shows connection progress while they open.
 
 ### Fixed
+
+- PiStorm window playback no longer leaves a black screen when the
+  window closes, and Paula sound plays in the window and full screen.
 
 - Reconnecting to a live stream reopened the video decoder with codec data
   from the stream it had just closed.

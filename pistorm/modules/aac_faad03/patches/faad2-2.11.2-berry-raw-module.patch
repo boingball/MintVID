@@ -1,0 +1,90 @@
+--- a/libfaad/huffman.c
++++ b/libfaad/huffman.c
+@@ -82,6 +82,23 @@
+ {NULL,   NULL,   NULL, NULL,   NULL, NULL, hcb6_2, NULL, hcb8_2, NULL, hcb10_2, hcb11_2};
+ static const hcb_bin_pair* hcb_bin_table[LAST_CB_IDX + 1] =
+ {NULL,   NULL,   NULL, NULL,   NULL, hcb5,   NULL, hcb7,   NULL, hcb9,    NULL,    NULL};
++
++#ifdef BERRY_FAAD_RAW_MODULE
++void berry_relocate_huffman(uintptr_t base)
++{
++    static uint8_t done;
++    uint8_t i;
++    if (done) return;
++    for (i = 0; i <= LAST_CB_IDX; i++)
++    {
++        if (hcb_table[i]) hcb_table[i] = (const hcb *)((uintptr_t)hcb_table[i] + base);
++        if (hcb_2_quad_table[i]) hcb_2_quad_table[i] = (const hcb_2_quad *)((uintptr_t)hcb_2_quad_table[i] + base);
++        if (hcb_2_pair_table[i]) hcb_2_pair_table[i] = (const hcb_2_pair *)((uintptr_t)hcb_2_pair_table[i] + base);
++        if (hcb_bin_table[i]) hcb_bin_table[i] = (const hcb_bin_pair *)((uintptr_t)hcb_bin_table[i] + base);
++    }
++    done = 1;
++}
++#endif
+ /*                     hcb3 is the unique case */
+ 
+ /* defines whether a huffman codebook is unsigned or not */
+--- a/libfaad/specrec.c
++++ b/libfaad/specrec.c
+@@ -284,6 +284,21 @@
+     swb_offset_128_8         /* 8000  */
+ };
+ 
++#ifdef BERRY_FAAD_RAW_MODULE
++void berry_relocate_specrec(uintptr_t base)
++{
++    static uint8_t done;
++    uint8_t i;
++    if (done) return;
++    for (i = 0; i < 12; i++)
++    {
++        if (swb_offset_1024_window[i]) swb_offset_1024_window[i] = (const uint16_t *)((uintptr_t)swb_offset_1024_window[i] + base);
++        if (swb_offset_128_window[i]) swb_offset_128_window[i] = (const uint16_t *)((uintptr_t)swb_offset_128_window[i] + base);
++    }
++    done = 1;
++}
++#endif
++
+ #define bit_set(A, B) ((A) & (1<<(B)))
+ 
+ /* 4.5.2.3.4 */
+--- a/libfaad/tns.c
++++ b/libfaad/tns.c
+@@ -80,6 +80,18 @@
+ 
+ static real_t* all_tns_coefs[] = {tns_coef_0_3, tns_coef_0_4, tns_coef_1_3, tns_coef_1_4};
+ 
++#ifdef BERRY_FAAD_RAW_MODULE
++void berry_relocate_tns(uintptr_t base)
++{
++    static uint8_t done;
++    uint8_t i;
++    if (done) return;
++    for (i = 0; i < 4; i++)
++        if (all_tns_coefs[i]) all_tns_coefs[i] = (real_t *)((uintptr_t)all_tns_coefs[i] + base);
++    done = 1;
++}
++#endif
++
+ /* TNS decoding for one channel and frame */
+ void tns_decode_frame(ic_stream *ics, tns_info *tns, uint8_t sr_index,
+                       uint8_t object_type, real_t *spec, uint16_t frame_len)
+--- a/libfaad/error.c
++++ b/libfaad/error.c
+@@ -68,3 +68,16 @@
+ 	"MAIN prediction not initialised"
+ };
+ 
++#ifdef BERRY_FAAD_RAW_MODULE
++void berry_relocate_error(uintptr_t base)
++{
++    static uint8_t done;
++    uint8_t i;
++    if (done) return;
++    for (i = 0; i < (uint8_t)(sizeof(err_msg)/sizeof(err_msg[0])); i++)
++        if (err_msg[i]) err_msg[i] = (char *)((uintptr_t)err_msg[i] + base);
++    done = 1;
++}
++#endif
++
++

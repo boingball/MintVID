@@ -443,6 +443,7 @@ static int open_seg(hls_source *h, size_t i)
     if (g_verbose)
         printf("HLS: opening segment %lu of %lu\n",
                (unsigned long)(i + 1), (unsigned long)h->nsegs);
+    mr_http_progress("Loading video segment %lu...", (unsigned long)(i + 1));
     /* A fetch override (e.g. amiga/hls_fetch.c's background worker) only
      * intercepts the complete-body fetch functions (mr_http_fetch_text()/
      * mr_http_fetch_buffer()), not the streaming mr_http_source_open_ex()
@@ -687,6 +688,7 @@ mr_source *mr_hls_source_open_ex(const char *url,
     mr_status st;
     int added;
 
+    mr_http_progress("Reading stream playlist...");
     text = fetch_text(url, options);
     if (!text) return NULL;
 
@@ -701,6 +703,7 @@ mr_source *mr_hls_source_open_ex(const char *url,
         }
         if (g_verbose) printf("HLS: compatible media variant selected\n");
         mr_free(text);
+        mr_http_progress("Reading playlist for the chosen quality...");
         text = fetch_text(media_url, options);
         if (!text) return NULL;
         base = media_url;
