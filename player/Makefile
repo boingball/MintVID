@@ -491,7 +491,7 @@ check: check-amissl-lifecycle check-hls-worker-lifecycle mr_decode mr_codec_regi
 	./mr_hwdec_check
 	@mkdir -p tests/assets/ref_annexb
 	@for f in test_h264_high.mp4 test_h264_gop.mp4 test_h264_aac.mkv; do \
-	    test -f tests/assets/ref_annexb/$$f.h264 || \
+	    test tests/assets/ref_annexb/$$f.h264 -nt tests/assets/$$f || \
 	    ffmpeg -v error -i tests/assets/$$f -c:v copy -bsf:v h264_mp4toannexb \
 	        -f h264 -y tests/assets/ref_annexb/$$f.h264 || exit 1; \
 	    ./mr_avc_check tests/assets/$$f tests/assets/ref_annexb/$$f.h264 || exit 1; \
