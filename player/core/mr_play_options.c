@@ -319,8 +319,14 @@ static int append_playback_flags(char *out, size_t cap,
     /* Same VQ value, same "always explicit" reasoning, for MPEG-1/2's own
      * B-frame skip (mr_mpeg2_set_speed_mode(), core/mr_mpeg2.h) - see
      * CLAUDE.md's "MPEG-1/2 B-frame skip" notes. */
-    if (!append_option(out, cap, mr_video_quality_prefers_fast(o->h264_performance)
-                                 ? "--mpeg2-speed=fast" : "--mpeg2-speed=quality"))
+    /* Quality decodes every picture and Turbo+ skips every B (as it does on
+     * H.264); every other choice gets Auto, which skips B pictures only while
+     * playback is behind, so MPEG-1/2 keeps its full frame rate whenever the
+     * CPU manages it. */
+    if (!append_option(out, cap,
+            o->h264_performance == MR_H264_PERF_QUALITY ? "--mpeg2-speed=quality" :
+            o->h264_performance == MR_H264_PERF_TURBO_PLUS ? "--mpeg2-speed=fast" :
+            "--mpeg2-speed=auto"))
         return 0;
     if (o->no_audio) {
         if (!append_option(out, cap, "--no-audio")) return 0;
@@ -581,7 +587,8 @@ int mr_play_options_parse(mr_play_options *o, int argc, char **argv,
          * playback option" below. */
         else if (!strncmp(arg, "--mpeg2-speed=", 14)) {
             value = arg + 14;
-            if (strcmp(value, "fast") && strcmp(value, "quality")) goto bad;
+            if (strcmp(value, "fast") && strcmp(value, "quality") &&
+                strcmp(value, "auto")) goto bad;
         }
         else if (!strncmp(arg, "--audio-rate=", 13)) {
             value = arg + 13;
