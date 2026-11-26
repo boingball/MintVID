@@ -788,6 +788,25 @@ static int channel_was_double_clicked(Object *channels) {
   return dbl;
 }
 
+/* Visible channel rows that still let the whole window fit the Workbench:
+ * 15 on a tall (interlaced/RTG) screen, fewer on a 256-line PAL one, where a
+ * fixed 15 made the layout taller than the screen, RA_OpenWindow() failed and
+ * the GUI quit silently (rc 20). The rest of the window is about six text
+ * rows plus borders and spacing. */
+static ULONG channel_rows(void) {
+  struct Screen *screen = LockPubScreen(NULL);
+  LONG rows = 15, font, avail;
+  if (!screen)
+    return rows;
+  font = screen->Font ? screen->Font->ta_YSize : 8;
+  avail = screen->Height - 6 * font - 70;
+  UnlockPubScreen(NULL, screen);
+  rows = avail / (font + 2);
+  if (rows > 15) rows = 15;
+  if (rows < 4) rows = 4;
+  return (ULONG)rows;
+}
+
 int main(int argc, char **argv) {
   Object *winobj = NULL, *layout = NULL, *search = NULL, *country = NULL;
   Object *category = NULL, *channels = NULL, *status = NULL, *url = NULL;
@@ -868,7 +887,7 @@ int main(int argc, char **argv) {
   channels = (Object *)NewObject(
       LISTBROWSER_GetClass(), NULL, GA_ID, G_CHANNELS, GA_RelVerify, TRUE,
       LISTBROWSER_Labels, (ULONG)&channel_nodes, LISTBROWSER_AutoFit, TRUE,
-      LISTBROWSER_ShowSelected, TRUE, LISTBROWSER_MinVisible, 15, TAG_DONE);
+      LISTBROWSER_ShowSelected, TRUE, LISTBROWSER_MinVisible, channel_rows(), TAG_DONE);
   url = (Object *)NewObject(STRING_GetClass(), NULL, STRINGA_MaxChars,
                             MR_IPTV_URL_MAX, TAG_DONE);
   if (refresh_attempted)
