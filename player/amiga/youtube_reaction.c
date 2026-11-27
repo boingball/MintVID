@@ -725,6 +725,23 @@ static int video_was_double_clicked(Object *results_list)
     return dbl;
 }
 
+/* Visible result rows that still let the window fit the Workbench: 15 on a
+ * tall screen, fewer on a 256-line PAL one (a fixed 15 made RA_OpenWindow()
+ * fail there). The rest of the window is about six text rows plus borders. */
+static ULONG channel_rows(void) {
+  struct Screen *screen = LockPubScreen(NULL);
+  LONG rows = 15, font, avail;
+  if (!screen)
+    return rows;
+  font = screen->Font ? screen->Font->ta_YSize : 8;
+  avail = screen->Height - 6 * font - 70;
+  UnlockPubScreen(NULL, screen);
+  rows = avail / (font + 2);
+  if (rows > 15) rows = 15;
+  if (rows < 4) rows = 4;
+  return (ULONG)rows;
+}
+
 int main(int argc, char **argv)
 {
     Object *winobj = NULL, *layout = NULL, *search_row = NULL;
@@ -791,7 +808,7 @@ int main(int argc, char **argv)
     results_list = (Object *)NewObject(
         LISTBROWSER_GetClass(), NULL, GA_ID, G_RESULTS, GA_RelVerify, TRUE,
         LISTBROWSER_Labels, (ULONG)&result_nodes, LISTBROWSER_AutoFit, TRUE,
-        LISTBROWSER_ShowSelected, TRUE, LISTBROWSER_MinVisible, 15,
+        LISTBROWSER_ShowSelected, TRUE, LISTBROWSER_MinVisible, channel_rows(),
         TAG_DONE);
     play_button = (Object *)NewObject(
         BUTTON_GetClass(), NULL, GA_ID, G_PLAY, GA_Text, (ULONG)"Play",

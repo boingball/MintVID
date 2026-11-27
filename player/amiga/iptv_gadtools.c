@@ -35,6 +35,7 @@ MINTVID_DECLARE_VERSION(iptvgui_gt_version_tag, "iptvgui-GT");
 #define MRPLAY_LOG_FILE "RAM:MintVID.log"
 #define WIN_W 640
 #define WIN_H 356
+#define LIST_SHRINK_MAX (192-48) /* the channel list keeps at least 48 px */
 
 #if defined(__GNUC__)
 static const char iptvgui_gt_stack_cookie[] __attribute__((used))="$STACK:131072";
@@ -472,29 +473,38 @@ static struct Gadget *add(iptvgt *app,struct Gadget *previous,ULONG kind,UWORD i
 static int window_open(iptvgt *app)
 {
     struct Gadget *g; struct NewWindow nw;
+    int d,avail;
     app->screen=LockPubScreen(NULL);if(!app->screen)return 0;
+    /* Short screens (a 640x256 or 672x267 PAL Workbench): the window is
+     * WIN_H tall, so shrink the channel list - by at most LIST_SHRINK_MAX, it
+     * keeps 48 px - and move everything below it up by the same amount. A
+     * negative NewWindow TopEdge made OpenWindow() fail and the GUI quit
+     * silently (rc 20) on any Workbench under 356 lines. */
+    avail=app->screen->Height-(app->screen->BarHeight+1);
+    d=WIN_H>avail?WIN_H-avail:0; if(d>LIST_SHRINK_MAX)d=LIST_SHRINK_MAX;
     app->visual=GetVisualInfoA(app->screen,NULL);
     if(!app->visual||!CreateContext(&app->gadgets))return 0;
     g=app->gadgets;
     app->search=g=add(app,g,STRING_KIND,G_SEARCH,8,20,260,15,"",GTST_MaxChars,MR_IPTV_NAME_MAX);
     app->country=g=add(app,g,CYCLE_KIND,G_COUNTRY,274,20,170,15,"",GTCY_Labels,(ULONG)country_labels);
     app->category=g=add(app,g,CYCLE_KIND,G_CATEGORY,450,20,178,15,"",GTCY_Labels,(ULONG)category_labels);
-    app->channels=g=add(app,g,LISTVIEW_KIND,G_CHANNELS,8,43,620,192,"",GTLV_Labels,(ULONG)&app->labels);
-    app->url=g=add(app,g,STRING_KIND,G_URL,8,242,620,15,"",GTST_MaxChars,MR_IPTV_URL_MAX);
-    g=add(app,g,BUTTON_KIND,G_REFRESH,8,265,86,17,"Refresh",TAG_IGNORE,0);
-    g=add(app,g,BUTTON_KIND,G_PLAY,98,265,76,17,"Play",TAG_IGNORE,0);
-    g=add(app,g,BUTTON_KIND,G_NEXT,178,265,100,17,"Next stream",TAG_IGNORE,0);
-    g=add(app,g,BUTTON_KIND,G_STOP,282,265,72,17,"Stop",TAG_IGNORE,0);
-    g=add(app,g,BUTTON_KIND,G_OPEN,358,265,96,17,"Open URL",TAG_IGNORE,0);
-    app->debug=g=add(app,g,CYCLE_KIND,G_DEBUG,458,265,88,17,"",GTCY_Labels,(ULONG)debug_labels);
-    g=add(app,g,BUTTON_KIND,G_CLOSE,550,265,78,17,"Close",TAG_IGNORE,0);
-    app->summary=g=add(app,g,TEXT_KIND,G_SUMMARY,8,290,620,15,"",GTTX_Text,(ULONG)"Playback options");
-    app->status=g=add(app,g,TEXT_KIND,G_STATUS,8,311,620,15,"",GTTX_Text,(ULONG)"Loading IPTV directory...");
+    app->channels=g=add(app,g,LISTVIEW_KIND,G_CHANNELS,8,43,620,192-d,"",GTLV_Labels,(ULONG)&app->labels);
+    app->url=g=add(app,g,STRING_KIND,G_URL,8,242-d,620,15,"",GTST_MaxChars,MR_IPTV_URL_MAX);
+    g=add(app,g,BUTTON_KIND,G_REFRESH,8,265-d,86,17,"Refresh",TAG_IGNORE,0);
+    g=add(app,g,BUTTON_KIND,G_PLAY,98,265-d,76,17,"Play",TAG_IGNORE,0);
+    g=add(app,g,BUTTON_KIND,G_NEXT,178,265-d,100,17,"Next stream",TAG_IGNORE,0);
+    g=add(app,g,BUTTON_KIND,G_STOP,282,265-d,72,17,"Stop",TAG_IGNORE,0);
+    g=add(app,g,BUTTON_KIND,G_OPEN,358,265-d,96,17,"Open URL",TAG_IGNORE,0);
+    app->debug=g=add(app,g,CYCLE_KIND,G_DEBUG,458,265-d,88,17,"",GTCY_Labels,(ULONG)debug_labels);
+    g=add(app,g,BUTTON_KIND,G_CLOSE,550,265-d,78,17,"Close",TAG_IGNORE,0);
+    app->summary=g=add(app,g,TEXT_KIND,G_SUMMARY,8,290-d,620,15,"",GTTX_Text,(ULONG)"Playback options");
+    app->status=g=add(app,g,TEXT_KIND,G_STATUS,8,311-d,620,15,"",GTTX_Text,(ULONG)"Loading IPTV directory...");
     if(!g)
         return 0;
     memset(&nw,0,sizeof(nw));
-    nw.LeftEdge=(app->screen->Width-WIN_W)/2;nw.TopEdge=(app->screen->Height-WIN_H)/2;
-    nw.Width=WIN_W;nw.Height=WIN_H;nw.DetailPen=0;nw.BlockPen=1;
+    nw.Width=WIN_W;nw.Height=WIN_H-d;
+    nw.LeftEdge=app->screen->Width>WIN_W?(app->screen->Width-WIN_W)/2:0;
+    nw.TopEdge=app->screen->Height>nw.Height?(app->screen->Height-nw.Height)/2:0;nw.DetailPen=0;nw.BlockPen=1;
     /* LISTVIEWIDCMP (gadtools.h) supplies the mouse-button/move, gadget-down
      * and IntuiTicks events GadTools' composite scroller and auto-repeat
      * up/down arrow gadgets consume internally - IDCMP_GADGETUP alone leaves

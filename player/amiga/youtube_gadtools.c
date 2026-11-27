@@ -34,6 +34,7 @@ MINTVID_DECLARE_VERSION(ytgui_gt_version_tag, "ytgui-GT");
 #define MRPLAY_LOG_FILE "RAM:MintVID.log"
 #define WIN_W 640
 #define WIN_H 356
+#define LIST_SHRINK_MAX (192-48) /* the results list keeps at least 48 px */
 
 #if defined(__GNUC__)
 static const char ytgui_gt_stack_cookie[] __attribute__((used))="$STACK:131072";
@@ -551,8 +552,15 @@ static int window_open(ytgt *app)
 {
     struct Gadget *g;
     struct NewWindow nw;
+    int d, avail;
     app->screen = LockPubScreen(NULL);
     if (!app->screen) return 0;
+    /* Short screens: shrink the results list (it keeps 48 px) and move the
+     * rows below it up, as the IPTV GUI does. A negative NewWindow TopEdge
+     * made OpenWindow() fail on any Workbench under 356 lines. */
+    avail = app->screen->Height - (app->screen->BarHeight + 1);
+    d = WIN_H > avail ? WIN_H - avail : 0;
+    if (d > LIST_SHRINK_MAX) d = LIST_SHRINK_MAX;
     app->visual = GetVisualInfoA(app->screen, NULL);
     if (!app->visual || !CreateContext(&app->gadgets)) return 0;
     g = app->gadgets;
@@ -561,30 +569,31 @@ static int window_open(ytgt *app)
     app->type = g = add(app,g,CYCLE_KIND,G_TYPE,404,20,108,15,"",
                         GTCY_Labels,(ULONG)type_labels);
     g = add(app,g,BUTTON_KIND,G_SEARCH,518,20,110,15,"Search",TAG_IGNORE,0);
-    app->results = g = add(app,g,LISTVIEW_KIND,G_RESULTS,8,43,620,192,"",
+    app->results = g = add(app,g,LISTVIEW_KIND,G_RESULTS,8,43,620,192-d,"",
                            GTLV_Labels,(ULONG)&app->labels);
-    g = add(app,g,BUTTON_KIND,G_PLAY,8,243,82,17,"Play",TAG_IGNORE,0);
+    g = add(app,g,BUTTON_KIND,G_PLAY,8,243-d,82,17,"Play",TAG_IGNORE,0);
     app->play = g;
-    g = add(app,g,BUTTON_KIND,G_PAUSE,94,243,82,17,"Pause",TAG_IGNORE,0);
-    g = add(app,g,BUTTON_KIND,G_FAST,180,243,82,17,"Fast",TAG_IGNORE,0);
-    g = add(app,g,BUTTON_KIND,G_VOLDOWN,266,243,82,17,"Vol -",TAG_IGNORE,0);
-    g = add(app,g,BUTTON_KIND,G_VOLUP,352,243,82,17,"Vol +",TAG_IGNORE,0);
-    g = add(app,g,BUTTON_KIND,G_FULLSCREEN,438,243,100,17,"Fullscreen",TAG_IGNORE,0);
-    g = add(app,g,BUTTON_KIND,G_STOP,542,243,86,17,"Stop",TAG_IGNORE,0);
-    app->quality = g = add(app,g,CYCLE_KIND,G_QUALITY,8,266,150,17,"",
+    g = add(app,g,BUTTON_KIND,G_PAUSE,94,243-d,82,17,"Pause",TAG_IGNORE,0);
+    g = add(app,g,BUTTON_KIND,G_FAST,180,243-d,82,17,"Fast",TAG_IGNORE,0);
+    g = add(app,g,BUTTON_KIND,G_VOLDOWN,266,243-d,82,17,"Vol -",TAG_IGNORE,0);
+    g = add(app,g,BUTTON_KIND,G_VOLUP,352,243-d,82,17,"Vol +",TAG_IGNORE,0);
+    g = add(app,g,BUTTON_KIND,G_FULLSCREEN,438,243-d,100,17,"Fullscreen",TAG_IGNORE,0);
+    g = add(app,g,BUTTON_KIND,G_STOP,542,243-d,86,17,"Stop",TAG_IGNORE,0);
+    app->quality = g = add(app,g,CYCLE_KIND,G_QUALITY,8,266-d,150,17,"",
         GTCY_Labels,(ULONG)quality_labels);
-    g = add(app,g,BUTTON_KIND,G_CHANNEL,162,266,220,17,"Channel videos",TAG_IGNORE,0);
-    app->log = g = add(app,g,CYCLE_KIND,G_LOG,386,266,110,17,"",
+    g = add(app,g,BUTTON_KIND,G_CHANNEL,162,266-d,220,17,"Channel videos",TAG_IGNORE,0);
+    app->log = g = add(app,g,CYCLE_KIND,G_LOG,386,266-d,110,17,"",
                        GTCY_Labels,(ULONG)log_labels);
-    g = add(app,g,BUTTON_KIND,G_CLOSE,500,266,128,17,"Close",TAG_IGNORE,0);
-    app->summary = g = add(app,g,TEXT_KIND,G_SUMMARY,8,290,620,15,"",
+    g = add(app,g,BUTTON_KIND,G_CLOSE,500,266-d,128,17,"Close",TAG_IGNORE,0);
+    app->summary = g = add(app,g,TEXT_KIND,G_SUMMARY,8,290-d,620,15,"",
                            GTTX_Text,(ULONG)"Playback options");
-    app->status = g = add(app,g,TEXT_KIND,G_STATUS,8,311,620,15,"",
+    app->status = g = add(app,g,TEXT_KIND,G_STATUS,8,311-d,620,15,"",
         GTTX_Text,(ULONG)"Search public live streams and recorded videos.");
     if (!g) return 0;
     memset(&nw,0,sizeof(nw));
-    nw.LeftEdge=(app->screen->Width-WIN_W)/2; nw.TopEdge=(app->screen->Height-WIN_H)/2;
-    nw.Width=WIN_W; nw.Height=WIN_H; nw.DetailPen=0; nw.BlockPen=1;
+    nw.Width=WIN_W; nw.Height=WIN_H-d;
+    nw.LeftEdge=app->screen->Width>WIN_W?(app->screen->Width-WIN_W)/2:0;
+    nw.TopEdge=app->screen->Height>nw.Height?(app->screen->Height-nw.Height)/2:0; nw.DetailPen=0; nw.BlockPen=1;
     /* LISTVIEWIDCMP (gadtools.h) supplies the mouse-button/move, gadget-down
      * and IntuiTicks events GadTools' composite scroller and auto-repeat
      * up/down arrow gadgets consume internally - IDCMP_GADGETUP alone leaves
