@@ -769,8 +769,24 @@ release:
 	@cp $(MINTAMP_ROOT)/RPSL.txt "$(RELEASE_LICENSE_DIR)/RPSL.txt"
 	@cp $(MINTAMP_ROOT)/RCSL.txt "$(RELEASE_LICENSE_DIR)/RCSL.txt"
 	@cp vendor/libdv/COPYING.LGPL-2.1 "$(RELEASE_LICENSE_DIR)/libdv-LGPL-2.1.txt"
+	@# PiStorm (Emu68): mrberry beside MintVID in the 68040 drawer, where the
+	@# GUI starts it from, and a PiStorm drawer with berryvp.library and its
+	@# ReadMe. Sound is Paula only: the BerryCore kernel and its CPU1 modules
+	@# (HDMI sound) are not shipped, so the stock Emu68 kernel is all a user
+	@# needs. mrberry and berryvp.library are by Michael (MichiB210), MIT.
+	rm -f mrberry build/mrberry/mrberry
+	$(MAKE) -f Makefile.amiga mrberry
+	cp mrberry "$(RELEASE_DIR)/MintVID040/mrberry"
+	PATH="$(dir $(KALMS_VASM)):$$PATH" sh ../pistorm/berryvp_library/build.sh "$(CURDIR)/build/berryvp"
+	mkdir -p "$(RELEASE_DIR)/PiStorm/Libs"
+	cp build/berryvp/berryvp.library "$(RELEASE_DIR)/PiStorm/Libs/berryvp.library"
+	cp ../pistorm/ReadMe-PiStorm "$(RELEASE_DIR)/PiStorm/ReadMe-PiStorm"
+	cp amiga/icons/ReadMe-PiStorm.info "$(RELEASE_DIR)/PiStorm/ReadMe-PiStorm.info"
+	cp amiga/icons/PiStorm.info "$(RELEASE_DIR)/PiStorm.info"
+	cp amiga/icons/PiStorm.info "$(RELEASE_DIR)/PiStorm/Libs.info"
+	cp ../pistorm/LICENSE "$(RELEASE_LICENSE_DIR)/MintVID-PiStorm-LICENSE.txt"
 	@echo "Release binaries written to $(RELEASE_DIR)/"
-	@echo "Ready-to-run sets: MintVID030, MintVID040 and MintVID060"
+	@echo "Ready-to-run sets: MintVID030, MintVID040 (with mrberry) and MintVID060; PiStorm drawer: berryvp.library + ReadMe"
 	@echo "Licence notices: $(RELEASE_LICENSE_DIR)/"
 	@echo "For Aminet binary distribution, also provide corresponding source from a recursive checkout."
 

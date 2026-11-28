@@ -1,0 +1,87 @@
+MintVID for PiStorm
+===================
+
+The PiStorm drawer adds hardware-accelerated playback for PiStorm
+accelerators running Emu68. The Raspberry Pi's VideoCore decodes H.264
+video (up to 1080p) and shows it in full screen on the Pi's HDMI output,
+or in a window on a Picasso96 Workbench. Sound plays through Paula with
+MintVID's own decoders.
+
+No patched Emu68 kernel and no other drivers are needed: keep using the
+current PiStorm/Emu68 release.
+
+The PiStorm player (mrberry) and berryvp.library are by Michael
+(MichiB210). Thank you, Michael!
+
+
+What you need
+-------------
+
+  - A PiStorm with Emu68. Tested on the PiStorm Classic with a
+    Raspberry Pi 3A+ and on the PiStorm32 lite with a Compute Module 4,
+    with Emu68 1.0.7 and 1.1.
+  - GPU memory for the VideoCore. On the PiStorm's SD card, config.txt
+    must contain
+
+        gpu_mem=64      (Raspberry Pi 3A+)
+        gpu_mem=128     (CM4; 128 and 256 tested)
+
+    Without it the VideoCore cannot decode and nothing plays.
+  - AmigaOS 3.x with Picasso96 for the window mode.
+  - AmiSSL 5 for YouTube and other HTTPS streams.
+
+
+Installing
+----------
+
+  1. Copy PiStorm/Libs/berryvp.library to LIBS:
+  2. Use the MintVID040 drawer. The PiStorm player, mrberry, is already
+     in it, next to MintVID.
+
+     If you copy MintVID somewhere else, keep mrberry beside MintVID.
+
+
+Playing
+-------
+
+Start MintVID from the MintVID040 drawer and pick a PiStorm display:
+
+  PiStorm (VideoCore)           full screen on the Pi's HDMI output
+  PiStorm (VideoCore, window)   a window on the Workbench
+
+Local files (MKV, MP4, MOV, TS), YouTube, IPTV and HTTP(S) streams all
+play this way. Anything the VideoCore cannot decode still plays with
+the normal MintVID displays.
+
+In the player:  F    full screen / window
+                + -  sound earlier / later (1 and 2 work too)
+                ESC  quit
+
+From the Shell, mrberry plays a file directly (Paula sound):
+
+  mrberry film.mkv            full screen
+  mrberry film.mkv W=50       in a window (W=10, 25, 50 or 75)
+  mrberry film.mkv INFO       show length, video and sound only
+
+
+If it does not play
+-------------------
+
+  "cannot open LIBS:berryvp.library"
+      berryvp.library is not in LIBS: (step 1 above).
+
+  The screen stays black, or MintVID says there is no VideoCore decoder
+      Check gpu_mem in config.txt on the PiStorm's SD card.
+
+  Turn on Log in MintVID and send the log with your report.
+
+
+Licence
+-------
+
+mrberry and berryvp.library: MIT licence, Copyright (c) 2026 Michael
+(MichiB210); see LICENSES/MintVID-PiStorm-LICENSE.txt. MintVID:
+Copyright (c) 2026 Darren "boingball" Banfi.
+
+The full source of all PiStorm parts is in the MintVID source archive
+(pistorm/).

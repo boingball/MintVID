@@ -3,7 +3,8 @@ Author:       Darren Banfi (boingball)
 Uploader:     boingball@gmail.com
 Type:         gfx/show
 Version:      1.5.0
-Requires:     68030+; util/libs/AmiSSL-v5-OS3.lha for online features
+Requires:     68030+; util/libs/AmiSSL-v5-OS3.lha for online features;
+              PiStorm player: Emu68 and gpu_mem=64+ in config.txt
 Architecture: m68k-amigaos >= 3.0.0
 
 Description:
@@ -19,9 +20,12 @@ WHAT'S NEW IN 1.5.0
     VideoCore stack (videocodec.library), H.264 and MJPEG are decoded
     and scaled on the Pi; 1080p plays full screen at 30 fps. Anything
     the VPU cannot take plays in software as before.
-  - PiStorm: the mrberry player is included. Its PiStorm (VideoCore)
-    displays play through Paula in the window and full screen, need no
-    patched kernel, and open YouTube, IPTV and HTTP streams.
+  - PiStorm: hardware H.264 with the mrberry player by Michael
+    (MichiB210), in the MintVID040 drawer. The Pi's VideoCore decodes up
+    to 1080p in full screen or in a Workbench window, with Paula sound,
+    on the normal Emu68 kernel (Pi 3A+ and CM4). Install
+    PiStorm/Libs/berryvp.library and set gpu_mem in config.txt; see
+    PISTORM below and PiStorm/ReadMe-PiStorm.
   - P96 (Fullscreen) also opens 16-bit little-endian, 24-bit RGB and
     32-bit BGRA screens.
   - AHI audio output: pick an AHI unit in the new Audio output list.
@@ -157,6 +161,27 @@ practical playback performance depend on the hardware underneath it.
     optimised build is officially recommended yet. Do not assume the 68060
     build is the correct choice solely from the CPU name; feedback from real
     Vampire hardware is welcome.
+
+PISTORM
+
+The PiStorm drawer adds hardware-accelerated playback for PiStorm
+accelerators running Emu68, with the mrberry player and berryvp.library by
+Michael (MichiB210). The Raspberry Pi's VideoCore decodes H.264 (up to
+1080p) and shows it full screen on the Pi's HDMI output or in a window on a
+Picasso96 Workbench; sound plays through Paula with MintVID's own decoders.
+Local files, YouTube, IPTV and HTTP(S) streams all play this way.
+
+No patched Emu68 kernel or other drivers are needed: keep using the current
+PiStorm/Emu68 release. Tested on the PiStorm Classic with a Raspberry Pi 3A+
+and the PiStorm32 lite with a CM4, Emu68 1.0.7 and 1.1.
+
+  1. Copy PiStorm/Libs/berryvp.library to LIBS:
+  2. Make sure config.txt on the PiStorm's SD card has gpu_mem=64 or more
+     (gpu_mem=128 or more on a CM4). The VideoCore cannot decode without it.
+  3. Start MintVID from the MintVID040 drawer (mrberry is already in it) and
+     choose "PiStorm (VideoCore)" or "PiStorm (VideoCore, window)".
+
+PiStorm/ReadMe-PiStorm has the details and what to check if nothing plays.
 
 WHAT IT PLAYS
 
@@ -324,11 +349,12 @@ official optimised-build recommendation for it yet. Copy the chosen drawer to
 your Amiga and keep its contents together.
 
 Run MintVID on systems with ReAction V44, or MintVID-GT for the plain
-GadTools/Intuition interface used by a standard AmigaOS 3.0 installation.
-IPTV and YouTube browsing are reachable from the controller's menus.
-Everything else in the drawer (mrplay, iptvgui, ytgui, the GadTools -GT set,
-mr_decode) is a support binary loaded on demand. Nothing in the release drawer
-is intended to be split up or copied out on its own.
+GadTools/Intuition interface used by a standard AmigaOS 3.0 installation. IPTV
+and YouTube browsing are reachable from the controller's menus. Everything
+else in the drawer (mrplay, iptvgui, ytgui, the GadTools -GT set, mr_decode,
+and mrberry in MintVID040) is a support binary loaded on demand. PiStorm users
+also copy PiStorm/Libs/berryvp.library to LIBS: (see PISTORM). Nothing in the
+release drawer is intended to be split up or copied out on its own.
 
 PROJECT / SOURCE
 
@@ -340,13 +366,15 @@ the build:
 
 SOURCE / LICENSING
 
-MintVID's own source is MIT-licensed. It links several dependencies that keep
-their own licences (GPL-2.0-or-later, Apache-2.0, and RealNetworks RPSL among
-them). The release archive includes a LICENSES drawer with the MintVID licence
-and upstream licence/notices available from the checked-out dependencies.
-See the project README for the full breakdown before redistributing binaries,
-and provide the corresponding source required by the licences of the binary
-components you redistribute.
+MintVID's own source is MIT-licensed. mrberry and berryvp.library are
+Copyright (c) 2026 Michael (MichiB210), MIT licence (LICENSES/MintVID-PiStorm-
+LICENSE.txt); their source is in pistorm/. It links several dependencies that
+keep their own licences (GPL-2.0-or-later, Apache-2.0, and RealNetworks RPSL
+among them). The release archive includes a LICENSES drawer with the MintVID
+licence and upstream licence/notices available from the checked-out
+dependencies. See the project README for the full breakdown before
+redistributing binaries, and provide the corresponding source required by the
+licences of the binary components you redistribute.
 
 SUPPORT
 
